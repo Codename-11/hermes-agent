@@ -3149,36 +3149,53 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
         return
 
-    # If origin/main has commits not on upstream, don't trample
-    if origin_ahead > 0:
-        print()
-        print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
-        print("  Skipping upstream sync to preserve your changes.")
-        print("  If you want to merge upstream changes, run:")
-        print("    git pull upstream main")
-        return
-
     # If upstream is not ahead, fork is up to date
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
         return
 
-    # origin/main is strictly behind upstream/main (can fast-forward)
     print()
     print(f"→ Fork is {upstream_ahead} commit(s) behind upstream")
-    print("→ Pulling from upstream...")
 
-    try:
-        subprocess.run(
-            git_cmd + ["pull", "--ff-only", "upstream", "main"],
-            cwd=cwd,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
-        print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
-        return
-
-    print("  ✓ Updated from upstream")
+    if origin_ahead > 0:
+        # Fork has local commits — rebase them on top of upstream
+        print(f"  ℹ Fork has {origin_ahead} local commit(s) — rebasing on upstream...")
+        try:
+            subprocess.run(
+                git_cmd + ["rebase", "upstream/main"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            # Abort the failed rebase so the repo isn't left in a broken state
+            subprocess.run(
+                git_cmd + ["rebase", "--abort"],
+                cwd=cwd,
+                capture_output=True,
+                check=False,
+            )
+            print("  ✗ Rebase failed (conflicts). Resolve manually:")
+            print("    cd ~/.hermes/hermes-agent")
+            print("    git rebase upstream/main")
+            print("    # fix conflicts, then: git rebase --continue")
+            print("    git push origin main --force-with-lease")
+            return
+        print("  ✓ Rebased local commits on upstream")
+    else:
+        # Clean fast-forward
+        print("→ Pulling from upstream...")
+        try:
+            subprocess.run(
+                git_cmd + ["pull", "--ff-only", "upstream", "main"],
+                cwd=cwd,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
+            return
+        print("  ✓ Updated from upstream")
 
     # Try to sync fork back to origin
     print("→ Syncing fork...")
@@ -3415,21 +3432,35 @@ def cmd_update(args):
         commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
-            _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd, PROJECT_ROOT, auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
+            # For forks: even if origin is current, check upstream before
+            # declaring "up to date" — upstream may have new commits that
+            # haven't been synced to the fork yet.
+            if is_fork and branch == "main":
+                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+                # Re-check after upstream sync — we may have new commits now
+                result = subprocess.run(
+                    git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
                 )
-            if current_branch not in ("main", "HEAD"):
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
-                )
-            print("✓ Already up to date!")
-            return
+                commit_count = int(result.stdout.strip())
+
+            if commit_count == 0:
+                _invalidate_update_cache()
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd, PROJECT_ROOT, auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                    )
+                if current_branch not in ("main", "HEAD"):
+                    subprocess.run(
+                        git_cmd + ["checkout", current_branch],
+                        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+                    )
+                print("✓ Already up to date!")
+                return
 
         print(f"→ Found {commit_count} new commit(s)")
 
