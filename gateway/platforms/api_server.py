@@ -1744,30 +1744,30 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     # Check cron module availability once (not per-request)
+    # Wrap in staticmethod() to prevent Python descriptor protocol from
+    # binding 'self' as first arg when called via self._cron_*(...)
     _CRON_AVAILABLE = False
     try:
         from cron.jobs import (
-            list_jobs as _cron_list,
-            get_job as _cron_get,
-            create_job as _cron_create,
-            update_job as _cron_update,
-            remove_job as _cron_remove,
-            pause_job as _cron_pause,
-            resume_job as _cron_resume,
-            trigger_job as _cron_trigger,
+            list_jobs as _cron_list_raw,
+            get_job as _cron_get_raw,
+            create_job as _cron_create_raw,
+            update_job as _cron_update_raw,
+            remove_job as _cron_remove_raw,
+            pause_job as _cron_pause_raw,
+            resume_job as _cron_resume_raw,
+            trigger_job as _cron_trigger_raw,
         )
         # Wrap as staticmethod to prevent descriptor binding — these are plain
-        # module functions, not instance methods.  Without this, self._cron_*()
-        # injects ``self`` as the first positional argument and every call
-        # raises TypeError.
-        _cron_list = staticmethod(_cron_list)
-        _cron_get = staticmethod(_cron_get)
-        _cron_create = staticmethod(_cron_create)
-        _cron_update = staticmethod(_cron_update)
-        _cron_remove = staticmethod(_cron_remove)
-        _cron_pause = staticmethod(_cron_pause)
-        _cron_resume = staticmethod(_cron_resume)
-        _cron_trigger = staticmethod(_cron_trigger)
+        # module functions, not instance methods.
+        _cron_list = staticmethod(_cron_list_raw)
+        _cron_get = staticmethod(_cron_get_raw)
+        _cron_create = staticmethod(_cron_create_raw)
+        _cron_update = staticmethod(_cron_update_raw)
+        _cron_remove = staticmethod(_cron_remove_raw)
+        _cron_pause = staticmethod(_cron_pause_raw)
+        _cron_resume = staticmethod(_cron_resume_raw)
+        _cron_trigger = staticmethod(_cron_trigger_raw)
         _CRON_AVAILABLE = True
     except ImportError:
         pass
