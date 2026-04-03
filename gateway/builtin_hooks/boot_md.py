@@ -43,13 +43,63 @@ def _build_boot_prompt(content: str) -> str:
     )
 
 
+def _resolve_boot_agent_kwargs() -> dict:
+    """Read model/provider from gateway config so the boot agent can make API calls.
+
+    Config structure (config.yaml):
+        model:
+          default: claude-opus-4-6
+          provider: anthropic
+    """
+    kwargs = {}
+    try:
+        from gateway.run import _resolve_gateway_model, _load_gateway_config
+        config = _load_gateway_config()
+        model = _resolve_gateway_model(config)
+        if model:
+            kwargs["model"] = model
+
+        # Provider lives under model.provider in config.yaml
+        model_cfg = config.get("model", {})
+        if isinstance(model_cfg, dict):
+            provider = model_cfg.get("provider", "")
+            if provider:
+                kwargs["provider"] = provider
+    except Exception as e:
+        logger.warning("Could not resolve boot agent config: %s", e)
+    return kwargs
+
+
+def _run_boot_agent(content: str) -> None:
+    """Spawn a one-shot agent session to execute the boot instructions."""
+def _load_model_config() -> dict:
+    """Read model and provider from ~/.hermes/config.yaml."""
+    try:
+        import yaml as _yaml
+        config_path = HERMES_HOME / "config.yaml"
+        if config_path.exists():
+            cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, dict):
+                return {
+                    "model": model_cfg.get("default", ""),
+                    "provider": model_cfg.get("provider", ""),
+                }
+    except Exception as e:
+        logger.warning("boot-md: could not read config.yaml: %s", e)
+    return {}
+
+
 def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent session to execute the boot instructions."""
     try:
         from run_agent import AIAgent
 
+        model_cfg = _load_model_config()
         prompt = _build_boot_prompt(content)
         agent = AIAgent(
+            model=model_cfg.get("model", ""),
+            provider=model_cfg.get("provider", ""),
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
