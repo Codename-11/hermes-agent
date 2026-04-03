@@ -3168,7 +3168,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
                 text=True,
                 check=True,
             )
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as exc:
             # Abort the failed rebase so the repo isn't left in a broken state
             subprocess.run(
                 git_cmd + ["rebase", "--abort"],
@@ -3176,11 +3176,45 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
                 capture_output=True,
                 check=False,
             )
-            print("  ✗ Rebase failed (conflicts). Resolve manually:")
-            print("    cd ~/.hermes/hermes-agent")
-            print("    git rebase upstream/main")
-            print("    # fix conflicts, then: git rebase --continue")
-            print("    git push origin main --force-with-lease")
+            # Gather context for the error message
+            conflict_stderr = (exc.stderr or "").strip()
+            local_log = ""
+            try:
+                log_result = subprocess.run(
+                    git_cmd + ["log", "--oneline", f"upstream/main..HEAD"],
+                    cwd=cwd, capture_output=True, text=True,
+                )
+                if log_result.returncode == 0:
+                    local_log = log_result.stdout.strip()
+            except Exception:
+                pass
+
+            print()
+            print("  ╭─────────────────────────────────────────────╮")
+            print("  │  ✗ Upstream rebase failed (conflicts)       │")
+            print("  ╰─────────────────────────────────────────────╯")
+            print()
+            print("  The rebase was auto-aborted — your repo is clean.")
+            print()
+            print("  ── Pass this to Victor (Hermes Agent) ────────")
+            print()
+            print("  ┌─ Copy below ─────────────────────────────────")
+            print(f"  │ Hermes upstream rebase failed.")
+            print(f"  │ Repo: ~/.hermes/hermes-agent")
+            print(f"  │ Upstream: {upstream_ahead} commits ahead")
+            print(f"  │ Local: {origin_ahead} commits ahead of upstream")
+            if local_log:
+                print(f"  │ Local commits:")
+                for line in local_log.splitlines()[:5]:
+                    print(f"  │   {line}")
+            if conflict_stderr:
+                first_line = conflict_stderr.splitlines()[0]
+                print(f"  │ Error: {first_line}")
+            print(f"  │ ")
+            print(f"  │ Please rebase our local commits onto upstream/main,")
+            print(f"  │ resolve conflicts, and push to origin.")
+            print("  └────────────────────────────────────────────")
+            print()
             return
         print("  ✓ Rebased local commits on upstream")
     else:
