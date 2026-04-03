@@ -3470,16 +3470,27 @@ def cmd_update(args):
             # declaring "up to date" — upstream may have new commits that
             # haven't been synced to the fork yet.
             if is_fork and branch == "main":
+                # Snapshot HEAD before sync so we can detect if upstream changed us
+                pre_sync_head = subprocess.run(
+                    git_cmd + ["rev-parse", "HEAD"],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                ).stdout.strip()
+
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
-                # Re-check after upstream sync — we may have new commits now
-                result = subprocess.run(
-                    git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                commit_count = int(result.stdout.strip())
+
+                post_sync_head = subprocess.run(
+                    git_cmd + ["rev-parse", "HEAD"],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                ).stdout.strip()
+
+                if pre_sync_head != post_sync_head:
+                    # Upstream sync changed HEAD — count those as new commits
+                    # so we fall through to reinstall deps + restart gateway
+                    commit_count = _count_commits_between(
+                        git_cmd, PROJECT_ROOT, pre_sync_head, post_sync_head,
+                    )
+                    if commit_count <= 0:
+                        commit_count = 1  # at minimum, something changed
 
             if commit_count == 0:
                 _invalidate_update_cache()
