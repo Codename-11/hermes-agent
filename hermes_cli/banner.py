@@ -167,19 +167,39 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 
-    # Count commits behind
+    # For forks: also fetch upstream so we detect upstream-only changes
+    has_upstream = False
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "remote", "get-url", "upstream"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
-        if result.returncode == 0:
-            behind = int(result.stdout.strip())
-        else:
-            behind = None
+        if result.returncode == 0 and result.stdout.strip():
+            has_upstream = True
+            subprocess.run(
+                ["git", "fetch", "upstream", "--quiet"],
+                capture_output=True, timeout=10,
+                cwd=str(repo_dir),
+            )
     except Exception:
-        behind = None
+        pass
+
+    # Count commits behind — check both origin and upstream, take the max
+    behind = None
+    for ref in (["origin/main"] + (["upstream/main"] if has_upstream else [])):
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--count", f"HEAD..{ref}"],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(repo_dir),
+            )
+            if result.returncode == 0:
+                count = int(result.stdout.strip())
+                if behind is None or count > behind:
+                    behind = count
+        except Exception:
+            pass
 
     # Write cache
     try:
