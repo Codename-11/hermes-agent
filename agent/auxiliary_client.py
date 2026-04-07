@@ -91,6 +91,7 @@ auxiliary_is_nous: bool = False
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
+_NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -208,7 +209,6 @@ class _CodexCompletionsAdapter:
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
-        temperature = kwargs.get("temperature")
 
         # Separate system/instructions from conversation messages.
         # Convert chat.completions multimodal content blocks to Responses
@@ -260,26 +260,73 @@ class _CodexCompletionsAdapter:
         usage = None
 
         try:
+            # Collect output items and text deltas during streaming —
+            # the Codex backend can return empty response.output from
+            # get_final_response() even when items were streamed.
+            collected_output_items: List[Any] = []
+            collected_text_deltas: List[str] = []
+            has_function_calls = False
             with self._client.responses.stream(**resp_kwargs) as stream:
                 for _event in stream:
-                    pass
+                    _etype = getattr(_event, "type", "")
+                    if _etype == "response.output_item.done":
+                        _done = getattr(_event, "item", None)
+                        if _done is not None:
+                            collected_output_items.append(_done)
+                    elif "output_text.delta" in _etype:
+                        _delta = getattr(_event, "delta", "")
+                        if _delta:
+                            collected_text_deltas.append(_delta)
+                    elif "function_call" in _etype:
+                        has_function_calls = True
                 final = stream.get_final_response()
 
-            # Extract text and tool calls from the Responses output
+            # Backfill empty output from collected stream events
+            _output = getattr(final, "output", None)
+            if isinstance(_output, list) and not _output:
+                if collected_output_items:
+                    final.output = list(collected_output_items)
+                    logger.debug(
+                        "Codex auxiliary: backfilled %d output items from stream events",
+                        len(collected_output_items),
+                    )
+                elif collected_text_deltas and not has_function_calls:
+                    # Only synthesize text when no tool calls were streamed —
+                    # a function_call response with incidental text should not
+                    # be collapsed into a plain-text message.
+                    assembled = "".join(collected_text_deltas)
+                    final.output = [SimpleNamespace(
+                        type="message", role="assistant", status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )]
+                    logger.debug(
+                        "Codex auxiliary: synthesized from %d deltas (%d chars)",
+                        len(collected_text_deltas), len(assembled),
+                    )
+
+            # Extract text and tool calls from the Responses output.
+            # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
+            # so use a helper that handles both shapes.
+            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
+                val = getattr(obj, key, None)
+                if val is None and isinstance(obj, dict):
+                    val = obj.get(key, default)
+                return val if val is not None else default
+
             for item in getattr(final, "output", []):
-                item_type = getattr(item, "type", None)
+                item_type = _item_get(item, "type")
                 if item_type == "message":
-                    for part in getattr(item, "content", []):
-                        ptype = getattr(part, "type", None)
+                    for part in (_item_get(item, "content") or []):
+                        ptype = _item_get(part, "type")
                         if ptype in ("output_text", "text"):
-                            text_parts.append(getattr(part, "text", ""))
+                            text_parts.append(_item_get(part, "text", ""))
                 elif item_type == "function_call":
                     tool_calls_raw.append(SimpleNamespace(
-                        id=getattr(item, "call_id", ""),
+                        id=_item_get(item, "call_id", ""),
                         type="function",
                         function=SimpleNamespace(
-                            name=getattr(item, "name", ""),
-                            arguments=getattr(item, "arguments", "{}"),
+                            name=_item_get(item, "name", ""),
+                            arguments=_item_get(item, "arguments", "{}"),
                         ),
                     ))
 
@@ -673,7 +720,19 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
-    model = "gemini-3-flash" if nous.get("source") == "pool" else _NOUS_MODEL
+    if nous.get("source") == "pool":
+        model = "gemini-3-flash"
+    else:
+        model = _NOUS_MODEL
+    # Free-tier users can't use paid auxiliary models — use the free
+    # multimodal model instead so vision/browser-vision still works.
+    try:
+        from hermes_cli.models import check_nous_free_tier
+        if check_nous_free_tier():
+            model = _NOUS_FREE_TIER_VISION_MODEL
+            logger.debug("Free-tier Nous account — using %s for auxiliary/vision", model)
+    except Exception:
+        pass
     return (
         OpenAI(
             api_key=_nous_api_key(nous),

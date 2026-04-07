@@ -20,7 +20,6 @@ Config (env vars or hermes config.yaml under retaindb:):
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -189,7 +188,7 @@ class _Client:
             "Content-Type": "application/json",
             "x-sdk-runtime": "hermes-plugin",
         }
-        if path.startswith("/v1/memory") or path.startswith("/v1/context"):
+        if path.startswith(("/v1/memory", "/v1/context")):
             h["X-API-Key"] = token
         return h
 
@@ -505,7 +504,8 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._user_id = kwargs.get("user_id", "default") or "default"
         self._agent_id = kwargs.get("agent_id", "hermes") or "hermes"
 
-        hermes_home_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        from hermes_constants import get_hermes_home
+        hermes_home_path = get_hermes_home()
         db_path = hermes_home_path / "retaindb_queue.db"
         self._queue = _WriteQueue(self._client, db_path)
 
