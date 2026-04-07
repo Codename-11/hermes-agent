@@ -185,21 +185,52 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Count commits behind — check both origin and upstream, take the max
+    # Detect deploy branch (e.g. "axiom") — these merge feature branches on
+    # top of main, so the relevant comparison is main..upstream/main (how far
+    # behind main is), not HEAD..upstream/main (which double-counts merge commits).
+    _DEPLOY_BRANCHES = {"axiom"}
+    current_branch = None
+    try:
+        br_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
+        )
+        if br_result.returncode == 0:
+            current_branch = br_result.stdout.strip()
+    except Exception:
+        pass
+
+    is_deploy = current_branch in _DEPLOY_BRANCHES and has_upstream
+
+    # Count commits behind — for deploy branches, compare main vs upstream/main;
+    # for normal installs, compare HEAD vs origin/main and upstream/main.
     behind = None
-    for ref in (["origin/main"] + (["upstream/main"] if has_upstream else [])):
+    if is_deploy:
+        # Deploy branch: how far is local main behind upstream/main?
         try:
             result = subprocess.run(
-                ["git", "rev-list", "--count", f"HEAD..{ref}"],
+                ["git", "rev-list", "--count", "main..upstream/main"],
                 capture_output=True, text=True, timeout=5,
                 cwd=str(repo_dir),
             )
             if result.returncode == 0:
-                count = int(result.stdout.strip())
-                if behind is None or count > behind:
-                    behind = count
+                behind = int(result.stdout.strip())
         except Exception:
             pass
+    else:
+        for ref in (["origin/main"] + (["upstream/main"] if has_upstream else [])):
+            try:
+                result = subprocess.run(
+                    ["git", "rev-list", "--count", f"HEAD..{ref}"],
+                    capture_output=True, text=True, timeout=5,
+                    cwd=str(repo_dir),
+                )
+                if result.returncode == 0:
+                    count = int(result.stdout.strip())
+                    if behind is None or count > behind:
+                        behind = count
+            except Exception:
+                pass
 
     # Write cache
     try:

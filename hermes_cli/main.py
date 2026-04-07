@@ -2551,6 +2551,21 @@ def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
+
+    # Show branch info for deploy branches
+    _DEPLOY_BRANCHES = {"axiom"}
+    try:
+        br_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=str(PROJECT_ROOT),
+        )
+        current_branch = br_result.stdout.strip() if br_result.returncode == 0 else None
+        if current_branch and current_branch in _DEPLOY_BRANCHES:
+            print(f"Branch: {current_branch} (deploy)")
+        elif current_branch and current_branch != "main":
+            print(f"Branch: {current_branch}")
+    except Exception:
+        pass
     
     # Show Python version
     print(f"Python: {sys.version.split()[0]}")
