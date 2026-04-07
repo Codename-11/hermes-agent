@@ -3447,7 +3447,9 @@ def cmd_update(args):
 
         if is_deploy_branch:
             # Deploy branch update: upstream → main → deploy branch (merge)
-            print(f"  ℹ Deploy branch '{current_branch}' detected")
+            print(f"→ Deploy branch: {current_branch}")
+            print(f"  upstream → main → {current_branch}")
+            print()
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
             # Fetch upstream
@@ -3457,8 +3459,20 @@ def cmd_update(args):
                     git_cmd + ["fetch", "upstream", "--quiet"],
                     cwd=PROJECT_ROOT, capture_output=True, check=True,
                 )
-            except subprocess.CalledProcessError:
-                print("  ✗ Failed to fetch upstream.")
+                print("  ✓ Fetched upstream")
+            except subprocess.CalledProcessError as exc:
+                fetch_err = (exc.stderr or "").strip() if hasattr(exc, "stderr") else ""
+                print("  ✗ Failed to fetch upstream")
+                print()
+                print("  ┌─ Copy below ─────────────────────────────────")
+                print(f"  │ hermes update failed — cannot fetch upstream.")
+                print(f"  │ Branch: {current_branch}")
+                print(f"  │ Repo: {PROJECT_ROOT}")
+                if fetch_err:
+                    print(f"  │ Error: {fetch_err.splitlines()[0]}")
+                print(f"  │ ")
+                print(f"  │ Check network, then retry: hermes update")
+                print("  └────────────────────────────────────────────")
                 if auto_stash_ref is not None:
                     _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
                 sys.exit(1)
@@ -3474,25 +3488,24 @@ def cmd_update(args):
                 print("✓ Already up to date!")
                 return
 
-            print(f"→ Found {upstream_ahead} new upstream commit(s)")
+            print(f"→ {upstream_ahead} new upstream commit(s)")
 
             # Fast-forward local main to upstream/main (without checking out)
-            print("→ Updating main from upstream...")
+            print("→ Syncing main ← upstream/main...")
             ff_result = subprocess.run(
                 git_cmd + ["fetch", "upstream", "main:main"],
                 cwd=PROJECT_ROOT, capture_output=True, text=True,
             )
             if ff_result.returncode != 0:
-                # If main has diverged (shouldn't happen with our workflow),
-                # force-update it since main should always track upstream exactly.
-                print("  ⚠ main diverged from upstream — resetting main to upstream/main...")
-                # Need to checkout main briefly to reset it
+                # main diverged — force-reset it (main should always == upstream)
+                print("  ⚠ main diverged — resetting to upstream/main")
                 subprocess.run(git_cmd + ["checkout", "main"], cwd=PROJECT_ROOT, capture_output=True, check=True)
                 subprocess.run(git_cmd + ["reset", "--hard", "upstream/main"], cwd=PROJECT_ROOT, capture_output=True, check=True)
                 subprocess.run(git_cmd + ["checkout", current_branch], cwd=PROJECT_ROOT, capture_output=True, check=True)
+            print("  ✓ main updated")
 
             # Merge main into deploy branch
-            print(f"→ Merging main into {current_branch}...")
+            print(f"→ Merging main → {current_branch}...")
             merge_result = subprocess.run(
                 git_cmd + ["merge", "main", "-m", f"merge: upstream sync ({upstream_ahead} commits)"],
                 cwd=PROJECT_ROOT, capture_output=True, text=True,
@@ -3503,19 +3516,56 @@ def cmd_update(args):
                     git_cmd + ["merge", "--abort"],
                     cwd=PROJECT_ROOT, capture_output=True, check=False,
                 )
+
+                # Gather context
+                conflict_files = ""
+                try:
+                    # Re-attempt merge just to get the conflict file list
+                    retry = subprocess.run(
+                        git_cmd + ["merge", "--no-commit", "--no-ff", "main"],
+                        cwd=PROJECT_ROOT, capture_output=True, text=True,
+                    )
+                    cf_result = subprocess.run(
+                        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+                        cwd=PROJECT_ROOT, capture_output=True, text=True,
+                    )
+                    conflict_files = cf_result.stdout.strip() if cf_result.returncode == 0 else ""
+                    subprocess.run(git_cmd + ["merge", "--abort"], cwd=PROJECT_ROOT, capture_output=True, check=False)
+                except Exception:
+                    pass
+
+                merge_stderr = (merge_result.stderr or "").strip()
+
                 print()
-                print("  ╭──────────────────────────────────────────────╮")
+                print("  ╭─────────────────────────────────────────────╮")
                 print(f"  │  ✗ Merge into {current_branch} failed (conflicts)  │")
-                print("  ╰──────────────────────────────────────────────╯")
+                print("  ╰─────────────────────────────────────────────╯")
                 print()
                 print("  The merge was auto-aborted — your repo is clean.")
-                print("  Resolve manually:")
-                print(f"    cd {PROJECT_ROOT}")
-                print(f"    git merge main")
-                print("    # resolve conflicts, then: git merge --continue")
+                print()
+                print("  ── Pass this to your Hermes agent ─────────────")
+                print()
+                print("  ┌─ Copy below ─────────────────────────────────")
+                print(f"  │ hermes update: merge into {current_branch} failed.")
+                print(f"  │ Repo: {PROJECT_ROOT}")
+                print(f"  │ Upstream: {upstream_ahead} new commits")
+                print(f"  │ Deploy branch: {current_branch}")
+                if conflict_files:
+                    print(f"  │ Conflicting files:")
+                    for f in conflict_files.splitlines()[:8]:
+                        print(f"  │   {f}")
+                if merge_stderr:
+                    print(f"  │ Error: {merge_stderr.splitlines()[0]}")
+                print(f"  │ ")
+                print(f"  │ Please merge main into {current_branch}, resolve")
+                print(f"  │ conflicts, and push to origin.")
+                print("  └────────────────────────────────────────────")
+                print()
                 if auto_stash_ref is not None:
                     _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
                 return
+
+            print(f"  ✓ Merged {upstream_ahead} commits into {current_branch}")
 
             commit_count = upstream_ahead
             if auto_stash_ref is not None:
