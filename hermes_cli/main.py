@@ -646,6 +646,7 @@ def cmd_chat(args):
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
+        "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
@@ -3995,7 +3996,7 @@ def cmd_update(args):
         # running gateway needs restarting to pick up the new code.
         try:
             from hermes_cli.gateway import (
-                is_macos, is_linux, _ensure_user_systemd_env,
+                is_macos, supports_systemd_services, _ensure_user_systemd_env,
                 find_gateway_pids,
                 _get_service_pids,
             )
@@ -4006,7 +4007,7 @@ def cmd_update(args):
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
-            if is_linux():
+            if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
                 except Exception:
@@ -4522,6 +4523,10 @@ For more help on a command:
     chat_parser.add_argument(
         "-q", "--query",
         help="Single query (non-interactive mode)"
+    )
+    chat_parser.add_argument(
+        "--image",
+        help="Optional local image path to attach to a single query"
     )
     chat_parser.add_argument(
         "-m", "--model",
