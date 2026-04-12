@@ -1046,6 +1046,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "message": {"id": assistant_message_id, "role": "assistant"},
             }))
 
+            last_activity = time.monotonic()
             while True:
                 try:
                     frame = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
@@ -1060,12 +1061,18 @@ class APIServerAdapter(BasePlatformAdapter):
                             except _q.Empty:
                                 break
                         break
+                    # Send periodic keepalive to prevent client/proxy
+                    # timeouts during agent init and long LLM API calls.
+                    if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
+                        await response.write(b": keepalive\n\n")
+                        last_activity = time.monotonic()
                     continue
 
                 if frame is None:
                     break
 
                 await response.write(frame)
+                last_activity = time.monotonic()
 
             result = await agent_task
             tools = _tool_map(result.get("messages") or [])
