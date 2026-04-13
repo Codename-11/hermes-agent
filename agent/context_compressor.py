@@ -659,6 +659,24 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         return max(cut_idx, head_end + 1)
 
+    def preview_turns_to_summarize(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return the slice that would be summarized during compression."""
+        n_messages = len(messages)
+        _min_for_compress = self.protect_first_n + 3 + 1
+        if n_messages <= _min_for_compress:
+            return []
+
+        preview_messages, _ = self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=self.tail_token_budget,
+        )
+        compress_start = self._align_boundary_forward(preview_messages, self.protect_first_n)
+        compress_end = self._find_tail_cut_by_tokens(preview_messages, compress_start)
+        if compress_start >= compress_end:
+            return []
+        return preview_messages[compress_start:compress_end]
+
     # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------

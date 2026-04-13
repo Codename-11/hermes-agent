@@ -64,6 +64,10 @@ class TestCompress:
         result = compressor.compress(msgs)
         assert result == msgs
 
+    def test_preview_turns_to_summarize_returns_empty_for_small_conversation(self, compressor):
+        msgs = self._make_messages(4)
+        assert compressor.preview_turns_to_summarize(msgs) == []
+
     def test_truncation_fallback_no_client(self, compressor):
         # compressor has client=None, so should use truncation fallback
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
@@ -91,6 +95,13 @@ class TestCompress:
         # (head=assistant, tail=user in this fixture).  Verify the
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
+
+    def test_preview_turns_to_summarize_returns_middle_slice(self, compressor):
+        msgs = [{"role": "system", "content": "system"}] + self._make_messages(10)
+        turns = compressor.preview_turns_to_summarize(msgs)
+        assert turns
+        assert all(msg in msgs for msg in turns)
+        assert turns[0] == msgs[2]
 
 
 class TestGenerateSummaryNoneContent:

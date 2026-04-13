@@ -6768,14 +6768,32 @@ class AIAgent:
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
-        # Notify external memory provider before compression discards context
-        if self._memory_manager:
+        # Notify external memory provider before compression discards context.
+        # Side-effect only — providers persist facts from the soon-to-be-dropped
+        # slice, but no provider text is reinjected into the prompt here.
+        memory_precompress_messages = messages
+        should_run_precompress = True
+        preview_turns = getattr(self.context_compressor, "preview_turns_to_summarize", None)
+        if callable(preview_turns):
             try:
-                self._memory_manager.on_pre_compress(messages)
+                preview_slice = preview_turns(messages)
+                if preview_slice:
+                    memory_precompress_messages = preview_slice
+                else:
+                    should_run_precompress = False
+            except Exception:
+                pass
+        if self._memory_manager and should_run_precompress:
+            try:
+                self._memory_manager.on_pre_compress(memory_precompress_messages)
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        compressed = self.context_compressor.compress(
+            messages,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+        )
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
