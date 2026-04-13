@@ -3310,6 +3310,29 @@ def _restore_stashed_changes(
 
         print("\nYour stashed changes are preserved — nothing is lost.")
         print(f"  Stash ref: {stash_ref}")
+        print()
+        print("  ── Pass this to Victor (Hermes Agent) ────────")
+        print()
+        print("  ┌─ Copy below ─────────────────────────────────")
+        print("  │ hermes update: restoring stashed local changes failed.")
+        print(f"  │ Repo: {cwd}")
+        current_branch = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if current_branch:
+            print(f"  │ Branch: {current_branch}")
+        print(f"  │ Stash ref: {stash_ref}")
+        if conflicted_files:
+            print("  │ Conflicted files:")
+            for f in conflicted_files.splitlines():
+                print(f"  │   {f}")
+        print("  │ ")
+        print("  │ Please restore the stashed local changes onto the updated codebase,")
+        print("  │ resolve any conflicts, and leave the repo in a clean runnable state.")
+        print("  └────────────────────────────────────────────")
 
         # Always reset to clean state — leaving conflict markers in source
         # files makes hermes completely unrunnable (SyntaxError on import).
@@ -3321,6 +3344,7 @@ def _restore_stashed_changes(
         )
         print("Working tree reset to clean state.")
         print(f"Restore your changes later with: git stash apply {stash_ref}")
+        print("If you want Victor to handle it, paste the block above.")
         # Don't sys.exit — the code update itself succeeded, only the stash
         # restore had conflicts.  Let cmd_update continue with pip install,
         # skill sync, and gateway restart.
