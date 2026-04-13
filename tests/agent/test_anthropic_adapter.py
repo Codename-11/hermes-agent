@@ -1439,7 +1439,13 @@ class TestThinkingBlockSignatureManagement:
                 assert "cache_control" not in block
 
     def test_thinking_stripped_from_merged_consecutive_assistants(self):
-        """When consecutive assistants are merged, second one's thinking is dropped."""
+        """When consecutive assistants are merged, ALL thinking is stripped.
+
+        Merging changes the message content structure, which invalidates
+        all thinking block signatures (computed against the original turn
+        content).  Both the first and second message's thinking blocks
+        must be stripped to avoid HTTP 400 from Anthropic.
+        """
         messages = [
             {
                 "role": "assistant",
@@ -1462,11 +1468,14 @@ class TestThinkingBlockSignatureManagement:
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 1
 
-        # Only the first thinking block should remain (signed, on the last/only assistant)
+        # ALL thinking blocks must be stripped — merging invalidates signatures.
         blocks = assistants[0]["content"]
         thinking = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking) == 1
-        assert thinking[0]["thinking"] == "First thought."
+        assert len(thinking) == 0
+        # Text content from both messages should survive
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert any("First" in b["text"] for b in text_blocks)
+        assert any("Second" in b["text"] for b in text_blocks)
 
     def test_empty_content_after_strip_gets_placeholder(self):
         """If stripping thinking leaves an empty message, a placeholder is added."""

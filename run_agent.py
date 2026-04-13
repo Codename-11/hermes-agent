@@ -9021,12 +9021,21 @@ class AIAgent:
                     # signature → HTTP 400.  Recovery: strip reasoning_details
                     # from all messages so the next retry sends no thinking
                     # blocks at all.  One-shot — don't retry infinitely.
+                    #
+                    # IMPORTANT: Must strip from BOTH `messages` (canonical
+                    # session list) AND `api_messages` (the shallow-copied
+                    # list used to build api_kwargs in the retry loop).
+                    # api_messages is built before the retry loop from
+                    # msg.copy(), so its dicts are separate objects.
                     if (
                         classified.reason == FailoverReason.thinking_signature
                         and not thinking_sig_retry_attempted
                     ):
                         thinking_sig_retry_attempted = True
                         for _m in messages:
+                            if isinstance(_m, dict):
+                                _m.pop("reasoning_details", None)
+                        for _m in api_messages:
                             if isinstance(_m, dict):
                                 _m.pop("reasoning_details", None)
                         self._vprint(

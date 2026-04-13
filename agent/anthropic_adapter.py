@@ -1026,19 +1026,25 @@ def convert_messages_to_anthropic(
             result.append({"role": "user", "content": content})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)
+    # Track which assistant messages were mutated — their thinking block
+    # signatures are invalidated by content changes.
+    _mutated_assistant_indices: set = set()
     tool_result_ids = set()
     for m in result:
         if m["role"] == "user" and isinstance(m["content"], list):
             for block in m["content"]:
                 if block.get("type") == "tool_result":
                     tool_result_ids.add(block.get("tool_use_id"))
-    for m in result:
+    for idx, m in enumerate(result):
         if m["role"] == "assistant" and isinstance(m["content"], list):
+            before = len(m["content"])
             m["content"] = [
                 b
                 for b in m["content"]
                 if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
             ]
+            if len(m["content"]) != before:
+                _mutated_assistant_indices.add(idx)
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
@@ -1063,9 +1069,15 @@ def convert_messages_to_anthropic(
                 m["content"] = [{"type": "text", "text": "(tool result removed)"}]
 
     # Enforce strict role alternation (Anthropic rejects consecutive same-role messages)
+    # Remap _mutated_assistant_indices from result[] positions to fixed[] positions.
     fixed = []
-    for m in result:
+    _old_to_new_idx: dict = {}  # result index → fixed index
+    for old_idx, m in enumerate(result):
         if fixed and fixed[-1]["role"] == m["role"]:
+            # Merging into the previous fixed entry — the previous entry's
+            # fixed index inherits mutation status from the merged message.
+            new_idx = len(fixed) - 1
+            _old_to_new_idx[old_idx] = new_idx
             if m["role"] == "user":
                 # Merge consecutive user messages
                 prev_content = fixed[-1]["content"]
@@ -1086,6 +1098,8 @@ def convert_messages_to_anthropic(
                 # Drop thinking blocks from the *second* message: their
                 # signature was computed against a different turn boundary
                 # and becomes invalid once merged.
+                # Mark the merged message as mutated — content structure changed.
+                _mutated_assistant_indices.add(new_idx)
                 if isinstance(m["content"], list):
                     m["content"] = [
                         b for b in m["content"]
@@ -1105,7 +1119,18 @@ def convert_messages_to_anthropic(
                         curr_blocks = [{"type": "text", "text": curr_blocks}]
                     fixed[-1]["content"] = prev_blocks + curr_blocks
         else:
+            new_idx = len(fixed)
+            _old_to_new_idx[old_idx] = new_idx
             fixed.append(m)
+    # Remap mutation tracking from old result indices to new fixed indices.
+    _mutated_fixed = set()
+    for old_idx in _mutated_assistant_indices:
+        if old_idx in _old_to_new_idx:
+            _mutated_fixed.add(_old_to_new_idx[old_idx])
+        # Indices added directly during merging are already in fixed-space.
+        elif old_idx < len(fixed):
+            _mutated_fixed.add(old_idx)
+    _mutated_assistant_indices = _mutated_fixed
     result = fixed
 
     # ── Thinking block signature management ──────────────────────────
@@ -1142,10 +1167,13 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _is_third_party or idx != last_assistant_idx:
+        _is_mutated = idx in _mutated_assistant_indices
+        if _is_third_party or idx != last_assistant_idx or _is_mutated:
             # Third-party endpoint: strip ALL thinking blocks from every
             # assistant message — signatures are Anthropic-proprietary.
-            # Direct Anthropic: strip from non-latest assistant messages only.
+            # Direct Anthropic: strip from non-latest assistant messages only,
+            # AND from the latest if it was mutated by orphan stripping or
+            # message merging (mutations invalidate signatures).
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
