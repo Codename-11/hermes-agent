@@ -49,7 +49,7 @@ from hermes_cli.config import load_config, save_config
 from hermes_cli.models import curated_models_for_provider, list_available_providers
 from hermes_state import SessionDB
 from tools.memory_tool import MemoryStore
-from tools.skills_tool import skill_view, skills_categories, skills_list
+from tools.skills_tool import skill_view, skills_list
 
 logger = logging.getLogger(__name__)
 
@@ -1274,13 +1274,6 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
         category = (request.query.get("category") or "").strip() or None
         return web.json_response(json.loads(skills_list(category=category)))
-
-    async def _handle_skill_categories(self, request: "web.Request") -> "web.Response":
-        """GET /api/skills/categories — list skill categories."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        return web.json_response(json.loads(skills_categories()))
 
     async def _handle_view_skill(self, request: "web.Request") -> "web.Response":
         """GET /api/skills/{name} — fetch skill details."""
@@ -2613,7 +2606,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_patch("/api/memory", self._handle_replace_memory)
             self._app.router.add_delete("/api/memory", self._handle_delete_memory)
             self._app.router.add_get("/api/skills", self._handle_list_skills)
-            self._app.router.add_get("/api/skills/categories", self._handle_skill_categories)
             self._app.router.add_get("/api/skills/{name}", self._handle_view_skill)
             self._app.router.add_get("/api/config", self._handle_get_config)
             self._app.router.add_patch("/api/config", self._handle_update_config)
