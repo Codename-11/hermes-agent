@@ -1499,6 +1499,7 @@ class GatewayRunner:
                        "WECOM_CALLBACK_ALLOWED_USERS",
                        "WEIXIN_ALLOWED_USERS",
                        "BLUEBUBBLES_ALLOWED_USERS",
+                       "QQ_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
@@ -1512,7 +1513,8 @@ class GatewayRunner:
                        "WECOM_ALLOW_ALL_USERS",
                        "WECOM_CALLBACK_ALLOW_ALL_USERS",
                        "WEIXIN_ALLOW_ALL_USERS",
-                       "BLUEBUBBLES_ALLOW_ALL_USERS")
+                       "BLUEBUBBLES_ALLOW_ALL_USERS",
+                       "QQ_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -2255,8 +2257,15 @@ class GatewayRunner:
                 return None
             return BlueBubblesAdapter(config)
 
+        elif platform == Platform.QQBOT:
+            from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+            if not check_qq_requirements():
+                logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")
+                return None
+            return QQAdapter(config)
+
         return None
-    
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -2296,6 +2305,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.QQBOT: "QQ_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -2313,6 +2323,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -2546,11 +2557,8 @@ class GatewayRunner:
                 self._pending_messages.pop(_quick_key, None)
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
-                # Mark session suspended so the next message starts fresh
-                # instead of resuming the stuck context (#7536).
-                self.session_store.suspend_session(_quick_key)
-                logger.info("HARD STOP for session %s — suspended, session lock released", _quick_key[:20])
-                return "⚡ Force-stopped. The session is suspended — your next message will start fresh."
+                logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key[:20])
+                return "⚡ Stopped. You can continue this session."
 
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
@@ -3964,6 +3972,11 @@ class GatewayRunner:
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
                 try:
+                    if hasattr(_old_agent, "shutdown_memory_provider"):
+                        _old_agent.shutdown_memory_provider()
+                except Exception:
+                    pass
+                try:
                     if hasattr(_old_agent, "close"):
                         _old_agent.close()
                 except Exception:
@@ -4120,9 +4133,7 @@ class GatewayRunner:
         only through normal command dispatch (no running agent) or as a
         fallback.  Force-clean the session lock in all cases for safety.
 
-        When there IS a running/pending agent, the session is also marked
-        as *suspended* so the next message starts a fresh session instead
-        of resuming the stuck context (#7536).
+        The session is preserved so the user can continue the conversation.
         """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
@@ -4133,17 +4144,15 @@ class GatewayRunner:
             # Force-clean the sentinel so the session is unlocked.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
-            self.session_store.suspend_session(session_key)
-            logger.info("HARD STOP (pending) for session %s — suspended, sentinel cleared", session_key[:20])
-            return "⚡ Force-stopped. The agent was still starting — your next message will start fresh."
+            logger.info("STOP (pending) for session %s — sentinel cleared", session_key[:20])
+            return "⚡ Stopped. The agent hadn't started yet — you can continue this session."
         if agent:
             agent.interrupt("Stop requested")
             # Force-clean the session lock so a truly hung agent doesn't
             # keep it locked forever.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
-            self.session_store.suspend_session(session_key)
-            return "⚡ Force-stopped. Your next message will start a fresh session."
+            return "⚡ Stopped. You can continue this session."
         else:
             return "No active task to stop."
 
@@ -6303,7 +6312,7 @@ class GatewayRunner:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
         loop = asyncio.get_event_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names before shutdown
             with _lock:
@@ -6476,7 +6485,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
@@ -7399,6 +7408,263 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    # ------------------------------------------------------------------
+    # Proxy mode: forward messages to a remote Hermes API server
+    # ------------------------------------------------------------------
+
+    def _get_proxy_url(self) -> Optional[str]:
+        """Return the proxy URL if proxy mode is configured, else None.
+
+        Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
+        then ``gateway.proxy_url`` in config.yaml.
+        """
+        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
+        if url:
+            return url.rstrip("/")
+        cfg = _load_gateway_config()
+        url = (cfg.get("gateway") or {}).get("proxy_url", "").strip()
+        if url:
+            return url.rstrip("/")
+        return None
+
+    async def _run_agent_via_proxy(
+        self,
+        message: str,
+        context_prompt: str,
+        history: List[Dict[str, Any]],
+        source: "SessionSource",
+        session_id: str,
+        session_key: str = None,
+        event_message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Forward the message to a remote Hermes API server instead of
+        running a local AIAgent.
+
+        When ``GATEWAY_PROXY_URL`` (or ``gateway.proxy_url`` in config.yaml)
+        is set, the gateway becomes a thin relay: it handles platform I/O
+        (encryption, threading, media) and delegates all agent work to the
+        remote server via ``POST /v1/chat/completions`` with SSE streaming.
+
+        This lets a Docker container handle Matrix E2EE while the actual
+        agent runs on the host with full access to local files, memory,
+        skills, and a unified session store.
+        """
+        try:
+            from aiohttp import ClientSession as _AioClientSession, ClientTimeout
+        except ImportError:
+            return {
+                "final_response": "⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
+
+        proxy_url = self._get_proxy_url()
+        if not proxy_url:
+            return {
+                "final_response": "⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
+
+        proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
+
+        # Build messages in OpenAI chat format --------------------------
+        #
+        # The remote api_server can maintain session continuity via
+        # X-Hermes-Session-Id, so it loads its own history.  We only
+        # need to send the current user message.  If the remote has
+        # no history for this session yet, include what we have locally
+        # so the first exchange has context.
+        #
+        # We always include the current message.  For history, send a
+        # compact version (text-only user/assistant turns) — the remote
+        # handles tool replay and system prompts.
+        api_messages: List[Dict[str, str]] = []
+
+        if context_prompt:
+            api_messages.append({"role": "system", "content": context_prompt})
+
+        for msg in history:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role in ("user", "assistant") and content:
+                api_messages.append({"role": role, "content": content})
+
+        api_messages.append({"role": "user", "content": message})
+
+        # HTTP headers ---------------------------------------------------
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if proxy_key:
+            headers["Authorization"] = f"Bearer {proxy_key}"
+        if session_id:
+            headers["X-Hermes-Session-Id"] = session_id
+
+        body = {
+            "model": "hermes-agent",
+            "messages": api_messages,
+            "stream": True,
+        }
+
+        # Set up platform streaming if available -------------------------
+        _stream_consumer = None
+        _scfg = getattr(getattr(self, "config", None), "streaming", None)
+        if _scfg is None:
+            from gateway.config import StreamingConfig
+            _scfg = StreamingConfig()
+
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
+        from gateway.display_config import resolve_display_setting
+        _plat_streaming = resolve_display_setting(
+            user_config, platform_key, "streaming"
+        )
+        _streaming_enabled = (
+            _scfg.enabled and _scfg.transport != "off"
+            if _plat_streaming is None
+            else bool(_plat_streaming)
+        )
+
+        if source.thread_id:
+            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
+        else:
+            _thread_metadata = None
+
+        if _streaming_enabled:
+            try:
+                from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+                from gateway.config import Platform
+                _adapter = self.adapters.get(source.platform)
+                if _adapter:
+                    _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                    _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                    if source.platform == Platform.MATRIX:
+                        _effective_cursor = ""
+                    _consumer_cfg = StreamConsumerConfig(
+                        edit_interval=_scfg.edit_interval,
+                        buffer_threshold=_scfg.buffer_threshold,
+                        cursor=_effective_cursor,
+                    )
+                    _stream_consumer = GatewayStreamConsumer(
+                        adapter=_adapter,
+                        chat_id=source.chat_id,
+                        config=_consumer_cfg,
+                        metadata=_thread_metadata,
+                    )
+            except Exception as _sc_err:
+                logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
+
+        # Run the stream consumer task in the background
+        stream_task = None
+        if _stream_consumer:
+            stream_task = asyncio.create_task(_stream_consumer.run())
+
+        # Send typing indicator
+        _adapter = self.adapters.get(source.platform)
+        if _adapter:
+            try:
+                await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
+            except Exception:
+                pass
+
+        # Make the HTTP request with SSE streaming -----------------------
+        full_response = ""
+        _start = time.time()
+
+        try:
+            _timeout = ClientTimeout(total=0, sock_read=1800)
+            async with _AioClientSession(timeout=_timeout) as session:
+                async with session.post(
+                    f"{proxy_url}/v1/chat/completions",
+                    json=body,
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logger.warning(
+                            "Proxy error (%d) from %s: %s",
+                            resp.status, proxy_url, error_text[:500],
+                        )
+                        return {
+                            "final_response": f"⚠️ Proxy error ({resp.status}): {error_text[:300]}",
+                            "messages": [],
+                            "api_calls": 0,
+                            "tools": [],
+                        }
+
+                    # Parse SSE stream
+                    buffer = ""
+                    async for chunk in resp.content.iter_any():
+                        text = chunk.decode("utf-8", errors="replace")
+                        buffer += text
+
+                        # Process complete SSE lines
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line.startswith("data: "):
+                                data = line[6:]
+                                if data.strip() == "[DONE]":
+                                    break
+                                try:
+                                    obj = json.loads(data)
+                                    choices = obj.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            full_response += content
+                                            if _stream_consumer:
+                                                _stream_consumer.on_delta(content)
+                                except json.JSONDecodeError:
+                                    pass
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Proxy connection error to %s: %s", proxy_url, e)
+            if not full_response:
+                return {
+                    "final_response": f"⚠️ Proxy connection error: {e}",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                }
+            # Partial response — return what we got
+        finally:
+            # Finalize stream consumer
+            if _stream_consumer:
+                _stream_consumer.finish()
+            if stream_task:
+                try:
+                    await asyncio.wait_for(stream_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    stream_task.cancel()
+
+        _elapsed = time.time() - _start
+        logger.info(
+            "proxy response: url=%s session=%s time=%.1fs response=%d chars",
+            proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
+        )
+
+        return {
+            "final_response": full_response or "(No response from remote agent)",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": full_response},
+            ],
+            "api_calls": 1,
+            "tools": [],
+            "history_offset": len(history),
+            "session_id": session_id,
+            "response_previewed": _stream_consumer is not None and bool(full_response),
+        }
+
+    # ------------------------------------------------------------------
+
     async def _run_agent(
         self,
         message: str,
@@ -7422,6 +7688,18 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        # ---- Proxy mode: delegate to remote API server ----
+        if self._get_proxy_url():
+            return await self._run_agent_via_proxy(
+                message=message,
+                context_prompt=context_prompt,
+                history=history,
+                source=source,
+                session_id=session_id,
+                session_key=session_key,
+                event_message_id=event_message_id,
+            )
+
         from run_agent import AIAgent
         import queue
         
@@ -7816,13 +8094,19 @@ class GatewayRunner:
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
                         # Platforms that don't support editing sent messages
-                        # (e.g. WeChat) must not show a cursor in intermediate
-                        # sends — the cursor would be permanently visible because
-                        # it can never be edited away.  Use an empty cursor for
-                        # such platforms so streaming still delivers the final
-                        # response, just without the typing indicator.
+                        # (e.g. QQ, WeChat) should skip streaming entirely —
+                        # without edit support, the consumer sends a partial
+                        # first message that can never be updated, resulting in
+                        # duplicate messages (partial + final).
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                        if not _adapter_supports_edit:
+                            raise RuntimeError("skip streaming for non-editable platform")
+                        _effective_cursor = _scfg.cursor
+                        # Some Matrix clients render the streaming cursor
+                        # as a visible tofu/white-box artifact.  Keep
+                        # streaming text on Matrix, but suppress the cursor.
+                        if source.platform == Platform.MATRIX:
+                            _effective_cursor = ""
                         _consumer_cfg = StreamConsumerConfig(
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
