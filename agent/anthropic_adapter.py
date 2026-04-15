@@ -522,6 +522,15 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _is_claude_code_source_suppressed() -> bool:
+    """Check if the claude_code source is suppressed for the anthropic provider."""
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed("anthropic", "claude_code")
+    except ImportError:
+        return False
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -534,28 +543,32 @@ def resolve_anthropic_token() -> Optional[str]:
 
     Returns the token string or None.
     """
-    creds = read_claude_code_credentials()
+    claude_code_suppressed = _is_claude_code_source_suppressed()
+    creds = None if claude_code_suppressed else read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
-        preferred = _prefer_refreshable_claude_code_token(token, creds)
-        if preferred:
-            return preferred
+        if not claude_code_suppressed:
+            preferred = _prefer_refreshable_claude_code_token(token, creds)
+            if preferred:
+                return preferred
         return token
 
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
-        preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
-        if preferred:
-            return preferred
+        if not claude_code_suppressed:
+            preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
+            if preferred:
+                return preferred
         return cc_token
 
-    # 3. Claude Code credential file
-    resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
-    if resolved_claude_token:
-        return resolved_claude_token
+    # 3. Claude Code credential file (skip if suppressed)
+    if not claude_code_suppressed:
+        resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
+        if resolved_claude_token:
+            return resolved_claude_token
 
     # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
