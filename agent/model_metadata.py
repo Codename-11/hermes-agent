@@ -36,6 +36,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
+    "xai", "x-ai", "x.ai", "grok",
     "qwen-portal",
 })
 
@@ -1010,6 +1011,16 @@ def get_model_context_length(
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
         if ctx:
             return ctx
+
+    # 4b. AWS Bedrock — use static context length table.
+    # Bedrock's ListFoundationModels doesn't expose context window sizes,
+    # so we maintain a curated table in bedrock_adapter.py.
+    if provider == "bedrock" or (base_url and "bedrock-runtime" in base_url):
+        try:
+            from agent.bedrock_adapter import get_bedrock_context_length
+            return get_bedrock_context_length(model)
+        except ImportError:
+            pass  # boto3 not installed — fall through to generic resolution
 
     # 5. Provider-aware lookups (before generic OpenRouter cache)
     # These are provider-specific and take priority over the generic OR cache,
