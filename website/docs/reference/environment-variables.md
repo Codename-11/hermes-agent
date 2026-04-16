@@ -110,6 +110,17 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
 
+### Nous Tool Gateway
+
+These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gateway) for paid Nous subscribers or self-hosted gateway deployments. Most users don't need to set these — the gateway is configured automatically via `hermes model` or `hermes tools`.
+
+| Variable | Description |
+|----------|-------------|
+| `TOOL_GATEWAY_DOMAIN` | Base domain for Tool Gateway routing (default: `nousresearch.com`) |
+| `TOOL_GATEWAY_SCHEME` | HTTP or HTTPS scheme for gateway URLs (default: `https`) |
+| `TOOL_GATEWAY_USER_TOKEN` | Auth token for the Tool Gateway (normally auto-populated from Nous auth) |
+| `FIRECRAWL_GATEWAY_URL` | Override URL for the Firecrawl gateway endpoint specifically |
+
 ## Terminal Backend
 
 | Variable | Description |
@@ -170,6 +181,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TELEGRAM_WEBHOOK_SECRET` | Secret token for verifying updates come from Telegram |
 | `TELEGRAM_REACTIONS` | Enable emoji reactions on messages during processing (default: `false`) |
 | `TELEGRAM_IGNORED_THREADS` | Comma-separated Telegram forum topic/thread IDs where the bot never responds |
+| `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
 | `DISCORD_HOME_CHANNEL` | Default Discord channel for cron delivery |
