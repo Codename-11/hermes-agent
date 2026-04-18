@@ -4587,9 +4587,9 @@ def cmd_update(args):
             except OSError:
                 pass
         
-        # Auto-restart ALL gateways after update.
+        # Auto-restart ALL hermes services after update.
         # The code update (git pull) is shared across all profiles, so every
-        # running gateway needs restarting to pick up the new code.
+        # running gateway and dashboard needs restarting to pick up the new code.
         try:
             from hermes_cli.gateway import (
                 is_macos, supports_systemd_services, _ensure_user_systemd_env,
@@ -4602,20 +4602,29 @@ def cmd_update(args):
             killed_pids = set()
 
             # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
+            # Discover all hermes-gateway* and hermes-dashboard* units
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
                 except Exception:
                     pass
 
+                # Discover hermes-gateway AND hermes-dashboard units.
+                # The dashboard is a long-running FastAPI server that shares the
+                # same codebase — it must be restarted to pick up code changes.
+                _HERMES_SERVICE_PATTERNS = ["hermes-gateway*", "hermes-dashboard*"]
+
                 for scope, scope_cmd in [("user", ["systemctl", "--user"]), ("system", ["systemctl"])]:
                     try:
-                        result = subprocess.run(
-                            scope_cmd + ["list-units", "hermes-gateway*", "--plain", "--no-legend", "--no-pager"],
-                            capture_output=True, text=True, timeout=10,
-                        )
-                        for line in result.stdout.strip().splitlines():
+                        # Collect units matching all patterns in one pass.
+                        discovered_lines: list[str] = []
+                        for _pat in _HERMES_SERVICE_PATTERNS:
+                            result = subprocess.run(
+                                scope_cmd + ["list-units", _pat, "--plain", "--no-legend", "--no-pager"],
+                                capture_output=True, text=True, timeout=10,
+                            )
+                            discovered_lines.extend(result.stdout.strip().splitlines())
+                        for line in discovered_lines:
                             parts = line.split()
                             if not parts:
                                 continue
