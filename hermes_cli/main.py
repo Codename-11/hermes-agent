@@ -5252,6 +5252,139 @@ def _finalize_update_output(state):
             pass
 
 
+def _update_neural_memory(git_cmd, gateway_mode: bool, gw_input_fn=None):
+    """Sync ~/neural-memory/ fork from upstream if available.
+
+    Uses the same axiom deploy-branch pattern as hermes-agent:
+    upstream/master → main → axiom (merge). Prompts Y/n (default Y).
+    Restarts the dashboard container after a successful update.
+    """
+    nm_root = Path.home() / "neural-memory"
+    if not (nm_root / ".git").exists():
+        return
+
+    # Check it has the expected fork structure
+    try:
+        branches = subprocess.run(
+            git_cmd + ["branch", "--list", "axiom"],
+            cwd=nm_root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        has_upstream = subprocess.run(
+            git_cmd + ["remote", "get-url", "upstream"],
+            cwd=nm_root, capture_output=True, text=True,
+        ).returncode == 0
+    except Exception:
+        return
+
+    if not branches or not has_upstream:
+        return
+
+    # Fetch upstream and check for new commits
+    print()
+    print("→ Checking Neural Memory for updates...")
+    try:
+        subprocess.run(
+            git_cmd + ["fetch", "upstream", "--quiet"],
+            cwd=nm_root, capture_output=True, check=True,
+        )
+    except Exception as e:
+        print(f"  ⚠ Failed to fetch neural-memory upstream: {e}")
+        return
+
+    upstream_ahead = _count_commits_between(
+        git_cmd, nm_root, "main", "upstream/master",
+    )
+    if upstream_ahead <= 0:
+        print("  ✓ Neural Memory is up to date")
+        return
+
+    print(f"  {upstream_ahead} new upstream commit(s)")
+
+    # Prompt Y/n (default yes)
+    if gateway_mode and gw_input_fn:
+        response = gw_input_fn(
+            f"Update Neural Memory? ({upstream_ahead} commits) [Y/n]", "y"
+        ).strip().lower()
+    elif sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            response = input(
+                f"  Update Neural Memory? ({upstream_ahead} commits) [Y/n]: "
+            ).strip().lower()
+        except EOFError:
+            response = "y"
+    else:
+        response = "y"  # non-interactive: default yes
+
+    if response not in ("", "y", "yes"):
+        print("  Skipped.")
+        return
+
+    # Fast-forward main to upstream/master
+    print("  → Syncing main ← upstream/master...")
+    ff_result = subprocess.run(
+        git_cmd + ["fetch", "upstream", "master:main"],
+        cwd=nm_root, capture_output=True, text=True,
+    )
+    if ff_result.returncode != 0:
+        # main diverged — force-reset
+        print("    ⚠ main diverged — resetting to upstream/master")
+        subprocess.run(git_cmd + ["checkout", "main"], cwd=nm_root, capture_output=True, check=True)
+        subprocess.run(git_cmd + ["reset", "--hard", "upstream/master"], cwd=nm_root, capture_output=True, check=True)
+        subprocess.run(git_cmd + ["checkout", "axiom"], cwd=nm_root, capture_output=True, check=True)
+    print("    ✓ main updated")
+
+    # Ensure we're on axiom
+    current = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=nm_root, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if current != "axiom":
+        subprocess.run(
+            git_cmd + ["checkout", "axiom"],
+            cwd=nm_root, capture_output=True, check=True,
+        )
+
+    # Merge main into axiom
+    print(f"  → Merging main → axiom...")
+    merge_result = subprocess.run(
+        git_cmd + ["merge", "main", "-m", f"merge: upstream sync ({upstream_ahead} commits)"],
+        cwd=nm_root, capture_output=True, text=True,
+    )
+    if merge_result.returncode != 0:
+        subprocess.run(git_cmd + ["merge", "--abort"], cwd=nm_root, capture_output=True, check=False)
+        print("    ✗ Merge conflict — aborted. Resolve manually:")
+        print(f"      cd {nm_root} && git merge main")
+        return
+
+    print(f"    ✓ Merged {upstream_ahead} commits into axiom")
+
+    # Push to origin
+    subprocess.run(
+        git_cmd + ["push", "origin", "axiom", "--quiet"],
+        cwd=nm_root, capture_output=True, check=False,
+    )
+
+    # Restart dashboard container
+    docker = shutil.which("docker")
+    compose_dir = Path.home() / "docker" / "neural-memory"
+    if docker and (compose_dir / "docker-compose.yaml").exists():
+        print("  → Restarting Neural Memory dashboard...")
+        restart = subprocess.run(
+            [docker, "compose", "down"],
+            cwd=compose_dir, capture_output=True, text=True,
+        )
+        subprocess.run(
+            [docker, "compose", "up", "-d"],
+            cwd=compose_dir, capture_output=True, text=True,
+        )
+        if restart.returncode == 0:
+            print("    ✓ Dashboard restarted")
+        else:
+            print("    ⚠ Dashboard restart failed — restart manually")
+    else:
+        print("  ℹ Dashboard compose not found — restart manually if needed")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -5840,6 +5973,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
+
+        # --- Neural Memory dashboard update ---
+        # If ~/neural-memory/ exists as a fork repo with axiom branch,
+        # offer to sync it from upstream too.
+        _update_neural_memory(git_cmd, gateway_mode, gw_input_fn)
 
         print()
         print("✓ Update complete!")
