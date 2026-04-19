@@ -5364,25 +5364,31 @@ def _update_neural_memory(git_cmd, gateway_mode: bool, gw_input_fn=None):
         cwd=nm_root, capture_output=True, check=False,
     )
 
-    # Restart dashboard container
+    # Restart dashboard container (try "lucid" first, fall back to "neural-memory")
     docker = shutil.which("docker")
-    compose_dir = Path.home() / "docker" / "neural-memory"
-    if docker and (compose_dir / "docker-compose.yaml").exists():
-        print("  → Restarting Neural Memory dashboard...")
+    compose_dir = None
+    for _candidate in ("lucid", "neural-memory"):
+        _path = Path.home() / "docker" / _candidate
+        if (_path / "docker-compose.yaml").exists():
+            compose_dir = _path
+            break
+
+    if docker and compose_dir:
+        print("  → Restarting Lucid dashboard...")
         restart = subprocess.run(
             [docker, "compose", "down"],
             cwd=compose_dir, capture_output=True, text=True,
         )
-        subprocess.run(
+        up = subprocess.run(
             [docker, "compose", "up", "-d"],
             cwd=compose_dir, capture_output=True, text=True,
         )
-        if restart.returncode == 0:
+        if up.returncode == 0:
             print("    ✓ Dashboard restarted")
         else:
-            print("    ⚠ Dashboard restart failed — restart manually")
+            print(f"    ⚠ Dashboard restart failed — restart manually: cd {compose_dir} && docker compose up -d")
     else:
-        print("  ℹ Dashboard compose not found — restart manually if needed")
+        print("  ℹ Lucid dashboard compose not found — restart manually if needed")
 
 
 def cmd_update(args):
