@@ -95,84 +95,37 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
-_FIXED_TEMPERATURE_MODELS: Dict[str, float] = {
-    "kimi-for-coding": 0.6,
-}
+# Sentinel: when returned by _fixed_temperature_for_model(), callers must
+# strip the ``temperature`` key from API kwargs entirely so the provider's
+# server-side default applies.  Kimi/Moonshot models manage temperature
+# internally — sending *any* value (even the "correct" one) can conflict
+# with gateway-side mode selection (thinking → 1.0, non-thinking → 0.6).
+OMIT_TEMPERATURE: object = object()
 
-# Moonshot's kimi-for-coding endpoint (api.kimi.com/coding) documents:
-# "k2.5 model will use a fixed value 1.0, non-thinking mode will use a fixed
-# value 0.6.  Any other value will result in an error."  The same lock applies
-# to the other k2.* models served on that endpoint.  Enumerated explicitly so
-# non-coding siblings like `kimi-k2-instruct` (variable temperature, served on
-# the standard chat API and third parties) are NOT clamped.
-# Source: https://platform.kimi.ai/docs/guide/kimi-k2-5-quickstart
-_KIMI_INSTANT_MODELS: frozenset = frozenset({
-    "kimi-k2.5",
-    "kimi-k2-turbo-preview",
-    "kimi-k2-0905-preview",
-})
-_KIMI_THINKING_MODELS: frozenset = frozenset({
-    "kimi-k2-thinking",
-    "kimi-k2-thinking-turbo",
-})
 
-# Moonshot's public chat endpoint (api.moonshot.ai/v1) enforces a different
-# temperature contract than the Coding Plan endpoint above.  Empirically,
-# `kimi-k2.5` on the public API rejects 0.6 with HTTP 400
-# "invalid temperature: only 1 is allowed for this model" — the Coding Plan
-# lock (0.6 for non-thinking) does not apply.  `kimi-k2-turbo-preview` and the
-# thinking variants already match the Coding Plan contract on the public
-# endpoint, so we only override the models that diverge.
-# Users hit this endpoint when `KIMI_API_KEY` is a legacy `sk-*` key (the
-# `sk-kimi-*` prefix routes to api.kimi.com/coding/v1 instead — see
-# hermes_cli/auth.py:_kimi_base_url_for_key).
-_KIMI_PUBLIC_API_OVERRIDES: Dict[str, float] = {
-    "kimi-k2.5": 1.0,
-}
+def _is_kimi_model(model: Optional[str]) -> bool:
+    """True for any Kimi / Moonshot model that manages temperature server-side."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare.startswith("kimi-") or bare == "kimi"
 
 
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
-) -> Optional[float]:
-    """Return a required temperature override for models with strict contracts.
+) -> "Optional[float] | object":
+    """Return a temperature directive for models with strict contracts.
 
-    Moonshot's kimi-for-coding endpoint rejects any non-approved temperature on
-    the k2.5 family.  Non-thinking variants require exactly 0.6; thinking
-    variants require 1.0.  An optional ``vendor/`` prefix (e.g.
-    ``moonshotai/kimi-k2.5``) is tolerated for aggregator routings.
-
-    When ``base_url`` points to Moonshot's public chat endpoint
-    (``api.moonshot.ai``), the contract changes for ``kimi-k2.5``: the public
-    API only accepts ``temperature=1``, not 0.6.  That override takes precedence
-    over the Coding Plan defaults above.
-
-    Returns ``None`` for every other model, including ``kimi-k2-instruct*``
-    which is the separate non-coding K2 family with variable temperature.
+    Returns:
+        ``OMIT_TEMPERATURE`` — caller must remove the ``temperature`` key so the
+            provider chooses its own default.  Used for all Kimi / Moonshot
+            models whose gateway selects temperature server-side.
+        ``float`` — a specific value the caller must use (reserved for future
+            models with fixed-temperature contracts).
+        ``None`` — no override; caller should use its own default.
     """
-    normalized = (model or "").strip().lower()
-    bare = normalized.rsplit("/", 1)[-1]
-
-    # Public Moonshot API has a stricter contract for some models than the
-    # Coding Plan endpoint — check it first so it wins on conflict.
-    if base_url and "api.moonshot.ai" in base_url.lower():
-        public = _KIMI_PUBLIC_API_OVERRIDES.get(bare)
-        if public is not None:
-            logger.debug(
-                "Forcing temperature=%s for %r on public Moonshot API", public, model
-            )
-            return public
-
-    fixed = _FIXED_TEMPERATURE_MODELS.get(normalized)
-    if fixed is not None:
-        logger.debug("Forcing temperature=%s for model %r (fixed map)", fixed, model)
-        return fixed
-    if bare in _KIMI_THINKING_MODELS:
-        logger.debug("Forcing temperature=1.0 for kimi thinking model %r", model)
-        return 1.0
-    if bare in _KIMI_INSTANT_MODELS:
-        logger.debug("Forcing temperature=0.6 for kimi instant model %r", model)
-        return 0.6
+    if _is_kimi_model(model):
+        logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
@@ -1098,7 +1051,7 @@ def _validate_base_url(base_url: str) -> None:
         ) from exc
 
 
-def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     runtime = _resolve_custom_runtime()
     if len(runtime) == 2:
         custom_base, custom_key = runtime
@@ -1114,6 +1067,23 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=custom_base)
         return CodexAuxiliaryClient(real_client, model), model
+    if custom_mode == "anthropic_messages":
+        # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
+        # LiteLLM proxies, etc.).  Must NEVER be treated as OAuth —
+        # Anthropic OAuth claims only apply to api.anthropic.com.
+        try:
+            from agent.anthropic_adapter import build_anthropic_client
+            real_client = build_anthropic_client(custom_key, custom_base)
+        except ImportError:
+            logger.warning(
+                "Custom endpoint declares api_mode=anthropic_messages but the "
+                "anthropic SDK is not installed — falling back to OpenAI-wire."
+            )
+            return OpenAI(api_key=custom_key, base_url=custom_base), model
+        return (
+            AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
+            model,
+        )
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
@@ -2296,7 +2266,6 @@ def _resolve_task_provider_model(
     to "custom" and the task uses that direct endpoint. api_mode is one of
     "chat_completions", "codex_responses", or None (auto-detect).
     """
-    config = {}
     cfg_provider = None
     cfg_model = None
     cfg_base_url = None
@@ -2304,16 +2273,7 @@ def _resolve_task_provider_model(
     cfg_api_mode = None
 
     if task:
-        try:
-            from hermes_cli.config import load_config
-            config = load_config()
-        except ImportError:
-            config = {}
-
-        aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-        task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-        if not isinstance(task_config, dict):
-            task_config = {}
+        task_config = _get_auxiliary_task_config(task)
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
@@ -2343,17 +2303,25 @@ def _resolve_task_provider_model(
 _DEFAULT_AUX_TIMEOUT = 30.0
 
 
-def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
+    """Return the config dict for auxiliary.<task>, or {} when unavailable."""
     if not task:
-        return default
+        return {}
     try:
         from hermes_cli.config import load_config
         config = load_config()
     except ImportError:
-        return default
+        return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
+    return task_config if isinstance(task_config, dict) else {}
+
+
+def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    if not task:
+        return default
+    task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("timeout")
     if raw is not None:
         try:
@@ -2361,6 +2329,15 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
         except (ValueError, TypeError):
             pass
     return default
+
+
+def _get_task_extra_body(task: str) -> Dict[str, Any]:
+    """Read auxiliary.<task>.extra_body and return a shallow copy when valid."""
+    task_config = _get_auxiliary_task_config(task)
+    raw = task_config.get("extra_body")
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -2451,7 +2428,9 @@ def _build_call_kwargs(
     }
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
-    if fixed_temperature is not None:
+    if fixed_temperature is OMIT_TEMPERATURE:
+        temperature = None  # strip — let server choose
+    elif fixed_temperature is not None:
         temperature = fixed_temperature
 
     # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
@@ -2563,6 +2542,8 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    effective_extra_body = _get_task_extra_body(task)
+    effective_extra_body.update(extra_body or {})
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -2637,7 +2618,7 @@ def call_llm(
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -2692,7 +2673,7 @@ def call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body,
+                    extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
@@ -2775,6 +2756,8 @@ async def async_call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    effective_extra_body = _get_task_extra_body(task)
+    effective_extra_body.update(extra_body or {})
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -2835,7 +2818,7 @@ async def async_call_llm(
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_client_base or resolved_base_url)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -2874,7 +2857,7 @@ async def async_call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body,
+                    extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
