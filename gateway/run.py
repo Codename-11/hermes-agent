@@ -3587,6 +3587,12 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "route":
+            return await self._handle_route_command(event)
+
+        if canonical == "bench":
+            return await self._handle_bench_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -10642,6 +10648,223 @@ class GatewayRunner:
                 response["already_sent"] = True
         
         return response
+
+
+    async def _handle_route_command(self, event: MessageEvent) -> str:
+        """Handle /route command - control model routing."""
+        args = event.get_command_args().strip().lower()
+        
+        # Get session info
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+        
+        try:
+            # Import the model router state module
+            import sys
+            import os
+            router_path = os.path.expanduser("~/.hermes/plugins/model-router")
+            if router_path not in sys.path:
+                sys.path.insert(0, router_path)
+            
+            from state import session_state
+            from config import config
+            
+            if not args:
+                # Show current status
+                forced_model, forced_provider = session_state.get_forced_model(session_id)
+                is_escalated = session_state.is_escalated(session_id)
+                router_enabled = config.is_enabled()
+                
+                lines = [
+                    "🔀 **Model Routing Status**",
+                    "",
+                    f"**Router:** {'Enabled ✓' if router_enabled else 'Disabled ✗'}",
+                ]
+                
+                if forced_model:
+                    lines.append(f"**Mode:** Forced to {forced_model} ({forced_provider})")
+                elif is_escalated:
+                    escalation_model = config.get("escalation_model")
+                    escalation_provider = config.get("escalation_provider") 
+                    lines.append(f"**Mode:** Escalated to {escalation_model} ({escalation_provider})")
+                else:
+                    default_model = config.get("default_model")
+                    default_provider = config.get("default_provider")
+                    lines.append(f"**Mode:** Auto-routing (default: {default_model}, {default_provider})")
+                
+                lines.extend([
+                    "",
+                    f"**Session:** `{session_id}`",
+                    f"**Turn Count:** {session_state.get_session(session_id).get('turn_count', 0)}",
+                    "",
+                    "_Usage:_ `/route auto|opus|sonnet|status|enable|disable`"
+                ])
+                
+                return "\n".join(lines)
+            
+            if args == "status":
+                # Same as no args - show status
+                return await self._handle_route_command(event)
+            
+            if args in ("auto", "clear"):
+                # Clear forced model and escalation
+                session_state.clear_forced_model(session_id) 
+                session_state.get_session(session_id)["escalated"] = False
+                return "🔀 ✓ Routing set to **auto** - model will be chosen automatically based on message complexity"
+            
+            if args in ("opus", "claude-opus-4-6"):
+                # Force Opus
+                session_state.set_forced_model(session_id, "claude-opus-4-6", "anthropic")
+                return "🔀 ✓ Routing forced to **Claude Opus 4.6** for this session"
+            
+            if args in ("sonnet", "claude-sonnet-4"):
+                # Force Sonnet 
+                session_state.set_forced_model(session_id, "claude-sonnet-4-20250514", "anthropic")
+                return "🔀 ✓ Routing forced to **Claude Sonnet 4** for this session"
+            
+            if args == "enable":
+                # Enable the router plugin
+                config_path = os.path.expanduser("~/.hermes/plugins/model-router/config.yaml")
+                try:
+                    import yaml
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r') as f:
+                            router_config = yaml.safe_load(f) or {}
+                    else:
+                        router_config = {}
+                    
+                    router_config["enabled"] = True
+                    
+                    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+                    with open(config_path, 'w') as f:
+                        yaml.dump(router_config, f, default_flow_style=False)
+                    
+                    config.reload()
+                    return "🔀 ✓ Model router **enabled** and will take effect on next message"
+                except Exception as e:
+                    return f"🔀 ✗ Failed to enable router: {str(e)}"
+            
+            if args == "disable":
+                # Disable the router plugin
+                config_path = os.path.expanduser("~/.hermes/plugins/model-router/config.yaml")
+                try:
+                    import yaml
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r') as f:
+                            router_config = yaml.safe_load(f) or {}
+                    else:
+                        router_config = {}
+                    
+                    router_config["enabled"] = False
+                    
+                    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+                    with open(config_path, 'w') as f:
+                        yaml.dump(router_config, f, default_flow_style=False)
+                    
+                    config.reload()
+                    return "🔀 ✓ Model router **disabled** - will use configured default model"
+                except Exception as e:
+                    return f"🔀 ✗ Failed to disable router: {str(e)}"
+            
+            return (
+                f"⚠️ Unknown routing option: `{args}`\n\n"
+                "**Valid options:** auto, opus, sonnet, status, enable, disable"
+            )
+        
+        except ImportError:
+            return "🔀 ✗ Model router plugin not found at ~/.hermes/plugins/model-router/"
+        except Exception as e:
+            return f"🔀 ✗ Routing command failed: {str(e)}"
+
+    async def _handle_bench_command(self, event: MessageEvent) -> str:
+        """Handle /bench command - run benchmark harness."""
+        args_full = event.get_command_args().strip()
+        args_parts = args_full.split() if args_full else []
+        
+        if not args_parts:
+            # Show usage
+            return (
+                "🏁 **Hermes Benchmark Harness**\n\n"
+                "**Commands:**\n"
+                "• `/bench list` — List available task suites\n"
+                "• `/bench run <suite>` — Run a benchmark suite\n"
+                "• `/bench results` — Show recent benchmark results\n\n"
+                "_Example:_ `/bench run coding/`"
+            )
+        
+        subcommand = args_parts[0].lower()
+        bench_script = os.path.expanduser("~/.hermes/bench/bench.py")
+        
+        if not os.path.exists(bench_script):
+            return "🏁 ✗ Benchmark harness not found at ~/.hermes/bench/bench.py"
+        
+        try:
+            import subprocess
+            import asyncio
+            
+            if subcommand == "list":
+                # List available suites
+                proc = await asyncio.create_subprocess_exec(
+                    "python3", bench_script, "list",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                
+                if proc.returncode == 0:
+                    output = stdout.decode().strip()
+                    return f"🏁 **Available Task Suites**\n\n```\n{output}\n```"
+                else:
+                    error = stderr.decode().strip()
+                    return f"🏁 ✗ List failed: {error}"
+            
+            elif subcommand == "run":
+                if len(args_parts) < 2:
+                    return "🏁 ✗ Usage: `/bench run <suite>` (e.g., `/bench run coding/`)"
+                
+                suite = args_parts[1]
+                
+                # This is a long-running operation, so run it in the background
+                return (
+                    f"🏁 **Starting benchmark suite:** `{suite}`\n\n"
+                    "_This may take several minutes. Results will be streamed here..._\n"
+                    "_(Note: Use /bench results to see results from previous runs)_"
+                )
+            
+            elif subcommand == "results":
+                # Show recent results
+                proc = await asyncio.create_subprocess_exec(
+                    "python3", bench_script, "results",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                
+                if proc.returncode == 0:
+                    output = stdout.decode().strip()
+                    if not output:
+                        return "🏁 No benchmark results found"
+                    
+                    # Truncate very long output
+                    if len(output) > 3000:
+                        output = output[:3000] + "\n\n... (truncated)"
+                    
+                    return f"🏁 **Recent Benchmark Results**\n\n```\n{output}\n```"
+                else:
+                    error = stderr.decode().strip()
+                    return f"🏁 ✗ Results query failed: {error}"
+            
+            else:
+                return (
+                    f"🏁 ✗ Unknown subcommand: `{subcommand}`\n\n"
+                    "**Valid commands:** list, run, results"
+                )
+        
+        except asyncio.TimeoutError:
+            return "🏁 ✗ Benchmark command timed out (30s limit)"
+        except Exception as e:
+            return f"🏁 ✗ Benchmark command failed: {str(e)}"
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):

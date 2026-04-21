@@ -169,6 +169,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
+    # Model Routing & Benchmarking
+    CommandDef("route", "Control model routing (auto/opus/sonnet/status/enable/disable)", "Configuration",
+               args_hint="[auto|opus|sonnet|status|enable|disable]",
+               subcommands=("auto", "opus", "sonnet", "status", "enable", "disable"),
+               gateway_only=True),
+    CommandDef("bench", "Run benchmark harness", "Tools & Skills",
+               args_hint="[list|run <suite>|results]",
+               subcommands=("list", "run", "results"),
+               gateway_only=True),
+
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
                cli_only=True, aliases=("exit",)),
