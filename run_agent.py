@@ -8791,6 +8791,56 @@ class AIAgent:
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
+        # Plugin hook: resolve_model
+        # Fired once per turn before pre_llm_call.  Plugins can return a dict
+        # with ``model`` and ``provider`` keys to override the model for this
+        # turn.  The first non-None result wins.  Used by the model-router
+        # plugin for intelligent complexity-based routing.
+        _routing_model_changed = False
+        _routing_reason = ""
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_routing_hook
+            _routing_results = _invoke_routing_hook(
+                "resolve_model",
+                session_id=self.session_id,
+                user_message=original_user_message,
+                conversation_history=list(messages),
+                is_first_turn=(not bool(conversation_history)),
+                current_model=self.model,
+                current_provider=self.provider,
+                platform=getattr(self, "platform", None) or "",
+                sender_id=getattr(self, "_user_id", None) or "",
+                thread_depth=len(messages),
+            )
+            for _rr in _routing_results:
+                if isinstance(_rr, dict) and _rr.get("model"):
+                    _new_model = _rr["model"]
+                    _new_provider = _rr.get("provider", self.provider)
+                    _routing_reason = _rr.get("reason", "unknown")
+                    if _new_model != self.model or _new_provider != self.provider:
+                        _old_label = f"{self.provider}/{self.model}"
+                        self.switch_model(_new_model, _new_provider)
+                        _routing_model_changed = True
+                        logger.info(
+                            "resolve_model: %s -> %s/%s (reason: %s)",
+                            _old_label, _new_provider, _new_model, _routing_reason,
+                        )
+                        # Notify user via status callback if configured
+                        if _rr.get("_escalation_event"):
+                            self._emit_status(
+                                f"🔀 Escalated to {_new_model} — {_routing_reason}. "
+                                f"Staying on this model for the session."
+                            )
+                        elif _rr.get("_reminder"):
+                            _esc_at = _rr.get("_escalated_at", "?")
+                            self._emit_status(
+                                f"ℹ️ Reminder: running on {_new_model} "
+                                f"(escalated at turn {_esc_at}). Use /route auto to reset."
+                            )
+                    break
+        except Exception as _routing_exc:
+            logger.warning("resolve_model hook failed: %s", _routing_exc)
+
         # Plugin hook: pre_llm_call
         # Fired once per turn before the tool-calling loop.  Plugins can
         # return a dict with a ``context`` key (or a plain string) whose
