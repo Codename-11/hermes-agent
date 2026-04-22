@@ -7783,6 +7783,7 @@ class GatewayRunner:
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         prompt_path = _hermes_home / ".update_prompt.json"
+        brief_prompt_path = _hermes_home / ".update_brief_prompt.json"
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -7875,9 +7876,38 @@ class GatewayRunner:
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
 
+                # Agent-summary injection: if `hermes update` dropped a
+                # .update_brief_prompt.json file, inject its prompt as a
+                # synthetic user turn in the originating session so the
+                # agent posts a natural-language summary in this channel.
+                if exit_code == 0 and brief_prompt_path.exists():
+                    try:
+                        brief_data = json.loads(brief_prompt_path.read_text())
+                        brief_prompt_text = brief_data.get("prompt", "").strip()
+                        if brief_prompt_text:
+                            synth_source = self._build_process_event_source(
+                                {"session_key": session_key}
+                            )
+                            if synth_source is not None:
+                                synth_event = MessageEvent(
+                                    text=brief_prompt_text,
+                                    message_type=MessageType.TEXT,
+                                    source=synth_source,
+                                    internal=True,
+                                )
+                                logger.info(
+                                    "Injecting update-brief summarize prompt for %s",
+                                    session_key,
+                                )
+                                await adapter.handle_message(synth_event)
+                    except Exception as inj_err:
+                        logger.warning(
+                            "Update brief prompt injection failed: %s", inj_err,
+                        )
+
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
-                          exit_code_path, prompt_path):
+                          exit_code_path, prompt_path, brief_prompt_path):
                     p.unlink(missing_ok=True)
                 (_hermes_home / ".update_response").unlink(missing_ok=True)
                 self._update_prompt_pending.pop(session_key, None)

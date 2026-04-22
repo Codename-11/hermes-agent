@@ -235,6 +235,29 @@ def _briefs_dir() -> Path:
     return d
 
 
+class UpdateBrief:
+    """Bundle of brief artifacts returned by :func:`write_update_brief`.
+
+    Attributes:
+        path:    Archived markdown file (``~/.hermes/logs/update-briefs/<ts>.md``).
+        latest:  Mirror path (``~/.hermes/logs/last-update-brief.md``).
+        body:    Full markdown body (string).
+        digest:  Short human-readable block for inline printing.
+        meta:    ``{"commits": N, "stat": "...", "summary": "...",
+                    "branch": "axiom", "repo": "/..."}`` — used to write
+                 the gateway prompt-inject file.
+    """
+
+    __slots__ = ("path", "latest", "body", "digest", "meta")
+
+    def __init__(self, path, latest, body, digest, meta):
+        self.path = path
+        self.latest = latest
+        self.body = body
+        self.digest = digest
+        self.meta = meta
+
+
 def write_update_brief(
     repo: Path,
     old_sha: str,
@@ -242,13 +265,14 @@ def write_update_brief(
     *,
     git_cmd: Optional[list[str]] = None,
     branch: str = "",
-) -> Optional[Path]:
+) -> Optional["UpdateBrief"]:
     """Write a markdown brief of commits between *old_sha* and *new_sha*.
 
-    Returns the path to the written brief, or ``None`` if nothing to write.
-    Also mirrors the latest brief to ``logs/last-update-brief.md`` so the
-    agent can always find ``~/.hermes/logs/last-update-brief.md`` without
-    guessing a timestamp.
+    Returns an :class:`UpdateBrief` bundle (path + body + digest + meta) or
+    ``None`` if there's nothing new.  The archived file lives at
+    ``~/.hermes/logs/update-briefs/<ts>.md``; the latest is always
+    mirrored to ``~/.hermes/logs/last-update-brief.md`` so the agent can
+    find it without guessing a timestamp.
     """
     if not old_sha or not new_sha or old_sha == new_sha:
         return None
@@ -334,6 +358,29 @@ def write_update_brief(
 
     body = "\n".join(lines) + "\n"
 
+    # Build a compact digest for inline CLI/gateway output — full category
+    # breakdown with commit titles, but cap each category at 10 items and
+    # skip the (often huge) file list.
+    summary_text = ", ".join(summary_parts) if summary_parts else "no categorized commits"
+    digest_lines: list[str] = []
+    digest_lines.append("")
+    digest_lines.append("━━ Upstream changes since last update ━━")
+    digest_lines.append(f"  {len(commits)} commits" + (f" · {stat}" if stat else ""))
+    digest_lines.append(f"  {summary_text}")
+    digest_lines.append("")
+    _CAP = 10
+    for key, heading in _CATEGORY_ORDER + [("other", "Other")]:
+        items = buckets.get(key)
+        if not items:
+            continue
+        digest_lines.append(f"  {heading} ({len(items)}):")
+        for sha, subject, _author in items[:_CAP]:
+            digest_lines.append(f"    • {subject}")
+        if len(items) > _CAP:
+            digest_lines.append(f"    …and {len(items) - _CAP} more")
+        digest_lines.append("")
+    digest = "\n".join(digest_lines)
+
     briefs = _briefs_dir()
     path = briefs / f"brief-{stamp}.md"
     try:
@@ -347,4 +394,55 @@ def write_update_brief(
     except OSError:
         pass
 
-    return path
+    meta = {
+        "commits": len(commits),
+        "stat": stat,
+        "summary": summary_text,
+        "branch": branch,
+        "repo": str(repo),
+        "range": f"{old_sha[:10]}..{new_sha[:10]}",
+    }
+
+    return UpdateBrief(path=path, latest=latest, body=body, digest=digest, meta=meta)
+
+
+def write_brief_prompt_inject(brief: "UpdateBrief") -> Optional[Path]:
+    """Write ``.update_brief_prompt.json`` so the gateway watcher can inject
+    a summarize-this-update prompt into the originating session after
+    ``hermes update --gateway`` completes.
+
+    The gateway's update watcher reads ``.update_pending.json`` to know
+    which platform/chat triggered the update.  It can pair that with the
+    prompt written here to post a natural-language summary back in the
+    same channel without extra wiring — the adapter already owns the
+    LLM connection for that session.
+
+    Returns the path written, or ``None`` on failure.
+    """
+    from hermes_cli.config import get_hermes_home  # type: ignore
+    import json as _json
+
+    home = get_hermes_home()
+    path = home / ".update_brief_prompt.json"
+    prompt_text = (
+        "I just finished `hermes update`. "
+        f"{brief.meta.get('commits', 0)} new commits on "
+        f"`{brief.meta.get('branch', 'main')}` "
+        f"({brief.meta.get('stat', '')}). "
+        "The full brief is at "
+        f"`{brief.latest}` (archived: `{brief.path}`). "
+        "Read it and give me a short natural-language summary of the "
+        "notable features, fixes, and anything that might affect my "
+        "current workflows. Highlight breaking changes if any."
+    )
+    payload = {
+        "prompt": prompt_text,
+        "brief_path": str(brief.path),
+        "latest_path": str(brief.latest),
+        "meta": brief.meta,
+    }
+    try:
+        path.write_text(_json.dumps(payload), encoding="utf-8")
+        return path
+    except OSError:
+        return None

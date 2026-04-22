@@ -6115,33 +6115,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # --- Upstream change brief ---
         # Walk git log pre_update_head..HEAD and emit a markdown brief so a
         # Hermes agent can summarize what actually changed this update.
+        # The digest is printed inline so the user sees it in the CLI *and*
+        # the gateway (the gateway's update watcher streams stdout to the
+        # originating channel).  In gateway mode we also drop a
+        # ``.update_brief_prompt.json`` file so the watcher can inject a
+        # summarize-this prompt into the session after the update finishes.
         try:
             if "pre_update_head" in locals() and pre_update_head:
                 post_update_head = subprocess.run(
                     git_cmd + ["rev-parse", "HEAD"],
                     cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
                 ).stdout.strip()
-                from hermes_cli.update_ui import write_update_brief
-                brief_path = write_update_brief(
+                from hermes_cli.update_ui import (
+                    write_update_brief,
+                    write_brief_prompt_inject,
+                )
+                brief = write_update_brief(
                     PROJECT_ROOT,
                     pre_update_head,
                     post_update_head,
                     git_cmd=git_cmd,
                     branch=current_branch,
                 )
-                if brief_path is not None:
+                if brief is not None:
+                    # Inline digest — visible to you in the CLI, and streamed
+                    # back to the channel in gateway mode.
+                    print(brief.digest)
+                    print(f"  Full brief: {brief.path}")
+                    print(f"  Latest:     {brief.latest}")
                     print()
-                    print("── Pass this to your Hermes agent ─────────────")
-                    print()
-                    print("  ┌─ Copy below ─────────────────────────────────")
-                    print(f"  │ hermes update: {commit_count} new commits on {current_branch}.")
-                    print(f"  │ Brief (markdown): {brief_path}")
-                    print(f"  │ Latest: ~/.hermes/logs/last-update-brief.md")
-                    print(f"  │ ")
-                    print(f"  │ Please read the brief and summarize what")
-                    print(f"  │ notably changed — features, fixes, anything")
-                    print(f"  │ affecting my current workflows.")
-                    print("  └────────────────────────────────────────────")
+                    if gateway_mode:
+                        inject_path = write_brief_prompt_inject(brief)
+                        if inject_path is not None:
+                            print(
+                                "  ✓ Hermes will post a natural-language "
+                                "summary in this channel shortly."
+                            )
         except Exception as _brief_err:  # never let the brief fail the update
             logger.debug("update brief generation failed: %s", _brief_err)
 
