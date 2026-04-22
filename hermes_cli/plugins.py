@@ -72,6 +72,11 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize",
     "on_session_reset",
     "subagent_stop",
+    # Plugin-owned slash command handlers. Each callback receives
+    # ``(args: str, session_id: str)`` and returns a string response (or
+    # ``None`` to defer). Used by gateway dispatchers to delegate command
+    # logic to the owning plugin instead of hardcoding it in run.py.
+    "handle_route_command",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

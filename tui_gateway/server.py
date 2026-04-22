@@ -2321,6 +2321,31 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
 
+    # Fallback: try hook-based plugin command pattern (e.g. handle_route_command).
+    # Plugins registered via ctx.register_hook('handle_<name>_command', fn) are
+    # invoked here — mirrors how the messaging gateway dispatches /route.
+    # Structured card dicts are rendered to text for TUI display.
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        _hook_name = f"handle_{name}_command"
+        _mgr = get_plugin_manager()
+        _session_id = session.get("session_key", "") if session else ""
+        _results = _mgr.invoke_hook(_hook_name, args=arg, session_id=_session_id)
+        if _results:
+            _output = next((r for r in _results if r is not None), None)
+            if _output is not None:
+                # InfoCard dict → render to markdown for TUI (no native embeds).
+                if isinstance(_output, dict):
+                    try:
+                        from gateway.cards import is_card, render_card_as_text
+                        if is_card(_output):
+                            _output = render_card_as_text(_output)
+                    except Exception:
+                        pass
+                return _ok(rid, {"type": "exec", "output": str(_output)})
+    except Exception:
+        pass
+
     try:
         from agent.skill_commands import scan_skill_commands, build_skill_invocation_message
         cmds = scan_skill_commands()
@@ -2651,6 +2676,21 @@ def _(rid, params: dict) -> dict:
 
     if _cmd_base in _PENDING_INPUT_COMMANDS:
         return _err(rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}")
+
+    # Redirect gateway-only commands that have plugin hook handlers to command.dispatch.
+    # These commands are not handled by the slash worker (HermesCLI.process_command) —
+    # the CLI would print "Unknown command" instead of executing them.  The hook-based
+    # handler (handle_<name>_command) is invoked in command.dispatch instead.
+    try:
+        from hermes_cli.commands import resolve_command as _rc
+        _cd = _rc(_cmd_base)
+        if _cd is not None and _cd.gateway_only:
+            from hermes_cli.plugins import get_plugin_manager as _gpm
+            _mgr = _gpm()
+            if _mgr._hooks.get(f"handle_{_cmd_base}_command"):
+                return _err(rid, 4018, f"gateway-only plugin command: use command.dispatch for /{_cmd_base}")
+    except Exception:
+        pass
 
     try:
         from agent.skill_commands import get_skill_commands

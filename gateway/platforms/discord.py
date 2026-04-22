@@ -809,6 +809,16 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
+        # Guild-scoped Lucid commands live in a separate command space
+        # from the global set, so they need their own sync pass.
+        try:
+            from gateway.platforms.discord_lucid import sync_lucid_guild
+            await sync_lucid_guild(self._client)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.warning("[%s] Lucid guild sync failed: %s", self.name, e, exc_info=True)
+
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
         if not message or not hasattr(message, "add_reaction"):
@@ -2200,6 +2210,15 @@ class DiscordAdapter(BasePlatformAdapter):
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
 
+        # Register Lucid (/remember, /recall, /classify) as GUILD-SCOPED
+        # commands so they update instantly on restart.  Lives in a
+        # separate module to keep this file from bloating further.
+        try:
+            from gateway.platforms.discord_lucid import register_lucid_commands
+            register_lucid_commands(self._client, tree)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("[%s] Failed to register Lucid slash commands: %s", self.name, e)
+
     def _register_skill_group(self, tree) -> None:
         """Register a single ``/skill`` command with autocomplete on the name.
 
@@ -2634,6 +2653,103 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    async def send_info_card(
+        self,
+        chat_id: str,
+        card: dict,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an InfoCard as a native Discord embed.
+
+        Falls back to the base text renderer if the client isn't connected
+        or if Discord raises an error building the embed.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from gateway.cards import normalize_card, parse_color, render_card_as_text
+        except Exception as e:
+            logger.warning("[%s] send_info_card: cards import failed: %s", self.name, e)
+            return await super().send_info_card(
+                chat_id=chat_id, card=card, reply_to=reply_to,
+                metadata=metadata, **kwargs,
+            )
+
+        try:
+            normalized = normalize_card(card or {})
+
+            # Resolve target channel — thread_id in metadata takes precedence.
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {target_id} not found")
+
+            # Forum channels reject channel.send() — fall back to text into a
+            # new thread via the existing forum helper.
+            if self._is_forum_parent(channel):
+                return await self._send_to_forum(channel, render_card_as_text(normalized))
+
+            embed = discord.Embed(
+                title=normalized.get("title") or None,
+                description=normalized.get("description") or None,
+                color=discord.Color(parse_color(normalized.get("color"))),
+                url=normalized.get("url") or None,
+            )
+            for f in normalized.get("fields", []):
+                embed.add_field(
+                    name=f["name"],
+                    value=f["value"],
+                    inline=f.get("inline", False),
+                )
+            if normalized.get("footer"):
+                embed.set_footer(text=normalized["footer"])
+
+            reference = None
+            if reply_to and self._reply_to_mode != "off":
+                try:
+                    ref_msg = await channel.fetch_message(int(reply_to))
+                    if hasattr(ref_msg, "to_reference"):
+                        reference = ref_msg.to_reference(fail_if_not_exists=False)
+                    else:
+                        reference = ref_msg
+                except Exception as e:
+                    logger.debug("Could not fetch reply-to for info card: %s", e)
+
+            try:
+                msg = await channel.send(embed=embed, reference=reference)
+            except Exception as e:
+                # Reply-to targets that have been deleted raise 50035/10008 —
+                # retry without the reference rather than failing the whole card.
+                err_text = str(e)
+                if reference is not None and (
+                    "error code: 50035" in err_text
+                    or "error code: 10008" in err_text
+                ):
+                    msg = await channel.send(embed=embed)
+                else:
+                    raise
+            return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:
+            logger.warning("[%s] send_info_card failed: %s", self.name, e)
+            # Best-effort fallback to plain text so the user still sees the
+            # content even when the embed path blows up.
+            try:
+                return await super().send_info_card(
+                    chat_id=chat_id, card=card, reply_to=reply_to,
+                    metadata=metadata, **kwargs,
+                )
+            except Exception:
+                return SendResult(success=False, error=str(e))
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

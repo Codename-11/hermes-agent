@@ -1298,6 +1298,43 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
+    async def send_info_card(
+        self,
+        chat_id: str,
+        card: dict,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        **kwargs,
+    ) -> SendResult:
+        """
+        Send a structured informational card (title + fields + footer).
+
+        Adapters that support rich rendering (Discord, Telegram inline markup)
+        should override this to render natively. The default implementation
+        falls back to a plain-text representation rendered via
+        :func:`gateway.cards.render_card_as_text`, which mirrors the card's
+        visual structure so the output remains readable on any platform.
+
+        Args:
+            chat_id: Target chat / channel ID.
+            card: InfoCard dict — see ``gateway.cards`` for the schema.
+            reply_to: Optional parent message to reply to.
+            metadata: Optional platform-specific metadata (e.g. thread_id).
+            **kwargs: Forwarded to the underlying ``send`` call.
+        """
+        from gateway.cards import render_card_as_text
+
+        text = render_card_as_text(card or {})
+        if not text:
+            text = "(empty card)"
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
+        )
+
     async def send_image_file(
         self,
         chat_id: str,

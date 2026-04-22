@@ -10727,132 +10727,78 @@ class GatewayRunner:
         return response
 
 
-    async def _handle_route_command(self, event: MessageEvent) -> str:
-        """Handle /route command - control model routing."""
+    async def _handle_route_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /route command — delegate to the model-router plugin.
+
+        The full handler logic lives in
+        ``~/.hermes/plugins/model-router/__init__.py`` and is invoked through
+        the plugin manager's ``handle_route_command`` hook. This dispatcher
+        only resolves the active session, forwards args + session_id, and
+        falls back to a friendly message if the plugin isn't loaded.
+
+        The plugin hook may return either a plain string (legacy) or a
+        structured InfoCard dict. When a card is returned, the response is
+        sent directly via ``adapter.send_info_card`` (Discord embed, etc.)
+        and this method returns ``None`` so the outer message-send path
+        doesn't duplicate the output as text.
+        """
         args = event.get_command_args().strip().lower()
-        
+
         # Get session info
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         session_id = session_entry.session_id
-        
+
         try:
-            # Import the model router state module
-            import sys
-            import os
-            router_path = os.path.expanduser("~/.hermes/plugins/model-router")
-            if router_path not in sys.path:
-                sys.path.insert(0, router_path)
-            
-            from state import session_state
-            from config import config
-            
-            if not args:
-                # Show current status
-                forced_model, forced_provider = session_state.get_forced_model(session_id)
-                is_escalated = session_state.is_escalated(session_id)
-                router_enabled = config.is_enabled()
-                
-                lines = [
-                    "🔀 **Model Routing Status**",
-                    "",
-                    f"**Router:** {'Enabled ✓' if router_enabled else 'Disabled ✗'}",
-                ]
-                
-                if forced_model:
-                    lines.append(f"**Mode:** Forced to {forced_model} ({forced_provider})")
-                elif is_escalated:
-                    escalation_model = config.get("escalation_model")
-                    escalation_provider = config.get("escalation_provider") 
-                    lines.append(f"**Mode:** Escalated to {escalation_model} ({escalation_provider})")
-                else:
-                    default_model = config.get("default_model")
-                    default_provider = config.get("default_provider")
-                    lines.append(f"**Mode:** Auto-routing (default: {default_model}, {default_provider})")
-                
-                lines.extend([
-                    "",
-                    f"**Session:** `{session_id}`",
-                    f"**Turn Count:** {session_state.get_session(session_id).get('turn_count', 0)}",
-                    "",
-                    "_Usage:_ `/route auto|opus|sonnet|status|enable|disable`"
-                ])
-                
-                return "\n".join(lines)
-            
-            if args == "status":
-                # Same as no args - show status
-                return await self._handle_route_command(event)
-            
-            if args in ("auto", "clear"):
-                # Clear forced model and escalation
-                session_state.clear_forced_model(session_id) 
-                session_state.get_session(session_id)["escalated"] = False
-                return "🔀 ✓ Routing set to **auto** - model will be chosen automatically based on message complexity"
-            
-            if args in ("opus", "claude-opus-4-6"):
-                # Force Opus
-                session_state.set_forced_model(session_id, "claude-opus-4-6", "anthropic")
-                return "🔀 ✓ Routing forced to **Claude Opus 4.6** for this session"
-            
-            if args in ("sonnet", "claude-sonnet-4"):
-                # Force Sonnet 
-                session_state.set_forced_model(session_id, "claude-sonnet-4-20250514", "anthropic")
-                return "🔀 ✓ Routing forced to **Claude Sonnet 4** for this session"
-            
-            if args == "enable":
-                # Enable the router plugin
-                config_path = os.path.expanduser("~/.hermes/plugins/model-router/config.yaml")
-                try:
-                    import yaml
-                    if os.path.exists(config_path):
-                        with open(config_path, 'r') as f:
-                            router_config = yaml.safe_load(f) or {}
-                    else:
-                        router_config = {}
-                    
-                    router_config["enabled"] = True
-                    
-                    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-                    with open(config_path, 'w') as f:
-                        yaml.dump(router_config, f, default_flow_style=False)
-                    
-                    config.reload()
-                    return "🔀 ✓ Model router **enabled** and will take effect on next message"
-                except Exception as e:
-                    return f"🔀 ✗ Failed to enable router: {str(e)}"
-            
-            if args == "disable":
-                # Disable the router plugin
-                config_path = os.path.expanduser("~/.hermes/plugins/model-router/config.yaml")
-                try:
-                    import yaml
-                    if os.path.exists(config_path):
-                        with open(config_path, 'r') as f:
-                            router_config = yaml.safe_load(f) or {}
-                    else:
-                        router_config = {}
-                    
-                    router_config["enabled"] = False
-                    
-                    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-                    with open(config_path, 'w') as f:
-                        yaml.dump(router_config, f, default_flow_style=False)
-                    
-                    config.reload()
-                    return "🔀 ✓ Model router **disabled** - will use configured default model"
-                except Exception as e:
-                    return f"🔀 ✗ Failed to disable router: {str(e)}"
-            
-            return (
-                f"⚠️ Unknown routing option: `{args}`\n\n"
-                "**Valid options:** auto, opus, sonnet, status, enable, disable"
+            from hermes_cli.plugins import get_plugin_manager
+            mgr = get_plugin_manager()
+            results = mgr.invoke_hook(
+                "handle_route_command",
+                args=args,
+                session_id=session_id,
             )
-        
-        except ImportError:
-            return "🔀 ✗ Model router plugin not found at ~/.hermes/plugins/model-router/"
         except Exception as e:
+            logger.exception("Failed to dispatch /route command via plugin hook")
             return f"🔀 ✗ Routing command failed: {str(e)}"
+
+        if not results:
+            return (
+                "🔀 ✗ Model router plugin is not loaded. "
+                "Add `model-router` to `plugins.enabled` in ~/.hermes/config.yaml "
+                "and restart the gateway."
+            )
+
+        response = results[0]
+
+        # Structured card return — send via adapter's card renderer and
+        # suppress the outer text send so the embed stands alone.
+        try:
+            from gateway.cards import is_card, render_card_as_text
+        except Exception:
+            is_card = lambda _v: False  # noqa: E731
+            render_card_as_text = None
+
+        if is_card(response):
+            adapter = self.adapters.get(source.platform)
+            metadata = {"thread_id": source.thread_id} if source.thread_id else None
+            if adapter is not None and hasattr(adapter, "send_info_card"):
+                try:
+                    result = await adapter.send_info_card(
+                        chat_id=source.chat_id,
+                        card=response,
+                        metadata=metadata,
+                    )
+                    if getattr(result, "success", False):
+                        return None  # Adapter sent the card natively.
+                except Exception:
+                    logger.exception("send_info_card failed — falling back to text")
+            # Adapter missing / failed — fall back to text representation.
+            if render_card_as_text is not None:
+                return render_card_as_text(response)
+            return str(response)
+
+        # Plain string response — legacy path.
+        return response
 
     async def _handle_bench_command(self, event: MessageEvent) -> str:
         """Handle /bench command - run benchmark harness."""
