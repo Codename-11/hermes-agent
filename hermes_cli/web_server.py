@@ -104,14 +104,35 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 })
 
 
-def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch.
+def _check_bearer(auth_header: str) -> bool:
+    """Return True if the Authorization header carries a recognized bearer.
 
-    Uses ``hmac.compare_digest`` to prevent timing side-channels.
+    Two tokens are accepted:
+
+    * The ephemeral dashboard session token (``_SESSION_TOKEN``) — generated
+      fresh per server start and injected into the served HTML so only the
+      legitimate web UI sees it.
+    * ``HERMES_GATEWAY_TOKEN`` from the environment — a stable, operator-set
+      bearer that external callers (Mission Control, scripts) can use without
+      scraping the SPA's session token. Empty / unset env var disables this
+      path so we don't accept a blank Authorization header.
+
+    Comparison uses ``hmac.compare_digest`` to avoid timing side-channels.
     """
-    auth = request.headers.get("authorization", "")
-    expected = f"Bearer {_SESSION_TOKEN}"
-    if not hmac.compare_digest(auth.encode(), expected.encode()):
+    if not auth_header.startswith("Bearer "):
+        return False
+    presented = auth_header.encode()
+    if hmac.compare_digest(presented, f"Bearer {_SESSION_TOKEN}".encode()):
+        return True
+    env_token = os.environ.get("HERMES_GATEWAY_TOKEN", "")
+    if env_token and hmac.compare_digest(presented, f"Bearer {env_token}".encode()):
+        return True
+    return False
+
+
+def _require_token(request: Request) -> None:
+    """Validate the bearer token on a single endpoint.  Raises 401 on mismatch."""
+    if not _check_bearer(request.headers.get("authorization", "")):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -202,12 +223,18 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
+    """Require a bearer token on all /api/ routes except the public list.
+
+    Plugin API routes (mounted at /api/plugins/<name>/) are gated by the
+    same check — they used to be excluded, which let any loopback caller hit
+    plugin endpoints unauthenticated. _check_bearer accepts either the
+    dashboard's ephemeral session token or HERMES_GATEWAY_TOKEN so external
+    consumers (Mission Control, scripts) keep working without scraping the
+    SPA's injected token.
+    """
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
-        auth = request.headers.get("authorization", "")
-        expected = f"Bearer {_SESSION_TOKEN}"
-        if not hmac.compare_digest(auth.encode(), expected.encode()):
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+        if not _check_bearer(request.headers.get("authorization", "")):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
