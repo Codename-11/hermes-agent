@@ -4262,6 +4262,38 @@ def cmd_version(args):
                 f"Update available: {behind} {commits_word} behind — "
                 f"run '{recommended_update_command()}'"
             )
+            # Preview digest — walks the pending commit range and prints a
+            # categorized top-10-per-bucket view so the operator can decide
+            # whether to update right now.  Opt out with HERMES_VERSION_NO_PREVIEW=1.
+            if os.environ.get("HERMES_VERSION_NO_PREVIEW") != "1":
+                try:
+                    from hermes_cli.update_ui import compute_pending_digest
+
+                    # Re-resolve the branch so this block doesn't depend on
+                    # variables from the earlier try/except that may not
+                    # have run (e.g. git call raised).
+                    _br = subprocess.run(
+                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                        capture_output=True, text=True, timeout=5,
+                        cwd=str(PROJECT_ROOT),
+                    )
+                    _branch = _br.stdout.strip() if _br.returncode == 0 else ""
+
+                    # Deploy branches compare main..upstream/main (what would
+                    # be merged in); other branches compare HEAD..origin/main
+                    # (what a standard pull would land).
+                    if _branch in {"axiom"}:
+                        base, target = "main", "upstream/main"
+                    else:
+                        base, target = "HEAD", "origin/main"
+                    digest = compute_pending_digest(
+                        PROJECT_ROOT, base, target,
+                        title="Pending upstream changes",
+                    )
+                    if digest:
+                        print(digest)
+                except Exception:
+                    pass  # preview is best-effort — never fail `hermes version`
         elif behind == 0:
             print("Up to date")
     except Exception:

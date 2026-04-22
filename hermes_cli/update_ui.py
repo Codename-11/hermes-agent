@@ -258,24 +258,19 @@ class UpdateBrief:
         self.meta = meta
 
 
-def write_update_brief(
-    repo: Path,
-    old_sha: str,
-    new_sha: str,
-    *,
-    git_cmd: Optional[list[str]] = None,
-    branch: str = "",
-) -> Optional["UpdateBrief"]:
-    """Write a markdown brief of commits between *old_sha* and *new_sha*.
+def _collect_commits(
+    repo: Path, old_sha: str, new_sha: str, git_cmd: Optional[list[str]] = None,
+):
+    """Run ``git log`` / ``git diff`` between *old_sha* and *new_sha* and
+    return ``(commits, stat, files_changed)``.
 
-    Returns an :class:`UpdateBrief` bundle (path + body + digest + meta) or
-    ``None`` if there's nothing new.  The archived file lives at
-    ``~/.hermes/logs/update-briefs/<ts>.md``; the latest is always
-    mirrored to ``~/.hermes/logs/last-update-brief.md`` so the agent can
-    find it without guessing a timestamp.
+    ``commits`` is a list of ``(sha, subject, author, category)`` tuples.
+    ``stat`` is the ``--shortstat`` string (may be empty).
+    ``files_changed`` is the list of file paths from ``--name-only``.
+    Returns ``(None, "", [])`` if there's nothing new between the refs.
     """
     if not old_sha or not new_sha or old_sha == new_sha:
-        return None
+        return None, "", []
 
     git = list(git_cmd) if git_cmd else ["git"]
 
@@ -293,7 +288,7 @@ def write_update_brief(
         f"{old_sha}..{new_sha}",
     ])
     if not log.strip():
-        return None
+        return None, "", []
 
     commits = []
     for line in log.splitlines():
@@ -308,13 +303,105 @@ def write_update_brief(
     files_changed = _run([
         "diff", "--name-only", f"{old_sha}..{new_sha}",
     ]).splitlines()
+    return commits, stat, files_changed
 
+
+def _bucket_commits(commits):
+    """Group commits by category, preserving per-category log order."""
     buckets: dict[str, list[tuple[str, str, str]]] = {}
     for sha, subject, author, cat in commits:
         buckets.setdefault(cat, []).append((sha, subject, author))
+    return buckets
+
+
+def _summary_parts(buckets):
+    parts = []
+    for key, heading in _CATEGORY_ORDER:
+        if key in buckets:
+            parts.append(f"{len(buckets[key])} {heading.lower()}")
+    if "other" in buckets:
+        parts.append(f"{len(buckets['other'])} other")
+    return parts
+
+
+def _render_digest(
+    commits, buckets, stat: str, *, title: str, cap: int = 10,
+) -> str:
+    """Shared digest renderer — summary line + top *cap* commits per category.
+
+    Used by both ``write_update_brief`` (for completed updates) and
+    ``compute_pending_digest`` (for ``hermes version`` previews), so the
+    two views look identical and are maintained in one place.
+    """
+    summary_text = ", ".join(_summary_parts(buckets)) or "no categorized commits"
+    lines: list[str] = []
+    lines.append("")
+    lines.append(f"━━ {title} ━━")
+    lines.append(f"  {len(commits)} commits" + (f" · {stat}" if stat else ""))
+    lines.append(f"  {summary_text}")
+    lines.append("")
+    for key, heading in _CATEGORY_ORDER + [("other", "Other")]:
+        items = buckets.get(key)
+        if not items:
+            continue
+        lines.append(f"  {heading} ({len(items)}):")
+        for sha, subject, _author in items[:cap]:
+            lines.append(f"    • {subject}")
+        if len(items) > cap:
+            lines.append(f"    …and {len(items) - cap} more")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def compute_pending_digest(
+    repo: Path,
+    base: str,
+    target: str,
+    *,
+    git_cmd: Optional[list[str]] = None,
+    title: str = "Pending upstream changes",
+    cap: int = 10,
+) -> Optional[str]:
+    """Return a digest of commits in ``base..target`` without writing any
+    files.  Used by ``hermes version`` to preview what an update would
+    pull in so the operator can decide whether to run it.
+
+    Returns ``None`` when the range is empty or git calls fail.
+    """
+    commits, stat, _ = _collect_commits(repo, base, target, git_cmd=git_cmd)
+    if not commits:
+        return None
+    buckets = _bucket_commits(commits)
+    return _render_digest(commits, buckets, stat, title=title, cap=cap)
+
+
+def write_update_brief(
+    repo: Path,
+    old_sha: str,
+    new_sha: str,
+    *,
+    git_cmd: Optional[list[str]] = None,
+    branch: str = "",
+) -> Optional["UpdateBrief"]:
+    """Write a markdown brief of commits between *old_sha* and *new_sha*.
+
+    Returns an :class:`UpdateBrief` bundle (path + body + digest + meta) or
+    ``None`` if there's nothing new.  The archived file lives at
+    ``~/.hermes/logs/update-briefs/<ts>.md``; the latest is always
+    mirrored to ``~/.hermes/logs/last-update-brief.md`` so the agent can
+    find it without guessing a timestamp.
+    """
+    commits, stat, files_changed = _collect_commits(
+        repo, old_sha, new_sha, git_cmd=git_cmd,
+    )
+    if not commits:
+        return None
+    buckets = _bucket_commits(commits)
 
     now = _dt.datetime.now()
     stamp = now.strftime("%Y%m%d-%H%M%S")
+
+    summary_parts = _summary_parts(buckets)
 
     lines: list[str] = []
     lines.append(f"# hermes update brief — {now.isoformat(timespec='seconds')}")
@@ -328,12 +415,6 @@ def write_update_brief(
         lines.append(f"- **Diff:** {stat}")
     lines.append("")
     lines.append("## Summary")
-    summary_parts = []
-    for key, heading in _CATEGORY_ORDER:
-        if key in buckets:
-            summary_parts.append(f"{len(buckets[key])} {heading.lower()}")
-    if "other" in buckets:
-        summary_parts.append(f"{len(buckets['other'])} other")
     lines.append(", ".join(summary_parts) if summary_parts else "no categorized commits")
     lines.append("")
 
@@ -358,28 +439,12 @@ def write_update_brief(
 
     body = "\n".join(lines) + "\n"
 
-    # Build a compact digest for inline CLI/gateway output — full category
-    # breakdown with commit titles, but cap each category at 10 items and
-    # skip the (often huge) file list.
+    # Compact digest for inline printing — shared with the version-preview path.
+    digest = _render_digest(
+        commits, buckets, stat,
+        title="Upstream changes since last update", cap=10,
+    )
     summary_text = ", ".join(summary_parts) if summary_parts else "no categorized commits"
-    digest_lines: list[str] = []
-    digest_lines.append("")
-    digest_lines.append("━━ Upstream changes since last update ━━")
-    digest_lines.append(f"  {len(commits)} commits" + (f" · {stat}" if stat else ""))
-    digest_lines.append(f"  {summary_text}")
-    digest_lines.append("")
-    _CAP = 10
-    for key, heading in _CATEGORY_ORDER + [("other", "Other")]:
-        items = buckets.get(key)
-        if not items:
-            continue
-        digest_lines.append(f"  {heading} ({len(items)}):")
-        for sha, subject, _author in items[:_CAP]:
-            digest_lines.append(f"    • {subject}")
-        if len(items) > _CAP:
-            digest_lines.append(f"    …and {len(items) - _CAP} more")
-        digest_lines.append("")
-    digest = "\n".join(digest_lines)
 
     briefs = _briefs_dir()
     path = briefs / f"brief-{stamp}.md"
