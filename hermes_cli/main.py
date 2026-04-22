@@ -5525,6 +5525,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
 
+    # Preload update_ui so the module is in sys.modules *before* any stash
+    # sweeps the working tree.  Without this, a freshly-pulled update_ui.py
+    # that hasn't been imported yet would be stashed away and a later
+    # ``from hermes_cli.update_ui import ...`` would raise ModuleNotFoundError.
+    from hermes_cli import update_ui as _update_ui  # noqa: F401
+
     print("⚕ Updating Hermes Agent...")
     print()
 
@@ -5636,17 +5642,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print()
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
+            # Capture pre-update HEAD so the changelog brief can diff against it.
+            try:
+                pre_update_head = subprocess.run(
+                    git_cmd + ["rev-parse", "HEAD"],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                ).stdout.strip()
+            except Exception:
+                pre_update_head = ""
+
+            # Pipeline UI — three git phases rendered on one line with a
+            # spinner on the active phase and ``|`` separators.  See
+            # ``hermes_cli.update_ui`` for details.
+            from hermes_cli.update_ui import Pipeline
+            _pipe = Pipeline(
+                ["fetch upstream", "sync main", f"merge → {current_branch}"]
+            )
+            _pipe.start("fetch upstream")
+
             # Fetch upstream
-            print("→ Fetching upstream...")
             try:
                 subprocess.run(
                     git_cmd + ["fetch", "upstream", "--quiet"],
                     cwd=PROJECT_ROOT, capture_output=True, check=True,
                 )
-                print("  ✓ Fetched upstream")
             except subprocess.CalledProcessError as exc:
                 fetch_err = (exc.stderr or "").strip() if hasattr(exc, "stderr") else ""
-                print("  ✗ Failed to fetch upstream")
+                _pipe.fail(note="cannot fetch upstream")
                 print()
                 print("  ┌─ Copy below ─────────────────────────────────")
                 print(f"  │ hermes update failed — cannot fetch upstream.")
@@ -5666,35 +5688,32 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd, PROJECT_ROOT, "main", "upstream/main",
             )
             if upstream_ahead <= 0:
+                _pipe.finish(note="already up to date")
                 _invalidate_update_cache()
                 if auto_stash_ref is not None:
                     _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
-                print("✓ Already up to date!")
                 return
 
-            print(f"→ {upstream_ahead} new upstream commit(s)")
-
             # Fast-forward local main to upstream/main (without checking out)
-            print("→ Syncing main ← upstream/main...")
+            _pipe.advance("sync main")
             ff_result = subprocess.run(
                 git_cmd + ["fetch", "upstream", "main:main"],
                 cwd=PROJECT_ROOT, capture_output=True, text=True,
             )
             if ff_result.returncode != 0:
                 # main diverged — force-reset it (main should always == upstream)
-                print("  ⚠ main diverged — resetting to upstream/main")
                 subprocess.run(git_cmd + ["checkout", "main"], cwd=PROJECT_ROOT, capture_output=True, check=True)
                 subprocess.run(git_cmd + ["reset", "--hard", "upstream/main"], cwd=PROJECT_ROOT, capture_output=True, check=True)
                 subprocess.run(git_cmd + ["checkout", current_branch], cwd=PROJECT_ROOT, capture_output=True, check=True)
-            print("  ✓ main updated")
 
             # Merge main into deploy branch
-            print(f"→ Merging main → {current_branch}...")
+            _pipe.advance(f"merge → {current_branch}")
             merge_result = subprocess.run(
                 git_cmd + ["merge", "main", "-m", f"merge: upstream sync ({upstream_ahead} commits)"],
                 cwd=PROJECT_ROOT, capture_output=True, text=True,
             )
             if merge_result.returncode != 0:
+                _pipe.fail(note=f"merge into {current_branch} failed")
                 # Merge conflict — abort and report
                 subprocess.run(
                     git_cmd + ["merge", "--abort"],
@@ -5749,7 +5768,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
                 return
 
-            print(f"  ✓ Merged {upstream_ahead} commits into {current_branch}")
+            _pipe.finish(note=f"merged {upstream_ahead} commits into {current_branch}")
 
             commit_count = upstream_ahead
             if auto_stash_ref is not None:
@@ -5759,6 +5778,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # Always update against main
             branch = "main"
+
+            # Capture pre-update HEAD so the changelog brief can diff against it.
+            try:
+                pre_update_head = subprocess.run(
+                    git_cmd + ["rev-parse", "HEAD"],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                ).stdout.strip()
+            except Exception:
+                pre_update_head = ""
 
             # If user is on a non-main branch or detached HEAD, switch to main
             if current_branch != "main":
@@ -6083,6 +6111,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # If ~/neural-memory/ exists as a fork repo with axiom branch,
         # offer to sync it from upstream too.
         _update_neural_memory(git_cmd, gateway_mode, gw_input_fn)
+
+        # --- Upstream change brief ---
+        # Walk git log pre_update_head..HEAD and emit a markdown brief so a
+        # Hermes agent can summarize what actually changed this update.
+        try:
+            if "pre_update_head" in locals() and pre_update_head:
+                post_update_head = subprocess.run(
+                    git_cmd + ["rev-parse", "HEAD"],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                from hermes_cli.update_ui import write_update_brief
+                brief_path = write_update_brief(
+                    PROJECT_ROOT,
+                    pre_update_head,
+                    post_update_head,
+                    git_cmd=git_cmd,
+                    branch=current_branch,
+                )
+                if brief_path is not None:
+                    print()
+                    print("── Pass this to your Hermes agent ─────────────")
+                    print()
+                    print("  ┌─ Copy below ─────────────────────────────────")
+                    print(f"  │ hermes update: {commit_count} new commits on {current_branch}.")
+                    print(f"  │ Brief (markdown): {brief_path}")
+                    print(f"  │ Latest: ~/.hermes/logs/last-update-brief.md")
+                    print(f"  │ ")
+                    print(f"  │ Please read the brief and summarize what")
+                    print(f"  │ notably changed — features, fixes, anything")
+                    print(f"  │ affecting my current workflows.")
+                    print("  └────────────────────────────────────────────")
+        except Exception as _brief_err:  # never let the brief fail the update
+            logger.debug("update brief generation failed: %s", _brief_err)
 
         print()
         print("✓ Update complete!")
