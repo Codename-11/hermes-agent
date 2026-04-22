@@ -7247,6 +7247,16 @@ For more help on a command:
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
     )
+    gateway_restart.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="Restart this profile's gateway AND every other profile with a running gateway (no prompt)",
+    )
+    gateway_restart.add_argument(
+        "--no-prompt-profiles",
+        action="store_true",
+        help="Don't prompt to restart other profiles' gateways after restarting this one",
+    )
 
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

@@ -3480,6 +3480,111 @@ def gateway_setup():
 
 
 # =============================================================================
+# Multi-profile restart helpers
+# =============================================================================
+
+_RESTART_RECURSE_ENV = "HERMES_GATEWAY_RESTART_NO_RECURSE"
+
+
+def _other_running_profiles():
+    """Return ``(active_profile_name, [ProfileInfo])`` for profiles with a
+    running gateway other than the active one.
+
+    Used by ``hermes gateway restart`` to offer to restart sibling profiles
+    (e.g. ``mizu``) after restarting the current profile's gateway.
+    """
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name
+    except Exception:
+        return "", []
+    try:
+        active = get_active_profile_name()
+    except Exception:
+        active = ""
+    try:
+        profiles = list_profiles()
+    except Exception:
+        profiles = []
+    others = [p for p in profiles if p.name != active and p.gateway_running]
+    return active, others
+
+
+def _restart_other_profile(name: str) -> bool:
+    """Restart another profile's gateway by invoking ``hermes -p <name>
+    gateway restart`` as a child process with the recursion guard set.
+
+    Returns ``True`` on exit code 0.
+    """
+    hermes_bin = shutil.which("hermes") or shutil.which("hermes-bin")
+    if not hermes_bin:
+        # Fall back to the interpreter + module so we still work inside a venv
+        hermes_bin = sys.executable
+        cmd = [hermes_bin, "-m", "hermes_cli.main", "-p", name, "gateway", "restart"]
+    else:
+        cmd = [hermes_bin, "-p", name, "gateway", "restart"]
+    env = {**os.environ, _RESTART_RECURSE_ENV: "1"}
+    try:
+        result = subprocess.run(cmd, env=env, timeout=60)
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(f"  ⚠ Restart of profile '{name}' timed out after 60s")
+        return False
+    except Exception as e:
+        print(f"  ⚠ Failed to restart profile '{name}': {e}")
+        return False
+
+
+def _maybe_restart_other_profiles(args) -> None:
+    """After restarting the active profile's gateway, optionally restart
+    other profiles' gateways.  Called at the end of the normal restart
+    path.  Skipped entirely when the recursion guard env var is set (so
+    child invocations don't recurse) or when ``--no-prompt-profiles``
+    was passed.
+    """
+    if os.environ.get(_RESTART_RECURSE_ENV) == "1":
+        return
+    if getattr(args, "no_prompt_profiles", False):
+        return
+
+    active, others = _other_running_profiles()
+    if not others:
+        return
+
+    all_profiles = getattr(args, "all_profiles", False)
+    names = ", ".join(p.name for p in others)
+
+    print()
+    if all_profiles:
+        print(f"→ Restarting {len(others)} other profile gateway(s): {names}")
+        approved = others
+    elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+        # Non-interactive: don't prompt.  Mention what we found so
+        # the operator knows they can rerun with --all-profiles.
+        print(
+            f"ℹ Other profile gateway(s) running: {names}. "
+            "Rerun with --all-profiles to restart them too."
+        )
+        return
+    else:
+        print(f"Other profile gateway(s) running: {names}")
+        approved: list = []
+        for p in others:
+            try:
+                ans = input(f"  Also restart '{p.name}'? [Y/n]: ").strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans in ("", "y", "yes"):
+                approved.append(p)
+
+    for p in approved:
+        print(f"→ Restarting profile '{p.name}'...")
+        if _restart_other_profile(p.name):
+            print(f"  ✓ Restarted '{p.name}'")
+        else:
+            print(f"  ✗ Failed to restart '{p.name}' — try: hermes -p {p.name} gateway restart")
+
+
+# =============================================================================
 # Main Command Handler
 # =============================================================================
 
@@ -3666,6 +3771,16 @@ def gateway_command(args):
         restart_all = getattr(args, 'all', False)
         service_configured = False
 
+        # Pipeline status line — active phase shows a spinner; falls back
+        # to plain per-phase prints on non-TTY (same module as hermes update).
+        try:
+            from hermes_cli.update_ui import Pipeline
+            _pipe = Pipeline([
+                "restart gateway", "check other profiles",
+            ])
+        except Exception:
+            _pipe = None
+
         if restart_all:
             # --all: stop every gateway process across all profiles, then start fresh
             service_stopped = False
@@ -3697,6 +3812,9 @@ def gateway_command(args):
                 run_gateway(verbose=0)
             return
         
+        if _pipe is not None:
+            _pipe.start("restart gateway")
+
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             service_configured = True
             try:
@@ -3711,7 +3829,10 @@ def gateway_command(args):
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
-        
+
+        if service_available and _pipe is not None:
+            _pipe.advance("check other profiles")
+
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue
             if supports_systemd_services():
@@ -3730,6 +3851,8 @@ def gateway_command(args):
                     return
 
             if service_configured:
+                if _pipe is not None:
+                    _pipe.fail(note="service restart failed")
                 print()
                 print("✗ Gateway service restart failed.")
                 print("  The service definition exists, but the service manager did not recover it.")
@@ -3745,7 +3868,12 @@ def gateway_command(args):
             # Start fresh
             print("Starting gateway...")
             run_gateway(verbose=0)
-    
+
+        # Check other profiles (e.g. mizu) and offer to restart them too.
+        if _pipe is not None:
+            _pipe.finish()
+        _maybe_restart_other_profiles(args)
+
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
         system = getattr(args, 'system', False)
