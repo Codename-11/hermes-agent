@@ -3509,6 +3509,35 @@ def _other_running_profiles():
     return active, others
 
 
+_PROFILE_LEAKY_PREFIXES = (
+    # Hermes core — HERMES_HOME gets rewritten by the ``-p <name>`` wrapper
+    # anyway, but other HERMES_* vars (tokens, CWD hints) would leak.
+    "HERMES_", "GATEWAY_", "MESSAGING_",
+    # Platform-specific vars that gateway/config.py reads at startup —
+    # if any bleed through from the parent profile, the child platform
+    # config will mix with the inherited values (e.g. parent's
+    # API_SERVER_KEY triggering enable even when child's .env sets
+    # ENABLED=false).
+    "API_SERVER_", "DISCORD_", "TELEGRAM_", "SLACK_", "WHATSAPP_",
+    "MATTERMOST_", "WEBHOOK_", "QQBOT_", "WECOM_", "DINGTALK_",
+    "FEISHU_", "LINE_", "HOMEASSISTANT_", "SMS_",
+)
+
+
+def _profile_safe_env() -> dict:
+    """Return a copy of ``os.environ`` with Hermes/messaging vars stripped.
+
+    Used when spawning ``hermes -p <name> gateway restart`` for another
+    profile — the child must load its own profile's ``.env`` cleanly
+    rather than inheriting the parent profile's values.  See
+    _PROFILE_LEAKY_PREFIXES for the exact set.
+    """
+    return {
+        k: v for k, v in os.environ.items()
+        if not k.startswith(_PROFILE_LEAKY_PREFIXES)
+    }
+
+
 def _restart_other_profile(name: str) -> bool:
     """Restart another profile's gateway by invoking ``hermes -p <name>
     gateway restart`` as a child process with the recursion guard set.
@@ -3522,7 +3551,8 @@ def _restart_other_profile(name: str) -> bool:
         cmd = [hermes_bin, "-m", "hermes_cli.main", "-p", name, "gateway", "restart"]
     else:
         cmd = [hermes_bin, "-p", name, "gateway", "restart"]
-    env = {**os.environ, _RESTART_RECURSE_ENV: "1"}
+    env = _profile_safe_env()
+    env[_RESTART_RECURSE_ENV] = "1"
     try:
         result = subprocess.run(cmd, env=env, timeout=60)
         return result.returncode == 0
