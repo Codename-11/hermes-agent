@@ -1,5 +1,29 @@
 # Hermes Agent — Dev Log
 
+## 2026-04-21 (evening) — hermes version preview + multi-profile gateway restart
+
+### Summary
+Two follow-ups to the morning's update UX work:
+
+1. **`hermes version` preview** — when the repo is behind upstream, print the same categorized digest (summary + top 10 per bucket) the update command emits on completion, so the operator can decide whether updating is worth it right now. Deploy branches compare `main..upstream/main`; others compare `HEAD..origin/main`. Best-effort; opt out with `HERMES_VERSION_NO_PREVIEW=1`.
+
+2. **`hermes gateway restart` multi-profile** — restart now wraps the two git-less phases (restart gateway / check other profiles) in the same `Pipeline` line as update, then enumerates other profiles via `list_profiles()` and offers to restart each one whose gateway is running. TTY prompts `[Y/n]` per profile; `--all-profiles` auto-restarts all; `--no-prompt-profiles` skips the prompt entirely; non-TTY prints an info line + flag hint instead of hanging on input. Child invocations run with `HERMES_GATEWAY_RESTART_NO_RECURSE=1` to prevent recursive prompting.
+
+3. **Env-leak fix on child restart** — `_restart_other_profile` was forwarding the parent's full `os.environ` to the child. Concrete bug that surfaced: the default profile's `API_SERVER_KEY` leaked into the Mizu child process. Mizu's `.env` explicitly has `API_SERVER_ENABLED=false`, but `gateway/config.py` uses `api_server_enabled or api_server_key` — inherited key won, api_server turned on with inherited `API_SERVER_PORT=8642`, collided with Victor's already-bound port. Fix: strip `HERMES_*`/`GATEWAY_*`/`MESSAGING_*` and per-platform prefixes from the child's env. The child's `-p <name>` wrapper sets `HERMES_HOME` fresh, then loads the target profile's `.env` cleanly.
+
+### Factored shared code
+Moved the digest renderer out of `write_update_brief` into `_render_digest` + `compute_pending_digest(repo, base, target)` in `update_ui.py`. Both the post-update brief's digest and the version-preview digest are produced from the same renderer — same format, one place to maintain. Verified by comparison: `UpdateBrief.digest` is byte-identical to `compute_pending_digest(...)` with a matching title.
+
+### Commits
+- `10506ab0` — feat(version): preview pending upstream commits so you can decide to update
+- `b0cdacd7` — feat(gateway): multi-profile restart + pipeline UX
+- `7ce0e53d` — fix(gateway/restart): strip profile-leaky env before spawning child
+
+### Related — underlying logic that made the env leak matter
+`gateway/config.py` treats api_server as enabled when *either* `API_SERVER_ENABLED=true` *or* `API_SERVER_KEY` is set. That's intentional upstream behavior — people set a key and expect api_server to come up — but it makes profile inheritance unsafe. The env strip is the targeted fix; a defensible upstream PR would be to let an explicit `API_SERVER_ENABLED=false` override a merely-present key. Not patched here to keep the local surface minimal.
+
+---
+
 ## 2026-04-21 — Upstream sync (166 commits), pipeline TUI, agent-readable change brief
 
 ### Summary
