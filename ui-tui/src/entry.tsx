@@ -4,6 +4,9 @@ import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+import { LocalSubprocessTransport } from './transport/LocalSubprocessTransport.js'
+import { RelayTransport } from './transport/RelayTransport.js'
+import type { Transport } from './transport/Transport.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
@@ -12,7 +15,39 @@ if (!process.stdin.isTTY) {
 
 process.stdout.write(bootBanner())
 
-const gw = new GatewayClient()
+// ── Transport selection ────────────────────────────────────────────────
+// Keep arg parsing deliberately tiny — anything more elaborate lands in
+// Phase 3 (hermes_cli/main.py is the proper home for a full CLI).
+const argvRemote = (() => {
+  const a = process.argv
+
+  for (let i = 2; i < a.length; i++) {
+    if (a[i] === '--remote' && i + 1 < a.length) {return a[i + 1]}
+    const v = a[i]
+
+    if (v?.startsWith('--remote=')) {return v.slice('--remote='.length)}
+  }
+
+  return null
+})()
+
+const remoteUrl = process.env.HERMES_RELAY_URL?.trim() || argvRemote?.trim() || null
+
+const buildTransport = (): Transport => {
+  if (!remoteUrl) {
+    return new LocalSubprocessTransport()
+  }
+
+  return new RelayTransport({
+    url: remoteUrl,
+    sessionToken: process.env.HERMES_RELAY_TOKEN?.trim() || undefined,
+    pairingCode: process.env.HERMES_RELAY_CODE?.trim() || undefined,
+    deviceName: process.env.HERMES_RELAY_DEVICE_NAME?.trim() || `hermes-tui (${process.platform})`,
+    deviceId: process.env.HERMES_RELAY_DEVICE_ID?.trim() || undefined
+  })
+}
+
+const gw = new GatewayClient(buildTransport())
 
 gw.start()
 
