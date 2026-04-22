@@ -265,4 +265,44 @@ describe('RelayTransport', () => {
     expect(pong.type).toBe('pong')
     expect(pong.payload.ts).toBe(42)
   })
+
+  it('fires onAuthSuccess observers with the minted token + version', () => {
+    const { tr, fake } = buildTransport()
+    const calls: Array<[string, null | string]> = []
+    tr.onAuthSuccess((token, version) => calls.push([token, version]))
+    tr.start()
+    fake.openAndAck('0.8.0-alpha', 'minted-tok')
+    expect(calls).toEqual([['minted-tok', '0.8.0-alpha']])
+  })
+
+  it('swallows observer exceptions so auth still completes', () => {
+    const { tr, fake } = buildTransport()
+    tr.onAuthSuccess(() => {
+      throw new Error('boom')
+    })
+    tr.start()
+    fake.openAndAck()
+    // getAuthInfo reflects the successful auth even though the cb threw.
+    expect(tr.getAuthInfo()).toEqual({ serverVersion: '0.8.0-alpha', token: 'mock-token-uuid' })
+  })
+
+  it('sendResize emits a tui.resize envelope after auth', () => {
+    const { tr, fake } = buildTransport()
+    tr.start()
+    fake.openAndAck()
+    const before = fake.sent.length
+    tr.sendResize(120, 40)
+    const resize = JSON.parse(fake.sent[before]!)
+    expect(resize.channel).toBe('tui')
+    expect(resize.type).toBe('tui.resize')
+    expect(resize.payload).toEqual({ cols: 120, rows: 40 })
+  })
+
+  it('sendResize no-ops when called before auth', () => {
+    const { tr, fake } = buildTransport()
+    tr.start()
+    const before = fake.sent.length
+    tr.sendResize(100, 30)
+    expect(fake.sent.length).toBe(before)
+  })
 })

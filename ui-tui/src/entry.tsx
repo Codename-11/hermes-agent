@@ -4,6 +4,7 @@ import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+import { getSession, saveSession } from './remoteSessions.js'
 import { LocalSubprocessTransport } from './transport/LocalSubprocessTransport.js'
 import { RelayTransport } from './transport/RelayTransport.js'
 import type { Transport } from './transport/Transport.js'
@@ -17,7 +18,7 @@ process.stdout.write(bootBanner())
 
 // ── Transport selection ────────────────────────────────────────────────
 // Keep arg parsing deliberately tiny — anything more elaborate lands in
-// Phase 3 (hermes_cli/main.py is the proper home for a full CLI).
+// hermes_cli/main.py (the proper home for a full CLI).
 const argvRemote = (() => {
   const a = process.argv
 
@@ -33,23 +34,70 @@ const argvRemote = (() => {
 
 const remoteUrl = process.env.HERMES_RELAY_URL?.trim() || argvRemote?.trim() || null
 
-const buildTransport = (): Transport => {
+// Active RelayTransport handle (null in local mode). We need this at module
+// scope to wire the resize pump after transport construction.
+let activeRelay: null | RelayTransport = null
+
+const buildTransport = async (): Promise<Transport> => {
   if (!remoteUrl) {
     return new LocalSubprocessTransport()
   }
 
-  return new RelayTransport({
+  // Credential precedence: explicit HERMES_RELAY_TOKEN env, then stored
+  // session token for this URL, then pairing code. The CLI (hermes --remote)
+  // enforces that at least one is present before spawning us — a missing
+  // credential here means someone ran the TUI directly without going
+  // through the CLI.
+  const envToken = process.env.HERMES_RELAY_TOKEN?.trim() || undefined
+  const pairingCode = process.env.HERMES_RELAY_CODE?.trim() || undefined
+  let sessionToken = envToken
+
+  if (!sessionToken && !pairingCode) {
+    const stored = await getSession(remoteUrl)
+    if (stored) {sessionToken = stored.token}
+  }
+
+  const relay = new RelayTransport({
     url: remoteUrl,
-    sessionToken: process.env.HERMES_RELAY_TOKEN?.trim() || undefined,
-    pairingCode: process.env.HERMES_RELAY_CODE?.trim() || undefined,
+    sessionToken,
+    pairingCode,
     deviceName: process.env.HERMES_RELAY_DEVICE_NAME?.trim() || `hermes-tui (${process.platform})`,
     deviceId: process.env.HERMES_RELAY_DEVICE_ID?.trim() || undefined
   })
+
+  // Persist the freshly-minted token back to ~/.hermes/remote-sessions.json
+  // so subsequent `hermes --remote <url>` launches reconnect without a code.
+  relay.onAuthSuccess((token, serverVersion) => {
+    void saveSession(remoteUrl, token, serverVersion)
+  })
+
+  activeRelay = relay
+
+  return relay
 }
 
-const gw = new GatewayClient(buildTransport())
+const gw = new GatewayClient(await buildTransport())
 
 gw.start()
+
+// ── Resize pump (remote only) ──────────────────────────────────────────
+// The local subprocess transport inherits the parent TTY, so SIGWINCH
+// propagates to the `tui_gateway` subprocess natively. Over WSS there's
+// no SIGWINCH — we have to forward cols/rows explicitly as a tui.resize
+// envelope. The relay translates to a `terminal.resize` JSON-RPC request.
+if (activeRelay) {
+  let lastCols = process.stdout.columns ?? 0
+  let lastRows = process.stdout.rows ?? 0
+  process.stdout.on('resize', () => {
+    const cols = process.stdout.columns ?? lastCols
+    const rows = process.stdout.rows ?? lastRows
+
+    if (cols === lastCols && rows === lastRows) {return}
+    lastCols = cols
+    lastRows = rows
+    activeRelay?.sendResize(cols, rows)
+  })
+}
 
 const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
   `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`

@@ -108,6 +108,8 @@ export class RelayTransport extends EventEmitter implements Transport {
   sessionToken: string | null = null
   /** Server-reported version for diagnostics. */
   serverVersion: string | null = null
+  /** Observers notified exactly once per `auth.ok`. */
+  private authSuccessObservers: Array<(token: string, serverVersion: string | null) => void> = []
 
   constructor(cfg: RelayTransportConfig) {
     super()
@@ -115,6 +117,33 @@ export class RelayTransport extends EventEmitter implements Transport {
     this.cfg = cfg
     this.wsFactory = cfg.wsFactory ?? defaultWSFactory
     this.sessionToken = cfg.sessionToken ?? null
+  }
+
+  /**
+   * Register a callback fired once per successful auth handshake. Used by
+   * the CLI entry point to persist the relay-minted session token into
+   * `~/.hermes/remote-sessions.json` for reconnect. Thrown exceptions are
+   * swallowed so persistence failures never take down the transport.
+   */
+  onAuthSuccess(cb: (token: string, serverVersion: string | null) => void): void {
+    this.authSuccessObservers.push(cb)
+  }
+
+  /**
+   * Send a `tui.resize` envelope. Safe to call before auth — no-ops if the
+   * socket isn't attached or auth hasn't completed (the subprocess will
+   * pick up the correct size from the initial `tui.attach` payload instead).
+   */
+  sendResize(cols: number, rows: number): void {
+    if (!this.ws || !this.authResolved) {return}
+    this.sendEnvelope('tui', 'tui.resize', { cols, rows })
+  }
+
+  /** Minimal getter for callers that prefer polling over callbacks. */
+  getAuthInfo(): { serverVersion: string | null; token: string } | null {
+    if (!this.authResolved || !this.sessionToken) {return null}
+
+    return { serverVersion: this.serverVersion, token: this.sessionToken }
   }
 
   start() {
@@ -259,6 +288,20 @@ export class RelayTransport extends EventEmitter implements Transport {
 
       if (typeof ver === 'string') {this.serverVersion = ver}
       this.pushLog(`[auth] ok (server ${this.serverVersion ?? '?'})`)
+
+      // Fire auth-success observers so the CLI entry can persist the token.
+      // Swallow observer errors — persistence hiccups must not take down
+      // the transport.
+      if (this.sessionToken) {
+        for (const cb of this.authSuccessObservers) {
+          try {
+            cb(this.sessionToken, this.serverVersion)
+          } catch {
+            /* ignore — see comment above */
+          }
+        }
+      }
+
       // Attach the TUI channel. Subprocess on the relay is spawned on receipt.
       this.sendEnvelope('tui', 'tui.attach', {
         cols: process.stdout.columns ?? 80,

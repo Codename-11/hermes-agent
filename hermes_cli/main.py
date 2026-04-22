@@ -1041,6 +1041,115 @@ def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     sys.exit(code)
 
 
+# ── Remote TUI (--remote flag) ────────────────────────────────────────────
+#
+# When the user passes ``--remote <url>`` the CLI skips spawning a local
+# ``tui_gateway`` subprocess entirely. Instead it launches the Node TUI
+# with ``HERMES_RELAY_*`` env vars, and the TUI's ``RelayTransport``
+# pipes JSON-RPC to a remote ``tui_gateway`` over the hermes-relay ``tui``
+# channel (docs/relay-protocol.md §3.7).
+#
+# Session-token storage lives on the Node side in ``remoteSessions.ts``
+# (~/.hermes/remote-sessions.json). The CLI only needs to know whether a
+# stored token exists so it can give a helpful error when the user hasn't
+# paired yet — the Node side handles load/save end-to-end.
+
+_REMOTE_SESSIONS_PATH = Path.home() / ".hermes" / "remote-sessions.json"
+
+
+def _stored_remote_session_exists(url: str) -> bool:
+    """Return True if ~/.hermes/remote-sessions.json has a token for ``url``.
+
+    Fail-closed: any read/parse error is treated as "no stored session". We
+    never surface the exception — if the file is broken the Node side will
+    also fail to load and the user gets the same "pair first" message.
+    """
+    try:
+        if not _REMOTE_SESSIONS_PATH.is_file():
+            return False
+        import json as _json
+        with _REMOTE_SESSIONS_PATH.open("r", encoding="utf-8") as fh:
+            data = _json.load(fh)
+        sessions = data.get("sessions") if isinstance(data, dict) else None
+        if not isinstance(sessions, dict):
+            return False
+        entry = sessions.get(url)
+        if not isinstance(entry, dict):
+            return False
+        token = entry.get("token")
+        return isinstance(token, str) and bool(token)
+    except Exception:
+        return False
+
+
+def _launch_remote_tui(
+    remote_url: str,
+    pairing_code: Optional[str] = None,
+    session_token: Optional[str] = None,
+    resume_session_id: Optional[str] = None,
+    tui_dev: bool = False,
+) -> None:
+    """Launch the Node TUI against a remote hermes-relay.
+
+    Requires ``--pair <code>`` on first use (or a previously-stored session
+    token in ``~/.hermes/remote-sessions.json``). On success this function
+    replaces the current process and never returns.
+    """
+    tui_dir = PROJECT_ROOT / "ui-tui"
+
+    # Decide whether we have credentials. Precedence: explicit --token, then
+    # explicit --pair, then a stored token for this URL. If none: error out
+    # with the pairing instructions.
+    have_pair = bool(pairing_code)
+    have_token = bool(session_token) or _stored_remote_session_exists(remote_url)
+
+    if not have_pair and not have_token:
+        print(
+            "Error: no stored session for this relay URL, and no pairing code given.\n"
+            "\n"
+            "Pair the desktop first:\n"
+            f"  1. On the relay host, run:  hermes-pair --relay-only\n"
+            f"  2. Copy the 6-character code\n"
+            f"  3. Re-run:  hermes --remote {remote_url} --pair <CODE>\n"
+            "\n"
+            "After the first successful connection the session token is stored\n"
+            f"in {_REMOTE_SESSIONS_PATH} (mode 0600) for automatic reconnect.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    env = os.environ.copy()
+    env["HERMES_RELAY_URL"] = remote_url
+    if session_token:
+        env["HERMES_RELAY_TOKEN"] = session_token
+    if pairing_code:
+        env["HERMES_RELAY_CODE"] = pairing_code
+    if resume_session_id:
+        env["HERMES_TUI_RESUME"] = resume_session_id
+
+    # Same NODE_OPTIONS merge as the local path — the Node TUI runs the same
+    # heap-heavy render path regardless of transport.
+    _tokens = env.get("NODE_OPTIONS", "").split()
+    if not any(t.startswith("--max-old-space-size=") for t in _tokens):
+        _tokens.append("--max-old-space-size=8192")
+    if "--expose-gc" not in _tokens:
+        _tokens.append("--expose-gc")
+    env["NODE_OPTIONS"] = " ".join(_tokens)
+
+    # HERMES_PYTHON_SRC_ROOT / HERMES_PYTHON / HERMES_CWD are only used by
+    # the local subprocess transport. Leaving them unset on the remote
+    # path is intentional — the Node TUI's entry.tsx picks RelayTransport
+    # purely from HERMES_RELAY_URL.
+
+    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    try:
+        code = subprocess.call(argv, cwd=str(cwd), env=env)
+    except KeyboardInterrupt:
+        code = 130
+
+    sys.exit(code)
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
@@ -6983,6 +7092,38 @@ For more help on a command:
         default=False,
         help="With --tui: run TypeScript sources via tsx (skip dist build)",
     )
+    parser.add_argument(
+        "--remote",
+        metavar="URL",
+        default=None,
+        help=(
+            "Connect the TUI to a remote hermes-relay over WebSocket "
+            "(e.g. wss://host:8767). Implies --tui. Pair first with "
+            "--pair <code>, then subsequent launches reconnect with a "
+            "stored token from ~/.hermes/remote-sessions.json."
+        ),
+    )
+    parser.add_argument(
+        "--pair",
+        "--pairing-code",
+        dest="pairing_code",
+        metavar="CODE",
+        default=None,
+        help=(
+            "One-time pairing code minted by the remote relay via "
+            "/pairing/register. Use once per device per relay URL."
+        ),
+    )
+    parser.add_argument(
+        "--token",
+        dest="session_token",
+        metavar="TOKEN",
+        default=None,
+        help=(
+            "Bearer session token for --remote. Mostly for testing — the "
+            "normal flow stores/reloads tokens automatically."
+        ),
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -9110,6 +9251,21 @@ Examples:
     # Handle --version flag
     if args.version:
         cmd_version(args)
+        return
+
+    # Handle --remote flag — launch the Node TUI against a remote
+    # hermes-relay. Short-circuits all normal CLI dispatch (no agent loop,
+    # no session DB, no provider config needed locally — everything runs
+    # on the remote host). ``--remote`` implies ``--tui``.
+    remote_url = getattr(args, "remote", None)
+    if remote_url:
+        _launch_remote_tui(
+            remote_url=remote_url,
+            pairing_code=getattr(args, "pairing_code", None),
+            session_token=getattr(args, "session_token", None),
+            resume_session_id=getattr(args, "resume", None),
+            tui_dev=getattr(args, "tui_dev", False),
+        )
         return
 
     # Discover Python plugins and register shell hooks once, before any
