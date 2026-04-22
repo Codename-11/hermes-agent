@@ -706,6 +706,23 @@ class TestPreLlmCallTargetRouting:
 class TestPluginCommands:
     """Tests for plugin slash command registration via register_command()."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_command_registry(self):
+        """Snapshot and restore the global COMMAND_REGISTRY per test.
+
+        register_command() synthesizes a CommandDef into the module-level
+        registry so /help, Telegram autocomplete, and CLI tab-completion
+        pick up the plugin command. That state leaks across tests running
+        in the same worker, so snapshot before the test and restore after.
+        """
+        from hermes_cli import commands as commands_mod
+        snapshot = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            yield
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = snapshot
+            commands_mod.rebuild_lookups()
+
     def test_register_command_basic(self):
         """register_command() stores handler, description, and plugin name."""
         mgr = PluginManager()
@@ -936,6 +953,252 @@ class TestPluginCommands:
         assert "cmd-b" in mgr._plugin_commands
         assert mgr._plugin_commands["cmd-a"]["plugin"] == "plugin-a"
         assert mgr._plugin_commands["cmd-b"]["plugin"] == "plugin-b"
+
+    def test_register_command_persists_commanddef_kwargs(self):
+        """New metadata kwargs are stored on the _plugin_commands entry."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "myroute",
+            lambda a: "ok",
+            description="Control routing",
+            args_hint="[a|b|c]",
+            subcommands=("a", "b", "c"),
+            category="Configuration",
+            gateway_only=True,
+            aliases=("mr",),
+            returns_card=True,
+        )
+
+        entry = mgr._plugin_commands["myroute"]
+        assert entry["description"] == "Control routing"
+        assert entry["args_hint"] == "[a|b|c]"
+        assert entry["subcommands"] == ("a", "b", "c")
+        assert entry["category"] == "Configuration"
+        assert entry["gateway_only"] is True
+        assert entry["cli_only"] is False
+        assert entry["aliases"] == ("mr",)
+        assert entry["returns_card"] is True
+
+    def test_register_command_synthesizes_commanddef(self):
+        """register_command adds a matching CommandDef to COMMAND_REGISTRY."""
+        from hermes_cli.commands import resolve_command
+
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "mysynth",
+            lambda a: "ok",
+            description="Synthesized",
+            args_hint="[x|y]",
+            subcommands=("x", "y"),
+            category="Tools & Skills",
+            gateway_only=True,
+        )
+
+        cmd_def = resolve_command("mysynth")
+        assert cmd_def is not None
+        assert cmd_def.name == "mysynth"
+        assert cmd_def.description == "Synthesized"
+        assert cmd_def.args_hint == "[x|y]"
+        assert cmd_def.subcommands == ("x", "y")
+        assert cmd_def.category == "Tools & Skills"
+        assert cmd_def.gateway_only is True
+
+    def test_register_command_dedups_synthetic_commanddef(self, caplog):
+        """Second plugin registering same name is rejected by the synthesis path too."""
+        mgr = PluginManager()
+
+        ctx_a = PluginContext(PluginManifest(name="plugin-a", source="user"), mgr)
+        ctx_a.register_command("dupcmd", lambda a: "a", description="first")
+
+        ctx_b = PluginContext(PluginManifest(name="plugin-b", source="user"), mgr)
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx_b.register_command("dupcmd", lambda a: "b", description="second")
+
+        # Second registration is rejected at the register_command level because
+        # the synthesized CommandDef from plugin-a is now in _COMMAND_LOOKUP.
+        assert mgr._plugin_commands["dupcmd"]["plugin"] == "plugin-a"
+        assert "conflicts" in caplog.text.lower()
+
+    def test_register_command_aliases_lowercased(self):
+        """Aliases are normalized like the primary name."""
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        ctx.register_command(
+            "primary",
+            lambda a: a,
+            aliases=("/AlT ", "alt2"),
+        )
+
+        entry = mgr._plugin_commands["primary"]
+        assert entry["aliases"] == ("alt", "alt2")
+
+    def test_register_command_returns_card_defaults_false(self):
+        """Legacy callers (no returns_card kwarg) record returns_card=False."""
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+        ctx.register_command("legacycmd", lambda a: "ok", description="legacy")
+
+        assert mgr._plugin_commands["legacycmd"]["returns_card"] is False
+
+
+class TestPluginCommandEntry:
+    """Tests for get_plugin_command_entry (full metadata lookup)."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_command_registry(self):
+        from hermes_cli import commands as commands_mod
+        snapshot = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            yield
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = snapshot
+            commands_mod.rebuild_lookups()
+
+    def test_get_plugin_command_entry_returns_full_metadata(self):
+        from hermes_cli.plugins import get_plugin_command_entry
+        import hermes_cli.plugins as plugins_mod
+
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+        ctx.register_command(
+            "entrycmd",
+            lambda a: "ok",
+            description="Entry test",
+            returns_card=True,
+            args_hint="[foo]",
+        )
+
+        with patch.object(plugins_mod, "_plugin_manager", mgr):
+            entry = get_plugin_command_entry("entrycmd")
+
+        assert entry is not None
+        assert entry["description"] == "Entry test"
+        assert entry["returns_card"] is True
+        assert entry["args_hint"] == "[foo]"
+
+    def test_get_plugin_command_entry_missing(self):
+        from hermes_cli.plugins import get_plugin_command_entry
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_plugin_manager", PluginManager()):
+            assert get_plugin_command_entry("nope") is None
+
+
+class TestReturnsCardDispatch:
+    """End-to-end: returns_card plugin handlers route through adapter.send_info_card.
+
+    The dispatcher in gateway/run.py is embedded in a large class; rather than
+    instantiate it, these tests exercise the same dispatch logic directly so
+    we can assert the integration contract between register_command's
+    returns_card flag and the InfoCard adapter API.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_command_registry(self):
+        from hermes_cli import commands as commands_mod
+        snapshot = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            yield
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = snapshot
+            commands_mod.rebuild_lookups()
+
+    async def _dispatch(self, entry, args, adapter):
+        """Mini gateway dispatcher mirroring run.py's returns_card path."""
+        from gateway.cards import is_card, render_card_as_text
+
+        handler = entry["handler"]
+        result = handler(args)
+        returns_card_hint = bool(entry.get("returns_card"))
+
+        if result is None:
+            return None
+
+        if returns_card_hint or isinstance(result, dict):
+            if is_card(result):
+                sent = await adapter.send_info_card(
+                    chat_id="chat-1", card=result, metadata=None,
+                )
+                if getattr(sent, "success", False):
+                    return None
+                return render_card_as_text(result)
+
+        return str(result) if result else None
+
+    @pytest.mark.asyncio
+    async def test_returns_card_routes_through_send_info_card(self):
+        from unittest.mock import AsyncMock
+
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="card-plugin", source="user"), mgr)
+        card = {
+            "title": "Plugin Card",
+            "color": "info",
+            "fields": [{"name": "Status", "value": "OK", "inline": True}],
+        }
+        ctx.register_command(
+            "cardcmd", lambda a: card, description="card test",
+            returns_card=True,
+        )
+
+        adapter = MagicMock()
+        adapter.send_info_card = AsyncMock(return_value=MagicMock(success=True))
+
+        result = await self._dispatch(
+            mgr._plugin_commands["cardcmd"], args="", adapter=adapter,
+        )
+        assert result is None  # Adapter sent the card — no duplicate text.
+        adapter.send_info_card.assert_awaited_once()
+        sent_kwargs = adapter.send_info_card.await_args.kwargs
+        assert sent_kwargs["card"] == card
+
+    @pytest.mark.asyncio
+    async def test_returns_card_false_keeps_string_path(self):
+        from unittest.mock import AsyncMock
+
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="str-plugin", source="user"), mgr)
+        ctx.register_command(
+            "strcmd", lambda a: "plain markdown", description="string test",
+        )
+
+        adapter = MagicMock()
+        adapter.send_info_card = AsyncMock(return_value=MagicMock(success=True))
+
+        result = await self._dispatch(
+            mgr._plugin_commands["strcmd"], args="", adapter=adapter,
+        )
+        assert result == "plain markdown"
+        adapter.send_info_card.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_card_adapter_failure_falls_back_to_text(self):
+        from unittest.mock import AsyncMock
+
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="card-plugin", source="user"), mgr)
+        card = {"title": "Fallback Card", "color": "info"}
+        ctx.register_command(
+            "fallbackcmd", lambda a: card, description="fallback test",
+            returns_card=True,
+        )
+
+        adapter = MagicMock()
+        # send_info_card returns non-success → dispatcher falls back to text.
+        adapter.send_info_card = AsyncMock(return_value=MagicMock(success=False))
+
+        result = await self._dispatch(
+            mgr._plugin_commands["fallbackcmd"], args="", adapter=adapter,
+        )
+        assert result is not None
+        assert "Fallback Card" in result
 
 
 # ── TestPluginDispatchTool ────────────────────────────────────────────────

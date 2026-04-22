@@ -692,6 +692,7 @@ class TestTelegramMenuCommands:
         """Telegram menu generation should discover plugin slash commands on first access."""
         from unittest.mock import patch
         import hermes_cli.plugins as plugins_mod
+        import hermes_cli.commands as commands_mod
 
         plugin_dir = tmp_path / "plugins" / "cmd-plugin"
         plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -708,11 +709,61 @@ class TestTelegramMenuCommands:
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        with patch.object(plugins_mod, "_plugin_manager", None):
-            menu, _ = telegram_menu_commands(max_commands=100)
+        snapshot = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            with patch.object(plugins_mod, "_plugin_manager", None):
+                menu, _ = telegram_menu_commands(max_commands=100)
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = snapshot
+            commands_mod.rebuild_lookups()
 
         menu_names = {name for name, _ in menu}
         assert "lcm" in menu_names
+
+    def test_plugin_command_with_subcommands_appears_in_menu(self, tmp_path, monkeypatch):
+        """A plugin command registered with subcommands gets a CommandDef and surfaces
+        in the Telegram menu via the core-commands path (not the skill-entries path)."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+        import hermes_cli.commands as commands_mod
+
+        plugin_dir = tmp_path / "plugins" / "route-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: route-plugin\nversion: 0.1.0\ndescription: Route plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command(\n"
+            "        'myroute', lambda a: 'ok',\n"
+            "        description='Custom routing',\n"
+            "        args_hint='[a|b|c]',\n"
+            "        subcommands=('a','b','c'),\n"
+            "        category='Configuration',\n"
+            "        gateway_only=True,\n"
+            "    )\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - route-plugin\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        snapshot = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            with patch.object(plugins_mod, "_plugin_manager", None):
+                menu, _ = telegram_menu_commands(max_commands=100)
+                # Telegram bot commands derives from COMMAND_REGISTRY directly,
+                # so the synthesized CommandDef must appear there too.
+                from hermes_cli.commands import telegram_bot_commands, SUBCOMMANDS
+                bot_names = {name for name, _ in telegram_bot_commands()}
+                assert "myroute" in bot_names
+                assert SUBCOMMANDS.get("/myroute") == ["a", "b", "c"]
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = snapshot
+            commands_mod.rebuild_lookups()
+
+        menu_names = {name for name, _ in menu}
+        assert "myroute" in menu_names
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""

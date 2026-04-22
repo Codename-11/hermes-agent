@@ -170,10 +170,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Model Routing & Benchmarking
-    CommandDef("route", "Control model routing (auto/opus/sonnet/status/enable/disable)", "Configuration",
-               args_hint="[auto|opus|sonnet|status|enable|disable]",
-               subcommands=("auto", "opus", "sonnet", "status", "enable", "disable"),
-               gateway_only=True),
+    # /route is owned by the model-router plugin (registers via
+    # register_command with the new CommandDef-equivalent kwargs). See
+    # ~/.hermes/plugins/model-router/__init__.py.
     CommandDef("bench", "Run benchmark harness", "Tools & Skills",
                args_hint="[list|run <suite>|results]",
                subcommands=("list", "run", "results"),
@@ -217,57 +216,101 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
-# Backwards-compatible flat dict: "/command" -> description
-COMMANDS: dict[str, str] = {}
-for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
-        COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
-        for _alias in _cmd.aliases:
-            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
-
-# Backwards-compatible categorized dict
-COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
-for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
-        _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
-        _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
-        for _alias in _cmd.aliases:
-            _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
-
-
-# Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
-SUBCOMMANDS: dict[str, list[str]] = {}
-for _cmd in COMMAND_REGISTRY:
-    if _cmd.subcommands:
-        SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
-
-# Also extract subcommands hinted in args_hint via pipe-separated patterns
-# e.g. args_hint="[on|off|tts|status]" for commands that don't have explicit subcommands.
-# NOTE: If a command already has explicit subcommands, this fallback is skipped.
-# Use the `subcommands` field on CommandDef for intentional tab-completable args.
 _PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
-for _cmd in COMMAND_REGISTRY:
-    key = f"/{_cmd.name}"
-    if key in SUBCOMMANDS or not _cmd.args_hint:
-        continue
-    m = _PIPE_SUBS_RE.search(_cmd.args_hint)
-    if m:
-        SUBCOMMANDS[key] = m.group(0).split("|")
+
+
+# Backwards-compatible flat dict: "/command" -> description (populated by rebuild_lookups)
+COMMANDS: dict[str, str] = {}
+# Backwards-compatible categorized dict (populated by rebuild_lookups)
+COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
+# Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...] (populated by rebuild_lookups)
+SUBCOMMANDS: dict[str, list[str]] = {}
+
+
+def rebuild_lookups() -> None:
+    """Regenerate all derived lookups from the current COMMAND_REGISTRY.
+
+    Called at module import and any time a plugin appends a synthetic
+    CommandDef via :func:`register_plugin_command_def`. All lookup
+    containers are module-level dicts/sets mutated in place so late
+    imports (and modules that already captured the name) still see the
+    fresh state.
+    """
+    _COMMAND_LOOKUP.clear()
+    _COMMAND_LOOKUP.update(_build_command_lookup())
+
+    COMMANDS.clear()
+    COMMANDS_BY_CATEGORY.clear()
+    for cmd in COMMAND_REGISTRY:
+        if cmd.gateway_only:
+            continue
+        COMMANDS[f"/{cmd.name}"] = _build_description(cmd)
+        for alias in cmd.aliases:
+            COMMANDS[f"/{alias}"] = f"{cmd.description} (alias for /{cmd.name})"
+        cat = COMMANDS_BY_CATEGORY.setdefault(cmd.category, {})
+        cat[f"/{cmd.name}"] = COMMANDS[f"/{cmd.name}"]
+        for alias in cmd.aliases:
+            cat[f"/{alias}"] = COMMANDS[f"/{alias}"]
+
+    SUBCOMMANDS.clear()
+    for cmd in COMMAND_REGISTRY:
+        if cmd.subcommands:
+            SUBCOMMANDS[f"/{cmd.name}"] = list(cmd.subcommands)
+    # Fallback: extract pipe-separated args_hint patterns like "[on|off|status]".
+    # Skipped when explicit subcommands are already defined.
+    for cmd in COMMAND_REGISTRY:
+        key = f"/{cmd.name}"
+        if key in SUBCOMMANDS or not cmd.args_hint:
+            continue
+        m = _PIPE_SUBS_RE.search(cmd.args_hint)
+        if m:
+            SUBCOMMANDS[key] = m.group(0).split("|")
+
+    global GATEWAY_KNOWN_COMMANDS
+    GATEWAY_KNOWN_COMMANDS = frozenset(
+        name
+        for cmd in COMMAND_REGISTRY
+        if not cmd.cli_only or cmd.gateway_config_gate
+        for name in (cmd.name, *cmd.aliases)
+    )
+
+
+# Set of all command names + aliases recognized by the gateway.
+# Includes config-gated commands so the gateway can dispatch them
+# (the handler checks the config gate at runtime). Rebuilt by
+# rebuild_lookups() whenever COMMAND_REGISTRY changes.
+GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset()
+
+
+def register_plugin_command_def(cmd_def: CommandDef) -> bool:
+    """Append a plugin-supplied CommandDef to COMMAND_REGISTRY.
+
+    Used by :meth:`hermes_cli.plugins.PluginContext.register_command` to
+    give plugin commands first-class CommandDef treatment (help menus,
+    Telegram autocomplete, CLI tab-completion, subcommand completion).
+
+    Returns False and makes no changes when the name or any alias
+    collides with an existing entry — callers should log. The
+    registry's other collision guards (``PluginContext.register_command``
+    already rejects built-in names) make this a belt-and-suspenders
+    check for simultaneous plugin collisions.
+    """
+    all_names = (cmd_def.name, *cmd_def.aliases)
+    for name in all_names:
+        if name in _COMMAND_LOOKUP:
+            return False
+    COMMAND_REGISTRY.append(cmd_def)
+    rebuild_lookups()
+    return True
+
+
+# Initial population from the static registry at import time.
+rebuild_lookups()
 
 
 # ---------------------------------------------------------------------------
 # Gateway helpers
 # ---------------------------------------------------------------------------
-
-# Set of all command names + aliases recognized by the gateway.
-# Includes config-gated commands so the gateway can dispatch them
-# (the handler checks the config gate at runtime).
-GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
-    name
-    for cmd in COMMAND_REGISTRY
-    if not cmd.cli_only or cmd.gateway_config_gate
-    for name in (cmd.name, *cmd.aliases)
-)
 
 
 # Commands with explicit Level-2 running-agent handlers in gateway/run.py.

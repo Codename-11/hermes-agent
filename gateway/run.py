@@ -3619,9 +3619,6 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
-        if canonical == "route":
-            return await self._handle_route_command(event)
-
         if canonical == "bench":
             return await self._handle_bench_command(event)
 
@@ -3673,16 +3670,95 @@ class GatewayRunner:
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import get_plugin_command_entry
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
+                plugin_entry = get_plugin_command_entry(command.replace("_", "-"))
+                if plugin_entry:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    handler = plugin_entry["handler"]
+
+                    # Plugin handlers may declare they can return an InfoCard
+                    # dict instead of a plain string (returns_card=True). The
+                    # legacy handle_route_command hook path sniffed the return
+                    # value unconditionally; we mirror that behavior so both
+                    # opt-in card plugins and curious string-returners get
+                    # rendered correctly.
+                    returns_card_hint = bool(plugin_entry.get("returns_card"))
+
+                    # Handler may or may not accept session_id — try the
+                    # kwarg form first so card-aware handlers (e.g. the
+                    # model-router's /route) can scope state per-session;
+                    # fall back to the legacy args-only form.
+                    try:
+                        session_id = None
+                        try:
+                            source_obj = event.source
+                            session_entry = self.session_store.get_or_create_session(source_obj)
+                            session_id = session_entry.session_id
+                        except Exception:
+                            session_id = None
+                        if session_id is not None:
+                            try:
+                                result = handler(user_args, session_id=session_id)
+                            except TypeError:
+                                result = handler(user_args)
+                        else:
+                            result = handler(user_args)
+                    except Exception as inner:
+                        logger.exception(
+                            "Plugin '%s' command '/%s' handler raised",
+                            plugin_entry.get("plugin", "?"),
+                            command,
+                        )
+                        return f"✗ Command failed: {inner}"
                     if asyncio.iscoroutine(result):
                         result = await result
+
+                    if result is None:
+                        return None
+
+                    # Card-aware dispatch: if the plugin opted in via
+                    # returns_card=True (or happens to return a dict shaped
+                    # like an InfoCard), route through adapter.send_info_card
+                    # and return None so the outer text-send path doesn't
+                    # duplicate the message.
+                    if returns_card_hint or isinstance(result, dict):
+                        try:
+                            from gateway.cards import is_card, render_card_as_text
+                        except Exception:
+                            is_card = lambda _v: False  # noqa: E731
+                            render_card_as_text = None
+
+                        if is_card(result):
+                            source_obj = event.source
+                            adapter = self.adapters.get(source_obj.platform)
+                            metadata = (
+                                {"thread_id": source_obj.thread_id}
+                                if getattr(source_obj, "thread_id", None)
+                                else None
+                            )
+                            if adapter is not None and hasattr(adapter, "send_info_card"):
+                                try:
+                                    sent = await adapter.send_info_card(
+                                        chat_id=source_obj.chat_id,
+                                        card=result,
+                                        metadata=metadata,
+                                    )
+                                    if getattr(sent, "success", False):
+                                        return None
+                                except Exception:
+                                    logger.exception(
+                                        "send_info_card failed for plugin '%s' "
+                                        "command '/%s' — falling back to text",
+                                        plugin_entry.get("plugin", "?"),
+                                        command,
+                                    )
+                            if render_card_as_text is not None:
+                                return render_card_as_text(result)
+                            return str(result)
+
                     return str(result) if result else None
             except Exception as e:
                 logger.debug("Plugin command dispatch failed (non-fatal): %s", e)
@@ -7865,6 +7941,7 @@ class GatewayRunner:
                 await _flush_buffer()
 
                 # Send final status
+                exit_code = 1
                 try:
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
@@ -10726,79 +10803,6 @@ class GatewayRunner:
         
         return response
 
-
-    async def _handle_route_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /route command — delegate to the model-router plugin.
-
-        The full handler logic lives in
-        ``~/.hermes/plugins/model-router/__init__.py`` and is invoked through
-        the plugin manager's ``handle_route_command`` hook. This dispatcher
-        only resolves the active session, forwards args + session_id, and
-        falls back to a friendly message if the plugin isn't loaded.
-
-        The plugin hook may return either a plain string (legacy) or a
-        structured InfoCard dict. When a card is returned, the response is
-        sent directly via ``adapter.send_info_card`` (Discord embed, etc.)
-        and this method returns ``None`` so the outer message-send path
-        doesn't duplicate the output as text.
-        """
-        args = event.get_command_args().strip().lower()
-
-        # Get session info
-        source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        session_id = session_entry.session_id
-
-        try:
-            from hermes_cli.plugins import get_plugin_manager
-            mgr = get_plugin_manager()
-            results = mgr.invoke_hook(
-                "handle_route_command",
-                args=args,
-                session_id=session_id,
-            )
-        except Exception as e:
-            logger.exception("Failed to dispatch /route command via plugin hook")
-            return f"🔀 ✗ Routing command failed: {str(e)}"
-
-        if not results:
-            return (
-                "🔀 ✗ Model router plugin is not loaded. "
-                "Add `model-router` to `plugins.enabled` in ~/.hermes/config.yaml "
-                "and restart the gateway."
-            )
-
-        response = results[0]
-
-        # Structured card return — send via adapter's card renderer and
-        # suppress the outer text send so the embed stands alone.
-        try:
-            from gateway.cards import is_card, render_card_as_text
-        except Exception:
-            is_card = lambda _v: False  # noqa: E731
-            render_card_as_text = None
-
-        if is_card(response):
-            adapter = self.adapters.get(source.platform)
-            metadata = {"thread_id": source.thread_id} if source.thread_id else None
-            if adapter is not None and hasattr(adapter, "send_info_card"):
-                try:
-                    result = await adapter.send_info_card(
-                        chat_id=source.chat_id,
-                        card=response,
-                        metadata=metadata,
-                    )
-                    if getattr(result, "success", False):
-                        return None  # Adapter sent the card natively.
-                except Exception:
-                    logger.exception("send_info_card failed — falling back to text")
-            # Adapter missing / failed — fall back to text representation.
-            if render_card_as_text is not None:
-                return render_card_as_text(response)
-            return str(response)
-
-        # Plain string response — legacy path.
-        return response
 
     async def _handle_bench_command(self, event: MessageEvent) -> str:
         """Handle /bench command - run benchmark harness."""

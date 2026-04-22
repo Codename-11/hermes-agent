@@ -72,10 +72,11 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize",
     "on_session_reset",
     "subagent_stop",
-    # Plugin-owned slash command handlers. Each callback receives
-    # ``(args: str, session_id: str)`` and returns a string response (or
-    # ``None`` to defer). Used by gateway dispatchers to delegate command
-    # logic to the owning plugin instead of hardcoding it in run.py.
+    # DEPRECATED: third-party plugins may still register this hook, so
+    # the surface remains valid. First-party ``/route`` dispatch now
+    # goes through ``register_command`` with the CommandDef-equivalent
+    # kwargs (args_hint, subcommands, returns_card, ...). New plugins
+    # should prefer register_command over this hook.
     "handle_route_command",
 }
 
@@ -269,17 +270,44 @@ class PluginContext:
         name: str,
         handler: Callable,
         description: str = "",
+        *,
+        args_hint: str | None = None,
+        subcommands: tuple[str, ...] | None = None,
+        category: str = "Plugin",
+        gateway_only: bool = False,
+        cli_only: bool = False,
+        aliases: tuple[str, ...] = (),
+        returns_card: bool = False,
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
-        The handler signature is ``fn(raw_args: str) -> str | None``.
-        It may also be an async callable — the gateway dispatch handles both.
+        The handler signature is ``fn(raw_args: str) -> str | None`` or
+        ``fn(raw_args: str) -> dict`` when ``returns_card=True``. It may also
+        be an async callable — the gateway dispatch handles both.
 
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
         terminal commands), this registers in-session slash commands that users
         invoke during a conversation.
 
-        Names conflicting with built-in commands are rejected with a warning.
+        The additional keyword-only arguments give the plugin command the same
+        first-class surface as a static :class:`~hermes_cli.commands.CommandDef`:
+
+        ``args_hint``       Placeholder shown in ``/help`` output,
+                            e.g. ``"[on|off|status]"``.
+        ``subcommands``     Tab-completion / menu-enumeration list.
+        ``category``        Section header used by ``/help`` grouping.
+        ``gateway_only``    Hide from CLI help, show in gateway/messaging.
+        ``cli_only``        Hide from gateway surfaces; CLI-only.
+        ``aliases``         Additional resolvable names for the same handler.
+        ``returns_card``    Handler may return a ``dict`` matching the
+                            InfoCard schema (see ``gateway/cards.py``); the
+                            gateway dispatcher detects the dict and sends it
+                            via ``adapter.send_info_card`` instead of text.
+
+        Names conflicting with built-in commands are rejected with a warning,
+        and a best-effort synthetic :class:`CommandDef` is appended to the
+        global command registry so help menus, Telegram autocomplete, and
+        CLI tab-completion all surface the command automatically.
         """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
@@ -289,16 +317,27 @@ class PluginContext:
             )
             return
 
-        # Reject if it conflicts with a built-in command
+        clean_aliases = tuple(
+            a.lower().strip().lstrip("/").replace(" ", "-")
+            for a in aliases
+            if a and a.strip()
+        )
+
+        # Reject if it conflicts with a built-in command (checks primary name
+        # and every alias). Uses resolve_command which walks the live
+        # _COMMAND_LOOKUP, so previously-registered plugin CommandDefs also
+        # count as collisions — belt-and-suspenders for plugins that race on
+        # the same name.
         try:
             from hermes_cli.commands import resolve_command
-            if resolve_command(clean) is not None:
-                logger.warning(
-                    "Plugin '%s' tried to register command '/%s' which conflicts "
-                    "with a built-in command. Skipping.",
-                    self.manifest.name, clean,
-                )
-                return
+            for check in (clean, *clean_aliases):
+                if resolve_command(check) is not None:
+                    logger.warning(
+                        "Plugin '%s' tried to register command '/%s' which conflicts "
+                        "with a built-in command. Skipping.",
+                        self.manifest.name, check,
+                    )
+                    return
         except Exception:
             pass  # If commands module isn't available, skip the check
 
@@ -306,7 +345,46 @@ class PluginContext:
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
+            "args_hint": args_hint,
+            "subcommands": tuple(subcommands) if subcommands else (),
+            "category": category,
+            "gateway_only": bool(gateway_only),
+            "cli_only": bool(cli_only),
+            "aliases": clean_aliases,
+            "returns_card": bool(returns_card),
         }
+
+        # Synthesize a CommandDef so the global command registry surfaces the
+        # plugin command in /help, Telegram autocomplete, CLI tab-completion,
+        # etc. — parity with hand-written CommandDefs.
+        try:
+            from hermes_cli.commands import CommandDef, register_plugin_command_def
+            cmd_def = CommandDef(
+                name=clean,
+                description=description or "Plugin command",
+                category=category,
+                aliases=clean_aliases,
+                args_hint=args_hint or "",
+                subcommands=tuple(subcommands) if subcommands else (),
+                cli_only=bool(cli_only),
+                gateway_only=bool(gateway_only),
+            )
+            if not register_plugin_command_def(cmd_def):
+                logger.warning(
+                    "Plugin '%s' command '/%s' could not be added to the "
+                    "global command registry (name/alias collision).",
+                    self.manifest.name, clean,
+                )
+        except Exception:
+            # Commands module missing or broken — plugin dispatch still works
+            # via _plugin_commands, we just lose the help-menu surface.
+            logger.debug(
+                "Failed to register synthetic CommandDef for plugin '%s' "
+                "command '/%s'",
+                self.manifest.name, clean,
+                exc_info=True,
+            )
+
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
     # -- tool dispatch -------------------------------------------------------
@@ -896,6 +974,21 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_command_entry(name: str) -> Optional[Dict[str, Any]]:
+    """Return the full registry entry for a plugin-registered slash command.
+
+    The entry mirrors the keyword args passed to ``register_command`` —
+    handler, description, plugin name, returns_card, and the CommandDef
+    metadata (args_hint, subcommands, category, aliases, gateway_only,
+    cli_only). Returns ``None`` when no plugin has registered the name.
+
+    Used by the gateway dispatcher so it can introspect ``returns_card``
+    and route handler output through ``adapter.send_info_card`` when
+    appropriate.
+    """
+    return _ensure_plugins_discovered()._plugin_commands.get(name)
 
 
 def get_plugin_commands() -> Dict[str, dict]:
