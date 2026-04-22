@@ -1,5 +1,37 @@
 # Hermes Agent — Dev Log
 
+## 2026-04-21 — Upstream sync (166 commits), pipeline TUI, agent-readable change brief
+
+### Summary
+Merged 166 upstream commits into `axiom`. The merge conflicted on `gateway/platforms/api_server.py` — upstream `1010e5fa` hoisted cron-function imports to module scope; our `aea9f5f4` had kept them class-scoped with `staticmethod()` wrappers to fix descriptor binding. Took upstream's approach (all our call sites already referenced module-level names, so the class-level block was redundant). Pushed as `64aa5d93 merge: upstream sync (166 commits)`.
+
+Then reworked the update UX in two follow-up commits (`cb952db6`, `c76f2407`) after the operator flagged that the existing flow gave a stash ref + paths but nothing about *what changed* — neither to the terminal nor back to Discord when `/update` triggered via the gateway.
+
+### What changed
+- Resolved `gateway/platforms/api_server.py` conflict: dropped our class-level cron import block in favor of upstream's module-scope version. No behavioral change — all call sites were already `_cron_list(...)` not `self._cron_list(...)`.
+- Added `hermes_cli/update_ui.py` with a `Pipeline` class that renders `⠋ fetch upstream | · sync main | · merge → axiom` on one animated line (braille spinner on active phase, `|` separators, `✓`/`✗` glyphs). Falls back to plain per-phase prints on non-TTY.
+- Rewired the deploy-branch phases in `_cmd_update_impl` to drive the pipeline instead of three separate prints.
+- Added `write_update_brief()` that walks `git log pre_update_head..HEAD`, categorizes commits by conventional-commit prefix, and writes a markdown brief to `~/.hermes/logs/update-briefs/brief-<ts>.md` + mirrors to `~/.hermes/logs/last-update-brief.md`.
+- Prints a compact digest (summary line + top 10 commits per category, no file list) inline after the merge so the operator *sees* the change set in the terminal.
+- In `--gateway` mode, also writes `~/.hermes/.update_brief_prompt.json`. Added a corresponding pickup in `gateway/run.py::_watch_update_progress`: on exit_code 0 it builds a synthetic `MessageEvent(internal=True)` via `_build_process_event_source({"session_key": session_key})` and calls `adapter.handle_message(...)`, so the agent posts a natural-language summary back in the channel where `/update` was invoked.
+- Preloaded `hermes_cli.update_ui` at the top of `_cmd_update_impl` so `_stash_local_changes_if_needed --include-untracked` can't sweep the module before the lazy import finds it — caught this on the first live run with the fresh untracked file.
+
+### Why the conflict pattern keeps recurring
+`axiom` carries ~40+ commits concentrated on hot upstream files (esp. `gateway/platforms/api_server.py`). Several are duplicate fixes upstream is independently also solving — this was the second time: the cron descriptor-binding fix (`aea9f5f4`) collided with upstream's refactor, and earlier the `skills_categories` drop (`d4e64290`) collided too. Mitigation: upstream the generic fixes as PRs (they stop being axiom-only hunks), isolate axiom-specific behavior in new files (`webapi/` never conflicts), and sync daily instead of weekly.
+
+### Commits
+- `64aa5d93` — merge: upstream sync (166 commits) — conflict resolution in api_server.py
+- `651d6a2c` — merge: upstream sync (1 commits) — minor follow-up after first push
+- `cb952db6` — feat(update): pipeline TUI + agent-readable changelog brief
+- `c76f2407` — feat(update): print brief digest inline + inject agent summary in-channel
+
+### Verification
+- `py_compile` on `hermes_cli/main.py`, `hermes_cli/update_ui.py`, `gateway/run.py` → OK
+- `hermes update` end-to-end run on axiom → "already up to date" path clean; earlier run with 1 new upstream commit produced a valid brief at `/home/bailey/.hermes/logs/last-update-brief.md`
+- Digest rendering verified against the full 150-commit 166-upstream merge range — prints correctly with capped per-category lists
+
+---
+
 ## 2026-04-13 — Upstream sync recovery, stash-conflict repair, and update UX fix
 
 ### Summary
