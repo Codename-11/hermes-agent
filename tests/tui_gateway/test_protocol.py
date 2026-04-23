@@ -279,6 +279,61 @@ def test_slash_exec_rejects_pending_input_commands(server, cmd):
     assert "pending-input command" in resp["error"]["message"]
 
 
+def test_slash_exec_rejects_gateway_only_plugin_commands(server):
+    """gateway-only plugin commands must fall through to command.dispatch."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    fake_entry = {
+        "handler": lambda *_a, **_k: {"title": "Card"},
+        "returns_card": True,
+    }
+
+    with patch("hermes_cli.commands.resolve_command", return_value=MagicMock(gateway_only=True)), \
+         patch("hermes_cli.plugins.get_plugin_command_entry", return_value=fake_entry):
+        resp = server.handle_request({
+            "id": "r_plugin_redirect",
+            "method": "slash.exec",
+            "params": {"command": "route status", "session_id": sid},
+        })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "gateway-only plugin command" in resp["error"]["message"]
+
+
+def test_command_dispatch_renders_plugin_cards_and_passes_session_id(server):
+    """First-class plugin commands with returns_card render cleanly in the TUI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    seen = {}
+
+    def _handler(raw_args, session_id=None):
+        seen["raw_args"] = raw_args
+        seen["session_id"] = session_id
+        return {
+            "title": "🔀 Model Routing Status",
+            "fields": [{"name": "Router", "value": "Enabled ✓", "inline": True}],
+            "footer": "/route status",
+        }
+
+    fake_entry = {"handler": _handler, "returns_card": True}
+
+    with patch("hermes_cli.plugins.get_plugin_command_entry", return_value=fake_entry):
+        resp = server.handle_request({
+            "id": "r_plugin_card",
+            "method": "command.dispatch",
+            "params": {"name": "route", "arg": "status", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "plugin"
+    assert result["output"].startswith("**🔀 Model Routing Status**")
+    assert "**Router:** Enabled ✓" in result["output"]
+    assert seen == {"raw_args": "status", "session_id": sid}
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

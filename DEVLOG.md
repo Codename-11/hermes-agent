@@ -1,5 +1,33 @@
 # Hermes Agent — Dev Log
 
+## 2026-04-23 — TUI plugin-command alignment for Model Router cards
+
+### Summary
+Audited the remaining router/plugin-command fork surface against upstream and found one real mismatch worth fixing immediately: the TUI still handled plugin commands via the older bare-handler path, so first-class plugin commands with `returns_card=True` (like Model Router's `/route status`) rendered as raw Python dicts instead of readable text. Updated the TUI to use full plugin command entries, pass `session_id`, render InfoCards through the shared card renderer, and redirect gateway-only plugin commands out of the slash worker and into `command.dispatch`.
+
+### What changed
+- `tui_gateway/server.py`
+  - `command.dispatch` now uses `get_plugin_command_entry(...)` instead of the legacy bare-handler lookup
+  - passes `session_id` to plugin handlers when available
+  - renders InfoCard dicts via `gateway.cards.render_card_as_text(...)`
+  - `slash.exec` now redirects gateway-only plugin commands registered through the plugin command surface (not just old hook-based handlers)
+- `tests/tui_gateway/test_protocol.py`
+  - added regression test for gateway-only plugin command redirect in `slash.exec`
+  - added regression test ensuring `command.dispatch` renders plugin cards cleanly and passes `session_id`
+
+### Verification
+- `pytest -q tests/tui_gateway/test_protocol.py tests/hermes_cli/test_plugins.py -o addopts=''` → 103 passed
+- Live smoke:
+  - `command.dispatch route status` now renders clean markdown text instead of a raw dict
+  - `slash.exec route status` now correctly returns 4018 so the TUI falls through to `command.dispatch`
+
+### Audit result
+- **Keep:** `resolve_model` hook in `run_agent.py` — still the core seam Model Router needs; upstream does not have it
+- **Keep:** plugin command metadata/card support in `hermes_cli/plugins.py` + `hermes_cli/commands.py` — still required for first-class `/route` UX
+- **Keep:** `gateway/cards.py` + Discord/base adapter support — necessary if we want rich `/route status` output without losing functionality
+- **Fixed, not removed:** stale TUI plugin-command path; now aligned with the newer first-class plugin command model
+- **Not touched:** unrelated `bench` and update-brief plumbing in `gateway/run.py`; outside this router-focused cleanup pass
+
 ## 2026-04-23 — Anthropic OAuth prompt-shim cleanup; keep Model Router intact
 
 ### Summary

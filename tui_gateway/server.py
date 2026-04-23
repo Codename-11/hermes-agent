@@ -2314,10 +2314,33 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 
     try:
-        from hermes_cli.plugins import get_plugin_command_handler
-        handler = get_plugin_command_handler(name)
-        if handler:
-            return _ok(rid, {"type": "plugin", "output": str(handler(arg) or "")})
+        from hermes_cli.plugins import get_plugin_command_entry
+        plugin_entry = get_plugin_command_entry(name)
+        if plugin_entry:
+            handler = plugin_entry["handler"]
+            returns_card_hint = bool(plugin_entry.get("returns_card"))
+
+            _session_key = session.get("session_key", "") if session else ""
+            if _session_key:
+                try:
+                    result = handler(arg, session_id=_session_key)
+                except TypeError:
+                    result = handler(arg)
+            else:
+                result = handler(arg)
+
+            if result is None:
+                return _ok(rid, {"type": "plugin", "output": ""})
+
+            if returns_card_hint or isinstance(result, dict):
+                try:
+                    from gateway.cards import is_card, render_card_as_text
+                    if is_card(result):
+                        result = render_card_as_text(result)
+                except Exception:
+                    pass
+
+            return _ok(rid, {"type": "plugin", "output": str(result)})
     except Exception:
         pass
 
@@ -2677,18 +2700,22 @@ def _(rid, params: dict) -> dict:
     if _cmd_base in _PENDING_INPUT_COMMANDS:
         return _err(rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}")
 
-    # Redirect gateway-only commands that have plugin hook handlers to command.dispatch.
-    # These commands are not handled by the slash worker (HermesCLI.process_command) —
-    # the CLI would print "Unknown command" instead of executing them.  The hook-based
-    # handler (handle_<name>_command) is invoked in command.dispatch instead.
+    # Redirect gateway-only plugin commands to command.dispatch.
+    # These commands are not handled correctly by the slash worker
+    # (HermesCLI.process_command) because they belong to the plugin command
+    # surface, not the built-in CLI slash-command path.
     try:
         from hermes_cli.commands import resolve_command as _rc
-        _cd = _rc(_cmd_base)
+        from hermes_cli.plugins import get_plugin_command_entry, get_plugin_manager as _gpm
+
+        _cmd_norm = _cmd_base.replace("_", "-")
+        _cd = _rc(_cmd_norm)
         if _cd is not None and _cd.gateway_only:
-            from hermes_cli.plugins import get_plugin_manager as _gpm
+            if get_plugin_command_entry(_cmd_norm) is not None:
+                return _err(rid, 4018, f"gateway-only plugin command: use command.dispatch for /{_cmd_norm}")
             _mgr = _gpm()
-            if _mgr._hooks.get(f"handle_{_cmd_base}_command"):
-                return _err(rid, 4018, f"gateway-only plugin command: use command.dispatch for /{_cmd_base}")
+            if _mgr._hooks.get(f"handle_{_cmd_norm}_command"):
+                return _err(rid, 4018, f"gateway-only plugin command: use command.dispatch for /{_cmd_norm}")
     except Exception:
         pass
 
