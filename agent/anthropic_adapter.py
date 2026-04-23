@@ -1659,23 +1659,18 @@ def build_anthropic_kwargs(
     # ── OAuth: Claude Code identity + billing fingerprint ────────────
     if oauth_prompt_shim:
         oauth_version = _get_claude_code_version()
+        system = [
+            {"type": "text", "text": _build_oauth_billing_header(anthropic_messages, oauth_version)},
+            {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX},
+        ]
 
-        # Prepend <system-reminder> FIRST so the billing header signature
-        # (sha256 over positions 4/7/20 of first user message) is computed
-        # against the final wire text Anthropic will see.  If we sign the
-        # pre-prepend text, server-side verification fails and the request
-        # falls through to the extra-usage billing pool instead of the
-        # standard Max subscription allocation.
+        # Move non-Claude-Code system prompt text into the first user message as
+        # literal <system-reminder> tags inside an ordinary text block.
         if oauth_system_content:
             _prepend_oauth_reminders(
                 anthropic_messages,
                 _sanitize_oauth_reminders(oauth_system_content),
             )
-
-        system = [
-            {"type": "text", "text": _build_oauth_billing_header(anthropic_messages, oauth_version)},
-            {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX},
-        ]
 
         if anthropic_tools:
             for tool in anthropic_tools:
