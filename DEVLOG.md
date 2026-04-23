@@ -1,5 +1,34 @@
 # Hermes Agent — Dev Log
 
+## 2026-04-23 — Merge `main` into `axiom` after upstream sync (14 commits)
+
+### Summary
+Resolved the failed `hermes update` merge manually after `main` advanced to `ce089169` from upstream and `axiom` still carried the local router/plugin/TUI fork surface. Conflicts landed in three expected hotspots: `agent/anthropic_adapter.py`, `hermes_cli/plugins.py`, and `tui_gateway/server.py`. Resolution strategy was "take upstream improvements, keep current axiom behavior" — especially for Model Router and TUI plugin-command handling.
+
+### Conflict resolution
+- `agent/anthropic_adapter.py`
+  - kept our mutation-aware thinking-signature stripping for direct Anthropic
+  - kept upstream's newer Kimi `/coding` special-case branch
+  - combined them so Kimi handling wins first, then the third-party/non-latest/mutated stripping logic applies everywhere else
+- `hermes_cli/plugins.py`
+  - kept the richer axiom plugin command surface (`subcommands`, `category`, `gateway_only`, `cli_only`, `aliases`, `returns_card`)
+  - kept synthetic `CommandDef` registration into the global command registry
+  - absorbed upstream's `args_hint` normalization/adapter-facing behavior into the merged docstring + stored value
+- `tui_gateway/server.py`
+  - kept the newer first-class plugin command path via `get_plugin_command_entry(...)`
+  - kept TUI card rendering + `session_id` passing
+  - kept the legacy hook fallback for compatibility
+  - dropped the stale upstream bare-handler branch that would have regressed `/route status` back to raw dict output in the TUI
+
+### Verification
+- `python -m py_compile agent/anthropic_adapter.py hermes_cli/plugins.py tui_gateway/server.py run_agent.py gateway/run.py hermes_cli/commands.py` → OK
+- `pytest -q tests/agent/test_anthropic_adapter.py tests/hermes_cli/test_plugins.py tests/tui_gateway/test_protocol.py -o addopts=''` → 244 passed
+
+### Result
+- `main` merged into `axiom`
+- upstream changes from the 14-commit sync are present
+- current Model Router / plugin-command / TUI card behavior preserved
+
 ## 2026-04-23 — TUI plugin-command alignment for Model Router cards
 
 ### Summary
