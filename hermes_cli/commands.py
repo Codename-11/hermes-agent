@@ -106,6 +106,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--provider name] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
+    CommandDef("auth", "Show the active auth path and runtime auth status", "Configuration"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info"),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
@@ -321,6 +322,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
     {
         "agents",
         "approve",
+        "auth",
         "background",
         "commands",
         "deny",

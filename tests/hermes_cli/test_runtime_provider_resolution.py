@@ -93,6 +93,19 @@ def test_resolve_runtime_provider_anthropic_explicit_override_skips_pool(monkeyp
     assert resolved.get("credential_pool") is None
 
 
+def test_resolve_runtime_provider_anthropic_marks_oauth_source(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: type("P", (), {"has_credentials": lambda self: False})())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "anthropic"})
+    monkeypatch.setattr("agent.anthropic_adapter.resolve_anthropic_token", lambda: "eyJ.oauth-token")
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["source"] == "oauth"
+    assert resolved["api_mode"] == "anthropic_messages"
+
+
 def test_resolve_runtime_provider_falls_back_when_pool_empty(monkeypatch):
     class _Pool:
         def has_credentials(self):

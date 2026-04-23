@@ -3378,6 +3378,8 @@ class GatewayRunner:
                     return await self._handle_commands_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "auth":
+                    return await self._handle_auth_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
 
@@ -3524,6 +3526,9 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
+
+        if canonical == "auth":
+            return await self._handle_auth_command(event)
         
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -5803,6 +5808,53 @@ class GatewayRunner:
         lines.append("Switch: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
+
+    async def _handle_auth_command(self, event: MessageEvent) -> str:
+        """Handle /auth command - show the active auth path and shim state."""
+        from hermes_cli.runtime_provider import (
+            build_auth_status_snapshot,
+            format_auth_status_snapshot,
+            resolve_runtime_provider,
+            format_runtime_provider_error,
+        )
+
+        source = getattr(event, "source", None)
+        session_key = None
+        if source is not None:
+            try:
+                session_key = self._session_key_for_source(source)
+            except Exception:
+                session_key = None
+
+        running_agents = getattr(self, "_running_agents", {}) or {}
+        agent = running_agents.get(session_key) if session_key else None
+        if agent is _AGENT_PENDING_SENTINEL:
+            agent = None
+
+        runtime = {}
+        needs_runtime_lookup = not (
+            getattr(agent, "_provider_source", None)
+            or getattr(agent, "_is_anthropic_oauth", False)
+        )
+        if needs_runtime_lookup:
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+                )
+            except Exception as exc:
+                if agent is None:
+                    return f"Auth status unavailable: {format_runtime_provider_error(exc)}"
+
+        snapshot = build_auth_status_snapshot(
+            provider=getattr(agent, "provider", None) or runtime.get("provider") or getattr(self, "_provider", None),
+            source=getattr(agent, "_provider_source", None) or runtime.get("source"),
+            base_url=getattr(agent, "base_url", None) or runtime.get("base_url") or getattr(self, "_base_url", None),
+            model=getattr(agent, "model", None) or runtime.get("model") or getattr(self, "_model", None),
+            api_mode=getattr(agent, "api_mode", None) or runtime.get("api_mode"),
+            api_key=getattr(agent, "api_key", None) or runtime.get("api_key"),
+            is_anthropic_oauth=getattr(agent, "_is_anthropic_oauth", None),
+        )
+        return format_auth_status_snapshot(snapshot, markdown=True)
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""

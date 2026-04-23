@@ -2089,6 +2089,25 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    def _get_auth_status_label(self) -> str:
+        """Return a compact runtime auth label for startup/status UI."""
+        agent = getattr(self, "agent", None)
+        try:
+            from hermes_cli.runtime_provider import build_auth_status_snapshot
+
+            snapshot = build_auth_status_snapshot(
+                provider=getattr(agent, "provider", None) or getattr(self, "provider", None),
+                source=getattr(agent, "_provider_source", None) or getattr(self, "_provider_source", None),
+                base_url=getattr(agent, "base_url", None) or getattr(self, "base_url", None),
+                model=getattr(agent, "model", None) or getattr(self, "model", None),
+                api_mode=getattr(agent, "api_mode", None) or getattr(self, "api_mode", None),
+                api_key=getattr(agent, "api_key", None) or getattr(self, "api_key", None),
+                is_anthropic_oauth=getattr(agent, "_is_anthropic_oauth", None),
+            )
+            return str(snapshot.get("auth_label") or "")
+        except Exception:
+            return ""
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -5298,6 +5317,52 @@ class HermesCLI:
         except Exception:
             return False
 
+    def _show_auth_status(self):
+        """Show the active runtime auth path for this CLI session."""
+        from hermes_cli.runtime_provider import (
+            build_auth_status_snapshot,
+            format_auth_status_snapshot,
+            resolve_runtime_provider,
+            format_runtime_provider_error,
+        )
+
+        agent = getattr(self, "agent", None)
+        source = getattr(agent, "_provider_source", None) or getattr(self, "_provider_source", None)
+        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+        model = getattr(agent, "model", None) or getattr(self, "model", None)
+        api_mode = getattr(agent, "api_mode", None) or getattr(self, "api_mode", None)
+        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+        is_anthropic_oauth = getattr(agent, "_is_anthropic_oauth", None)
+
+        if not source:
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=self.requested_provider,
+                    explicit_api_key=self._explicit_api_key,
+                    explicit_base_url=self._explicit_base_url,
+                )
+                provider = runtime.get("provider") or provider
+                source = runtime.get("source") or source
+                base_url = runtime.get("base_url") or base_url
+                model = model or self.model
+                api_mode = runtime.get("api_mode") or api_mode
+                api_key = runtime.get("api_key") or api_key
+            except Exception as exc:
+                self._console_print(f"[red]Auth status unavailable:[/] {format_runtime_provider_error(exc)}")
+                return
+
+        snapshot = build_auth_status_snapshot(
+            provider=provider,
+            source=source,
+            base_url=base_url,
+            model=model,
+            api_mode=api_mode,
+            api_key=api_key,
+            is_anthropic_oauth=is_anthropic_oauth,
+        )
+        self._console_print(format_auth_status_snapshot(snapshot), markup=False, highlight=False)
+
     def _show_model_and_providers(self):
         """Show current model + provider and list all authenticated providers.
 
@@ -5948,6 +6013,8 @@ class HermesCLI:
             self._handle_model_switch(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
+        elif canonical == "auth":
+            self._show_auth_status()
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 
