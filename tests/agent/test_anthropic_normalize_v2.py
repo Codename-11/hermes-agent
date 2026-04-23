@@ -193,27 +193,17 @@ class TestStopReasons:
 
 
 class TestStripToolPrefix:
-    """Verify Claude Code-style tool-name normalization works identically."""
+    """Verify mcp_ prefix stripping works identically."""
 
-    def test_pascalcase_prefix_stripped(self):
-        resp = _response(
-            [_tool_use_block("toolu_1", "mcp_Terminal", {"cmd": "ls"})],
-            stop_reason="tool_use",
-        )
-        v1_msg, _ = normalize_anthropic_response(resp, strip_tool_prefix=True)
-        v2 = normalize_anthropic_response_v2(resp, strip_tool_prefix=True)
-        assert v1_msg.tool_calls[0].function.name == "terminal"
-        assert v2.tool_calls[0].name == "terminal"
-
-    def test_existing_mcp_prefix_kept_when_stripping(self):
+    def test_prefix_stripped(self):
         resp = _response(
             [_tool_use_block("toolu_1", "mcp_terminal", {"cmd": "ls"})],
             stop_reason="tool_use",
         )
         v1_msg, _ = normalize_anthropic_response(resp, strip_tool_prefix=True)
         v2 = normalize_anthropic_response_v2(resp, strip_tool_prefix=True)
-        assert v1_msg.tool_calls[0].function.name == "mcp_terminal"
-        assert v2.tool_calls[0].name == "mcp_terminal"
+        assert v1_msg.tool_calls[0].function.name == "terminal"
+        assert v2.tool_calls[0].name == "terminal"
 
     def test_prefix_kept(self):
         resp = _response(

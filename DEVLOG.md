@@ -1,51 +1,5 @@
 # Hermes Agent — Dev Log
 
-## 2026-04-22 — Claude Max OAuth "credit balance too low" fix
-
-### Problem
-Hermes routing via Claude Code OAuth token (MAX subscription) failed with:
-`HTTP 400: Your credit balance is too low to access the Anthropic API`
-Root cause: Anthropic counts the `system` param against Max subscription token budget.
-Hermes verbose prompts (Victor persona + tools + memory) exceeded that budget, routing
-to extra-usage pool → depleted → 400.
-
-### Fix
-`agent/anthropic_adapter.py` — `build_anthropic_kwargs(is_oauth=True)`:
-- `_extract_system_for_oauth()`: captures system content BEFORE `convert_messages_to_anthropic()` strips it
-- `_sanitize_oauth_reminders()`: sanitizes product names and returns reminder text fragments
-- OAuth path now keeps `system` limited to Claude Code-required entries: signed `x-anthropic-billing-header` + Claude Code identity block
-- Remaining system text is prepended to the first user message as normal Anthropic `text` content whose `text` contains literal `<system-reminder>...</system-reminder>` tags
-- Important implementation detail: Anthropic rejects typed `{ "type": "system_reminder" }` blocks; the workaround only works with literal tag text inside a normal `text` block
-- Added runtime helpers `anthropic_oauth_prompt_shim_enabled()` + `anthropic_oauth_prompt_shim_label()`
-- Added Claude Code fingerprint parity from `kristianvast/hermes-claude-auth`: `sdk-cli` billing header, extra OAuth betas, `x-stainless-*` headers, `anthropic-dangerous-direct-browser-access`, and `extra_query.beta=true`
-- OAuth tool naming now matches Claude Code for built-ins (`bash` → `mcp_Bash`) while preserving round-trip identity for existing Hermes `mcp_*` tools
-- Community upstream: refs NousResearch/hermes-agent#10575, #10576 (not yet merged); local reference: `kristianvast/hermes-claude-auth`
-
-### UI visibility
-Added explicit runtime status when the shim is active:
-- CLI full startup banner shows `Auth: Anthropic OAuth + prompt shim`
-- CLI compact startup status line appends the same label
-- CLI live status bar shows the label on wide terminals
-- TUI session panel shows an `Auth` section with the label
-- TUI live status bar shows the label on wide terminals
-- New `/auth` command (CLI + gateway) reports the active auth source, model, API mode, base URL, and whether the Anthropic OAuth prompt shim is active
-
-### Verification
-- `python3 -m py_compile scripts/test_anthropic_oauth_smoke.py` → OK
-- `pytest -q tests/agent/test_anthropic_adapter.py tests/agent/test_auxiliary_client_anthropic_oauth.py tests/agent/test_anthropic_normalize_v2.py tests/gateway/test_auth_command.py tests/run_agent/test_anthropic_third_party_oauth_guard.py` → 170 passed
-- `hermes auth reset anthropic` → cleared exhausted Claude Code OAuth status so the fixed path becomes primary again
-- Canonical smoke test: `source venv/bin/activate && python3 scripts/test_anthropic_oauth_smoke.py` → PASS
-- Direct OAuth smoke request via `build_anthropic_kwargs(..., is_oauth=True)` + `build_anthropic_client(...)` → success
-- Direct OAuth smoke usage markers: `service_tier=standard`, `inference_geo=not_available`
-- End-to-end CLI smoke: `hermes chat -q 'Reply with exactly: AUTH TEST OK' --provider anthropic -m claude-haiku-4-5 -Q` → `AUTH TEST OK`
-- Confirmed wire shape: `system` contains billing header + Claude Code identity; first user message contains literal `<system-reminder>` tag text in a normal `text` block
-
-### Files changed
-- `agent/anthropic_adapter.py`: shim helpers + OAuth prompt transform
-- `cli.py`, `hermes_cli/banner.py`: CLI startup/status visibility
-- `tui_gateway/server.py`, `ui-tui/src/components/*`, `ui-tui/src/types.ts`: TUI session/status visibility
-- Targeted tests for adapter, banner, CLI status bar, TUI session info
-
 ## 2026-04-21 (evening) — hermes version preview + multi-profile gateway restart
 
 ### Summary

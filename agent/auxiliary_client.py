@@ -568,18 +568,13 @@ class AsyncCodexAuxiliaryClient:
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str, is_oauth: bool = False, base_url: Optional[str] = None):
+    def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
         self._client = real_client
         self._model = model
         self._is_oauth = is_oauth
-        self._base_url = str(base_url or "").strip() or None
 
     def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import (
-            anthropic_oauth_prompt_shim_enabled,
-            build_anthropic_kwargs,
-            normalize_anthropic_response,
-        )
+        from agent.anthropic_adapter import build_anthropic_kwargs, normalize_anthropic_response
 
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
@@ -587,11 +582,6 @@ class _AnthropicCompletionsAdapter:
         tool_choice = kwargs.get("tool_choice")
         max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 2000
         temperature = kwargs.get("temperature")
-        native_oauth = anthropic_oauth_prompt_shim_enabled(
-            "anthropic",
-            is_oauth=self._is_oauth,
-            base_url=self._base_url,
-        )
 
         normalized_tool_choice = None
         if isinstance(tool_choice, str):
@@ -611,23 +601,17 @@ class _AnthropicCompletionsAdapter:
             reasoning_config=None,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
-            base_url=self._base_url,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
-        # temperature for models that still accept it. OAuth Claude Code routing
-        # is stricter on adaptive-thinking 4.6/4.7 models too — a non-default
-        # temperature there triggers a 400, so omit it entirely.
+        # temperature for models that still accept it. build_anthropic_kwargs
+        # additionally strips these keys as a safety net — keep both layers.
         if temperature is not None:
-            from agent.anthropic_adapter import _forbids_sampling_params, _supports_adaptive_thinking
+            from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
-                if not (native_oauth and _supports_adaptive_thinking(model) and temperature not in (1, 1.0)):
-                    anthropic_kwargs["temperature"] = temperature
+                anthropic_kwargs["temperature"] = temperature
 
         response = self._client.messages.create(**anthropic_kwargs)
-        assistant_message, finish_reason = normalize_anthropic_response(
-            response,
-            strip_tool_prefix=native_oauth,
-        )
+        assistant_message, finish_reason = normalize_anthropic_response(response)
 
         usage = None
         if hasattr(response, "usage") and response.usage:
@@ -662,7 +646,7 @@ class AnthropicAuxiliaryClient:
 
     def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, base_url=base_url)
+        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url

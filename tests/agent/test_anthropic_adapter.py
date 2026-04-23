@@ -9,14 +9,10 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
-    _CLAUDE_CODE_VERSION_FALLBACK,
-    _detect_claude_code_version,
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
-    anthropic_oauth_prompt_shim_enabled,
-    anthropic_oauth_prompt_shim_label,
     build_anthropic_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
@@ -62,22 +58,15 @@ class TestIsOAuthToken:
 class TestBuildAnthropicClient:
     def test_setup_token_uses_auth_token(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-oat-test-token")
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert "auth_token" in kwargs
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "oauth-2025-04-20" in betas
             assert "claude-code-20250219" in betas
-            assert "prompt-caching-scope-2026-01-05" in betas
-            assert "advisor-tool-2026-03-01" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
             assert "api_key" not in kwargs
-
-    def test_detect_claude_code_version_falls_back_to_validator_compatible_build(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            assert _detect_claude_code_version() == _CLAUDE_CODE_VERSION_FALLBACK
-            assert _CLAUDE_CODE_VERSION_FALLBACK == "2.1.112"
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -934,134 +923,6 @@ class TestBuildAnthropicKwargs:
         assert kwargs["max_tokens"] == 4096
         assert "tools" not in kwargs
 
-    def test_oauth_path_moves_system_prompt_into_first_user_message(self):
-        messages = [
-            {"role": "system", "content": "You are Hermes Agent from Nous Research."},
-            {"role": "user", "content": "Hi"},
-        ]
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=messages,
-            tools=None,
-            max_tokens=4096,
-            reasoning_config=None,
-            is_oauth=True,
-        )
-        assert kwargs["system"][0]["text"].startswith("x-anthropic-billing-header: ")
-        assert "cc_entrypoint=sdk-cli;" in kwargs["system"][0]["text"]
-        assert kwargs["system"][1] == {
-            "type": "text",
-            "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-        }
-        content = kwargs["messages"][0]["content"]
-        assert isinstance(content, list)
-        assert content[0]["type"] == "text"
-        assert "<system-reminder>\nYou are Claude Code from Anthropic.\n</system-reminder>" in content[0]["text"]
-        assert content[0]["text"].endswith("Hi")
-        assert kwargs["extra_query"] == {"beta": "true"}
-        assert kwargs["extra_headers"]["anthropic-dangerous-direct-browser-access"] == "true"
-        assert kwargs["extra_headers"]["x-stainless-lang"] == "js"
-        assert kwargs["extra_headers"]["x-stainless-runtime"] == "node"
-
-    def test_oauth_path_synthesizes_first_user_message_when_none_exists(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=[{"role": "system", "content": "You are Hermes Agent."}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config=None,
-            is_oauth=True,
-        )
-        assert kwargs["system"][0]["text"].startswith("x-anthropic-billing-header: ")
-        assert kwargs["system"][1] == {
-            "type": "text",
-            "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-        }
-        assert kwargs["messages"] == [{
-            "role": "user",
-            "content": [{
-                "type": "text",
-                "text": "<system-reminder>\nYou are Claude Code.\n</system-reminder>",
-            }],
-        }]
-
-    def test_oauth_prompt_shim_state_helpers(self):
-        assert anthropic_oauth_prompt_shim_enabled("anthropic", is_oauth=True) is True
-        assert anthropic_oauth_prompt_shim_label("anthropic", is_oauth=True) == "Anthropic OAuth + prompt shim"
-        assert anthropic_oauth_prompt_shim_enabled("anthropic", is_oauth=False) is False
-        assert anthropic_oauth_prompt_shim_enabled(
-            "anthropic", is_oauth=True, base_url="https://api.minimax.io/anthropic"
-        ) is False
-        assert anthropic_oauth_prompt_shim_enabled("nous", is_oauth=True) is False
-
-    def test_oauth_path_rewrites_tool_names_and_specific_tool_choice(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=[
-                {"role": "user", "content": "Hi"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{"id": "tc_1", "function": {"name": "bash", "arguments": "{}"}}],
-                },
-                {"role": "tool", "tool_call_id": "tc_1", "content": "ok"},
-            ],
-            tools=[{
-                "type": "function",
-                "function": {
-                    "name": "bash",
-                    "description": "Run a shell command",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }],
-            max_tokens=4096,
-            reasoning_config=None,
-            tool_choice="bash",
-            is_oauth=True,
-        )
-        assert kwargs["tools"][0]["name"] == "mcp_Bash"
-        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp_Bash"}
-        assistant_tool_use = next(
-            block
-            for block in kwargs["messages"][1]["content"]
-            if block.get("type") == "tool_use"
-        )
-        assert assistant_tool_use["name"] == "mcp_Bash"
-
-    def test_oauth_path_preserves_existing_mcp_tool_names(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=[
-                {"role": "user", "content": "Hi"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{"id": "tc_1", "function": {"name": "mcp_test_fs_read", "arguments": "{}"}}],
-                },
-                {"role": "tool", "tool_call_id": "tc_1", "content": "ok"},
-            ],
-            tools=[{
-                "type": "function",
-                "function": {
-                    "name": "mcp_test_fs_read",
-                    "description": "Read from the test fs MCP tool",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }],
-            max_tokens=4096,
-            reasoning_config=None,
-            tool_choice="mcp_test_fs_read",
-            is_oauth=True,
-        )
-        assert kwargs["tools"][0]["name"] == "mcp_test_fs_read"
-        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp_test_fs_read"}
-        assistant_tool_use = next(
-            block
-            for block in kwargs["messages"][1]["content"]
-            if block.get("type") == "tool_use"
-        )
-        assert assistant_tool_use["name"] == "mcp_test_fs_read"
-
     def test_strips_anthropic_prefix(self):
         kwargs = build_anthropic_kwargs(
             model="anthropic/claude-sonnet-4-20250514",
@@ -1404,40 +1265,6 @@ class TestNormalizeResponse:
         assert len(msg.tool_calls) == 1
         assert msg.tool_calls[0].function.name == "search"
         assert json.loads(msg.tool_calls[0].function.arguments) == {"query": "test"}
-
-    def test_tool_use_response_unhooks_pascalcase_oauth_names(self):
-        blocks = [
-            SimpleNamespace(
-                type="tool_use",
-                id="tc_1",
-                name="mcp_Bash",
-                input={"cmd": "pwd"},
-            ),
-        ]
-        msg, reason = normalize_anthropic_response(
-            self._make_response(blocks, "tool_use"),
-            strip_tool_prefix=True,
-        )
-        assert reason == "tool_calls"
-        assert msg.tool_calls[0].function.name == "bash"
-        assert json.loads(msg.tool_calls[0].function.arguments) == {"cmd": "pwd"}
-
-    def test_tool_use_response_preserves_existing_mcp_names_when_stripping_oauth_prefix(self):
-        blocks = [
-            SimpleNamespace(
-                type="tool_use",
-                id="tc_1",
-                name="mcp_test_fs_read",
-                input={"path": "/tmp/example.txt"},
-            ),
-        ]
-        msg, reason = normalize_anthropic_response(
-            self._make_response(blocks, "tool_use"),
-            strip_tool_prefix=True,
-        )
-        assert reason == "tool_calls"
-        assert msg.tool_calls[0].function.name == "mcp_test_fs_read"
-        assert json.loads(msg.tool_calls[0].function.arguments) == {"path": "/tmp/example.txt"}
 
     def test_thinking_response(self):
         blocks = [

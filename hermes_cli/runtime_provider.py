@@ -148,102 +148,6 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
-def _looks_like_anthropic_oauth_token(token: Optional[str]) -> bool:
-    """Return True when the token format matches Anthropic OAuth/subscription auth."""
-    token = str(token or "").strip()
-    if not token:
-        return False
-    try:
-        from agent.anthropic_adapter import _is_oauth_token
-
-        return bool(_is_oauth_token(token))
-    except Exception:
-        if token.startswith("sk-ant-api"):
-            return False
-        return token.startswith("sk-ant-") or token.startswith("eyJ")
-
-
-def build_auth_status_snapshot(
-    *,
-    provider: Optional[str],
-    source: Optional[str] = None,
-    base_url: Optional[str] = None,
-    model: Optional[str] = None,
-    api_mode: Optional[str] = None,
-    api_key: Optional[str] = None,
-    is_anthropic_oauth: Optional[bool] = None,
-) -> Dict[str, Any]:
-    """Build a shared auth-status snapshot for CLI/gateway surfaces."""
-    normalized_provider = str(provider or "unknown").strip() or "unknown"
-    normalized_source = str(source or "").strip() or "unknown"
-    normalized_base_url = str(base_url or "").strip()
-    normalized_model = str(model or "").strip()
-    normalized_api_mode = str(api_mode or "").strip()
-
-    oauth_active = bool(is_anthropic_oauth)
-    if normalized_provider == "anthropic" and is_anthropic_oauth is None:
-        oauth_active = normalized_source == "oauth" or _looks_like_anthropic_oauth_token(api_key)
-
-    auth_label = ""
-    try:
-        from agent.anthropic_adapter import anthropic_oauth_prompt_shim_label
-
-        auth_label = anthropic_oauth_prompt_shim_label(
-            normalized_provider,
-            is_oauth=oauth_active,
-            base_url=normalized_base_url,
-        )
-    except Exception:
-        auth_label = ""
-
-    if normalized_provider == "anthropic" and oauth_active:
-        normalized_source = "oauth"
-
-    return {
-        "provider": normalized_provider,
-        "source": normalized_source,
-        "base_url": normalized_base_url,
-        "model": normalized_model,
-        "api_mode": normalized_api_mode,
-        "is_anthropic_oauth": oauth_active,
-        "auth_label": auth_label,
-    }
-
-
-def format_auth_status_snapshot(snapshot: Dict[str, Any], *, markdown: bool = False) -> str:
-    """Render a shared auth-status snapshot for CLI or gateway output."""
-    provider = str(snapshot.get("provider") or "unknown")
-    source = str(snapshot.get("source") or "unknown")
-    model = str(snapshot.get("model") or "").strip()
-    base_url = str(snapshot.get("base_url") or "").strip()
-    api_mode = str(snapshot.get("api_mode") or "").strip()
-    auth_label = str(snapshot.get("auth_label") or "").strip()
-
-    if markdown:
-        lines = ["🔐 **Auth Status**", "", f"**Provider:** `{provider}`", f"**Auth source:** `{source}`"]
-        if model:
-            lines.append(f"**Model:** `{model}`")
-        if api_mode:
-            lines.append(f"**API mode:** `{api_mode}`")
-        if base_url:
-            lines.append(f"**Base URL:** `{base_url}`")
-        if auth_label:
-            lines.append(f"**Status:** {auth_label}")
-        return "\n".join(lines)
-
-    lines = ["", "Auth Status", f"  Provider: {provider}", f"  Auth source: {source}"]
-    if model:
-        lines.append(f"  Model: {model}")
-    if api_mode:
-        lines.append(f"  API mode: {api_mode}")
-    if base_url:
-        lines.append(f"  Base URL: {base_url}")
-    if auth_label:
-        lines.append(f"  Status: {auth_label}")
-    lines.append("")
-    return "\n".join(lines)
-
-
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -974,13 +878,12 @@ def resolve_runtime_provider(
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or "https://api.anthropic.com"
-        source = "oauth" if _looks_like_anthropic_oauth_token(token) else "env"
         return {
             "provider": "anthropic",
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": token,
-            "source": source,
+            "source": "env",
             "requested_provider": requested_provider,
         }
 

@@ -11,16 +11,14 @@ Auth supports:
 """
 
 import copy
-import hashlib
 import json
 import logging
 import os
-import platform
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional, Tuple
 from utils import normalize_proxy_env_vars
 
 try:
@@ -167,25 +165,17 @@ _FAST_MODE_BETA = "fast-mode-2026-02-01"
 
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
-_OAUTH_ONLY_BETAS=[
+_OAUTH_ONLY_BETAS = [
     "claude-code-20250219",
     "oauth-2025-04-20",
-    "prompt-caching-scope-2026-01-05",
-    "advisor-tool-2026-03-01",
 ]
 
 # Claude Code identity — required for OAuth requests to be routed correctly.
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
 # The version must stay reasonably current — Anthropic rejects OAuth requests
 # when the spoofed user-agent version is too far behind the actual release.
-# 2.1.112 is the first Claude Code build whose request fingerprint matches the
-# validator changes Anthropic rolled out in mid-April 2026.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.112"
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
-_BILLING_SALT = "59cf53e54c78"
-_BILLING_ENTRYPOINT = "sdk-cli"
-_STAINLESS_PACKAGE_VERSION = "0.81.0"
-_STAINLESS_NODE_VERSION = "v22.11.0"
 
 
 def _detect_claude_code_version() -> str:
@@ -247,227 +237,6 @@ def _is_oauth_token(key: str) -> bool:
     if key.startswith("eyJ"):
         return True
     return False
-
-
-def _extract_system_for_oauth(messages: List[Dict]) -> Optional[List[Dict]]:
-    """Extract system content blocks from raw OpenAI-format messages.
-
-    Called BEFORE convert_messages_to_anthropic so we can capture the original
-    system content before it gets extracted into a separate field.
-    Returns a list of content blocks (all types, including <system-reminder>),
-    or None if no system message was found.
-    """
-    for m in messages:
-        if m.get("role") == "system":
-            content = m.get("content")
-            if isinstance(content, list):
-                return [p for p in content if isinstance(p, dict) and p.get("type") == "text"]
-            elif isinstance(content, str) and content:
-                return [{"type": "text", "text": content}]
-    return None
-
-
-def _extract_first_user_message_text(messages: List[Dict[str, Any]]) -> str:
-    """Return the first text payload from the first user message."""
-    for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text")
-                    if isinstance(text, str) and text:
-                        return text
-        return ""
-    return ""
-
-
-def _compute_oauth_billing_cch(message_text: str) -> str:
-    """Return Claude Code's 5-char content checksum for the first user message."""
-    return hashlib.sha256(message_text.encode("utf-8")).hexdigest()[:5]
-
-
-def _compute_oauth_billing_suffix(message_text: str, version: str) -> str:
-    """Return Claude Code's 3-char billing signature suffix."""
-    sampled = "".join(message_text[i] if i < len(message_text) else "0" for i in (4, 7, 20))
-    return hashlib.sha256(f"{_BILLING_SALT}{sampled}{version}".encode("utf-8")).hexdigest()[:3]
-
-
-def _build_oauth_billing_header(messages: List[Dict[str, Any]], version: str) -> str:
-    """Build the x-anthropic-billing-header system text for Claude Code OAuth."""
-    first_user_text = _extract_first_user_message_text(messages)
-    suffix = _compute_oauth_billing_suffix(first_user_text, version)
-    cch = _compute_oauth_billing_cch(first_user_text)
-    return (
-        "x-anthropic-billing-header: "
-        f"cc_version={version}.{suffix}; "
-        f"cc_entrypoint={_BILLING_ENTRYPOINT}; "
-        f"cch={cch};"
-    )
-
-
-def _sanitize_oauth_reminders(blocks: List[Dict]) -> List[str]:
-    """Return sanitized system texts for OAuth <system-reminder> injection."""
-    reminders: List[str] = []
-    for block in blocks:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            continue
-        text = block.get("text", "")
-        if not text:
-            continue
-        # Sanitize product name references
-        text = text.replace("Hermes Agent", "Claude Code")
-        text = text.replace("Hermes agent", "Claude Code")
-        text = text.replace("hermes-agent", "claude-code")
-        text = text.replace("Nous Research", "Anthropic")
-        text = text.replace("OpenClaw", "Claude Code")
-        text = text.strip()
-        if text:
-            reminders.append(text)
-    return reminders
-
-
-def _oauth_reminders_to_text(reminders: List[str]) -> str:
-    """Render sanitized reminder texts as literal Claude Code reminder tags."""
-    rendered = [f"<system-reminder>\n{text}\n</system-reminder>" for text in reminders if text]
-    return "\n\n".join(rendered)
-
-
-def _prepend_oauth_reminders(messages: List[Dict[str, Any]], reminders: List[str]) -> None:
-    """Prepend literal <system-reminder> text to the first user message."""
-    reminder_text = _oauth_reminders_to_text(reminders)
-    if not reminder_text:
-        return
-
-    for idx, message in enumerate(messages):
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-
-        content = message.get("content")
-        if isinstance(content, str):
-            combined = f"{reminder_text}\n\n{content}" if content else reminder_text
-            messages[idx] = {**message, "content": [{"type": "text", "text": combined}]}
-            return
-
-        if isinstance(content, list):
-            new_content = list(content)
-            for block_idx, block in enumerate(new_content):
-                if isinstance(block, dict) and block.get("type") == "text":
-                    existing = block.get("text") or ""
-                    combined = f"{reminder_text}\n\n{existing}" if existing else reminder_text
-                    new_content[block_idx] = {**block, "text": combined}
-                    messages[idx] = {**message, "content": new_content}
-                    return
-            new_content.insert(0, {"type": "text", "text": reminder_text})
-            messages[idx] = {**message, "content": new_content}
-            return
-
-        messages[idx] = {**message, "content": [{"type": "text", "text": reminder_text}]}
-        return
-
-    messages.insert(0, {"role": "user", "content": [{"type": "text", "text": reminder_text}]})
-
-
-def _pascalcase_mcp_name(name: str) -> str:
-    """Rewrite mcp_foo to Claude Code's mcp_Foo form."""
-    if not isinstance(name, str) or not name.startswith(_MCP_TOOL_PREFIX):
-        return name
-    suffix = name[len(_MCP_TOOL_PREFIX):]
-    if not suffix or not suffix[0].islower():
-        return name
-    return _MCP_TOOL_PREFIX + suffix[0].upper() + suffix[1:]
-
-
-def _oauth_tool_name(name: str) -> str:
-    """Apply Claude Code's OAuth tool naming convention."""
-    if not isinstance(name, str) or not name:
-        return name
-    if name.startswith(_MCP_TOOL_PREFIX):
-        return name
-    return _pascalcase_mcp_name(_MCP_TOOL_PREFIX + name)
-
-
-def _stainless_arch() -> str:
-    machine = (platform.machine() or "").lower()
-    if machine in ("x86_64", "amd64"):
-        return "x64"
-    if machine in ("arm64", "aarch64"):
-        return "arm64"
-    if machine in ("i386", "i686"):
-        return "ia32"
-    return machine or "unknown"
-
-
-def _stainless_os() -> str:
-    return {
-        "Darwin": "MacOS",
-        "Linux": "Linux",
-        "Windows": "Windows",
-    }.get(platform.system(), platform.system() or "Unknown")
-
-
-def _oauth_spoof_headers() -> Dict[str, str]:
-    """Headers that make Hermes OAuth requests match Claude Code's fingerprint."""
-    return {
-        "anthropic-dangerous-direct-browser-access": "true",
-        "x-stainless-arch": _stainless_arch(),
-        "x-stainless-lang": "js",
-        "x-stainless-os": _stainless_os(),
-        "x-stainless-package-version": _STAINLESS_PACKAGE_VERSION,
-        "x-stainless-retry-count": "0",
-        "x-stainless-runtime": "node",
-        "x-stainless-runtime-version": _STAINLESS_NODE_VERSION,
-        "x-stainless-timeout": "600",
-    }
-
-
-def _merge_oauth_transport_fingerprint(kwargs: Dict[str, Any]) -> None:
-    """Inject Claude Code's per-request headers and beta query flag."""
-    extra_headers = dict(_oauth_spoof_headers())
-    if isinstance(kwargs.get("extra_headers"), dict):
-        extra_headers.update(kwargs["extra_headers"])
-    kwargs["extra_headers"] = extra_headers
-
-    extra_query: Dict[str, Any] = {"beta": "true"}
-    if isinstance(kwargs.get("extra_query"), dict):
-        extra_query.update(kwargs["extra_query"])
-    kwargs["extra_query"] = extra_query
-
-
-def anthropic_oauth_prompt_shim_enabled(
-    provider: Optional[str],
-    *,
-    is_oauth: bool,
-    base_url: Optional[str] = None,
-) -> bool:
-    """True when the Anthropic OAuth prompt shim is active.
-
-    The shim only applies on native Anthropic OAuth/setup-token requests.
-    Third-party Anthropic-compatible endpoints use different auth/routing and do
-    not receive the system→<system-reminder> transform.
-    """
-    if str(provider or "").strip().lower() != "anthropic":
-        return False
-    if not is_oauth:
-        return False
-    if _requires_bearer_auth(base_url) or _is_third_party_anthropic_endpoint(base_url):
-        return False
-    return True
-
-
-def anthropic_oauth_prompt_shim_label(
-    provider: Optional[str],
-    *,
-    is_oauth: bool,
-    base_url: Optional[str] = None,
-) -> str:
-    """Human-readable label for the Anthropic OAuth prompt shim state."""
-    if anthropic_oauth_prompt_shim_enabled(provider, is_oauth=is_oauth, base_url=base_url):
-        return "Anthropic OAuth + prompt shim"
-    return ""
 
 
 def _normalize_base_url_text(base_url) -> str:
@@ -1597,19 +1366,6 @@ def build_anthropic_kwargs(
     Currently only supported on native Anthropic endpoints (not third-party
     compatible ones).
     """
-    # ── OAuth: extract system content BEFORE convert_messages strips it ─
-    # Anthropic counts the system param against Max subscription token budget,
-    # but Claude Code's literal <system-reminder> text in user messages routes
-    # differently. Only apply the shim on native Anthropic OAuth requests.
-    oauth_prompt_shim = anthropic_oauth_prompt_shim_enabled(
-        "anthropic",
-        is_oauth=is_oauth,
-        base_url=base_url,
-    )
-    oauth_system_content: Optional[List[Dict]] = None
-    if oauth_prompt_shim:
-        oauth_system_content = _extract_system_for_oauth(messages)
-
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
@@ -1625,33 +1381,45 @@ def build_anthropic_kwargs(
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
 
-    # ── OAuth: Claude Code identity + billing fingerprint ────────────
-    if oauth_prompt_shim:
-        oauth_version = _get_claude_code_version()
-        system = [
-            {"type": "text", "text": _build_oauth_billing_header(anthropic_messages, oauth_version)},
-            {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX},
-        ]
+    # ── OAuth: Claude Code identity ──────────────────────────────────
+    if is_oauth:
+        # 1. Prepend Claude Code system prompt identity
+        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        if isinstance(system, list):
+            system = [cc_block] + system
+        elif isinstance(system, str) and system:
+            system = [cc_block, {"type": "text", "text": system}]
+        else:
+            system = [cc_block]
 
-        # Move non-Claude-Code system prompt text into the first user message as
-        # literal <system-reminder> tags inside an ordinary text block.
-        if oauth_system_content:
-            _prepend_oauth_reminders(
-                anthropic_messages,
-                _sanitize_oauth_reminders(oauth_system_content),
-            )
+        # 2. Sanitize system prompt — replace product name references
+        #    to avoid Anthropic's server-side content filters.
+        for block in system:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                text = text.replace("Hermes Agent", "Claude Code")
+                text = text.replace("Hermes agent", "Claude Code")
+                text = text.replace("hermes-agent", "claude-code")
+                text = text.replace("Nous Research", "Anthropic")
+                block["text"] = text
 
+        # 3. Prefix tool names with mcp_ (Claude Code convention)
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:
-                    tool["name"] = _oauth_tool_name(tool["name"])
+                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
+        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
         for msg in anthropic_messages:
             content = msg.get("content")
             if isinstance(content, list):
                 for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use" and "name" in block:
-                        block["name"] = _oauth_tool_name(block["name"])
+                    if isinstance(block, dict):
+                        if block.get("type") == "tool_use" and "name" in block:
+                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
+                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
+                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
+                            pass  # tool_result uses ID, not name
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -1674,8 +1442,7 @@ def build_anthropic_kwargs(
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
             # Specific tool name
-            tool_name = _oauth_tool_name(tool_choice) if oauth_prompt_shim else tool_choice
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_name}
+            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.
@@ -1733,9 +1500,6 @@ def build_anthropic_kwargs(
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
-    if oauth_prompt_shim:
-        _merge_oauth_transport_fingerprint(kwargs)
-
     return kwargs
 
 
@@ -1748,9 +1512,8 @@ def normalize_anthropic_response(
     Returns (assistant_message, finish_reason) where assistant_message has
     .content, .tool_calls, and .reasoning attributes.
 
-    When *strip_tool_prefix* is True, reverses the synthetic Claude Code
-    ``mcp_Foo`` rename used for built-in Hermes tools while preserving tool
-    names that were already registered as ``mcp_*``.
+    When *strip_tool_prefix* is True, removes the ``mcp_`` prefix that was
+    added to tool names for OAuth Claude Code compatibility.
     """
     text_parts = []
     reasoning_parts = []
@@ -1768,9 +1531,7 @@ def normalize_anthropic_response(
         elif block.type == "tool_use":
             name = block.name
             if strip_tool_prefix and name.startswith(_MCP_TOOL_PREFIX):
-                suffix = name[len(_MCP_TOOL_PREFIX):]
-                if suffix and suffix[0].isupper():
-                    name = suffix[0].lower() + suffix[1:]
+                name = name[len(_MCP_TOOL_PREFIX):]
             tool_calls.append(
                 SimpleNamespace(
                     id=block.id,

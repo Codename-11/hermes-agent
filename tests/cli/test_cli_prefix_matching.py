@@ -92,13 +92,6 @@ class TestSlashCommandPrefixMatching:
             cli_obj.process_command("/help")
         mock_help.assert_called_once()
 
-    def test_exact_auth_command_dispatches(self):
-        """/auth should dispatch to the dedicated auth-status handler."""
-        cli_obj = _make_cli()
-        with patch.object(cli_obj, '_show_auth_status') as mock_auth:
-            cli_obj.process_command("/auth")
-        mock_auth.assert_called_once()
-
     def test_skill_command_prefix_matches(self):
         """A prefix that uniquely matches a skill command should dispatch it."""
         cli_obj = _make_cli()
