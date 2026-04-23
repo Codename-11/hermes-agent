@@ -310,8 +310,22 @@ def _build_oauth_billing_header(messages: List[Dict[str, Any]], version: str) ->
 
 
 def _sanitize_oauth_reminders(blocks: List[Dict]) -> List[str]:
-    """Return sanitized system texts for OAuth <system-reminder> injection."""
+    """Return sanitized, budget-capped system texts for OAuth <system-reminder> injection.
+
+    Applies a character budget (default 12 000 chars ≈ 3 000 tokens) so large
+    memory blocks and context files don't push the total input over the Max
+    subscription allocation and spill into the extra-usage pool.
+
+    Override with env var HERMES_OAUTH_SYSTEM_MAX_CHARS=0 to disable the cap.
+    """
+    _default_max = 12_000
+    try:
+        _max_chars = int(os.environ.get("HERMES_OAUTH_SYSTEM_MAX_CHARS", _default_max))
+    except (ValueError, TypeError):
+        _max_chars = _default_max
+
     reminders: List[str] = []
+    total_chars = 0
     for block in blocks:
         if not isinstance(block, dict) or block.get("type") != "text":
             continue
@@ -325,8 +339,25 @@ def _sanitize_oauth_reminders(blocks: List[Dict]) -> List[str]:
         text = text.replace("Nous Research", "Anthropic")
         text = text.replace("OpenClaw", "Claude Code")
         text = text.strip()
-        if text:
-            reminders.append(text)
+        if not text:
+            continue
+
+        if _max_chars > 0 and total_chars >= _max_chars:
+            break
+
+        if _max_chars > 0 and total_chars + len(text) > _max_chars:
+            remaining = _max_chars - total_chars
+            # Truncate at last paragraph boundary within budget
+            cutoff = text.rfind("\n\n", 0, remaining)
+            if cutoff <= 0:
+                cutoff = text.rfind("\n", 0, remaining)
+            if cutoff <= 0:
+                cutoff = remaining
+            text = text[:cutoff].rstrip() + "\n\n[...system context truncated for OAuth routing...]"
+
+        reminders.append(text)
+        total_chars += len(text)
+
     return reminders
 
 
