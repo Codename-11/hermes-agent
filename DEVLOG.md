@@ -1,5 +1,34 @@
 # Hermes Agent — Dev Log
 
+## 2026-04-23 — Anthropic OAuth prompt-shim cleanup; keep Model Router intact
+
+### Summary
+Reviewed Obsidian + local fork state, isolated the Anthropic-only workaround from the older model-router seam, and removed the three recent Claude Max OAuth prompt-shim commits. Goal was to reduce fork surface and stop carrying custom system-prompt/billing-header logic while preserving the Model Router plugin and its gateway/TUI plumbing.
+
+### What changed
+- Reverted `6e3d2d2f` (`feat(anthropic): Claude Max OAuth prompt shim + /auth command`)
+- Reverted `c0f6da85` (`fix(anthropic-oauth): cap <system-reminder> injection at 12k chars`)
+- Reverted `c6fa0ff7` (`fix(anthropic-oauth): compute billing header after system-reminder prepend`)
+- Removed untracked shim leftovers:
+  - `scripts/test_anthropic_oauth_smoke.py`
+  - `tests/agent/test_auxiliary_client_anthropic_oauth.py`
+  - `tests/gateway/test_auth_command.py`
+- Left the Model Router path alone (`resolve_model` hook + plugin command/card plumbing)
+
+### Verification
+- `python -m py_compile run_agent.py hermes_cli/plugins.py hermes_cli/commands.py gateway/run.py tui_gateway/server.py agent/anthropic_adapter.py agent/auxiliary_client.py cli.py` → OK
+- `pytest -q tests/hermes_cli/test_plugins.py tests/hermes_cli/test_commands.py tests/gateway/test_discord_slash_commands.py tests/agent/test_anthropic_adapter.py -o addopts=''` → 322 passed
+- Model Router direct smoke with process-local `config._config['enabled']=True`:
+  - greeting routed to `claude-haiku-4-5`
+  - off-tier `gpt-5.4` caused router stand-down without override
+  - `/route status` still returned the expected info card dict
+- Note: `~/.hermes/plugins/model-router/config.yaml` is currently `enabled: false`, so the plugin's local pytest file fails if run against live config without overriding that flag
+
+### Docs updated
+- Obsidian: `3. System/References/AI Tools/Hermes Agent.md`
+- Skills: `hermes-agent`, `hermes-profile-auth`, `hermes-cost-optimization`, `systematic-debugging`
+- Guidance now treats Claude Code/Max OAuth as brittle and recommends Anthropic API keys for the reliable path
+
 ## 2026-04-21 (evening) — hermes version preview + multi-profile gateway restart
 
 ### Summary
