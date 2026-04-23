@@ -71,6 +71,7 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # Injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
+_SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -104,24 +105,35 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 })
 
 
-def _check_bearer(auth_header: str) -> bool:
-    """Return True if the Authorization header carries a recognized bearer.
+def _has_valid_token(request: Request) -> bool:
+    """True if the request carries a recognized credential.
 
-    Two tokens are accepted:
+    Three credentials are accepted:
 
-    * The ephemeral dashboard session token (``_SESSION_TOKEN``) — generated
-      fresh per server start and injected into the served HTML so only the
-      legitimate web UI sees it.
-    * ``HERMES_GATEWAY_TOKEN`` from the environment — a stable, operator-set
-      bearer that external callers (Mission Control, scripts) can use without
-      scraping the SPA's session token. Empty / unset env var disables this
-      path so we don't accept a blank Authorization header.
+    * The dedicated session header (``X-Hermes-Session-Token``) carrying
+      ``_SESSION_TOKEN`` — preferred path that avoids collisions with reverse
+      proxies which already use ``Authorization`` (e.g. Caddy ``basic_auth``,
+      Authelia/Traefik forward-auth).
+    * ``Bearer <_SESSION_TOKEN>`` — legacy path for older dashboard bundles
+      and the SPA's ``window.__HERMES_SESSION_TOKEN__`` injection.
+    * ``Bearer <HERMES_GATEWAY_TOKEN>`` from the environment — a stable,
+      operator-set token that external callers (Mission Control, scripts) can
+      use without scraping the SPA's per-restart session token. An empty /
+      unset env var disables this path so we don't accept a blank header.
 
-    Comparison uses ``hmac.compare_digest`` to avoid timing side-channels.
+    Comparisons use ``hmac.compare_digest`` to avoid timing side-channels.
     """
-    if not auth_header.startswith("Bearer "):
+    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
+    if session_header and hmac.compare_digest(
+        session_header.encode(),
+        _SESSION_TOKEN.encode(),
+    ):
+        return True
+
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
         return False
-    presented = auth_header.encode()
+    presented = auth.encode()
     if hmac.compare_digest(presented, f"Bearer {_SESSION_TOKEN}".encode()):
         return True
     env_token = os.environ.get("HERMES_GATEWAY_TOKEN", "")
@@ -131,8 +143,8 @@ def _check_bearer(auth_header: str) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the bearer token on a single endpoint.  Raises 401 on mismatch."""
-    if not _check_bearer(request.headers.get("authorization", "")):
+    """Validate the request credential.  Raises 401 on mismatch."""
+    if not _has_valid_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -223,18 +235,19 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require a bearer token on all /api/ routes except the public list.
+    """Require a credential on all /api/ routes except the public list.
 
     Plugin API routes (mounted at /api/plugins/<name>/) are gated by the
     same check — they used to be excluded, which let any loopback caller hit
-    plugin endpoints unauthenticated. _check_bearer accepts either the
-    dashboard's ephemeral session token or HERMES_GATEWAY_TOKEN so external
+    plugin endpoints unauthenticated. _has_valid_token accepts the dedicated
+    session header (preferred, avoids reverse-proxy Authorization collisions),
+    the legacy Bearer session token, or HERMES_GATEWAY_TOKEN so external
     consumers (Mission Control, scripts) keep working without scraping the
     SPA's injected token.
     """
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
-        if not _check_bearer(request.headers.get("authorization", "")):
+        if not _has_valid_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
@@ -2331,8 +2344,134 @@ _BUILTIN_DASHBOARD_THEMES = [
 ]
 
 
+def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[Dict[str, Any]]:
+    """Normalise a theme layer spec from YAML into `{hex, alpha}` form.
+
+    Accepts shorthand (a bare hex string) or full dict form.  Returns
+    ``None`` on garbage input so the caller can fall back to a built-in
+    default rather than blowing up.
+    """
+    if value is None:
+        return {"hex": default_hex, "alpha": default_alpha}
+    if isinstance(value, str):
+        return {"hex": value, "alpha": default_alpha}
+    if isinstance(value, dict):
+        hex_val = value.get("hex", default_hex)
+        alpha_val = value.get("alpha", default_alpha)
+        if not isinstance(hex_val, str):
+            return None
+        try:
+            alpha_f = float(alpha_val)
+        except (TypeError, ValueError):
+            alpha_f = default_alpha
+        return {"hex": hex_val, "alpha": max(0.0, min(1.0, alpha_f))}
+    return None
+
+
+_THEME_DEFAULT_TYPOGRAPHY: Dict[str, str] = {
+    "fontSans": 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    "fontMono": 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace',
+    "baseSize": "15px",
+    "lineHeight": "1.55",
+    "letterSpacing": "0",
+}
+
+_THEME_DEFAULT_LAYOUT: Dict[str, str] = {
+    "radius": "0.5rem",
+    "density": "comfortable",
+}
+
+_THEME_OVERRIDE_KEYS = {
+    "card", "cardForeground", "popover", "popoverForeground",
+    "primary", "primaryForeground", "secondary", "secondaryForeground",
+    "muted", "mutedForeground", "accent", "accentForeground",
+    "destructive", "destructiveForeground", "success", "warning",
+    "border", "input", "ring",
+}
+
+
+def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalise a user theme YAML into the wire format `ThemeProvider`
+    expects.  Returns ``None`` if the theme is unusable.
+
+    Accepts both the full schema (palette/typography/layout) and a loose
+    form with bare hex strings, so hand-written YAMLs stay friendly.
+    """
+    if not isinstance(data, dict):
+        return None
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    # Palette
+    palette_src = data.get("palette", {}) if isinstance(data.get("palette"), dict) else {}
+    # Allow top-level `colors.background` as a shorthand too.
+    colors_src = data.get("colors", {}) if isinstance(data.get("colors"), dict) else {}
+
+    def _layer(key: str, default_hex: str, default_alpha: float = 1.0) -> Dict[str, Any]:
+        spec = palette_src.get(key, colors_src.get(key))
+        parsed = _parse_theme_layer(spec, default_hex, default_alpha)
+        return parsed if parsed is not None else {"hex": default_hex, "alpha": default_alpha}
+
+    palette = {
+        "background": _layer("background", "#041c1c", 1.0),
+        "midground": _layer("midground", "#ffe6cb", 1.0),
+        "foreground": _layer("foreground", "#ffffff", 0.0),
+        "warmGlow": palette_src.get("warmGlow") or data.get("warmGlow") or "rgba(255, 189, 56, 0.35)",
+        "noiseOpacity": 1.0,
+    }
+    raw_noise = palette_src.get("noiseOpacity", data.get("noiseOpacity"))
+    try:
+        palette["noiseOpacity"] = float(raw_noise) if raw_noise is not None else 1.0
+    except (TypeError, ValueError):
+        palette["noiseOpacity"] = 1.0
+
+    # Typography
+    typo_src = data.get("typography", {}) if isinstance(data.get("typography"), dict) else {}
+    typography = dict(_THEME_DEFAULT_TYPOGRAPHY)
+    for key in ("fontSans", "fontMono", "fontDisplay", "fontUrl", "baseSize", "lineHeight", "letterSpacing"):
+        val = typo_src.get(key)
+        if isinstance(val, str) and val.strip():
+            typography[key] = val
+
+    # Layout
+    layout_src = data.get("layout", {}) if isinstance(data.get("layout"), dict) else {}
+    layout = dict(_THEME_DEFAULT_LAYOUT)
+    radius = layout_src.get("radius")
+    if isinstance(radius, str) and radius.strip():
+        layout["radius"] = radius
+    density = layout_src.get("density")
+    if isinstance(density, str) and density in ("compact", "comfortable", "spacious"):
+        layout["density"] = density
+
+    # Color overrides — keep only valid keys with string values.
+    overrides_src = data.get("colorOverrides", {})
+    color_overrides: Dict[str, str] = {}
+    if isinstance(overrides_src, dict):
+        for key, val in overrides_src.items():
+            if key in _THEME_OVERRIDE_KEYS and isinstance(val, str) and val.strip():
+                color_overrides[key] = val
+
+    result: Dict[str, Any] = {
+        "name": name,
+        "label": data.get("label") or name,
+        "description": data.get("description", ""),
+        "palette": palette,
+        "typography": typography,
+        "layout": layout,
+    }
+    if color_overrides:
+        result["colorOverrides"] = color_overrides
+    return result
+
+
 def _discover_user_themes() -> list:
-    """Scan ~/.hermes/dashboard-themes/*.yaml for user-created themes."""
+    """Scan ~/.hermes/dashboard-themes/*.yaml for user-created themes.
+
+    Returns a list of fully-normalised theme definitions ready to ship
+    to the frontend, so the client can apply them without a secondary
+    round-trip or a built-in stub.
+    """
     themes_dir = get_hermes_home() / "dashboard-themes"
     if not themes_dir.is_dir():
         return []
@@ -2340,33 +2479,42 @@ def _discover_user_themes() -> list:
     for f in sorted(themes_dir.glob("*.yaml")):
         try:
             data = yaml.safe_load(f.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("name"):
-                result.append({
-                    "name": data["name"],
-                    "label": data.get("label", data["name"]),
-                    "description": data.get("description", ""),
-                })
         except Exception:
             continue
+        normalised = _normalise_theme_definition(data)
+        if normalised is not None:
+            result.append(normalised)
     return result
 
 
 @app.get("/api/dashboard/themes")
 async def get_dashboard_themes():
-    """Return available themes and the currently active one."""
+    """Return available themes and the currently active one.
+
+    Built-in entries ship name/label/description only (the frontend owns
+    their full definitions in `web/src/themes/presets.ts`).  User themes
+    from `~/.hermes/dashboard-themes/*.yaml` ship with their full
+    normalised definition under `definition`, so the client can apply
+    them without a stub.
+    """
     config = load_config()
     active = config.get("dashboard", {}).get("theme", "default")
     user_themes = _discover_user_themes()
-    # Merge built-in + user, user themes override built-in by name.
     seen = set()
     themes = []
     for t in _BUILTIN_DASHBOARD_THEMES:
         seen.add(t["name"])
         themes.append(t)
     for t in user_themes:
-        if t["name"] not in seen:
-            themes.append(t)
-            seen.add(t["name"])
+        if t["name"] in seen:
+            continue
+        themes.append({
+            "name": t["name"],
+            "label": t["label"],
+            "description": t["description"],
+            "definition": t,
+        })
+        seen.add(t["name"])
     return {"themes": themes, "active": active}
 
 
