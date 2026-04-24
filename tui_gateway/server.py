@@ -2225,6 +2225,129 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, str(e))
 
 
+@method("image.attach.bytes")
+def _(rid, params: dict) -> dict:
+    """Attach an image from base64-encoded bytes sent by a remote client.
+
+    Unlike `clipboard.paste` (reads server-local clipboard) or `image.attach`
+    (reads a server-local filesystem path), this RPC accepts the image payload
+    inline — the shape remote/WSS clients need when the image lives on the
+    user's own machine, not the tui_gateway host.
+
+    Params:
+        session_id (str, required): standard session routing.
+        format (str, required): one of png | jpg | jpeg | webp | gif.
+        bytes_base64 (str, required): base64-encoded image bytes.
+        filename_hint (str, optional): suffix appended to the saved filename
+            (sanitized, ignored if empty).
+
+    Error codes:
+        4015  missing required field
+        4016  unsupported format
+        4017  payload exceeds 25 MB
+        4018  invalid base64
+        4019  magic-byte mismatch (smuggling guard)
+    """
+    import base64
+    import binascii
+
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    fmt_raw = params.get("format")
+    b64 = params.get("bytes_base64")
+    if not fmt_raw or not isinstance(fmt_raw, str):
+        return _err(rid, 4015, "format required")
+    if not b64 or not isinstance(b64, str):
+        return _err(rid, 4015, "bytes_base64 required")
+
+    fmt = fmt_raw.strip().lower()
+    _ALLOWED = {"png", "jpg", "jpeg", "webp", "gif"}
+    if fmt not in _ALLOWED:
+        return _err(
+            rid,
+            4016,
+            f"unsupported format: {fmt!r} (expected one of {sorted(_ALLOWED)})",
+        )
+
+    try:
+        data = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return _err(rid, 4018, "invalid base64 payload")
+
+    # 25 MB cap (matches spec; checked post-decode so we reject the actual size)
+    if len(data) > 25 * 1024 * 1024:
+        return _err(rid, 4017, "image exceeds 25 MB limit")
+    if not data:
+        return _err(rid, 4018, "invalid base64 payload")
+
+    # Magic-byte sniff — refuse to trust the format param blindly.
+    def _magic_matches(fmt: str, buf: bytes) -> bool:
+        if fmt == "png":
+            return buf.startswith(b"\x89PNG\r\n\x1a\n")
+        if fmt in ("jpg", "jpeg"):
+            return buf.startswith(b"\xff\xd8\xff")
+        if fmt == "webp":
+            return len(buf) >= 12 and buf[0:4] == b"RIFF" and buf[8:12] == b"WEBP"
+        if fmt == "gif":
+            return buf.startswith(b"GIF87a") or buf.startswith(b"GIF89a")
+        return False
+
+    if not _magic_matches(fmt, data):
+        return _err(
+            rid,
+            4019,
+            f"format mismatch — body does not look like {fmt}",
+        )
+
+    # On-disk extension: normalize jpg → jpeg for consistency.
+    ext = "jpeg" if fmt == "jpg" else fmt
+
+    # Sanitize optional filename hint (keep alnum/dash/underscore, trim length).
+    hint_raw = params.get("filename_hint") or ""
+    hint = "".join(c for c in str(hint_raw) if c.isalnum() or c in ("-", "_"))[:40]
+    hint_suffix = f"_{hint}" if hint else ""
+
+    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    img_path = (
+        img_dir
+        / f"remote_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}{hint_suffix}.{ext}"
+    )
+
+    # Atomic write: stage to .tmp then rename so partial writes can't leak.
+    tmp_path = img_path.with_suffix(img_path.suffix + ".tmp")
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp_path, img_path)
+    except OSError as e:
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        return _err(rid, 5027, f"failed to write image: {e}")
+
+    session.setdefault("attached_images", []).append(str(img_path))
+    print(
+        f"[tui_gateway] image.attach.bytes: {len(data)} bytes, saved to {img_path}",
+        file=sys.stderr,
+    )
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": len(session["attached_images"]),
+            **_image_meta(img_path),
+        },
+    )
+
+
 @method("input.detect_drop")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
