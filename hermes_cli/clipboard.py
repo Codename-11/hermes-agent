@@ -10,6 +10,12 @@ Platform support:
   Windows — PowerShell via WinForms, Get-Clipboard, file-drop fallback
   WSL2    — powershell.exe via WinForms, Get-Clipboard, file-drop fallback
   Linux   — wl-paste (Wayland), xclip (X11)
+  Remote  — pending-inbox at ~/.hermes/images/inbox/ (populated by a
+            relay client that has no local-server display, e.g. when
+            the user runs hermes via PTY through hermes-relay over WSS).
+            Inbox is checked FIRST so a fresh remote image wins over a
+            stale native clipboard. TTL 300s; newest file consumes-and-
+            unlinks on save.
 """
 
 import base64
@@ -17,6 +23,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
@@ -24,12 +31,76 @@ from hermes_constants import is_wsl as _is_wsl
 logger = logging.getLogger(__name__)
 
 
+# ── Pending inbox (remote-client paste rendezvous) ──────────────────────
+
+_INBOX_DIR = Path.home() / ".hermes" / "images" / "inbox"
+_INBOX_TTL_SECONDS = 300  # 5 minutes — a paste forgotten that long is stale
+
+
+def _inbox_freshest():
+    """Return the newest fresh image in the inbox, or None.
+
+    "Fresh" means the file was modified within `_INBOX_TTL_SECONDS`. A
+    relay client populates this directory by writing to it before the
+    user types `/paste` in the TUI. Newest file wins so a quick double-
+    paste behaves intuitively.
+    """
+    try:
+        if not _INBOX_DIR.is_dir():
+            return None
+        cutoff = time.time() - _INBOX_TTL_SECONDS
+        candidates = sorted(
+            (p for p in _INBOX_DIR.iterdir() if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    return path
+            except OSError:
+                continue
+        return None
+    except OSError as exc:
+        logger.debug("inbox scan failed: %s", exc)
+        return None
+
+
+def _inbox_consume(target: Path, dest: Path) -> bool:
+    """Move *target* to *dest*, returning True on success. Best-effort."""
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        target.replace(dest)
+        return True
+    except OSError as exc:
+        logger.debug("inbox consume failed (%s -> %s): %s", target, dest, exc)
+        # Fallback: copy + unlink so a cross-device move isn't fatal.
+        try:
+            data = target.read_bytes()
+            dest.write_bytes(data)
+            target.unlink(missing_ok=True)
+            return True
+        except OSError as exc2:
+            logger.debug("inbox copy fallback failed: %s", exc2)
+            return False
+
+
 def save_clipboard_image(dest: Path) -> bool:
     """Extract an image from the system clipboard and save it as PNG.
 
     Returns True if an image was found and saved, False otherwise.
+
+    Order: inbox (remote paste) → native platform clipboard. The inbox
+    check is cheap (one stat per file) so the precedence flip is invisible
+    when no remote client is staging anything.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    inbox_hit = _inbox_freshest()
+    if inbox_hit is not None:
+        if _inbox_consume(inbox_hit, dest):
+            logger.info("clipboard image sourced from inbox: %s", inbox_hit.name)
+            return True
+        # Consume failed — fall through to native clipboard rather than fail.
     if sys.platform == "darwin":
         return _macos_save(dest)
     if sys.platform == "win32":
@@ -41,7 +112,11 @@ def has_clipboard_image() -> bool:
     """Quick check: does the clipboard currently contain an image?
 
     Lighter than save_clipboard_image — doesn't extract or write anything.
+    Checks the inbox first so a remote paste registers as "yes" even on
+    a headless server with no native clipboard available.
     """
+    if _inbox_freshest() is not None:
+        return True
     if sys.platform == "darwin":
         return _macos_has_image()
     if sys.platform == "win32":
