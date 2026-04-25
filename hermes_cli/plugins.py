@@ -78,6 +78,14 @@ VALID_HOOKS: Set[str] = {
     # kwargs (args_hint, subcommands, returns_card, ...). New plugins
     # should prefer register_command over this hook.
     "handle_route_command",
+    # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
+    # after the internal-event guard but BEFORE auth/pairing and agent
+    # dispatch. Plugins may return a dict to influence flow:
+    #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
+    #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+    #   {"action": "allow"}  /  None             -> normal dispatch
+    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+    "pre_gateway_dispatch",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
