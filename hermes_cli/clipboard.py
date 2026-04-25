@@ -44,6 +44,13 @@ def _inbox_freshest():
     relay client populates this directory by writing to it before the
     user types `/paste` in the TUI. Newest file wins so a quick double-
     paste behaves intuitively.
+
+    Side effect: stale files (older than TTL) are deleted during the
+    same scan. The inbox is a transient staging area — anything past
+    its TTL won't be consumed by /paste anyway, so there's no reason
+    to keep it on disk. Self-cleaning piggybacked on the read path
+    means no cron/scheduler is needed; the cost is one unlink per
+    stale file per /paste call. Bounded and amortized.
     """
     try:
         if not _INBOX_DIR.is_dir():
@@ -54,13 +61,25 @@ def _inbox_freshest():
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
+        freshest = None
         for path in candidates:
             try:
                 if path.stat().st_mtime >= cutoff:
-                    return path
+                    if freshest is None:
+                        freshest = path
+                    # Don't delete fresh files even if not the freshest —
+                    # they might be picked up by a follow-up /paste before
+                    # they go stale.
+                else:
+                    # Stale — opportunistic cleanup.
+                    try:
+                        path.unlink(missing_ok=True)
+                        logger.debug("inbox: swept stale %s", path.name)
+                    except OSError as exc:
+                        logger.debug("inbox: could not unlink %s: %s", path.name, exc)
             except OSError:
                 continue
-        return None
+        return freshest
     except OSError as exc:
         logger.debug("inbox scan failed: %s", exc)
         return None
