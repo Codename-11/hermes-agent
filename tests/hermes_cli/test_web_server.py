@@ -1678,6 +1678,33 @@ class TestDashboardPluginManifestExtensions:
         entry = next(p for p in plugins if p["name"] == "mixed-slots")
         assert entry["slots"] == ["sidebar", "header-right"]
 
+    def test_bundled_example_dashboard_plugin_is_suppressed(self, tmp_path, monkeypatch):
+        """The bundled SDK demo must not reappear in the production sidebar."""
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._write_plugin(tmp_path, "example-dashboard", {
+            "name": "example",
+            "label": "Example",
+            "tab": {"path": "/example"},
+            "entry": "dist/index.js",
+        })
+        self._write_plugin(tmp_path, "useful-dashboard", {
+            "name": "useful",
+            "label": "Useful",
+            "tab": {"path": "/useful"},
+            "entry": "dist/index.js",
+        })
+
+        from hermes_cli import web_server
+        monkeypatch.setattr(web_server, "PROJECT_ROOT", tmp_path)
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        names = {p["name"] for p in plugins}
+
+        assert "example" not in names
+        assert "useful" in names
+
     def test_page_scoped_slots_preserved(self, tmp_path, monkeypatch):
         """Page-scoped slot names (e.g. ``sessions:top``) round-trip through
         the manifest loader untouched.  The backend has no allowlist — the

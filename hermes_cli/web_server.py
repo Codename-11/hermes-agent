@@ -2970,6 +2970,11 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+# Local production policy: bundled demo/sample dashboard plugins should never
+# show up in the live sidebar. The example plugin is useful as developer
+# reference code, but it is not an operator-facing feature on Docker-Server.
+_SUPPRESSED_BUNDLED_DASHBOARD_PLUGINS: frozenset[str] = frozenset({"example"})
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -3001,6 +3006,8 @@ def _discover_dashboard_plugins() -> list:
             try:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
+                if source == "bundled" and name in _SUPPRESSED_BUNDLED_DASHBOARD_PLUGINS:
+                    continue
                 if name in seen_names:
                     continue
                 seen_names.add(name)
