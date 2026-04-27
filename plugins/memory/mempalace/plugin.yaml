@@ -1,9 +1,0 @@
-name: mempalace
-version: 1.0.0
-description: "MemPalace — local-first AI memory with 4-layer L0-L3 stack and temporal knowledge graph. Wings: victor, operator, system, projects, hermes."
-pip_dependencies:
-  - mempalace
-hooks:
-  - on_session_end
-  - on_pre_compress
-  - on_memory_write
