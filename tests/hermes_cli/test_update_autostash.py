@@ -227,6 +227,8 @@ def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path
             return SimpleNamespace(stdout="conflict output\n", stderr="conflict stderr\n", returncode=1)
         if cmd[1:3] == ["diff", "--name-only"]:
             return SimpleNamespace(stdout="hermes_cli/main.py\n", stderr="", returncode=0)
+        if cmd[1:3] == ["rev-parse", "--abbrev-ref"]:
+            return SimpleNamespace(stdout="axiom\n", stderr="", returncode=0)
         if cmd[1:3] == ["reset", "--hard"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
@@ -240,6 +242,7 @@ def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert "Conflicted files:" in out
     assert "hermes_cli/main.py" in out
+    assert "Branch: axiom" in out
     assert "stashed changes are preserved" in out
     assert "Working tree reset to clean state" in out
     assert "git stash apply abc123" in out
@@ -258,6 +261,8 @@ def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_pa
             return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
         if cmd[1:3] == ["diff", "--name-only"]:
             return SimpleNamespace(stdout="cli.py\n", stderr="", returncode=0)
+        if cmd[1:3] == ["rev-parse", "--abbrev-ref"]:
+            return SimpleNamespace(stdout="axiom\n", stderr="", returncode=0)
         if cmd[1:3] == ["reset", "--hard"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
@@ -333,7 +338,10 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             raise CalledProcessError(returncode=1, cmd=cmd)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"]:
             return SimpleNamespace(returncode=0)
-        return SimpleNamespace(returncode=0)
+        # Catch-all must include stdout/stderr so consumers that parse
+        # output (e.g. the dashboard-restart `ps -A` scan added in the
+        # updater) don't crash on AttributeError.
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
@@ -370,7 +378,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
         if cmd == ["git", "pull", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
