@@ -185,6 +185,27 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids()
         assert pids == [12345]
 
+    def test_exclude_pids_filters_systemd_managed(self):
+        """``hermes update`` restarts ``hermes-dashboard.service`` first, then
+        runs the stale-process sweep.  Without exclusion, the freshly-spawned
+        managed PID gets SIGTERMed and systemd has to respawn it again.  The
+        ``exclude_pids`` arg is the seam that prevents that.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(11111, "python -m hermes_cli.main dashboard --port 9119"),
+                    _ps_line(22222, "hermes dashboard --port 9120"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [11111, 22222]
+            assert _find_stale_dashboard_pids(exclude_pids={11111}) == [22222]
+            assert _find_stale_dashboard_pids(
+                exclude_pids={11111, 22222}
+            ) == []
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:
