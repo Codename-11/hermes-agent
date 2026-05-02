@@ -5393,7 +5393,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     return True
 
 
-def _find_stale_dashboard_pids() -> list[int]:
+def _find_stale_dashboard_pids(
+    exclude_pids: Optional[set] = None,
+) -> list[int]:
     """Return PIDs of ``hermes dashboard`` processes other than ourselves.
 
     ``hermes dashboard`` is a long-lived server process commonly started and
@@ -5402,14 +5404,21 @@ def _find_stale_dashboard_pids() -> list[int]:
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
-    ``_kill_stale_dashboard_processes`` for the kill.
+    Most dashboards have no service manager, no PID file, and we can't know
+    the original launch args — so the only sane action after an update is
+    to kill the stale process and let the user restart it.  This helper is
+    just the detection step; see ``_kill_stale_dashboard_processes`` for
+    the kill.
+
+    ``exclude_pids`` filters out PIDs that the caller has already restarted
+    cleanly (e.g. systemd-managed ``hermes-dashboard.service`` MainPIDs the
+    update flow just respawned).  Without it, the post-update sweep would
+    SIGTERM the just-spawned managed process, forcing systemd to respawn
+    it again and printing a misleading "restart manually" hint.
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
+    excluded: set = set(exclude_pids) if exclude_pids else set()
     patterns = [
         "hermes dashboard",
         "hermes_cli.main dashboard",
@@ -5445,9 +5454,12 @@ def _find_stale_dashboard_pids() -> list[int]:
                     if (any(p in current_cmd for p in patterns)
                             and int(pid_str) != self_pid):
                         try:
-                            dashboard_pids.append(int(pid_str))
+                            pid_val = int(pid_str)
                         except ValueError:
-                            pass
+                            continue
+                        if pid_val in excluded:
+                            continue
+                        dashboard_pids.append(pid_val)
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps
@@ -5473,12 +5485,62 @@ def _find_stale_dashboard_pids() -> list[int]:
                         continue
                     command = parts[1]
                     if (any(p in command for p in patterns)
-                            and pid != self_pid):
+                            and pid != self_pid
+                            and pid not in excluded):
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
 
     return dashboard_pids
+
+
+def _get_dashboard_service_pids() -> set:
+    """Return PIDs currently managed by ``hermes-dashboard*`` systemd units.
+
+    Mirrors ``hermes_cli.gateway._get_service_pids`` but for dashboard
+    units (which the update flow restarts via the same systemd path).
+    Used to exclude freshly-restarted managed processes from the
+    post-update stale-dashboard sweep — without this, the sweep would
+    SIGTERM the process systemd just spawned with new code, and systemd
+    would have to respawn it again.
+    """
+    pids: set = set()
+
+    try:
+        from hermes_cli.gateway import supports_systemd_services
+    except Exception:
+        return pids
+
+    if not supports_systemd_services():
+        return pids
+
+    for scope_args in [["systemctl", "--user"], ["systemctl"]]:
+        try:
+            result = subprocess.run(
+                scope_args + ["list-units", "hermes-dashboard*",
+                              "--plain", "--no-legend", "--no-pager"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.strip().splitlines():
+                parts = line.split()
+                if not parts or not parts[0].endswith(".service"):
+                    continue
+                svc = parts[0]
+                try:
+                    show = subprocess.run(
+                        scope_args + ["show", svc,
+                                      "--property=MainPID", "--value"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    pid = int(show.stdout.strip())
+                    if pid > 0:
+                        pids.add(pid)
+                except (ValueError, subprocess.TimeoutExpired):
+                    pass
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return pids
 
 
 def _print_curator_first_run_notice() -> None:
@@ -5522,6 +5584,7 @@ def _print_curator_first_run_notice() -> None:
 
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
+    exclude_pids: Optional[set] = None,
 ) -> None:
     """Kill running ``hermes dashboard`` processes.
 
@@ -5541,7 +5604,7 @@ def _kill_stale_dashboard_processes(
     launch args (--host, --port, --insecure, --tui, --no-open).  The user
     restarts it manually; a hint is printed.
     """
-    pids = _find_stale_dashboard_pids()
+    pids = _find_stale_dashboard_pids(exclude_pids=exclude_pids)
     if not pids:
         return
 
@@ -7969,12 +8032,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
-        _kill_stale_dashboard_processes()
+        # Kill stale dashboard processes — for un-managed dashboards,
+        # leaving them alive after a code update produces a silent
+        # frontend/backend mismatch.  We can't auto-restart those (no
+        # saved launch args), but we can stop them and print a hint.
+        # Exclude PIDs of ``hermes-dashboard*`` systemd units the
+        # systemd-restart loop above just respawned cleanly — without
+        # this, the sweep would SIGTERM the just-spawned managed PID
+        # and force systemd to respawn it again, while printing a
+        # misleading "restart manually" hint for a service that's
+        # already running with fresh code.
+        _kill_stale_dashboard_processes(
+            exclude_pids=_get_dashboard_service_pids(),
+        )
 
         print()
         print("Tip: You can now select a provider and model:")
