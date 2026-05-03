@@ -14,12 +14,16 @@ Tests cover:
 
 import asyncio
 import json
+import os
+import sys
+import tempfile
 import time
+import types
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -315,6 +319,12 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/api/audio/transcriptions", adapter._handle_audio_transcriptions)
+    app.router.add_post("/api/audio/speech", adapter._handle_audio_speech)
+    app.router.add_get("/api/audio/capabilities", adapter._handle_audio_capabilities)
+    app.router.add_post("/voice/transcribe", adapter._handle_audio_transcriptions)
+    app.router.add_post("/voice/synthesize", adapter._handle_audio_speech)
+    app.router.add_get("/voice/config", adapter._handle_audio_capabilities)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -561,6 +571,185 @@ class TestCapabilitiesEndpoint:
             data = await authed.json()
             assert data["auth"]["required"] is True
 
+
+
+def _install_fake_voice_modules(monkeypatch, *, transcript="hello from audio", tts_file=None):
+    """Install lightweight fake voice modules for API audio endpoint tests."""
+    tools_pkg = sys.modules.get("tools") or types.ModuleType("tools")
+    monkeypatch.setitem(sys.modules, "tools", tools_pkg)
+
+    transcription_mod = types.ModuleType("tools.transcription_tools")
+    transcription_calls = []
+
+    def transcribe_audio(path):
+        transcription_calls.append(path)
+        assert os.path.exists(path)
+        return {"success": True, "transcript": transcript, "provider": "fake-stt"}
+
+    transcription_mod.transcribe_audio = transcribe_audio
+    transcription_mod._load_stt_config = lambda: {"provider": "fake-stt", "model": "fake-whisper"}
+    monkeypatch.setitem(sys.modules, "tools.transcription_tools", transcription_mod)
+
+    tts_mod = types.ModuleType("tools.tts_tool")
+    tts_calls = []
+
+    def text_to_speech_tool(text):
+        tts_calls.append(text)
+        return json.dumps({"success": True, "file_path": tts_file})
+
+    tts_mod.text_to_speech_tool = text_to_speech_tool
+    tts_mod._load_tts_config = lambda: {"provider": "fake-tts", "model": "fake-voice", "voice_id": "voice-1"}
+    monkeypatch.setitem(sys.modules, "tools.tts_tool", tts_mod)
+
+    voice_mode_mod = types.ModuleType("tools.voice_mode")
+    voice_mode_mod.check_voice_requirements = lambda: {"available": True}
+    monkeypatch.setitem(sys.modules, "tools.voice_mode", voice_mode_mod)
+
+    return transcription_calls, tts_calls
+
+
+# ---------------------------------------------------------------------------
+# /api/audio/* and /voice/* endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestAudioEndpoints:
+    @pytest.mark.asyncio
+    async def test_audio_capabilities_reports_voice_contract(self, adapter, monkeypatch):
+        _install_fake_voice_modules(monkeypatch)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/audio/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["success"] is True
+            assert data["transcription"]["endpoint"] == "/api/audio/transcriptions"
+            assert data["transcription"]["provider"] == "fake-stt"
+            assert data["speech"]["endpoint"] == "/api/audio/speech"
+            assert data["speech"]["mime_type"] == "audio/mpeg"
+            assert data["stt"]["provider"] == "fake-stt"
+            assert data["tts"]["provider"] == "fake-tts"
+            assert data["limits"]["max_audio_bytes"] > 1_000_000
+
+    @pytest.mark.asyncio
+    async def test_voice_config_alias_uses_audio_capabilities(self, adapter, monkeypatch):
+        _install_fake_voice_modules(monkeypatch)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/voice/config")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["speech"]["provider"] == "fake-tts"
+
+    @pytest.mark.asyncio
+    async def test_audio_capabilities_requires_auth_when_key_configured(self, auth_adapter, monkeypatch):
+        _install_fake_voice_modules(monkeypatch)
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/audio/capabilities")
+            assert resp.status == 401
+            authed = await cli.get(
+                "/api/audio/capabilities",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert authed.status == 200
+
+    @pytest.mark.asyncio
+    async def test_audio_transcriptions_uploads_audio_to_hermes_stt(self, adapter, monkeypatch):
+        transcription_calls, _ = _install_fake_voice_modules(monkeypatch)
+        app = _create_app(adapter)
+        form = FormData()
+        form.add_field(
+            "file",
+            b"not-real-audio-but-good-enough-for-a-mocked-backend",
+            filename="clip.webm",
+            content_type="audio/webm;codecs=opus",
+        )
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcriptions", data=form)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"success": True, "text": "hello from audio", "provider": "fake-stt"}
+
+        assert len(transcription_calls) == 1
+        assert transcription_calls[0].endswith(".webm")
+        assert not os.path.exists(transcription_calls[0])
+
+    @pytest.mark.asyncio
+    async def test_voice_transcribe_alias_uploads_audio(self, adapter, monkeypatch):
+        transcription_calls, _ = _install_fake_voice_modules(monkeypatch, transcript="alias ok")
+        app = _create_app(adapter)
+        form = FormData()
+        form.add_field("audio", b"abc", filename="clip.m4a", content_type="audio/mp4")
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/voice/transcribe", data=form)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["text"] == "alias ok"
+
+        assert len(transcription_calls) == 1
+        assert transcription_calls[0].endswith(".m4a")
+
+    @pytest.mark.asyncio
+    async def test_audio_speech_returns_mpeg_and_sanitizes_text(self, adapter, monkeypatch):
+        fd, audio_path = tempfile.mkstemp(suffix=".mp3")
+        try:
+            os.write(fd, b"fake mp3 bytes")
+            os.close(fd)
+            _, tts_calls = _install_fake_voice_modules(monkeypatch, tts_file=audio_path)
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/api/audio/speech",
+                    json={"text": "**Hello** [docs](https://example.com) `💻 terminal`"},
+                )
+                assert resp.status == 200
+                assert resp.headers["Content-Type"].startswith("audio/mpeg")
+                body = await resp.read()
+                assert body == b"fake mp3 bytes"
+
+            assert tts_calls == ["Hello docs"]
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_voice_synthesize_alias_returns_mpeg(self, adapter, monkeypatch):
+        fd, audio_path = tempfile.mkstemp(suffix=".mp3")
+        try:
+            os.write(fd, b"alias mp3")
+            os.close(fd)
+            _install_fake_voice_modules(monkeypatch, tts_file=audio_path)
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/voice/synthesize", json={"text": "Alias works."})
+                assert resp.status == 200
+                assert (await resp.read()) == b"alias mp3"
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_audio_speech_rejects_empty_text(self, adapter, monkeypatch):
+        _install_fake_voice_modules(monkeypatch)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speech", json={"text": "   "})
+            assert resp.status == 400
+            data = await resp.json()
+            assert "must not be empty" in data["error"]
 
 # ---------------------------------------------------------------------------
 # /v1/chat/completions endpoint

@@ -32,6 +32,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -65,6 +66,85 @@ MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024  # Whisper/OpenAI-compatible upload cap
+MAX_TTS_TEXT_CHARS = 5000
+
+_AUDIO_UPLOAD_PATHS = {
+    "/api/audio/transcriptions",
+    "/voice/transcribe",
+}
+
+_AUDIO_EXT_BY_CONTENT_TYPE = {
+    "audio/wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/aac": ".aac",
+}
+
+_MD_CODE_BLOCK = re.compile(r"```[\s\S]*?```")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_MD_URL = re.compile(r"https?://\S+")
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_MD_ITALIC = re.compile(r"\*(.+?)\*")
+_MD_INLINE_CODE = re.compile(r"`(.+?)`")
+_MD_HEADER = re.compile(r"^#+\s*", flags=re.MULTILINE)
+_MD_LIST_ITEM = re.compile(r"^\s*[-*]\s+", flags=re.MULTILINE)
+_MD_HR = re.compile(r"---+")
+_MD_EXCESS_NL = re.compile(r"\n{3,}")
+_TOOL_ANNOTATION_EMOJI = (
+    "\U0001F527"  # 🔧 wrench
+    "\u2705"      # ✅ white heavy check mark
+    "\u274C"      # ❌ cross mark
+    "\U0001F4BB"  # 💻 laptop
+    "\U0001F4F1"  # 📱 mobile phone
+    "\U0001F3A4"  # 🎤 microphone
+    "\U0001F50A"  # 🔊 speaker high volume
+    "\u26A0"      # ⚠ warning sign
+)
+_TOOL_ANNOTATION = re.compile(r"`[" + _TOOL_ANNOTATION_EMOJI + r"]\uFE0F?[^`]*`")
+_STANDALONE_EMOJI = re.compile(r"[" + _TOOL_ANNOTATION_EMOJI + r"]\uFE0F?")
+
+
+def _request_body_limit(path: str) -> int:
+    """Return per-route request body cap for early Content-Length rejection."""
+    return MAX_AUDIO_UPLOAD_BYTES if path in _AUDIO_UPLOAD_PATHS else MAX_REQUEST_BYTES
+
+
+def _ext_for_audio_content_type(content_type: Optional[str]) -> str:
+    """Pick a temp-file extension for uploaded audio bytes."""
+    if not content_type:
+        return ".wav"
+    base = content_type.split(";", 1)[0].strip().lower()
+    return _AUDIO_EXT_BY_CONTENT_TYPE.get(base, ".wav")
+
+
+def _sanitize_for_tts(text: str) -> str:
+    """Strip markdown/tool noise before handing text to the TTS backend."""
+    if not text or not text.strip():
+        return ""
+
+    text = _MD_CODE_BLOCK.sub(" ", text)
+    text = _TOOL_ANNOTATION.sub("", text)
+    text = _MD_LINK.sub(r"\1", text)
+    text = _MD_URL.sub("", text)
+    text = _MD_BOLD.sub(r"\1", text)
+    text = _MD_ITALIC.sub(r"\1", text)
+    text = _MD_INLINE_CODE.sub(r"\1", text)
+    text = _MD_HEADER.sub("", text)
+    text = _MD_LIST_ITEM.sub("", text)
+    text = _MD_HR.sub("", text)
+    text = _STANDALONE_EMOJI.sub("", text)
+    text = _MD_EXCESS_NL.sub("\n\n", text)
+    return text.strip()
 
 
 def _normalize_chat_content(
@@ -444,7 +524,8 @@ if AIOHTTP_AVAILABLE:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    limit = _request_body_limit(request.path)
+                    if int(cl) > limit:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -1581,6 +1662,287 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"provider": provider, "models": models, "providers": providers})
 
 
+    async def _handle_audio_transcriptions(self, request: "web.Request") -> "web.Response":
+        """POST /api/audio/transcriptions — multipart audio upload to Hermes STT."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        temp_path: Optional[str] = None
+        try:
+            reader = await request.multipart()
+        except Exception as exc:
+            logger.info("Audio transcription: malformed multipart: %s", exc)
+            return web.json_response(
+                {"success": False, "error": f"malformed multipart body: {exc}"},
+                status=400,
+            )
+
+        part = None
+        try:
+            async for field in reader:
+                if field.filename or field.name in ("file", "audio"):
+                    part = field
+                    break
+        except Exception as exc:
+            logger.info("Audio transcription: multipart read failed: %s", exc)
+            return web.json_response(
+                {"success": False, "error": f"multipart read failed: {exc}"},
+                status=400,
+            )
+
+        if part is None:
+            return web.json_response(
+                {"success": False, "error": "no audio file in multipart body"},
+                status=400,
+            )
+
+        ext = _ext_for_audio_content_type(part.headers.get("Content-Type"))
+        try:
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=ext,
+                prefix="hermes_api_audio_",
+                delete=False,
+            )
+            temp_path = tmp.name
+            total = 0
+            try:
+                while True:
+                    chunk = await part.read_chunk(64 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_AUDIO_UPLOAD_BYTES:
+                        tmp.close()
+                        return web.json_response(
+                            {
+                                "success": False,
+                                "error": f"audio exceeds {MAX_AUDIO_UPLOAD_BYTES} bytes",
+                            },
+                            status=413,
+                        )
+                    tmp.write(chunk)
+            finally:
+                tmp.close()
+
+            if total == 0:
+                return web.json_response(
+                    {"success": False, "error": "empty audio upload"},
+                    status=400,
+                )
+
+            try:
+                from tools.transcription_tools import transcribe_audio  # type: ignore
+            except Exception as exc:
+                logger.warning("Audio transcription backend import failed: %s", exc)
+                return web.json_response(
+                    {"success": False, "error": f"transcription backend not importable: {exc}"},
+                    status=500,
+                )
+
+            result = await asyncio.to_thread(transcribe_audio, temp_path)
+            if not isinstance(result, dict):
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": "transcription backend returned unexpected shape",
+                    },
+                    status=500,
+                )
+            if not result.get("success"):
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": result.get("error", "transcription failed"),
+                        "provider": result.get("provider"),
+                    },
+                    status=500,
+                )
+
+            text = result.get("transcript") or result.get("text") or ""
+            return web.json_response(
+                {
+                    "success": True,
+                    "text": text,
+                    "provider": result.get("provider"),
+                }
+            )
+        except web.HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Audio transcription failed: %s", exc)
+            return web.json_response(
+                {"success": False, "error": f"transcription error: {exc}"},
+                status=500,
+            )
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    async def _handle_audio_speech(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/audio/speech — synthesize text through Hermes TTS."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response(
+                {"success": False, "error": "invalid JSON body"},
+                status=400,
+            )
+
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {"success": False, "error": "body must be a JSON object"},
+                status=400,
+            )
+
+        text = payload.get("text") or payload.get("input")
+        if not isinstance(text, str):
+            return web.json_response(
+                {"success": False, "error": "'text' must be a string"},
+                status=400,
+            )
+        text = text.strip()
+        if not text:
+            return web.json_response(
+                {"success": False, "error": "'text' must not be empty"},
+                status=400,
+            )
+        if len(text) > MAX_TTS_TEXT_CHARS:
+            return web.json_response(
+                {"success": False, "error": f"text exceeds {MAX_TTS_TEXT_CHARS} characters"},
+                status=400,
+            )
+
+        sanitized = _sanitize_for_tts(text)
+        if not sanitized:
+            return web.json_response(
+                {"success": False, "error": "'text' is empty after sanitization"},
+                status=400,
+            )
+
+        try:
+            from tools.tts_tool import text_to_speech_tool  # type: ignore
+            raw = await asyncio.to_thread(text_to_speech_tool, sanitized)
+        except Exception as exc:
+            logger.exception("Audio speech: TTS call failed: %s", exc)
+            return web.json_response(
+                {"success": False, "error": f"tts backend error: {exc}"},
+                status=500,
+            )
+
+        try:
+            result = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, ValueError) as exc:
+            return web.json_response(
+                {"success": False, "error": f"tts backend returned non-JSON: {exc}"},
+                status=500,
+            )
+
+        if not isinstance(result, dict) or not result.get("success"):
+            err = (
+                result.get("error", "tts failed")
+                if isinstance(result, dict)
+                else "tts returned unexpected shape"
+            )
+            return web.json_response({"success": False, "error": err}, status=500)
+
+        file_path = result.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            return web.json_response(
+                {"success": False, "error": "tts result missing file_path"},
+                status=500,
+            )
+        if not os.path.isfile(file_path):
+            return web.json_response(
+                {"success": False, "error": f"tts file missing on disk: {file_path}"},
+                status=500,
+            )
+
+        headers = {
+            "Content-Type": "audio/mpeg",
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": 'inline; filename="tts.mp3"',
+        }
+        return web.FileResponse(file_path, headers=headers)
+
+    async def _handle_audio_capabilities(self, request: "web.Request") -> "web.Response":
+        """GET /api/audio/capabilities — configured STT/TTS capability probe."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from tools.voice_mode import check_voice_requirements  # type: ignore
+            from tools.tts_tool import _load_tts_config  # type: ignore
+            from tools.transcription_tools import _load_stt_config  # type: ignore
+        except Exception as exc:
+            logger.warning("Audio capabilities imports failed: %s", exc)
+            return web.json_response(
+                {"success": False, "error": f"voice backend not importable: {exc}"},
+                status=500,
+            )
+
+        try:
+            requirements = check_voice_requirements()
+        except Exception as exc:
+            logger.warning("check_voice_requirements failed: %s", exc)
+            requirements = {"error": str(exc)}
+
+        try:
+            tts_cfg = _load_tts_config() or {}
+        except Exception as exc:
+            logger.warning("_load_tts_config failed: %s", exc)
+            tts_cfg = {"error": str(exc)}
+
+        try:
+            stt_cfg = _load_stt_config() or {}
+        except Exception as exc:
+            logger.warning("_load_stt_config failed: %s", exc)
+            stt_cfg = {"error": str(exc)}
+
+        return web.json_response(
+            {
+                "success": True,
+                "transcription": {
+                    "enabled": bool(stt_cfg.get("provider")),
+                    "provider": stt_cfg.get("provider"),
+                    "model": stt_cfg.get("model"),
+                    "endpoint": "/api/audio/transcriptions",
+                },
+                "speech": {
+                    "enabled": bool(tts_cfg.get("provider")),
+                    "provider": tts_cfg.get("provider"),
+                    "voice_id": tts_cfg.get("voice_id"),
+                    "model": tts_cfg.get("model"),
+                    "endpoint": "/api/audio/speech",
+                    "mime_type": "audio/mpeg",
+                },
+                "stt": {
+                    "enabled": bool(stt_cfg.get("provider")),
+                    "provider": stt_cfg.get("provider"),
+                    "model": stt_cfg.get("model"),
+                },
+                "tts": {
+                    "enabled": bool(tts_cfg.get("provider")),
+                    "provider": tts_cfg.get("provider"),
+                    "voice_id": tts_cfg.get("voice_id"),
+                    "model": tts_cfg.get("model"),
+                },
+                "limits": {
+                    "max_audio_bytes": MAX_AUDIO_UPLOAD_BYTES,
+                    "max_text_chars": MAX_TTS_TEXT_CHARS,
+                },
+                "requirements": requirements,
+            }
+        )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -1610,6 +1972,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "tool_progress_events": True,
+                "audio_transcriptions": True,
+                "audio_speech": True,
+                "audio_capabilities": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "cors": bool(self._cors_origins),
             },
@@ -1623,6 +1988,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "audio_transcriptions": {"method": "POST", "path": "/api/audio/transcriptions"},
+                "audio_speech": {"method": "POST", "path": "/api/audio/speech"},
+                "audio_capabilities": {"method": "GET", "path": "/api/audio/capabilities"},
+                "voice_transcribe": {"method": "POST", "path": "/voice/transcribe"},
+                "voice_synthesize": {"method": "POST", "path": "/voice/synthesize"},
+                "voice_config": {"method": "GET", "path": "/voice/config"},
             },
         })
 
@@ -3565,6 +3936,12 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_post("/api/audio/transcriptions", self._handle_audio_transcriptions)
+            self._app.router.add_post("/api/audio/speech", self._handle_audio_speech)
+            self._app.router.add_get("/api/audio/capabilities", self._handle_audio_capabilities)
+            self._app.router.add_post("/voice/transcribe", self._handle_audio_transcriptions)
+            self._app.router.add_post("/voice/synthesize", self._handle_audio_speech)
+            self._app.router.add_get("/voice/config", self._handle_audio_capabilities)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
