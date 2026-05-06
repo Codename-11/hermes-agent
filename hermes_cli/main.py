@@ -7764,10 +7764,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 except Exception:
                     pass
 
-                # Discover hermes-gateway AND hermes-dashboard units.
-                # The dashboard is a long-running FastAPI server that shares the
-                # same codebase — it must be restarted to pick up code changes.
-                _HERMES_SERVICE_PATTERNS = ["hermes-gateway*", "hermes-dashboard*"]
+                # Discover Hermes gateway services plus dashboard units.
+                #
+                # The default profile uses ``hermes-gateway.service`` while
+                # named profile gateways on this host use ``<profile>-gateway``
+                # units (for example ``mizu-gateway.service`` and
+                # ``gary-gateway.service``).  All of them share this checkout,
+                # so code updates must restart every active gateway, not just
+                # the default profile.  The dashboard is also a long-running
+                # Python process from the same codebase and must be restarted
+                # to pick up updated code.
+                _HERMES_SERVICE_PATTERNS = [
+                    "hermes-gateway*",
+                    "*-gateway.service",
+                    "hermes-dashboard*",
+                ]
+                _allowed_profile_gateway_units: set[str] = set()
+                try:
+                    from hermes_cli.profiles import list_profiles as _list_profiles
+
+                    _allowed_profile_gateway_units = {
+                        f"{profile.name}-gateway.service"
+                        for profile in _list_profiles()
+                        if not getattr(profile, "is_default", False)
+                    }
+                except Exception:
+                    _allowed_profile_gateway_units = set()
+
+                def _is_managed_hermes_unit(unit: str) -> bool:
+                    if unit.startswith("hermes-gateway"):
+                        return True
+                    if unit.startswith("hermes-dashboard"):
+                        return True
+                    return unit in _allowed_profile_gateway_units
 
                 for scope, scope_cmd in [
                     ("user", ["systemctl", "--user"]),
@@ -7791,15 +7820,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 timeout=10,
                             )
                             discovered_lines.extend(result.stdout.strip().splitlines())
+
+                        seen_units: set[str] = set()
                         for line in discovered_lines:
                             parts = line.split()
                             if not parts:
                                 continue
                             unit = parts[
                                 0
-                            ]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
-                            if not unit.endswith(".service"):
+                            ]  # e.g. hermes-gateway.service or gary-gateway.service
+                            if (
+                                not unit.endswith(".service")
+                                or unit in seen_units
+                                or not _is_managed_hermes_unit(unit)
+                            ):
                                 continue
+                            seen_units.add(unit)
                             svc_name = unit.removesuffix(".service")
                             # Check if active
                             check = subprocess.run(

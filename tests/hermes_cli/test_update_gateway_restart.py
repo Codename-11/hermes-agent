@@ -499,6 +499,103 @@ class TestCmdUpdateLaunchdRestart:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_discovers_named_profile_gateway_services(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """Updates restart every active Hermes gateway unit, including named
+        profile units such as gary-gateway.service, not only the default
+        hermes-gateway.service.
+        """
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.list_profiles",
+            lambda: [
+                SimpleNamespace(name="default", is_default=True),
+                SimpleNamespace(name="gary", is_default=False),
+                SimpleNamespace(name="mizu", is_default=False),
+                SimpleNamespace(name="mizuki", is_default=False),
+            ],
+        )
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+
+            if "systemctl" in joined and "list-units" in joined:
+                if "--user" not in joined:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                if "hermes-gateway*" in joined:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout="hermes-gateway.service loaded active running Hermes Gateway\n",
+                        stderr="",
+                    )
+                if "*-gateway.service" in joined:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout=(
+                            "gary-gateway.service loaded active running Captain Gary\n"
+                            "mizu-gateway.service loaded active running Mizu\n"
+                            "mizuki-gateway.service loaded active running Mizuki\n"
+                        ),
+                        stderr="",
+                    )
+                if "hermes-dashboard*" in joined:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout="hermes-dashboard.service loaded active running Dashboard\n",
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if "systemctl" in joined and "is-active" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+            if "systemctl" in joined and "show" in joined and "MainPID" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            if "systemctl" in joined and "restart" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        for svc in [
+            "hermes-gateway",
+            "gary-gateway",
+            "mizu-gateway",
+            "mizuki-gateway",
+            "hermes-dashboard",
+        ]:
+            assert f"Restarted {svc}" in captured
+
+        restart_services = {
+            c.args[0][-1]
+            for c in mock_run.call_args_list
+            if "systemctl" in " ".join(str(a) for a in c.args[0])
+            and "restart" in " ".join(str(a) for a in c.args[0])
+        }
+        assert restart_services == {
+            "hermes-gateway",
+            "gary-gateway",
+            "mizu-gateway",
+            "mizuki-gateway",
+            "hermes-dashboard",
+        }
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_prefers_sigusr1_over_systemctl_restart_when_mainpid_known(
         self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
     ):
