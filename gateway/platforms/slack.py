@@ -986,7 +986,11 @@ class SlackAdapter(BasePlatformAdapter):
         if not self.config.extra.get("reply_in_thread", True):
             md = metadata or {}
             existing_thread = md.get("thread_id") or md.get("thread_ts")
-            if existing_thread and reply_to and existing_thread == reply_to:
+            # Normal final sends pass reply_to.  Streaming/progress/commentary
+            # sends may only pass metadata, so use the preserved original
+            # message id as the same synthetic-thread discriminator.
+            anchor = reply_to or md.get("reply_to_message_id") or md.get("message_id")
+            if existing_thread and anchor and str(existing_thread) == str(anchor):
                 existing_thread = None
             return existing_thread or None
 

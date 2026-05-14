@@ -487,11 +487,24 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
         metadata={"thread_id": "171.000"},
     ) is None
 
+    # Streaming/progress paths may not pass reply_to, but they carry the
+    # original message ts in metadata. That should also suppress synthetic
+    # top-level threading when reply_in_thread=false.
+    assert adapter._resolve_thread_ts(
+        reply_to=None,
+        metadata={"thread_id": "171.000", "reply_to_message_id": "171.000"},
+    ) is None
+
     # Real thread replies (reply_to differs from thread parent) must still
     # resolve to the parent thread so conversation context is preserved.
     assert adapter._resolve_thread_ts(
         reply_to="171.500",
         metadata={"thread_id": "171.000"},
+    ) == "171.000"
+
+    assert adapter._resolve_thread_ts(
+        reply_to=None,
+        metadata={"thread_id": "171.000", "reply_to_message_id": "171.500"},
     ) == "171.000"
 
 

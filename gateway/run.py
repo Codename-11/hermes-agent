@@ -12234,6 +12234,14 @@ class GatewayRunner:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
         if (
+            getattr(source, "platform", None) == Platform.SLACK
+            and reply_to_message_id is not None
+        ):
+            # Slack uses event.ts as a synthetic thread_id for top-level channel
+            # session keying.  Carry the triggering message ts so adapter paths
+            # that only receive metadata do not mistake it for a real thread.
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
+        if (
             getattr(source, "platform", None) == Platform.TELEGRAM
             and getattr(source, "chat_type", None) == "dm"
         ):
