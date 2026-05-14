@@ -415,6 +415,43 @@ class SlackAdapter(BasePlatformAdapter):
     # we use a much shorter TTL to avoid routing unrelated messages
     # as ephemeral if the command handler was slow or dropped.
 
+    def _legacy_slash_command_names(self) -> set[str]:
+        # Return legacy single-entry slash commands that proxy subcommands.
+        # /hermes <subcommand> predates native Slack slash registration. For
+        # profile-branded workplace bots, also allow /<profile> <subcommand>
+        # (for example /atlas new) when HERMES_HOME points at a named profile.
+        names = {"hermes"}
+
+        # Optional explicit aliases from config for deployments whose visible
+        # bot name differs from the Hermes profile directory.
+        try:
+            raw_aliases = self.config.extra.get("slash_command_aliases", "")
+        except Exception:
+            raw_aliases = ""
+        if isinstance(raw_aliases, str):
+            candidates = raw_aliases.replace(",", " ").split()
+        elif isinstance(raw_aliases, (list, tuple, set)):
+            candidates = list(raw_aliases)
+        else:
+            candidates = []
+        for raw in candidates:
+            alias = str(raw).strip().lower().lstrip("/")
+            if alias:
+                names.add(alias)
+
+        try:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            if home.parent.name == "profiles" and home.name:
+                names.add(home.name.lower())
+        except Exception:
+            pass
+
+        # Slack slash command names are lowercase and conservative. Drop any
+        # weird profile/config values rather than registering an invalid regex.
+        import re as _re
+        return {n for n in names if _re.fullmatch(r"[a-z0-9_-]+", n)}
+
     def _pop_slash_context(
         self, chat_id: str,
     ) -> Optional[Dict[str, Any]]:
@@ -647,7 +684,10 @@ class SlackAdapter(BasePlatformAdapter):
             from hermes_cli.commands import slack_native_slashes
             import re as _re
 
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            _slash_names = sorted(
+                {name for name, _d, _h in slack_native_slashes()}
+                | self._legacy_slash_command_names()
+            )
             if _slash_names:
                 _slash_pattern = _re.compile(
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
@@ -2763,10 +2803,11 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in {"hermes", ""}:
-            # Legacy /hermes <subcommand> [args] routing + free-form questions.
-            # Empty slash_name falls into this branch for backward compat
-            # with any caller that didn't populate command["command"].
+        if slash_name in self._legacy_slash_command_names() or slash_name == "":
+            # Legacy /hermes or profile-branded /<profile> <subcommand> [args]
+            # routing + free-form questions. Empty slash_name falls into this
+            # branch for backward compat with any caller that didn't populate
+            # command["command"].
             from hermes_cli.commands import slack_subcommand_map
             subcommand_map = slack_subcommand_map()
             subcommand_map["compact"] = "/compress"

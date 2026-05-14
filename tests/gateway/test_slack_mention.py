@@ -700,3 +700,29 @@ def test_config_bridges_slack_allowed_channels_env_takes_precedence(monkeypatch,
     import os as _os
     # env var must not be overwritten by config.yaml
     assert _os.environ["SLACK_ALLOWED_CHANNELS"] == OTHER_CHANNEL_ID
+
+
+# ---------------------------------------------------------------------------
+# Regression: profile-branded Slack slash command aliases
+# ---------------------------------------------------------------------------
+
+def test_profile_named_slash_alias_is_legacy_passthrough(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes" / "profiles" / "atlas"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    adapter = _make_adapter()
+
+    assert "hermes" in adapter._legacy_slash_command_names()
+    assert "atlas" in adapter._legacy_slash_command_names()
+
+
+def test_configured_slash_aliases_are_legacy_passthroughs():
+    adapter = _make_adapter()
+    adapter.config.extra["slash_command_aliases"] = "atlas titan /shop-floor"
+
+    aliases = adapter._legacy_slash_command_names()
+
+    assert "atlas" in aliases
+    assert "titan" in aliases
+    assert "shop-floor" in aliases
