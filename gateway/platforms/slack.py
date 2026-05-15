@@ -344,6 +344,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Fallback for workspaces/apps where Slack's native Assistant status
+        # API is unavailable or missing scope.  Keyed by (chat_id, thread_ts)
+        # and edited in-place so operators get one concise dynamic status
+        # breadcrumb instead of a spray of "still working" messages.
+        self._active_status_messages: Dict[Tuple[str, str], str] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -941,18 +946,32 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Show a typing/status indicator using assistant.threads.setStatus.
+        """Show native Slack Assistant status, with an editable fallback.
 
-        Displays "is thinking..." next to the bot name in a thread.
-        Requires the assistant:write or chat:write scope.
-        Auto-clears when the bot sends a reply to the thread.
+        Slack's dynamic "under the bot name" status is thread-scoped via
+        ``assistant.threads.setStatus``; it cannot be shown for a bare channel
+        without a ``thread_ts``.  Hermes intentionally keeps final replies in
+        the channel when ``reply_in_thread: false``, but progress/status can
+        still use the triggering message's thread anchor.  If Slack rejects the
+        native status call (missing assistant scope/app config/etc.), update one
+        concise thread message instead so operators still see live progress.
         """
         if not self._app:
             return
 
         thread_ts = None
+        status = "is thinking..."
         if metadata:
-            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+            thread_ts = (
+                metadata.get("status_thread_id")
+                or metadata.get("thread_id")
+                or metadata.get("thread_ts")
+            )
+            status = str(
+                metadata.get("status")
+                or metadata.get("status_text")
+                or status
+            ).strip() or status
 
         if not thread_ts:
             return  # Can only set status in a thread context
@@ -962,15 +981,52 @@ class SlackAdapter(BasePlatformAdapter):
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
-                status="is thinking...",
+                status=status[:100],
             )
         except Exception as e:
-            # Silently ignore — may lack assistant:write scope or not be
-            # in an assistant-enabled context. Falls back to reactions.
+            # Workspaces may lack assistant:write/chat:write scope or may not
+            # be assistant-enabled.  Keep the failure quiet in chat but provide
+            # the same operator signal through one edited thread message.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+            await self._upsert_status_fallback(chat_id, thread_ts, status)
+
+    async def _upsert_status_fallback(
+        self,
+        chat_id: str,
+        thread_ts: str,
+        status: str,
+    ) -> None:
+        """Create or edit the single fallback Slack status message."""
+        key = (chat_id, thread_ts)
+        text = f"_Status:_ {status}"
+        text = text[:300]
+        try:
+            msg_id = self._active_status_messages.get(key)
+            if msg_id:
+                await self._get_client(chat_id).chat_update(
+                    channel=chat_id,
+                    ts=msg_id,
+                    text=text,
+                    mrkdwn=True,
+                )
+                return
+
+            result = await self._get_client(chat_id).chat_postMessage(
+                channel=chat_id,
+                thread_ts=thread_ts,
+                text=text,
+                mrkdwn=True,
+            )
+            sent_ts = result.get("ts") if result else None
+            if sent_ts:
+                self._active_status_messages[key] = sent_ts
+                self._bot_message_ts.add(sent_ts)
+                self._bot_message_ts.add(thread_ts)
+        except Exception as fallback_error:
+            logger.debug("[Slack] status fallback message failed: %s", fallback_error)
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
-        """Clear the assistant thread status indicator."""
+        """Clear native Slack status and finalize fallback status message."""
         if not self._app:
             return
         thread_ts = self._active_status_threads.pop(chat_id, None)
@@ -984,6 +1040,19 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+
+        key = (chat_id, thread_ts)
+        msg_id = self._active_status_messages.pop(key, None)
+        if msg_id:
+            try:
+                await self._get_client(chat_id).chat_update(
+                    channel=chat_id,
+                    ts=msg_id,
+                    text="_Status:_ done.",
+                    mrkdwn=True,
+                )
+            except Exception as e:
+                logger.debug("[Slack] status fallback finalize failed: %s", e)
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.
@@ -1961,8 +2030,12 @@ class SlackAdapter(BasePlatformAdapter):
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
         # Build thread_ts for session keying.
-        # In channels: fall back to ts so each top-level @mention starts a
-        #   new thread/session (the bot always replies in a thread).
+        # In channels: real Slack thread replies keep their thread_ts.  For
+        # top-level channel messages, fall back to ts so each top-level @mention
+        # starts a new session, except in free-response channels with
+        # reply_in_thread=false.  Those are ambient channel-chat lanes; using the
+        # top-level message ts there fragments context into one session per
+        # message.
         # In DMs: fall back to ts so each top-level DM reply thread gets
         #   its own session key (matching channel behavior). Set
         #   dm_top_level_threads_as_sessions: false in config to revert to
@@ -1972,7 +2045,15 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            if event.get("thread_ts"):
+                thread_ts = event["thread_ts"]
+            elif (
+                channel_id in self._slack_free_response_channels()
+                and not self.config.extra.get("reply_in_thread", True)
+            ):
+                thread_ts = None
+            else:
+                thread_ts = ts
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is

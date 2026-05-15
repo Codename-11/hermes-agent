@@ -14054,6 +14054,14 @@ class GatewayRunner:
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        # Slack's native Assistant status is thread-scoped even when final
+        # replies are intentionally top-level (`reply_in_thread: false`). Keep
+        # streaming metadata unchanged so content still lands in-channel, but
+        # give the status API the triggering message ts as a dedicated anchor.
+        _typing_metadata = dict(_thread_metadata or {})
+        if source.platform == Platform.SLACK and event_message_id:
+            _typing_metadata.setdefault("status_thread_id", event_message_id)
+        _typing_metadata.setdefault("status", "is thinking...")
 
         if _streaming_enabled:
             try:
@@ -14103,7 +14111,7 @@ class GatewayRunner:
         _adapter = self.adapters.get(source.platform)
         if _adapter:
             try:
-                await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
+                await _adapter.send_typing(source.chat_id, metadata=_typing_metadata)
             except Exception:
                 pass
 
@@ -14514,6 +14522,34 @@ class GatewayRunner:
             if not adapter:
                 return
 
+            def _status_from_progress(msg: Any) -> str:
+                """Turn a visible tool-progress line into concise status text."""
+                if not isinstance(msg, str) or not msg.strip():
+                    return "is thinking..."
+                first = msg.strip().splitlines()[0]
+                # Drop a leading emoji/icon while keeping the meaningful tool
+                # name/preview. This feeds Slack Assistant status and the
+                # fallback status bubble without duplicating verbose payloads.
+                first = re.sub(r"^\W+\s*", "", first).strip() or first.strip()
+                if len(first) > 80:
+                    first = first[:77].rstrip() + "..."
+                if first.lower().startswith("is "):
+                    return first
+                return f"is {first}"
+
+            async def _refresh_status(msg: Any = None) -> None:
+                if not hasattr(adapter, "send_typing") or not _progress_metadata:
+                    return
+                status_meta = dict(_progress_metadata)
+                if source.platform == Platform.SLACK and event_message_id:
+                    status_meta.setdefault("status_thread_id", event_message_id)
+                status_meta["status"] = _status_from_progress(msg)
+                await adapter.send_typing(source.chat_id, metadata=status_meta)
+
+            # Prime native Slack Assistant status / fallback status bubble before
+            # the first tool starts so long model-thinking gaps are visible.
+            await _refresh_status("thinking...")
+
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
             # would become a separate message bubble, which is noisy.
@@ -14658,7 +14694,7 @@ class GatewayRunner:
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
                     if _run_still_current():
-                        await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                        await _refresh_status(msg)
 
                 except queue.Empty:
                     await asyncio.sleep(0.3)

@@ -474,6 +474,70 @@ class TestSlackProxyBehavior:
 
 
 # ---------------------------------------------------------------------------
+# TestTypingStatus
+# ---------------------------------------------------------------------------
+
+class TestTypingStatus:
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_native_assistant_status_with_custom_text(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock()
+
+        await adapter.send_typing(
+            "C123",
+            metadata={
+                "status_thread_id": "1710000000.000100",
+                "status": "is running terminal...",
+            },
+        )
+
+        adapter._app.client.assistant_threads_setStatus.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="1710000000.000100",
+            status="is running terminal...",
+        )
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_typing_falls_back_to_single_edited_thread_message(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=RuntimeError("missing_scope")
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "1710000000.000200"})
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        await adapter.send_typing(
+            "C123",
+            metadata={"thread_id": "1710000000.000100", "status": "is reading files..."},
+        )
+        await adapter.send_typing(
+            "C123",
+            metadata={"thread_id": "1710000000.000100", "status": "is patching..."},
+        )
+
+        adapter._app.client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            thread_ts="1710000000.000100",
+            text="_Status:_ is reading files...",
+            mrkdwn=True,
+        )
+        adapter._app.client.chat_update.assert_awaited_once_with(
+            channel="C123",
+            ts="1710000000.000200",
+            text="_Status:_ is patching...",
+            mrkdwn=True,
+        )
+
+        await adapter.stop_typing("C123")
+        adapter._app.client.chat_update.assert_any_await(
+            channel="C123",
+            ts="1710000000.000200",
+            text="_Status:_ done.",
+            mrkdwn=True,
+        )
+
+
+# ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
 
@@ -1131,6 +1195,62 @@ class TestMessageRouting:
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text == "what's the weather?"
         assert "<@U_BOT>" not in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_free_response_top_level_channel_message_uses_channel_session_when_not_threading(self, adapter):
+        """Free-response top-level channel messages should not key by Slack ts."""
+        adapter.config.extra["free_response_channels"] = "C123"
+        adapter.config.extra["reply_in_thread"] = False
+        event = {
+            "text": "ambient channel chat",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id is None
+        assert msg_event.reply_to_message_id is None
+
+    @pytest.mark.asyncio
+    async def test_real_thread_reply_keeps_thread_ts_in_free_response_channel(self, adapter):
+        """Real Slack thread replies still get thread-scoped sessions."""
+        adapter.config.extra["free_response_channels"] = "C123"
+        adapter.config.extra["reply_in_thread"] = False
+        event = {
+            "text": "reply in an actual thread",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000002",
+            "thread_ts": "1234567890.000001",
+        }
+        with patch.object(adapter, "_fetch_thread_context", new_callable=AsyncMock, return_value=""):
+            with patch.object(adapter, "_fetch_thread_parent_text", new_callable=AsyncMock, return_value=None):
+                await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "1234567890.000001"
+        assert msg_event.reply_to_message_id == "1234567890.000001"
+
+    @pytest.mark.asyncio
+    async def test_mention_gated_top_level_channel_message_keeps_ts_session(self, adapter):
+        """Mention-gated top-level channel asks keep legacy per-message sessions."""
+        event = {
+            "text": "<@U_BOT> start a fresh ask",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "1234567890.000001"
 
     @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):
