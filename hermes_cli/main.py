@@ -5652,31 +5652,18 @@ def cmd_version(args):
             # whether to update right now.  Opt out with HERMES_VERSION_NO_PREVIEW=1.
             if os.environ.get("HERMES_VERSION_NO_PREVIEW") != "1":
                 try:
+                    from hermes_cli.banner import get_update_preview_range
                     from hermes_cli.update_ui import compute_pending_digest
 
-                    # Re-resolve the branch so this block doesn't depend on
-                    # variables from the earlier try/except that may not
-                    # have run (e.g. git call raised).
-                    _br = subprocess.run(
-                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                        capture_output=True, text=True, timeout=5,
-                        cwd=str(PROJECT_ROOT),
-                    )
-                    _branch = _br.stdout.strip() if _br.returncode == 0 else ""
-
-                    # Deploy branches compare main..upstream/main (what would
-                    # be merged in); other branches compare HEAD..origin/main
-                    # (what a standard pull would land).
-                    if _branch in {"axiom"}:
-                        base, target = "main", "upstream/main"
-                    else:
-                        base, target = "HEAD", "origin/main"
-                    digest = compute_pending_digest(
-                        PROJECT_ROOT, base, target,
-                        title="Pending upstream changes",
-                    )
-                    if digest:
-                        print(digest)
+                    preview = get_update_preview_range(PROJECT_ROOT)
+                    if preview:
+                        base, target, title = preview
+                        digest = compute_pending_digest(
+                            PROJECT_ROOT, base, target,
+                            title=title,
+                        )
+                        if digest:
+                            print(digest)
                 except Exception:
                     pass  # preview is best-effort — never fail `hermes version`
         elif behind == 0:
@@ -7950,31 +7937,15 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference
-    print("→ Fetching from upstream...")
-    fetch_result = subprocess.run(
-        git_cmd + ["fetch", "upstream"],
+    print("→ Fetching from origin...")
+    fetch_origin = subprocess.run(
+        git_cmd + ["fetch", "origin"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
     )
-    if fetch_result.returncode != 0:
-        # Fallback to origin if upstream doesn't exist
-        print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        upstream_exists = False
-        compare_branch = "origin/main"
-    else:
-        upstream_exists = True
-        compare_branch = "upstream/main"
-
-    if fetch_result.returncode != 0:
-        stderr = fetch_result.stderr.strip()
+    if fetch_origin.returncode != 0:
+        stderr = fetch_origin.stderr.strip()
         if "Could not resolve host" in stderr or "unable to access" in stderr:
             print("✗ Network error — cannot reach the remote repository.")
         elif "Authentication failed" in stderr or "could not read Username" in stderr:
@@ -7985,14 +7956,61 @@ def _cmd_update_check():
                 print(f"  {stderr.splitlines()[0]}")
         sys.exit(1)
 
-    rev_result = subprocess.run(
-        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
+    upstream_exists = _has_upstream_remote(git_cmd, PROJECT_ROOT)
+    upstream_fetched = False
+    if upstream_exists:
+        print("→ Fetching from upstream...")
+        fetch_upstream = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_upstream.returncode == 0:
+            upstream_fetched = True
+        else:
+            stderr = fetch_upstream.stderr.strip()
+            print("⚠ Failed to fetch upstream; checking origin only.")
+            if stderr:
+                print(f"  {stderr.splitlines()[0]}")
+
+    current_branch_result = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         check=True,
     )
-    behind = int(rev_result.stdout.strip())
+    current_branch = current_branch_result.stdout.strip()
+
+    if current_branch in DEPLOY_BRANCHES:
+        remote_ref = f"origin/{current_branch}"
+        origin_ahead = _count_commits_between(git_cmd, PROJECT_ROOT, "HEAD", remote_ref)
+        if origin_ahead < 0:
+            print(f"✗ Could not compare HEAD against {remote_ref}.")
+            sys.exit(1)
+        upstream_ahead = 0
+        if upstream_fetched:
+            upstream_ahead = _count_commits_between(
+                git_cmd, PROJECT_ROOT, remote_ref, "upstream/main"
+            )
+            if upstream_ahead < 0:
+                print(f"✗ Could not compare {remote_ref} against upstream/main.")
+                sys.exit(1)
+        behind = origin_ahead + upstream_ahead
+        compare_branch = f"{remote_ref}"
+        if upstream_fetched:
+            compare_branch += " + upstream/main"
+    else:
+        compare_branch = "upstream/main" if upstream_fetched else "origin/main"
+        rev_result = subprocess.run(
+            git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        behind = int(rev_result.stdout.strip())
 
     if behind == 0:
         print("✓ Already up to date.")

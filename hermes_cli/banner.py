@@ -122,12 +122,56 @@ def get_available_skills() -> Dict[str, List[str]]:
 
 # Cache update check results for 6 hours to avoid repeated git fetches
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+_UPDATE_CHECK_CACHE_SCHEMA = 2
 
 # Sentinel returned when we know an update exists but can't count commits
 # (e.g. nix-built hermes — no local git history to count against).
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_DEPLOY_BRANCHES = {"axiom"}
+
+
+def _current_git_branch(repo_dir: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _has_git_remote(repo_dir: Path, remote: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", remote],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _count_git_range(repo_dir: Path, base: str, target: str) -> Optional[int]:
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", f"{base}..{target}"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip() or "0")
+    except ValueError:
+        return None
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -163,65 +207,64 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         pass  # Offline or timeout — use stale refs, that's fine
 
     # For forks: also fetch upstream so deploy branches detect upstream-only changes.
-    has_upstream = False
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "upstream"],
-            capture_output=True, text=True, timeout=5,
-            cwd=str(repo_dir),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            has_upstream = True
+    has_upstream = _has_git_remote(repo_dir, "upstream")
+    if has_upstream:
+        try:
             subprocess.run(
                 ["git", "fetch", "upstream", "--quiet"],
                 capture_output=True, timeout=10,
                 cwd=str(repo_dir),
             )
-    except Exception:
-        pass
-
-    # Deploy branches (e.g. axiom) merge feature branches on top of main, so the
-    # relevant comparison is local main..upstream/main rather than HEAD..upstream/main.
-    deploy_branches = {"axiom"}
-    current_branch = None
-    try:
-        br_result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
-        )
-        if br_result.returncode == 0:
-            current_branch = br_result.stdout.strip()
-    except Exception:
-        pass
-
-    behind = None
-    if current_branch in deploy_branches and has_upstream:
-        try:
-            result = subprocess.run(
-                ["git", "rev-list", "--count", "main..upstream/main"],
-                capture_output=True, text=True, timeout=5,
-                cwd=str(repo_dir),
-            )
-            if result.returncode == 0:
-                behind = int(result.stdout.strip() or "0")
         except Exception:
             pass
+
+    current_branch = _current_git_branch(repo_dir)
+
+    behind = None
+    if current_branch in _DEPLOY_BRANCHES:
+        remote_ref = f"origin/{current_branch}"
+        pending_counts: list[int] = []
+        origin_ahead = _count_git_range(repo_dir, "HEAD", remote_ref)
+        if origin_ahead is not None:
+            pending_counts.append(max(origin_ahead, 0))
+        if has_upstream:
+            upstream_ahead = _count_git_range(repo_dir, remote_ref, "upstream/main")
+            if upstream_ahead is not None:
+                pending_counts.append(max(upstream_ahead, 0))
+        behind = sum(pending_counts) if pending_counts else None
     else:
         refs = ["origin/main"] + (["upstream/main"] if has_upstream else [])
         for ref in refs:
-            try:
-                result = subprocess.run(
-                    ["git", "rev-list", "--count", f"HEAD..{ref}"],
-                    capture_output=True, text=True, timeout=5,
-                    cwd=str(repo_dir),
-                )
-                if result.returncode == 0:
-                    count = int(result.stdout.strip() or "0")
-                    if behind is None or count > behind:
-                        behind = count
-            except Exception:
-                pass
+            count = _count_git_range(repo_dir, "HEAD", ref)
+            if count is not None and (behind is None or count > behind):
+                behind = count
     return behind
+
+
+def get_update_preview_range(repo_dir: Optional[Path] = None) -> Optional[tuple[str, str, str]]:
+    """Return the git range that ``hermes version`` should preview.
+
+    Deploy branches are checked against their remote deploy artifact first, and
+    then against upstream commits not yet merged into that artifact.
+    """
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+
+    current_branch = _current_git_branch(repo_dir)
+    if current_branch in _DEPLOY_BRANCHES:
+        remote_ref = f"origin/{current_branch}"
+        origin_ahead = _count_git_range(repo_dir, "HEAD", remote_ref)
+        if origin_ahead and origin_ahead > 0:
+            return "HEAD", remote_ref, "Pending deploy branch changes"
+
+        if _has_git_remote(repo_dir, "upstream"):
+            upstream_ahead = _count_git_range(repo_dir, remote_ref, "upstream/main")
+            if upstream_ahead and upstream_ahead > 0:
+                return remote_ref, "upstream/main", "Pending upstream changes"
+        return None
+
+    return "HEAD", "origin/main", "Pending upstream changes"
 
 def _version_tuple(v: str) -> tuple[int, ...]:
     """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
@@ -288,6 +331,7 @@ def check_for_updates() -> Optional[int]:
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
+                and cached.get("schema") == _UPDATE_CHECK_CACHE_SCHEMA
             ):
                 return cached.get("behind")
     except Exception:
@@ -308,7 +352,12 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(json.dumps({
+            "schema": _UPDATE_CHECK_CACHE_SCHEMA,
+            "ts": now,
+            "behind": behind,
+            "rev": embedded_rev,
+        }))
     except Exception:
         pass
 

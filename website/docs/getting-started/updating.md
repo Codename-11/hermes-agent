@@ -49,7 +49,7 @@ When you run `hermes update`, the following steps occur:
 
 ### Preview-only: `hermes update --check`
 
-Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares against the same branch target `hermes update` would use; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
 
 ### Fork and deploy branch installs
 
@@ -59,6 +59,8 @@ Forked installs can track the official Hermes repository through an `upstream` r
 2. If the live checkout is only behind `origin/<deploy-branch>`, fast-forward it.
 3. If upstream has new commits, merge `upstream/main` into the deploy branch in a temporary worktree, push the result to origin, then fast-forward the live checkout.
 4. If the upstream merge conflicts, leave the live checkout untouched and print a copy/paste handoff block with the repo path, retained worktree path, commits, and conflicted files.
+
+`hermes version` and `hermes update --check` use the same deploy-branch comparison: live `HEAD` versus `origin/<deploy-branch>`, plus upstream commits not yet merged into `origin/<deploy-branch>`. They do not use a stale local `main` branch as the deploy baseline.
 
 Local uncommitted changes are stashed before deploy-branch updates. When code actually changes, the stash is preserved instead of being reapplied automatically so the live checkout stays on the tested deploy branch. Restore it manually only after reviewing whether those changes are still intended.
 

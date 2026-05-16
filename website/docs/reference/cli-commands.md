@@ -1192,7 +1192,7 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 
 | Option | Description |
 |--------|-------------|
-| `--check` | Print the current commit and the latest `origin/main` commit side by side, and exit 0 if in sync or 1 if behind. Does not pull, install, or restart anything. |
+| `--check` | Fetch remotes, report whether the current install is behind the update target, and exit without pulling, installing, or restarting. Standard git installs compare against the main update target; deploy branches compare against `origin/<deploy-branch>` plus upstream commits not yet merged there. |
 | `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `update.backup: true` in `config.yaml`. |
 | `--restart-gateway` | After a successful update, restart the running gateway service. Implies `--all` semantics if multiple profiles are installed. |
 
@@ -1200,6 +1200,7 @@ Additional behavior:
 
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
 - **Fork deploy branches.** When a forked install runs from a configured deploy branch such as `axiom`, `hermes update` treats `origin/<deploy-branch>` as the deploy artifact. It merges new `upstream/main` commits into that branch in a temporary worktree, pushes the merge to origin, then fast-forwards the live checkout. Merge conflicts leave the live checkout untouched and print a handoff block with the retained worktree and conflict list.
+- **Deploy-branch status checks.** `hermes version` and `hermes update --check` use the deploy branch as the baseline, not a stale local `main` branch. They check live `HEAD` against `origin/<deploy-branch>` and then check `upstream/main` against that deploy branch.
 - **Deploy-branch local changes.** Uncommitted local changes are stashed before deploy-branch updates. If code changes, the stash is preserved rather than automatically reapplied, keeping the live checkout aligned with the tested deploy branch.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
