@@ -220,8 +220,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
 
     # Exit
-    CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit",)),
+    CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
+               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
 
 
