@@ -6074,11 +6074,14 @@ class AIAgent:
         # ── Stable tier ────────────────────────────────────────────────
         stable_parts: List[str] = []
 
-        # Try SOUL.md as primary identity unless the caller explicitly skipped it.
-        # Some execution modes (cron) still want HERMES_HOME persona while keeping
-        # cwd project instructions disabled.
+        # Priority: ephemeral_system_prompt (from /personality) takes precedence
+        # as the identity so selectable personalities actually override SOUL.md.
+        # Falls back to SOUL.md when no personality overlay is active.
         _soul_loaded = False
-        if self.load_soul_identity or not self.skip_context_files:
+        if self.ephemeral_system_prompt:
+            stable_parts.append(self.ephemeral_system_prompt.strip())
+            _soul_loaded = True
+        elif self.load_soul_identity or not self.skip_context_files:
             _soul_content = load_soul_md()
             if _soul_content:
                 stable_parts.append(_soul_content)
@@ -6205,8 +6208,9 @@ class AIAgent:
         # ── Context tier (cwd-dependent, may change between sessions) ─
         context_parts: List[str] = []
 
-        # Note: ephemeral_system_prompt is NOT included here. It's injected at
-        # API-call time only so it stays out of the cached/stored system prompt.
+        # Note: ephemeral_system_prompt (from /personality) is now included in
+        # the stable identity tier when set, so it overrides SOUL.md for the
+        # session. It is still kept out of long-term trajectory storage.
         if system_message is not None:
             context_parts.append(system_message)
 
