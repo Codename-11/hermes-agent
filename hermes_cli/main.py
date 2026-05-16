@@ -7533,6 +7533,139 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
+        # --- TGI deploy branch update ---
+        # TGI Atlas/Titan runs local Slack runtime patches from the `tgi`
+        # deploy branch.  Older upstream update logic switches any non-main
+        # branch back to main, which would bypass those patches.  Keep main as
+        # the clean upstream mirror, then merge main into tgi in place.
+        if (
+            current_branch == "tgi"
+            and is_fork
+            and _has_upstream_remote(git_cmd, PROJECT_ROOT)
+        ):
+            print("→ Deploy branch: tgi")
+            print("  upstream → main → tgi")
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            prompt_for_restore = (
+                auto_stash_ref is not None
+                and not assume_yes
+                and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+            )
+
+            try:
+                print("→ Fetching upstream...")
+                subprocess.run(
+                    git_cmd + ["fetch", "upstream", "--quiet"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+
+                upstream_ahead = _count_commits_between(
+                    git_cmd, PROJECT_ROOT, "main", "upstream/main"
+                )
+                if upstream_ahead <= 0:
+                    _invalidate_update_cache()
+                    if auto_stash_ref is not None:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=prompt_for_restore,
+                            input_fn=gw_input_fn,
+                        )
+                    print("✓ Already up to date!")
+                    return
+
+                print(f"→ Found {upstream_ahead} upstream commit(s)")
+
+                # Keep local main as a clean mirror of upstream/main without
+                # checking it out.  main must not carry TGI runtime patches.
+                print("→ Syncing main to upstream/main...")
+                subprocess.run(
+                    git_cmd + ["branch", "-f", "main", "upstream/main"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+
+                print("→ Merging main into tgi...")
+                merge_result = subprocess.run(
+                    git_cmd + [
+                        "merge",
+                        "main",
+                        "-m",
+                        f"merge: upstream sync ({upstream_ahead} commits)",
+                    ],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if merge_result.returncode != 0:
+                    subprocess.run(
+                        git_cmd + ["merge", "--abort"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        check=False,
+                    )
+                    print("✗ Merge into tgi failed; merge was aborted and repo left clean.")
+                    if merge_result.stderr.strip():
+                        print(f"  {merge_result.stderr.strip().splitlines()[0]}")
+                    print("  Resolve manually: git checkout tgi && git merge main")
+                    if auto_stash_ref is not None:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=False,
+                            input_fn=gw_input_fn,
+                        )
+                    sys.exit(1)
+
+                _invalidate_update_cache()
+                removed = _clear_bytecode_cache(PROJECT_ROOT)
+                if removed:
+                    print(
+                        f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
+                    )
+
+                print("→ Updating Python dependencies...")
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-e", "."],
+                    cwd=PROJECT_ROOT,
+                    check=True,
+                )
+
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
+
+                print()
+                print("✓ Code updated on tgi deploy branch.")
+                print("  Restart atlas-gateway.service and titan-gateway.service only during a maintenance window.")
+                return
+            except subprocess.CalledProcessError as exc:
+                print("✗ TGI deploy-branch update failed.")
+                err = (exc.stderr or "").strip()
+                if err:
+                    print(f"  {err.splitlines()[0]}")
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                sys.exit(1)
+
         # Always update against main
         branch = "main"
 
