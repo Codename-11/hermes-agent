@@ -4,6 +4,7 @@ description: Design-ready operating skill for CLI/API agents creating thoughtful
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [design, html, prototype, ux, ui, creative, artifact, deck, motion, design-system]
