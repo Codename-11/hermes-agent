@@ -16,7 +16,7 @@ Update to the latest version with a single command:
 hermes update
 ```
 
-This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
+This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update. Standard git installs update from `main`; configured deploy branches update from their deploy branch after upstream changes have been merged into it.
 
 ### pip installs
 
@@ -42,7 +42,7 @@ pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agen
 When you run `hermes update`, the following steps occur:
 
 1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.hermes/` directory.
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+2. **Git update** — pulls the latest code from `main`, or fast-forwards the current deploy branch after upstream has been merged into that branch
 3. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 4. **Config migration** — detects new config options added since your version and prompts you to set them
 5. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
@@ -50,6 +50,17 @@ When you run `hermes update`, the following steps occur:
 ### Preview-only: `hermes update --check`
 
 Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+
+### Fork and deploy branch installs
+
+Forked installs can track the official Hermes repository through an `upstream` remote while deploying from a fork branch such as `axiom`. In this mode, `hermes update` treats the deploy branch as the runnable artifact:
+
+1. Fetch `origin/<deploy-branch>` and `upstream/main`.
+2. If the live checkout is only behind `origin/<deploy-branch>`, fast-forward it.
+3. If upstream has new commits, merge `upstream/main` into the deploy branch in a temporary worktree, push the result to origin, then fast-forward the live checkout.
+4. If the upstream merge conflicts, leave the live checkout untouched and print a copy/paste handoff block with the repo path, retained worktree path, commits, and conflicted files.
+
+Local uncommitted changes are stashed before deploy-branch updates. When code actually changes, the stash is preserved instead of being reapplied automatically so the live checkout stays on the tested deploy branch. Restore it manually only after reviewing whether those changes are still intended.
 
 ### Full pre-update backup: `--backup`
 

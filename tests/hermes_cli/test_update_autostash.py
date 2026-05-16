@@ -297,6 +297,141 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# Axiom/deploy branch updater
+# ---------------------------------------------------------------------------
+
+def test_deploy_branch_update_fast_forwards_when_origin_ahead(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return SimpleNamespace(stdout="2\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--ff-only", "origin/axiom"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "oldhead..HEAD"]:
+            return SimpleNamespace(stdout="2\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], tmp_path, "axiom", "oldhead"
+    )
+
+    assert changed == 2
+    assert [cmd for cmd, _ in calls if cmd[:3] == ["git", "merge", "--ff-only"]] == [
+        ["git", "merge", "--ff-only", "origin/axiom"]
+    ]
+
+
+def test_deploy_branch_update_merges_upstream_in_temp_worktree(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = tmp_path / "update-parent"
+    parent.mkdir()
+    worktree_path = parent / "worktree"
+    calls = []
+
+    monkeypatch.setattr(hermes_main.tempfile, "mkdtemp", lambda prefix: str(parent))
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = kwargs.get("cwd")
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "add", "--detach", str(worktree_path), "origin/axiom"]:
+            worktree_path.mkdir()
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--no-edit", "upstream/main"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="Merge made\n", stderr="", returncode=0)
+        if cmd == ["git", "push", "origin", "HEAD:axiom"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--ff-only", "origin/axiom"] and cwd == repo:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "remove", str(worktree_path), "--force"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "oldhead..HEAD"]:
+            return SimpleNamespace(stdout="4\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+
+    assert changed == 4
+    commands = [cmd for cmd, _ in calls]
+    assert commands.index(["git", "push", "origin", "HEAD:axiom"]) < commands.index(
+        ["git", "merge", "--ff-only", "origin/axiom"]
+    )
+    assert not parent.exists()
+
+
+def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
+    monkeypatch, tmp_path, capsys
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = tmp_path / "update-parent"
+    parent.mkdir()
+    worktree_path = parent / "worktree"
+    calls = []
+
+    monkeypatch.setattr(hermes_main.tempfile, "mkdtemp", lambda prefix: str(parent))
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = kwargs.get("cwd")
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return SimpleNamespace(stdout="5\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "add", "--detach", str(worktree_path), "origin/axiom"]:
+            worktree_path.mkdir()
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--no-edit", "upstream/main"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="CONFLICT\n", stderr="", returncode=1)
+        if cmd == ["git", "diff", "--name-only", "--diff-filter=U"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="hermes_cli/main.py\n", stderr="", returncode=0)
+        if cmd[:3] == ["git", "rev-parse", "--short"]:
+            return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+
+    assert changed is None
+    assert worktree_path.exists()
+    commands = [cmd for cmd, _ in calls]
+    assert ["git", "push", "origin", "HEAD:axiom"] not in commands
+    assert ["git", "merge", "--ff-only", "origin/axiom"] not in commands
+    out = capsys.readouterr().out
+    assert "hermes update: merge into axiom failed." in out
+    assert "Worktree:" in out
+    assert "hermes_cli/main.py" in out
+    assert "live checkout was left unchanged" in out
+
+
+# ---------------------------------------------------------------------------
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------
 

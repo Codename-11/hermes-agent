@@ -67,6 +67,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -6719,6 +6720,7 @@ OFFICIAL_REPO_URLS = {
 }
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
+DEPLOY_BRANCHES = {"axiom"}
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -6796,6 +6798,318 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
     except Exception:
         pass
     return -1
+
+
+def _short_git_ref(git_cmd: list[str], cwd: Path, ref: str) -> str:
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--short", ref],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _count_changed_from_pre_update(
+    git_cmd: list[str],
+    cwd: Path,
+    pre_update_head: str,
+    fallback: int,
+) -> int:
+    if pre_update_head:
+        changed = _count_commits_between(git_cmd, cwd, pre_update_head, "HEAD")
+        if changed > 0:
+            return changed
+    return max(fallback, 1)
+
+
+def _print_deploy_branch_handoff(
+    *,
+    reason: str,
+    repo: Path,
+    branch: str,
+    upstream_ahead: int = -1,
+    origin_ahead: int = -1,
+    worktree_path: Optional[Path] = None,
+    conflict_files: str = "",
+    error: str = "",
+    git_cmd: Optional[list[str]] = None,
+) -> None:
+    git_cmd = git_cmd or ["git"]
+    print()
+    print("  ── Pass this to your Hermes agent ─────────────")
+    print()
+    print("  ┌─ Copy below ─────────────────────────────────")
+    print(f"  │ hermes update: {reason}")
+    print(f"  │ Repo: {repo}")
+    print(f"  │ Deploy branch: {branch}")
+    print(f"  │ Live HEAD: {_short_git_ref(git_cmd, repo, 'HEAD')}")
+    print(f"  │ Origin deploy: {_short_git_ref(git_cmd, repo, f'origin/{branch}')}")
+    print(f"  │ Upstream main: {_short_git_ref(git_cmd, repo, 'upstream/main')}")
+    if upstream_ahead >= 0:
+        print(f"  │ Upstream commits not in origin/{branch}: {upstream_ahead}")
+    if origin_ahead >= 0:
+        print(f"  │ origin/{branch} commits not in live HEAD: {origin_ahead}")
+    if worktree_path is not None:
+        print(f"  │ Worktree: {worktree_path}")
+    if conflict_files:
+        print("  │ Conflicting files:")
+        for f in conflict_files.splitlines()[:12]:
+            print(f"  │   {f}")
+    if error:
+        print(f"  │ Error: {error.splitlines()[0]}")
+    print("  │ ")
+    print(f"  │ Please merge upstream/main into {branch}, resolve conflicts,")
+    print(f"  │ run focused tests, push HEAD:{branch} to origin, then run")
+    print(f"  │ hermes update again so the live checkout fast-forwards cleanly.")
+    print("  └────────────────────────────────────────────")
+    print()
+
+
+def _preserve_deploy_branch_stash(stash_ref: str) -> None:
+    print("⚠ Local changes were stashed and left preserved.")
+    print("  Deploy branch updates keep the live checkout on the tested origin branch.")
+    print(f"  Stash ref: {stash_ref}")
+    print("  Review with: git stash show --stat")
+    print(f"  Restore manually, if needed, with: git stash apply {stash_ref}")
+
+
+def _remove_update_worktree(
+    git_cmd: list[str],
+    repo: Path,
+    worktree_path: Path,
+    parent: Path,
+) -> None:
+    subprocess.run(
+        git_cmd + ["worktree", "remove", str(worktree_path), "--force"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    shutil.rmtree(parent, ignore_errors=True)
+
+
+def _run_deploy_branch_update(
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    pre_update_head: str,
+) -> Optional[int]:
+    """Update a merge-based deploy branch without mutating live code on conflicts.
+
+    The live checkout only fast-forwards to ``origin/<branch>`` after any
+    upstream merge has succeeded and been pushed.  Merge conflicts happen in a
+    temporary worktree so production source files are not left conflicted.
+    Returns the number of commits that changed the live checkout, ``0`` when no
+    code changed, or ``None`` when a handoff was printed and update should stop.
+    """
+    from hermes_cli.update_ui import Pipeline
+
+    remote_ref = f"origin/{branch}"
+    _pipe = Pipeline(["fetch upstream", "merge upstream", f"sync {branch}"])
+    _pipe.start("fetch upstream")
+
+    fetch_upstream = subprocess.run(
+        git_cmd + ["fetch", "upstream", "--quiet"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_upstream.returncode != 0:
+        _pipe.fail(note="cannot fetch upstream")
+        _print_deploy_branch_handoff(
+            reason="cannot fetch upstream.",
+            repo=repo,
+            branch=branch,
+            error=(fetch_upstream.stderr or "").strip(),
+            git_cmd=git_cmd,
+        )
+        return None
+
+    origin_ahead = _count_commits_between(git_cmd, repo, "HEAD", remote_ref)
+    local_ahead = _count_commits_between(git_cmd, repo, remote_ref, "HEAD")
+    upstream_ahead = _count_commits_between(git_cmd, repo, remote_ref, "upstream/main")
+    if origin_ahead < 0 or local_ahead < 0 or upstream_ahead < 0:
+        _pipe.fail(note="cannot compare deploy refs")
+        _print_deploy_branch_handoff(
+            reason="cannot compare deploy branch refs.",
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            git_cmd=git_cmd,
+        )
+        return None
+    if local_ahead > 0:
+        _pipe.fail(note=f"live {branch} has unpushed commits")
+        _print_deploy_branch_handoff(
+            reason=f"live {branch} has commits that are not on {remote_ref}.",
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            git_cmd=git_cmd,
+        )
+        return None
+
+    if upstream_ahead == 0:
+        if origin_ahead == 0:
+            _pipe.finish(note="already up to date")
+            return 0
+
+        _pipe.advance(f"sync {branch}")
+        ff_result = subprocess.run(
+            git_cmd + ["merge", "--ff-only", remote_ref],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if ff_result.returncode != 0:
+            _pipe.fail(note=f"cannot fast-forward to {remote_ref}")
+            _print_deploy_branch_handoff(
+                reason=f"fast-forward to {remote_ref} failed.",
+                repo=repo,
+                branch=branch,
+                upstream_ahead=upstream_ahead,
+                origin_ahead=origin_ahead,
+                error=(ff_result.stderr or "").strip(),
+                git_cmd=git_cmd,
+            )
+            return None
+        _pipe.finish(note=f"fast-forwarded {origin_ahead} commit(s)")
+        return _count_changed_from_pre_update(git_cmd, repo, pre_update_head, origin_ahead)
+
+    parent = Path(tempfile.mkdtemp(prefix=f"hermes-update-{branch}-"))
+    worktree_path = parent / "worktree"
+    worktree_created = False
+
+    _pipe.advance("merge upstream")
+    add_result = subprocess.run(
+        git_cmd + ["worktree", "add", "--detach", str(worktree_path), remote_ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if add_result.returncode != 0:
+        shutil.rmtree(parent, ignore_errors=True)
+        _pipe.fail(note="cannot create update worktree")
+        _print_deploy_branch_handoff(
+            reason="cannot create deploy update worktree.",
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            error=(add_result.stderr or "").strip(),
+            git_cmd=git_cmd,
+        )
+        return None
+    worktree_created = True
+
+    merge_result = subprocess.run(
+        git_cmd + ["merge", "--no-edit", "upstream/main"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    if merge_result.returncode != 0:
+        conflict_result = subprocess.run(
+            git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        _pipe.fail(note=f"merge into {branch} failed")
+        _print_deploy_branch_handoff(
+            reason=f"merge into {branch} failed.",
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            worktree_path=worktree_path,
+            conflict_files=conflict_result.stdout.strip(),
+            error=(merge_result.stderr or merge_result.stdout or "").strip(),
+            git_cmd=git_cmd,
+        )
+        print("  The live checkout was left unchanged; resolve the retained worktree above.")
+        return None
+
+    push_result = subprocess.run(
+        git_cmd + ["push", "origin", f"HEAD:{branch}"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    if push_result.returncode != 0:
+        _pipe.fail(note=f"cannot push {branch}")
+        _print_deploy_branch_handoff(
+            reason=f"push to origin/{branch} failed.",
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            worktree_path=worktree_path,
+            error=(push_result.stderr or "").strip(),
+            git_cmd=git_cmd,
+        )
+        print("  The live checkout was left unchanged; the merged worktree was retained.")
+        return None
+
+    _pipe.advance(f"sync {branch}")
+    fetch_deploy = subprocess.run(
+        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_deploy.returncode != 0:
+        _pipe.fail(note=f"cannot refresh origin/{branch}")
+        _print_deploy_branch_handoff(
+            reason=f"fetch origin/{branch} after push failed.",
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            worktree_path=worktree_path,
+            error=(fetch_deploy.stderr or "").strip(),
+            git_cmd=git_cmd,
+        )
+        return None
+
+    ff_result = subprocess.run(
+        git_cmd + ["merge", "--ff-only", remote_ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if ff_result.returncode != 0:
+        _pipe.fail(note=f"cannot fast-forward to {remote_ref}")
+        _print_deploy_branch_handoff(
+            reason=f"fast-forward to pushed {remote_ref} failed.",
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            worktree_path=worktree_path,
+            error=(ff_result.stderr or "").strip(),
+            git_cmd=git_cmd,
+        )
+        return None
+
+    _pipe.finish(note=f"merged {upstream_ahead} upstream commit(s)")
+    if worktree_created:
+        _remove_update_worktree(git_cmd, repo, worktree_path, parent)
+    return _count_changed_from_pre_update(
+        git_cmd,
+        repo,
+        pre_update_head,
+        max(origin_ahead, upstream_ahead),
+    )
 
 
 def _should_skip_upstream_prompt() -> bool:
@@ -8046,20 +8360,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # --- Deploy branch detection ---
         # If the current branch is a deploy/integration branch (e.g. "axiom")
         # that merges feature branches on top of main, use a different update
-        # strategy: fast-forward main from upstream, then merge main into the
-        # deploy branch.  This avoids the rebase-on-main flow which would
-        # destroy the merge-based branch structure.
-        _DEPLOY_BRANCHES = {"axiom"}  # add more deploy branch names here if needed
+        # strategy: merge upstream into origin/<deploy-branch> in a temporary
+        # worktree, push the merged deploy artifact, then fast-forward the live
+        # checkout.  This avoids the rebase-on-main flow which would destroy
+        # the merge-based branch structure.
         is_deploy_branch = (
-            current_branch in _DEPLOY_BRANCHES
+            current_branch in DEPLOY_BRANCHES
             and is_fork
             and _has_upstream_remote(git_cmd, PROJECT_ROOT)
         )
 
         if is_deploy_branch:
-            # Deploy branch update: upstream → main → deploy branch (merge)
+            # Deploy branch update: upstream → origin/deploy → live checkout.
+            # Integration happens in a temporary worktree; the live checkout
+            # only fast-forwards after the merge has succeeded and been pushed.
             print(f"→ Deploy branch: {current_branch}")
-            print(f"  upstream → main → {current_branch}")
+            print(f"  upstream → origin/{current_branch} → live checkout")
             print()
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
@@ -8072,128 +8388,44 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception:
                 pre_update_head = ""
 
-            # Pipeline UI — three git phases rendered on one line with a
-            # spinner on the active phase and ``|`` separators.  See
-            # ``hermes_cli.update_ui`` for details.
-            from hermes_cli.update_ui import Pipeline
-            _pipe = Pipeline(
-                ["fetch upstream", "sync main", f"merge → {current_branch}"]
+            prompt_for_restore = (
+                auto_stash_ref is not None
+                and not assume_yes
+                and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
             )
-            _pipe.start("fetch upstream")
 
-            # Fetch upstream
-            try:
-                subprocess.run(
-                    git_cmd + ["fetch", "upstream", "--quiet"],
-                    cwd=PROJECT_ROOT, capture_output=True, check=True,
-                )
-            except subprocess.CalledProcessError as exc:
-                fetch_err = (exc.stderr or "").strip() if hasattr(exc, "stderr") else ""
-                _pipe.fail(note="cannot fetch upstream")
-                print()
-                print("  ┌─ Copy below ─────────────────────────────────")
-                print(f"  │ hermes update failed — cannot fetch upstream.")
-                print(f"  │ Branch: {current_branch}")
-                print(f"  │ Repo: {PROJECT_ROOT}")
-                if fetch_err:
-                    print(f"  │ Error: {fetch_err.splitlines()[0]}")
-                print(f"  │ ")
-                print(f"  │ Check network, then retry: hermes update")
-                print("  └────────────────────────────────────────────")
+            deploy_commit_count = _run_deploy_branch_update(
+                git_cmd,
+                PROJECT_ROOT,
+                current_branch,
+                pre_update_head,
+            )
+            if deploy_commit_count is None:
                 if auto_stash_ref is not None:
-                    _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
-                sys.exit(1)
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
+                return
 
-            # Check how far behind upstream we are
-            upstream_ahead = _count_commits_between(
-                git_cmd, PROJECT_ROOT, "main", "upstream/main",
-            )
-            if upstream_ahead <= 0:
-                _pipe.finish(note="already up to date")
+            if deploy_commit_count == 0:
                 _invalidate_update_cache()
                 if auto_stash_ref is not None:
-                    _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
                 return
 
-            # Fast-forward local main to upstream/main (without checking out)
-            _pipe.advance("sync main")
-            ff_result = subprocess.run(
-                git_cmd + ["fetch", "upstream", "main:main"],
-                cwd=PROJECT_ROOT, capture_output=True, text=True,
-            )
-            if ff_result.returncode != 0:
-                # main diverged — force-reset it (main should always == upstream)
-                subprocess.run(git_cmd + ["checkout", "main"], cwd=PROJECT_ROOT, capture_output=True, check=True)
-                subprocess.run(git_cmd + ["reset", "--hard", "upstream/main"], cwd=PROJECT_ROOT, capture_output=True, check=True)
-                subprocess.run(git_cmd + ["checkout", current_branch], cwd=PROJECT_ROOT, capture_output=True, check=True)
-
-            # Merge main into deploy branch
-            _pipe.advance(f"merge → {current_branch}")
-            merge_result = subprocess.run(
-                git_cmd + ["merge", "main", "-m", f"merge: upstream sync ({upstream_ahead} commits)"],
-                cwd=PROJECT_ROOT, capture_output=True, text=True,
-            )
-            if merge_result.returncode != 0:
-                _pipe.fail(note=f"merge into {current_branch} failed")
-                # Merge conflict — abort and report
-                subprocess.run(
-                    git_cmd + ["merge", "--abort"],
-                    cwd=PROJECT_ROOT, capture_output=True, check=False,
-                )
-
-                # Gather context
-                conflict_files = ""
-                try:
-                    # Re-attempt merge just to get the conflict file list
-                    retry = subprocess.run(
-                        git_cmd + ["merge", "--no-commit", "--no-ff", "main"],
-                        cwd=PROJECT_ROOT, capture_output=True, text=True,
-                    )
-                    cf_result = subprocess.run(
-                        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
-                        cwd=PROJECT_ROOT, capture_output=True, text=True,
-                    )
-                    conflict_files = cf_result.stdout.strip() if cf_result.returncode == 0 else ""
-                    subprocess.run(git_cmd + ["merge", "--abort"], cwd=PROJECT_ROOT, capture_output=True, check=False)
-                except Exception:
-                    pass
-
-                merge_stderr = (merge_result.stderr or "").strip()
-
-                print()
-                print("  ╭─────────────────────────────────────────────╮")
-                print(f"  │  ✗ Merge into {current_branch} failed (conflicts)  │")
-                print("  ╰─────────────────────────────────────────────╯")
-                print()
-                print("  The merge was auto-aborted — your repo is clean.")
-                print()
-                print("  ── Pass this to your Hermes agent ─────────────")
-                print()
-                print("  ┌─ Copy below ─────────────────────────────────")
-                print(f"  │ hermes update: merge into {current_branch} failed.")
-                print(f"  │ Repo: {PROJECT_ROOT}")
-                print(f"  │ Upstream: {upstream_ahead} new commits")
-                print(f"  │ Deploy branch: {current_branch}")
-                if conflict_files:
-                    print(f"  │ Conflicting files:")
-                    for f in conflict_files.splitlines()[:8]:
-                        print(f"  │   {f}")
-                if merge_stderr:
-                    print(f"  │ Error: {merge_stderr.splitlines()[0]}")
-                print(f"  │ ")
-                print(f"  │ Please merge main into {current_branch}, resolve")
-                print(f"  │ conflicts, and push to origin.")
-                print("  └────────────────────────────────────────────")
-                print()
-                if auto_stash_ref is not None:
-                    _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
-                return
-
-            _pipe.finish(note=f"merged {upstream_ahead} commits into {current_branch}")
-
-            commit_count = upstream_ahead
+            commit_count = deploy_commit_count
             if auto_stash_ref is not None:
-                _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref, prompt_user=False)
+                _preserve_deploy_branch_stash(auto_stash_ref)
         else:
             # --- Standard update flow (main branch or non-deploy branch) ---
 
