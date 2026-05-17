@@ -36,7 +36,7 @@ def cmd_proxy_start(args: Any) -> int:
         _print_aiohttp_missing()
         return 1
 
-    provider = getattr(args, "provider", None) or "nous"
+    provider = getattr(args, "provider", None) or "auto"
     try:
         adapter = get_adapter(provider)
     except ValueError as exc:
@@ -93,7 +93,7 @@ def cmd_proxy_status(args: Any) -> int:
         expires = f" (bearer expires {cred.expires_at})" if cred.expires_at else ""
         print(f"  [{name:8s}] {adapter.display_name} — ready{expires}")
     print(
-        "\nStart the proxy with: hermes proxy start [--provider <name>]"
+        "\nStart the proxy with: hermes proxy start [--provider auto]"
     )
     return 0
 
@@ -122,8 +122,8 @@ def cmd_proxy(args: Any) -> int:
         "OAuth-authenticated provider credentials to outbound requests.\n"
         "\n"
         "Subcommands:\n"
-        "  hermes proxy start [--provider nous] [--host 127.0.0.1] [--port 8645]\n"
-        "      Run the proxy in the foreground.\n"
+        "  hermes proxy start [--provider auto] [--host 127.0.0.1] [--port 8645]\n"
+        "      Run the proxy in the foreground. The default auto provider routes by model.\n"
         "  hermes proxy status\n"
         "      Show which upstream adapters are ready.\n"
         "  hermes proxy providers\n"

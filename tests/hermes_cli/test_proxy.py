@@ -15,6 +15,7 @@ import pytest
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.routed import RoutedOAuthAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -24,6 +25,13 @@ from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
 
 def test_registry_lists_nous():
     assert "nous" in ADAPTERS
+
+
+def test_registry_lists_routed_auto_adapter():
+    assert "auto" in ADAPTERS
+    assert "routed" in ADAPTERS
+    assert isinstance(get_adapter("auto"), RoutedOAuthAdapter)
+    assert isinstance(get_adapter("routed"), RoutedOAuthAdapter)
 
 
 def test_get_adapter_returns_instance():
@@ -288,6 +296,45 @@ class FakeAdapter(UpstreamAdapter):
         )
 
 
+# ---------------------------------------------------------------------------
+# Routed adapter
+# ---------------------------------------------------------------------------
+
+
+def test_routed_adapter_routes_credentials_by_requested_model():
+    adapter = RoutedOAuthAdapter()
+    setattr(adapter, "xai", FakeAdapter("https://xai.example/v1", bearer="xai-token"))
+    setattr(adapter, "codex", FakeAdapter("https://codex.example/v1", bearer="codex-token"))
+    setattr(adapter, "nous", FakeAdapter("https://nous.example/v1", bearer="nous-token"))
+    adapter.adapters = [adapter.xai, adapter.codex, adapter.nous]
+
+    grok = adapter.get_credential_for_request(
+        "/chat/completions",
+        json.dumps({"model": "grok-4.3"}).encode(),
+    )
+    codex = adapter.get_credential_for_request(
+        "/chat/completions",
+        json.dumps({"model": "gpt-5.4"}).encode(),
+    )
+    nous = adapter.get_credential_for_request(
+        "/chat/completions",
+        json.dumps({"model": "hermes-4-405b"}).encode(),
+    )
+
+    assert grok.bearer == "xai-token"
+    assert grok.base_url == "https://xai.example/v1"
+    assert codex.bearer == "codex-token"
+    assert codex.base_url == "https://codex.example/v1"
+    assert nous.bearer == "nous-token"
+    assert nous.base_url == "https://nous.example/v1"
+
+
+def test_routed_adapter_advertises_combined_model_list():
+    adapter = RoutedOAuthAdapter()
+    model_ids = {item["id"] for item in adapter.available_models}
+    assert {"grok-4.3", "gpt-5.4"}.issubset(model_ids)
+
+
 async def _start_runner(app: "web.Application"):
     """Spin up an aiohttp app on an ephemeral localhost port. Returns (runner, base_url)."""
     runner = web.AppRunner(app, access_log=None)
@@ -403,6 +450,26 @@ def test_server_health_endpoint():
                     assert body["status"] == "ok"
                     assert body["upstream"] == "Fake Provider"
                     assert body["authenticated"] is True
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_models_endpoint_uses_synthetic_adapter_models():
+    async def run():
+        adapter = FakeAdapter("http://unused.example/v1")
+        setattr(adapter, "available_models", [
+            {"id": "grok-4.3", "object": "model", "owned_by": "xai-oauth"},
+            {"id": "gpt-5.4", "object": "model", "owned_by": "openai-codex"},
+        ])
+        runner, base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/v1/models") as resp:
+                    assert resp.status == 200
+                    body = await resp.json()
+                    assert {item["id"] for item in body["data"]} == {"grok-4.3", "gpt-5.4"}
         finally:
             await runner.cleanup()
 

@@ -106,13 +106,14 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         )
 
     async def handle_models_fallback(request: "web.Request") -> "web.Response":
-        # Most clients hit /v1/models on startup. If the upstream doesn't
-        # serve /models, synthesize a minimal response so clients don't
-        # crash. The actual forwarding path handles /models when allowed.
+        # Most clients hit /v1/models on startup. Prefer a synthetic model list
+        # for routed/local OAuth setups so clients can discover usable slugs
+        # without leaking startup probes to upstream providers.
+        models = getattr(adapter, "available_models", [])
         return web.json_response(
             {
                 "object": "list",
-                "data": [],
+                "data": models,
             }
         )
 
@@ -130,8 +131,18 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 code="path_not_allowed",
             )
 
+        # Forward body verbatim. Read into memory once — request bodies for
+        # chat/completions/embeddings are small (<1MB typically). If we ever
+        # need to forward large multipart uploads we'll switch to streaming
+        # the request body too. Routed adapters also inspect this body to pick
+        # the OAuth upstream from the requested model.
+        body = await request.read()
+
         try:
-            cred = adapter.get_credential()
+            if hasattr(adapter, "get_credential_for_request"):
+                cred = adapter.get_credential_for_request(rel_path, body)  # type: ignore[attr-defined]
+            else:
+                cred = adapter.get_credential()
         except Exception as exc:
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")
@@ -140,12 +151,6 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         # Preserve query string verbatim.
         if request.query_string:
             upstream_url = f"{upstream_url}?{request.query_string}"
-
-        # Forward body verbatim. Read into memory once — request bodies for
-        # chat/completions/embeddings are small (<1MB typically). If we ever
-        # need to forward large multipart uploads we'll switch to streaming
-        # the request body too.
-        body = await request.read()
 
         fwd_headers = _filter_request_headers(request.headers)
         fwd_headers["Authorization"] = f"{cred.token_type} {cred.bearer}"
@@ -203,6 +208,9 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
     # /health doesn't go through the upstream
     app.router.add_get("/health", handle_health)
+    # Model discovery is synthetic for proxy clients and must be registered
+    # before the /v1 catch-all route below.
+    app.router.add_get("/v1/models", handle_models_fallback)
     # Catch-all under /v1 — forwards if the path is allowed.
     app.router.add_route("*", "/v1/{tail:.*}", handle_proxy)
 
