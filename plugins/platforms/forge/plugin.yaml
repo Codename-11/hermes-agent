@@ -1,0 +1,18 @@
+name: forge-platform
+label: Forge
+kind: platform
+version: 1.0.0
+description: >
+  Forge chat delivery adapter for Hermes webhook dispatch. Appends completed
+  agent responses into Forge ChatThread rows through Forge's MCP chat tools.
+author: Axiom-Labs
+requires_env:
+  - name: FORGE_API_KEY
+    description: "Forge API key with WRITE_COMMENTS / chat permissions"
+    prompt: "Forge API key"
+    password: true
+optional_env:
+  - name: FORGE_BASE_URL
+    description: "Forge base URL; defaults to https://forge.axiom-labs.dev"
+    prompt: "Forge base URL"
+    password: false

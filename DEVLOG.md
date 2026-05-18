@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-18 — Restore Forge chat delivery adapter
+
+### Summary
+
+Investigated Forge chat runs that showed a thinking indicator without a final reply. Hermes accepted the Forge webhook and generated a response, but the webhook delivery layer failed with `Unknown deliver type: forge` because the outbound Forge platform adapter was missing from the current gateway runtime.
+
+### What changed
+
+- Added `plugins/platforms/forge/` platform plugin.
+- Implemented `ForgeAdapter` for outbound webhook delivery into Forge chat threads via the Forge MCP `chat.appendMessage` tool.
+- Treated `[SILENT]` as successful no-op delivery so echoed AGENT chat events do not create empty/noisy replies.
+- Added regression tests for plugin registration, Forge MCP append calls, and silent no-op delivery.
+
+### Verification
+
+- `python -m py_compile plugins/platforms/forge/adapter.py plugins/platforms/forge/__init__.py` → OK
+- `pytest tests/gateway/test_forge_plugin.py tests/gateway/test_webhook_adapter.py -q -o addopts=''` → 58 passed
+- Live signed synthetic POST to `/webhooks/forge-dispatch` delivered `forge-e2e-smoke-*` back into Forge thread `cmohwivz30005mo076bmti9y5`.
+
 ## 2026-04-23 — Merge `main` into `axiom` after upstream sync (14 commits)
 
 ### Summary
