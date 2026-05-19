@@ -212,9 +212,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Model Routing & Benchmarking
-    # /route is owned by the model-router plugin (registers via
-    # register_command with the new CommandDef-equivalent kwargs). See
-    # ~/.hermes/plugins/model-router/__init__.py.
+    # /route was owned by the now-shelved model-router plugin. Future
+    # gateway-only plugin commands should register via register_command
+    # with CommandDef-equivalent kwargs rather than adding built-ins here.
     CommandDef("bench", "Run benchmark harness", "Tools & Skills",
                args_hint="[list|run <suite>|results]",
                subcommands=("list", "run", "results"),

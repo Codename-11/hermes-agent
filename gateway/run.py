@@ -6964,8 +6964,8 @@ class GatewayRunner:
                     returns_card_hint = bool(plugin_entry.get("returns_card"))
 
                     # Handler may or may not accept session_id — try the
-                    # kwarg form first so card-aware handlers (e.g. the
-                    # model-router's /route) can scope state per-session;
+                    # kwarg form first so card-aware plugin handlers can
+                    # scope state per-session;
                     # fall back to the legacy args-only form.
                     try:
                         session_id = None

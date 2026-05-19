@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-19 — Shelve local Model Router plugin references
+
+### Summary
+
+Shelved the local Model Router path without restarting Hermes services. The live plugin directories were moved outside plugin discovery, profile configs now keep `model-router` disabled, and source comments no longer point future plugin work at the archived live path.
+
+### What changed
+
+- Archived `model-router` and `hermes-admin` out of `~/.hermes/plugins/` into `~/.hermes/plugin-archive/shelved-20260519_155645/`.
+- Updated profile configs so `model-router` is absent from every `plugins.enabled` list and present in `plugins.disabled`.
+- Updated comments in `hermes_cli/commands.py` and `gateway/run.py` to describe `/route` as a shelved legacy plugin command example, not a live plugin path.
+- Updated SYSTEM/Obsidian/Hermes skill docs separately to mark the lane as shelved.
+
+### Verification
+
+- Parsed root/profile config YAML and asserted no live profile enables `model-router`.
+- Checked live plugin discovery roots: no `model-router` or `hermes-admin` directories remain under `~/.hermes/plugins` or profile plugin roots.
+- No gateway/dashboard restart performed by request; loaded runtime copies will unload naturally on next restart/reboot.
+
 ## 2026-05-18 — Restore Forge chat delivery adapter
 
 ### Summary
