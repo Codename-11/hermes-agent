@@ -160,6 +160,38 @@ async def test_send_does_not_retry_on_unrelated_errors():
     assert send_calls[0]["reference"] is reference_obj
 
 
+@pytest.mark.asyncio
+async def test_send_escapes_configured_roundtable_bot_mentions():
+    adapter = DiscordAdapter(PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={
+            "roundtable": {
+                "enabled": True,
+                "participant_bot_ids": ["123", "456"],
+            },
+        },
+    ))
+    sent_msg = SimpleNamespace(id=1234)
+    send_calls = []
+
+    async def fake_send(*, content, reference=None):
+        send_calls.append({"content": content, "reference": reference})
+        return sent_msg
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=456),
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "Ask <@123>, not self <@456>.")
+
+    assert result.success is True
+    assert send_calls[0]["content"] == "Ask <@\u200b123>, not self <@456>."
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------

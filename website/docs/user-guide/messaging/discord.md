@@ -19,6 +19,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
+| **Shared rooms with multiple Hermes bots** | Use explicit `@mentions`, set `thread_require_mention: true`, keep free-response channels empty, and enable `roundtable` safeguards if bots may read each other's messages. This lets a human facilitate turn-taking without bot-to-bot cascades. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
 
 :::tip
@@ -282,6 +283,10 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_ROUNDTABLE_ENABLED` | No | `false` | Enables extra multi-agent room safeguards. Does **not** make the bot respond without mention. |
+| `DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY` | No | `true` | When roundtable mode is enabled, controls whether other bots' recent messages are included in history backfill. |
+| `DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS` | No | `"escape"` | `"escape"` prevents accidental live mentions of configured participant bots in Hermes replies. `"allow"` leaves them unchanged. |
+| `DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS` | No | — | Comma-separated Discord bot user IDs whose outbound mentions should be guarded in roundtable mode. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -315,6 +320,12 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  allow_bots: "none"              # none | mentions | all for bot-authored messages
+  roundtable:
+    enabled: false                # Extra safeguards for shared multi-agent rooms
+    include_bot_history: true     # Include other bots in backfill when enabled
+    outbound_bot_mentions: escape # escape | allow configured participant bot mentions
+    participant_bot_ids: []       # Bot user IDs to guard in outbound replies
   channel_prompts: {}             # Per-channel ephemeral system prompts
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
@@ -345,6 +356,39 @@ discord:
   require_mention: true
   thread_require_mention: true    # multi-bot setup
 ```
+
+#### `discord.allow_bots` and `discord.roundtable`
+
+**Types:** `allow_bots` string, `roundtable` mapping — **Defaults:** `"none"`, disabled
+
+Use these only when multiple Hermes profiles or bots share the same channel/thread and a human is facilitating turn-taking. `allow_bots` controls whether bot-authored messages can trigger this bot:
+
+- `none` — ignore all bot-authored messages. Safest default.
+- `mentions` — accept bot-authored messages only when they directly mention this bot.
+- `all` — accept all bot-authored messages. Use only in tightly controlled channels.
+
+`roundtable.enabled` does not make Hermes ambiently respond. It only enables extra safety controls for shared multi-agent rooms: optional inclusion of other bots in history backfill and outbound mention escaping for known participant bots.
+
+Recommended human-facilitated roundtable shape:
+
+```yaml
+discord:
+  require_mention: true
+  thread_require_mention: true
+  free_response_channels: ""
+  allowed_channels: "<parent-channel-id>"
+  allow_bots: mentions
+  history_backfill: true
+  roundtable:
+    enabled: true
+    include_bot_history: true
+    outbound_bot_mentions: escape
+    participant_bot_ids:
+      - "123456789012345678"  # another Hermes bot user ID
+      - "987654321098765432"
+```
+
+With `outbound_bot_mentions: escape`, Hermes still prints the visible text but makes configured bot mentions non-pinging. That prevents an LLM response like “ask @Mizu” from accidentally waking Mizu. A human can still explicitly mention the next agent in a new message.
 
 #### `discord.free_response_channels`
 

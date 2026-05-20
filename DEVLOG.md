@@ -1,5 +1,27 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-20 — Add Discord roundtable safety controls
+
+### Summary
+
+Added a focused Discord gateway patch for human-facilitated multi-profile rooms. The patch keeps solo-bot behavior unchanged by default, adds config parity for bot-authored message admission, and introduces opt-in roundtable safeguards so Victor/Mizu/Sentinel-style profiles can see each other's context without accidental bot-to-bot cascades.
+
+### What changed
+
+- Added `discord.allow_bots` config support matching `DISCORD_ALLOW_BOTS=none|mentions|all`.
+- Added `discord.roundtable` controls for safe multi-agent rooms: `enabled`, `include_bot_history`, `outbound_bot_mentions`, and `participant_bot_ids`.
+- Refactored Discord bot-message admission into tested adapter helpers.
+- Made history backfill use the normalized bot-history policy instead of env-only checks.
+- Escapes configured participant bot mentions in outbound Discord replies when roundtable mode is enabled, preventing accidental live pings to other Hermes bots.
+- Documented the human-facilitated roundtable pattern in the Discord messaging docs and Hermes skill reference.
+
+### Verification
+
+- `python -m py_compile gateway/platforms/discord.py gateway/config.py hermes_cli/config.py tests/gateway/test_discord_roundtable.py tests/gateway/test_discord_send.py` → OK
+- `python -m pytest tests/gateway/test_discord_roundtable.py tests/gateway/test_discord_bot_filter.py tests/gateway/test_discord_send.py -q -o 'addopts='` → 42 passed.
+- `python -m pytest tests/gateway/test_discord_thread_persistence.py tests/gateway/test_discord_allowed_channels.py tests/gateway/test_discord_allowed_mentions.py tests/gateway/test_discord_free_response.py tests/gateway/test_discord_slash_commands.py -q -o 'addopts='` → 109 passed.
+- `python -m pytest tests/gateway/test_config.py tests/gateway/test_config_env_bridge_authority.py tests/gateway/test_runtime_env_reload_config_authority.py -q -o 'addopts='` → 52 passed, 1 order-dependent failure in pre-existing `test_bridges_quoted_false_platform_enabled_from_config_yaml`; the same test passes in isolation.
+
 ## 2026-05-19 — Advertise current Codex models through Hermes Proxy router
 
 ### Summary

@@ -30,6 +30,8 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_ALLOW_BOTS_VALUES = {"none", "mentions", "all"}
+_DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS_VALUES = {"escape", "allow"}
 
 try:
     import discord
@@ -83,6 +85,32 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _coerce_discord_bool(value: Any, default: bool) -> bool:
+    """Coerce config/env bool-ish values while preserving a safe default."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off", ""}:
+            return False
+        return default
+    return bool(value)
+
+
+def _csv_or_list_to_set(value: Any) -> set[str]:
+    """Normalize a comma-separated string or list into a stripped string set."""
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        return {str(part).strip() for part in value if str(part).strip()}
+    text = str(value).strip()
+    if not text:
+        return set()
+    return {part.strip() for part in text.split(",") if part.strip()}
 
 
 def check_discord_requirements() -> bool:
@@ -747,14 +775,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
+                    if not adapter_self._should_admit_bot_message(message):
                         return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
+                    # Permitted bot messages skip the human-user allowlist
+                    # below (bots aren't in it).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
@@ -1420,8 +1444,9 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
-            # Format and split message if needed
+            # Format, escape unsafe roundtable bot mentions, and split message if needed
             formatted = self.format_message(content)
+            formatted = self._escape_outbound_roundtable_bot_mentions(formatted)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
@@ -1501,6 +1526,7 @@ class DiscordAdapter(BasePlatformAdapter):
         from tools.send_message_tool import _derive_forum_thread_name
 
         formatted = self.format_message(content)
+        formatted = self._escape_outbound_roundtable_bot_mentions(formatted)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
         thread_name = _derive_forum_thread_name(content)
@@ -3584,6 +3610,119 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_allow_bots(self) -> str:
+        """Return normalized policy for accepting messages authored by other bots.
+
+        Environment overrides config so operators can quickly de-risk a live
+        gateway by exporting ``DISCORD_ALLOW_BOTS=none`` without editing yaml.
+        """
+        raw = os.getenv("DISCORD_ALLOW_BOTS")
+        if raw is None:
+            raw = self.config.extra.get("allow_bots", "none")
+        value = str(raw or "none").strip().lower()
+        if value not in _DISCORD_ALLOW_BOTS_VALUES:
+            logger.warning(
+                "[%s] Invalid discord allow_bots value %r; using 'none'",
+                self.name,
+                raw,
+            )
+            return "none"
+        return value
+
+    def _message_mentions_self(self, message: Any) -> bool:
+        """Return whether an incoming Discord message mentions this bot user."""
+        return bool(
+            self._client
+            and getattr(self._client, "user", None)
+            and self._client.user in (getattr(message, "mentions", None) or [])
+        )
+
+    def _should_admit_bot_message(self, message: Any) -> bool:
+        """Return whether a bot-authored incoming message should be processed."""
+        allow_bots = self._discord_allow_bots()
+        if allow_bots == "none":
+            return False
+        if allow_bots == "mentions" and not self._message_mentions_self(message):
+            return False
+        return True
+
+    def _discord_roundtable_config(self) -> Dict[str, Any]:
+        """Return normalized Discord roundtable safety config.
+
+        Roundtable mode never makes the bot ambiently respond; it only exposes
+        safer multi-agent defaults such as bot-history inclusion and outbound
+        bot-mention escaping.
+        """
+        raw = self.config.extra.get("roundtable")
+        cfg = raw if isinstance(raw, dict) else {}
+
+        enabled_raw = os.getenv("DISCORD_ROUNDTABLE_ENABLED")
+        include_history_raw = os.getenv("DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY")
+        outbound_raw = os.getenv("DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS")
+        participants_raw = os.getenv("DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS")
+
+        outbound = str(outbound_raw if outbound_raw is not None else cfg.get("outbound_bot_mentions", "escape")).strip().lower()
+        if outbound not in _DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS_VALUES:
+            logger.warning(
+                "[%s] Invalid discord roundtable outbound_bot_mentions value %r; using 'escape'",
+                self.name,
+                outbound,
+            )
+            outbound = "escape"
+
+        return {
+            "enabled": _coerce_discord_bool(
+                enabled_raw if enabled_raw is not None else cfg.get("enabled"),
+                False,
+            ),
+            "include_bot_history": _coerce_discord_bool(
+                include_history_raw if include_history_raw is not None else cfg.get("include_bot_history"),
+                True,
+            ),
+            "outbound_bot_mentions": outbound,
+            "participant_bot_ids": _csv_or_list_to_set(
+                participants_raw if participants_raw is not None else cfg.get("participant_bot_ids", [])
+            ),
+        }
+
+    def _discord_include_bot_history(self) -> bool:
+        """Return whether other bots should be included in history backfill."""
+        roundtable = self._discord_roundtable_config()
+        if roundtable["enabled"]:
+            return bool(roundtable["include_bot_history"])
+        return self._discord_allow_bots() != "none"
+
+    def _escape_outbound_roundtable_bot_mentions(self, content: str) -> str:
+        """Escape configured participant bot mentions to prevent cascades."""
+        roundtable = self._discord_roundtable_config()
+        if not roundtable["enabled"] or roundtable["outbound_bot_mentions"] != "escape":
+            return content
+
+        participant_ids = set(roundtable["participant_bot_ids"])
+        if self._client and getattr(self._client, "user", None):
+            participant_ids.discard(str(getattr(self._client.user, "id", "")))
+        if not participant_ids:
+            return content
+
+        escaped = content
+        for bot_id in sorted(participant_ids, key=len, reverse=True):
+            escaped = escaped.replace(f"<@{bot_id}>", f"<@\u200b{bot_id}>")
+            escaped = escaped.replace(f"<@!{bot_id}>", f"<@!\u200b{bot_id}>")
+        return escaped
+
+    def _discord_roundtable_status(self) -> Dict[str, Any]:
+        """Return client-safe status for shared multi-agent Discord rooms."""
+        roundtable = dict(self._discord_roundtable_config())
+        roundtable["participant_bot_ids"] = sorted(roundtable.get("participant_bot_ids") or [])
+        return {
+            "allow_bots": self._discord_allow_bots(),
+            "require_mention": self._discord_require_mention(),
+            "thread_require_mention": self._discord_thread_require_mention(),
+            "history_backfill": self._discord_history_backfill(),
+            "include_bot_history": self._discord_include_bot_history(),
+            "roundtable": roundtable,
+        }
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -3715,9 +3854,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
-        # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-        include_other_bots = allow_bots_raw != "none"
+        # Determine which bot messages to include in context.
+        include_other_bots = self._discord_include_bot_history()
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
         # If we know our last message ID in this channel, pass it as `after`

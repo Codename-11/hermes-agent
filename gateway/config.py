@@ -823,6 +823,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "allow_bots" in platform_cfg:
+                    bridged["allow_bots"] = platform_cfg["allow_bots"]
+                if plat == Platform.DISCORD and "roundtable" in platform_cfg:
+                    bridged["roundtable"] = platform_cfg["roundtable"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:
@@ -919,6 +923,22 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+                if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
+                    os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
+                roundtable_cfg = discord_cfg.get("roundtable")
+                if isinstance(roundtable_cfg, dict):
+                    for yaml_key, env_key in (
+                        ("enabled", "DISCORD_ROUNDTABLE_ENABLED"),
+                        ("include_bot_history", "DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY"),
+                        ("outbound_bot_mentions", "DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS"),
+                    ):
+                        if yaml_key in roundtable_cfg and not os.getenv(env_key):
+                            os.environ[env_key] = str(roundtable_cfg[yaml_key]).lower()
+                    participant_bot_ids = roundtable_cfg.get("participant_bot_ids")
+                    if participant_bot_ids is not None and not os.getenv("DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS"):
+                        if isinstance(participant_bot_ids, list):
+                            participant_bot_ids = ",".join(str(v) for v in participant_bot_ids)
+                        os.environ["DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS"] = str(participant_bot_ids)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
