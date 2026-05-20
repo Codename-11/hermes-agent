@@ -16,6 +16,8 @@ import json
 import logging
 from typing import FrozenSet, Iterable, Optional
 
+from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
+from hermes_cli.models import provider_model_ids
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
 from hermes_cli.proxy.adapters.openai_codex import OpenAICodexAdapter
@@ -23,12 +25,52 @@ from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
 
 logger = logging.getLogger(__name__)
 
+def _model_entries(model_ids: Iterable[str], owned_by: str) -> list[dict]:
+    return [
+        {"id": model_id, "object": "model", "owned_by": owned_by}
+        for model_id in model_ids
+        if isinstance(model_id, str) and model_id.strip()
+    ]
+
+
+def _text_model_ids(model_ids: Iterable[str]) -> list[str]:
+    """Keep the routed proxy catalog focused on text/chat-capable models."""
+    blocked_fragments = ("imagine", "image", "video", "vision")
+    out: list[str] = []
+    seen: set[str] = set()
+    for model_id in model_ids:
+        if not isinstance(model_id, str):
+            continue
+        clean = model_id.strip()
+        if not clean:
+            continue
+        lowered = clean.lower()
+        if any(fragment in lowered for fragment in blocked_fragments):
+            continue
+        if clean not in seen:
+            out.append(clean)
+            seen.add(clean)
+    return out
+
+
+def _provider_models(provider: str, fallback: Iterable[str]) -> list[str]:
+    try:
+        ids = provider_model_ids(provider)
+    except Exception:
+        ids = []
+    return _text_model_ids(ids or fallback)
+
+
+_XAI_FALLBACK_MODELS = [
+    "grok-4.3",
+    "grok-4.20-reasoning",
+]
+_CODEX_FALLBACK_MODELS = _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+
+
 _DEFAULT_MODELS = [
-    {"id": "grok-4.3", "object": "model", "owned_by": "xai-oauth"},
-    {"id": "grok-4.20-reasoning", "object": "model", "owned_by": "xai-oauth"},
-    {"id": "gpt-5.4", "object": "model", "owned_by": "openai-codex"},
-    {"id": "gpt-5.4-mini", "object": "model", "owned_by": "openai-codex"},
-    {"id": "gpt-5.3-codex", "object": "model", "owned_by": "openai-codex"},
+    *_model_entries(_XAI_FALLBACK_MODELS, "xai-oauth"),
+    *_model_entries(_CODEX_FALLBACK_MODELS, "openai-codex"),
 ]
 
 
@@ -62,7 +104,17 @@ class RoutedOAuthAdapter(UpstreamAdapter):
 
     @property
     def available_models(self) -> list[dict]:
-        return _DEFAULT_MODELS
+        models: list[dict] = []
+        if self.xai.is_authenticated():
+            models.extend(_model_entries(_provider_models("xai-oauth", _XAI_FALLBACK_MODELS), "xai-oauth"))
+        if self.codex.is_authenticated():
+            models.extend(_model_entries(_provider_models("openai-codex", _CODEX_FALLBACK_MODELS), "openai-codex"))
+        if self.nous.is_authenticated():
+            models.extend(_model_entries(_provider_models("nous", []), "nous"))
+
+        # Startup already requires at least one authenticated adapter. Keep a
+        # static fallback for tests and for status probes during auth churn.
+        return models or _DEFAULT_MODELS
 
     def is_authenticated(self) -> bool:
         return any(adapter.is_authenticated() for adapter in self.adapters)
@@ -80,7 +132,7 @@ class RoutedOAuthAdapter(UpstreamAdapter):
     def _select_adapter(self, rel_path: str, body: bytes) -> UpstreamAdapter:
         model = self._model_from_body(body)
 
-        if model.startswith("grok") or model.startswith("xai"):
+        if model.startswith("grok") or model.startswith("xai") or model.startswith("x-ai/"):
             return self.xai
 
         if (
@@ -95,6 +147,12 @@ class RoutedOAuthAdapter(UpstreamAdapter):
             return self.codex
 
         if model.startswith("hermes") or model.startswith("nous"):
+            return self.nous
+
+        # Nous Portal exposes OpenRouter-style provider/model IDs. Preserve
+        # slash-prefixed IDs for Nous rather than accidentally sending them to
+        # a bare-model OAuth backend.
+        if "/" in model:
             return self.nous
 
         # If no model is present (for /models or basic probes), prefer xAI if ready.

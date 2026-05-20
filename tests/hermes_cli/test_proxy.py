@@ -418,6 +418,10 @@ def test_routed_adapter_routes_credentials_by_requested_model():
         "/chat/completions",
         json.dumps({"model": "hermes-4-405b"}).encode(),
     )
+    slash_prefixed = adapter.get_credential_for_request(
+        "/chat/completions",
+        json.dumps({"model": "anthropic/claude-sonnet-4.6"}).encode(),
+    )
 
     assert grok.bearer == "xai-token"
     assert grok.base_url == "https://xai.example/v1"
@@ -425,12 +429,14 @@ def test_routed_adapter_routes_credentials_by_requested_model():
     assert codex.base_url == "https://codex.example/v1"
     assert nous.bearer == "nous-token"
     assert nous.base_url == "https://nous.example/v1"
+    assert slash_prefixed.bearer == "nous-token"
+    assert slash_prefixed.base_url == "https://nous.example/v1"
 
 
 def test_routed_adapter_advertises_combined_model_list():
     adapter = RoutedOAuthAdapter()
     model_ids = {item["id"] for item in adapter.available_models}
-    assert {"grok-4.3", "gpt-5.4"}.issubset(model_ids)
+    assert {"grok-4.3", "gpt-5.5", "gpt-5.4"}.issubset(model_ids)
 
 
 async def _start_runner(app: "web.Application"):

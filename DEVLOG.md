@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-19 — Advertise current Codex models through Hermes Proxy router
+
+### Summary
+
+ModelFoundry discovery omitted `gpt-5.5` because the local `hermes proxy --provider auto` routed adapter served a hardcoded synthetic `/v1/models` list that still only advertised `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.3-codex` for the Codex lane.
+
+### What changed
+
+- Updated `hermes_cli/proxy/adapters/routed.py` so the routed adapter derives OpenAI Codex entries from `DEFAULT_CODEX_MODELS` plus the existing forward-compat synthesis helper instead of maintaining a stale duplicate static list.
+- Extended the routed adapter toward auth-driven discovery: `/v1/models` now builds from authenticated proxy adapters (`xai-oauth`, `openai-codex`, `nous` when logged in) and their Hermes model catalogs, with a static fallback only for auth churn/tests.
+- Filtered non-text media model IDs out of the routed proxy catalog so chat-oriented downstream routers do not pick image/video models.
+- Added regression coverage for `gpt-5.5` advertisement and slash-prefixed Nous model routing.
+
+### Verification
+
+- `python -m pytest tests/hermes_cli/test_proxy.py -q -o addopts=''` → 32 passed.
+- Restarted `hermes-proxy.service`.
+- `GET http://172.16.24.250:8648/v1/models` now returns 17 text/chat models from authenticated proxy adapters, including `gpt-5.5`.
+
 ## 2026-05-19 — Shelve local Model Router plugin references
 
 ### Summary
