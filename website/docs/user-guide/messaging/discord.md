@@ -287,6 +287,9 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY` | No | `true` | When roundtable mode is enabled, controls whether other bots' recent messages are included in history backfill. |
 | `DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS` | No | `"escape"` | `"escape"` prevents accidental live mentions of configured participant bots in Hermes replies. `"allow"` leaves them unchanged. |
 | `DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS` | No | — | Comma-separated Discord bot user IDs whose outbound mentions should be guarded in roundtable mode. |
+| `DISCORD_ROUNDTABLE_CHANNELS` | No | — | Optional comma-separated channel/thread IDs for the bundled roundtable circuit breaker. When unset, the breaker applies to all admitted Discord bot-authored turns. |
+| `HERMES_ROUNDTABLE_CHANNELS` | No | — | Same as `DISCORD_ROUNDTABLE_CHANNELS`; useful when the channel gate is shared across profiles. |
+| `HERMES_ROUNDTABLE_STATE` | No | `~/.hermes/roundtable_state.json` | Optional path for the shared roundtable circuit-breaker state file used by `/roundtable status|stop|start`. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -381,14 +384,29 @@ discord:
   history_backfill: true
   roundtable:
     enabled: true
+    channels:
+      - "123456789012345678"  # shared roundtable channel/thread ID
     include_bot_history: true
     outbound_bot_mentions: escape
     participant_bot_ids:
       - "123456789012345678"  # another Hermes bot user ID
       - "987654321098765432"
+plugins:
+  enabled:
+    - roundtable-orchestrator  # optional runtime stop/start circuit breaker
 ```
 
 With `outbound_bot_mentions: escape`, Hermes still prints the visible text but makes configured bot mentions non-pinging. That prevents an LLM response like “ask @Mizu” from accidentally waking Mizu. A human can still explicitly mention the next agent in a new message.
+
+If the bundled `roundtable-orchestrator` plugin is enabled, operators can pause or resume admitted bot-authored turns without changing Discord config:
+
+```text
+/roundtable status
+/roundtable stop <optional reason>
+/roundtable start <optional reason>
+```
+
+The plugin is intentionally a circuit breaker, not a conversation scheduler. `/roundtable start` only opens the plugin gate; `discord.allow_bots` still controls whether bot-authored messages can reach Hermes at all. Keep `allow_bots: none` for the safest posture, and switch to `mentions` only during controlled human-facilitated tests.
 
 #### `discord.free_response_channels`
 

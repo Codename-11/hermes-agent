@@ -1,5 +1,25 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-20 — Add roundtable circuit breaker plugin
+
+### Summary
+
+Added a bundled `roundtable-orchestrator` plugin as a runtime brake for Discord multi-agent rooms. The plugin does not replace Discord bot-admission policy or create a new orchestration path; it adds `/roundtable status|stop|start` and a shared fail-closed pre-dispatch gate for admitted Discord bot-authored events.
+
+### What changed
+
+- Added `plugins/roundtable_orchestrator/` with a gateway-only `/roundtable` command.
+- Added shared state at `~/.hermes/roundtable_state.json`, overrideable via `HERMES_ROUNDTABLE_STATE`.
+- Added optional roundtable channel scoping via `HERMES_ROUNDTABLE_CHANNELS` / `DISCORD_ROUNDTABLE_CHANNELS` or `discord.roundtable.channels`.
+- Added `pre_gateway_dispatch` coverage so stopped roundtables skip admitted Discord bot turns before any LLM call.
+- Updated focused gateway/plugin tests and isolated roundtable env vars in Discord roundtable tests.
+
+### Verification
+
+- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/run.py gateway/platforms/discord.py` → OK
+- `python -m pytest tests/gateway/test_roundtable_orchestrator_dispatch.py -q -o 'addopts='` → 5 passed.
+- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/gateway/test_discord_roundtable.py -q -o 'addopts='` → 29 passed.
+
 ## 2026-05-20 — Add Discord roundtable safety controls
 
 ### Summary
