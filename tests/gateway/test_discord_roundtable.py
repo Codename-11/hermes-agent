@@ -9,6 +9,19 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.discord import DiscordAdapter
 
 
+@pytest.fixture(autouse=True)
+def _isolate_discord_roundtable_env(monkeypatch):
+    """Keep live gateway env from overriding per-test Discord config fixtures."""
+    for name in [
+        "DISCORD_ALLOW_BOTS",
+        "DISCORD_ROUNDTABLE_ENABLED",
+        "DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY",
+        "DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS",
+        "DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _adapter(extra=None):
     return DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra=extra or {}))
 

@@ -1,0 +1,9 @@
+name: roundtable-orchestrator
+label: Roundtable Orchestrator
+version: 0.1.0
+description: >
+  Shared Discord roundtable circuit breaker and /roundtable command shim for
+  multi-agent rooms. Stops bot-to-bot loops before LLM dispatch.
+author: Axiom-Labs
+hooks:
+  - pre_gateway_dispatch
