@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
@@ -433,10 +434,97 @@ def test_routed_adapter_routes_credentials_by_requested_model():
     assert slash_prefixed.base_url == "https://nous.example/v1"
 
 
-def test_routed_adapter_advertises_combined_model_list():
+def _make_authenticated_routed_adapter() -> RoutedOAuthAdapter:
+    adapter = RoutedOAuthAdapter()
+    setattr(adapter, "xai", FakeAdapter("https://xai.example/v1", bearer="xai-token"))
+    setattr(adapter, "codex", FakeAdapter("https://codex.example/v1", bearer="codex-token"))
+    setattr(adapter, "nous", FakeAdapter("https://nous.example/v1", bearer="nous-token"))
+    adapter.adapters = [adapter.xai, adapter.codex, adapter.nous]
+    return adapter
+
+
+def test_routed_adapter_default_inventory_requires_authenticated_adapters(monkeypatch):
+    monkeypatch.delenv("HERMES_PROXY_MODEL_ADVERTISE_MODE", raising=False)
+    adapter = RoutedOAuthAdapter()
+    # A temp HERMES_HOME has no auth store, so the default inventory should not
+    # fall back to optimistic static ghosts.
+    assert adapter.available_models == []
+
+
+def test_routed_adapter_legacy_all_mode_keeps_static_fallback(monkeypatch):
+    monkeypatch.setenv("HERMES_PROXY_MODEL_ADVERTISE_MODE", "all")
     adapter = RoutedOAuthAdapter()
     model_ids = {item["id"] for item in adapter.available_models}
     assert {"grok-4.3", "gpt-5.5", "gpt-5.4"}.issubset(model_ids)
+
+
+def test_routed_adapter_advertises_authenticated_chat_model_list(monkeypatch):
+    monkeypatch.delenv("HERMES_PROXY_MODEL_ADVERTISE_MODE", raising=False)
+
+    def fake_provider_model_ids(provider):
+        return {
+            "xai-oauth": [
+                "grok-4.3",
+                "grok-4.20-0309-reasoning",
+                "grok-4.20-multi-agent-0309",
+                "grok-2",
+                "grok-beta",
+                "grok-imagine-video",
+            ],
+            "openai-codex": ["gpt-5.5", "gpt-5.4", "gpt-image-2"],
+            "nous": [],
+        }[provider]
+
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.routed.provider_model_ids",
+        fake_provider_model_ids,
+    )
+    adapter = _make_authenticated_routed_adapter()
+
+    rows = adapter.available_models
+    model_ids = {item["id"] for item in rows}
+
+    assert {"grok-4.3", "grok-4.20-0309-reasoning", "gpt-5.5", "gpt-5.4"}.issubset(model_ids)
+    assert "grok-4.20-multi-agent-0309" not in model_ids
+    assert "grok-2" not in model_ids
+    assert "grok-beta" not in model_ids
+    assert "grok-imagine-video" not in model_ids
+    assert "gpt-image-2" not in model_ids
+    assert all(item["hermes_capabilities"] == ["chat"] for item in rows)
+    assert all(item["hermes_health"] == "unknown" for item in rows)
+
+
+def test_routed_adapter_routable_mode_uses_health_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_PROXY_MODEL_ADVERTISE_MODE", "routable")
+    monkeypatch.setenv("HERMES_PROXY_MODEL_HEALTH_CACHE", str(tmp_path / "health.json"))
+    monkeypatch.setenv("HERMES_PROXY_MODEL_HEALTH_TTL_SECONDS", "3600")
+
+    def fake_provider_model_ids(provider):
+        return {
+            "xai-oauth": ["grok-4.3", "grok-4.20-0309-reasoning"],
+            "openai-codex": ["gpt-5.5", "gpt-5.4"],
+            "nous": [],
+        }[provider]
+
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.routed.provider_model_ids",
+        fake_provider_model_ids,
+    )
+    (tmp_path / "health.json").write_text(json.dumps({
+        "models": {
+            "grok-4.3": {"status": "down", "checked_at": time.time()},
+            "grok-4.20-0309-reasoning": {"status": "up", "checked_at": time.time()},
+            "gpt-5.5": {"status": "up", "checked_at": 1},
+            "gpt-5.4": {"status": "healthy", "checked_at": time.time()},
+        }
+    }))
+
+    adapter = _make_authenticated_routed_adapter()
+    rows = adapter.available_models
+    model_ids = {item["id"] for item in rows}
+
+    assert model_ids == {"grok-4.20-0309-reasoning", "gpt-5.4"}
+    assert all(item["hermes_health"] == "up" for item in rows)
 
 
 async def _start_runner(app: "web.Application"):
