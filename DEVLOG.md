@@ -1,5 +1,23 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-20 — Stop Discord roundtable consensus loops
+
+### Summary
+
+Fixed a live roundtable loop where consensus replies could keep re-triggering Victor/Mizu after debate completion.
+
+### What changed
+
+- Debate consensus and max-turn stops now fail closed by setting the shared roundtable gate back to disabled with explicit stop reasons.
+- Discord responses to bot-authored roundtable turns now suppress reply-author pings so `allow_bots: mentions` does not treat reply metadata as a fresh bot mention.
+- Added regression coverage for fail-closed debate completion and reply-mention suppression.
+
+### Verification
+
+- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/platforms/base.py gateway/platforms/discord.py gateway/run.py tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_allowed_mentions.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/gateway/test_discord_roundtable.py` → OK
+- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_roundtable.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/hermes_cli/test_plugins.py tests/gateway/test_discord_allowed_mentions.py -q -o 'addopts='` → 142 passed.
+- `python -m pytest tests/gateway/test_telegram_thread_fallback.py tests/gateway/test_background_command.py tests/gateway/test_send_voice_reply_notify.py -q -o 'addopts='` → 64 passed.
+
 ## 2026-05-20 — Add bounded Discord roundtable debate mode
 
 ### Summary

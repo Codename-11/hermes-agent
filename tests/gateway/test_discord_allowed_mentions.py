@@ -82,6 +82,9 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.discord import _build_allowed_mentions  # noqa: E402
+from gateway.platforms.base import _thread_metadata_for_source  # noqa: E402
+from gateway.config import Platform  # noqa: E402
+from gateway.run import GatewayRunner  # noqa: E402
 
 
 # The four DISCORD_ALLOW_MENTION_* env vars that _build_allowed_mentions reads.
@@ -153,3 +156,32 @@ def test_all_four_knobs_together(monkeypatch):
     assert am.roles is True
     assert am.users is False
     assert am.replied_user is False
+
+
+def test_reply_mention_override_suppresses_replied_user_ping():
+    am = _build_allowed_mentions(replied_user=False)
+    assert am.everyone is False
+    assert am.roles is False
+    assert am.users is True
+    assert am.replied_user is False
+
+
+def test_discord_bot_thread_metadata_suppresses_reply_pings_without_thread():
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        is_bot=True,
+        thread_id=None,
+    )
+
+    assert _thread_metadata_for_source(source) == {"suppress_reply_mentions": True}
+
+
+def test_gateway_runner_discord_bot_metadata_suppresses_reply_pings_without_thread():
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        is_bot=True,
+        thread_id=None,
+    )
+    runner = GatewayRunner.__new__(GatewayRunner)
+
+    assert runner._thread_metadata_for_source(source) == {"suppress_reply_mentions": True}

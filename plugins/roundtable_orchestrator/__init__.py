@@ -612,6 +612,10 @@ async def _post_gateway_send(
         debate["active"] = False
         debate["stop_reason"] = "consensus"
         debate["stopped_at"] = _now()
+        state["enabled"] = False
+        state["reason"] = "debate-consensus"
+        state["updated_at"] = _now()
+        state["updated_from"] = "roundtable-orchestrator"
         state["debate"] = debate
         _write_full_state(state)
         await _send_debate_notice(
@@ -629,6 +633,10 @@ async def _post_gateway_send(
         debate["active"] = False
         debate["stop_reason"] = "max-turns"
         debate["stopped_at"] = _now()
+        state["enabled"] = False
+        state["reason"] = "debate-max-turns"
+        state["updated_at"] = _now()
+        state["updated_from"] = "roundtable-orchestrator"
         state["debate"] = debate
         _write_full_state(state)
         await _send_debate_notice(

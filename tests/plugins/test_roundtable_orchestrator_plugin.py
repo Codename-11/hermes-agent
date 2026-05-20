@@ -307,10 +307,55 @@ class TestRoundtableDebate:
         debate = roundtable_mod._read_state()["debate"]
         assert debate["active"] is False
         assert debate["stop_reason"] == "consensus"
+        assert roundtable_mod._read_state()["enabled"] is False
         assert len(sent) == 1
         assert sent[0][0] == "roundtable"
         assert "Consensus reached" in sent[0][1]
         assert sent[0][2] == {"allow_roundtable_bot_mentions": False, "roundtable_debate_id": "debate-1"}
+
+    @pytest.mark.asyncio
+    async def test_debate_round_limit_stops_gate_fail_closed(self, roundtable_mod):
+        sent = []
+
+        class Adapter:
+            async def send(self, chat_id, content, metadata=None):
+                sent.append((chat_id, content, metadata))
+                return SimpleNamespace(success=True, message_id=f"msg-{len(sent)}")
+
+        gateway = SimpleNamespace(adapters={"discord": Adapter()}, config={})
+        roundtable_mod._write_state(True, reason="test")
+        state = roundtable_mod._read_state()
+        state["debate"] = {
+            "id": "debate-1",
+            "active": True,
+            "channel_id": "roundtable",
+            "participants": ["victor", "mizu"],
+            "agent_ids": {"victor": "111", "mizu": "222"},
+            "topic": "Ship it?",
+            "rounds": 1,
+            "turn_index": 1,
+            "transcript": [{"agent": "victor", "content": "yes with tests"}],
+            "started_at": "now",
+        }
+        roundtable_mod._write_full_state(state)
+
+        result = roundtable_mod._post_gateway_send(
+            platform="discord",
+            chat_id="roundtable",
+            content="Product wants one visual first. ROUND_TABLE_DECISION: CONTINUE",
+            sender_bot_id="222",
+            message_id="mizu-msg",
+            gateway=gateway,
+        )
+        if hasattr(result, "__await__"):
+            await result
+
+        state = roundtable_mod._read_state()
+        assert state["enabled"] is False
+        assert state["debate"]["active"] is False
+        assert state["debate"]["stop_reason"] == "max-turns"
+        assert len(sent) == 1
+        assert "round limit reached" in sent[0][1]
 
 
 class TestRegistration:

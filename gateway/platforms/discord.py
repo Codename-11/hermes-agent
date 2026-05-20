@@ -144,7 +144,7 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions():
+def _build_allowed_mentions(*, replied_user: Optional[bool] = None):
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
     Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
@@ -171,11 +171,15 @@ def _build_allowed_mentions():
             return default
         return raw in {"true", "1", "yes", "on"}
 
+    allow_replied_user = _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True)
+    if replied_user is not None:
+        allow_replied_user = bool(replied_user)
+
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
         roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        replied_user=allow_replied_user,
     )
 
 
@@ -1469,6 +1473,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     users=users or False,
                     replied_user=False,
                 )
+            elif metadata and metadata.get("suppress_reply_mentions"):
+                # Bot-authored roundtable turns may arrive as Discord reply
+                # references.  If our response reply-pings the bot we answered,
+                # `allow_bots: mentions` admits that bot again and creates a
+                # cascade outside the orchestrator.  Keep normal user mentions
+                # governed by env defaults, but suppress the reply-author ping.
+                allowed_mentions = _build_allowed_mentions(replied_user=False)
 
             message_ids = []
             reference = None

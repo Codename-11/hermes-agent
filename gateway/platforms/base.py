@@ -51,10 +51,17 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
     thread_id = getattr(source, "thread_id", None)
-    if thread_id is None:
+    platform = _platform_name(getattr(source, "platform", None))
+    metadata: dict = {}
+    if thread_id is not None:
+        metadata["thread_id"] = thread_id
+    if platform == "discord" and getattr(source, "is_bot", False):
+        # Bot-to-bot roundtable replies must not reply-ping the bot that just
+        # spoke; with allow_bots=mentions that implicit ping becomes a new turn.
+        metadata["suppress_reply_mentions"] = True
+    if not metadata:
         return None
-    metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
