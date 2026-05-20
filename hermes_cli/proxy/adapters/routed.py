@@ -346,3 +346,34 @@ class RoutedOAuthAdapter(UpstreamAdapter):
         adapter = self._select_adapter(rel_path, body)
         logger.debug("proxy router: %s -> %s", rel_path, adapter.display_name)
         return adapter.get_credential()
+
+    def prepare_proxy_request(
+        self,
+        rel_path: str,
+        body: bytes,
+        headers: dict[str, str],
+    ):
+        adapter = self._select_adapter(rel_path, body)
+        if hasattr(adapter, "prepare_proxy_request"):
+            inner_rel_path, inner_body, inner_headers, inner_context = adapter.prepare_proxy_request(  # type: ignore[attr-defined]
+                rel_path,
+                body,
+                headers,
+            )
+            return inner_rel_path, inner_body, inner_headers, {
+                "selected_adapter": adapter,
+                "inner_context": inner_context,
+            }
+        return rel_path, body, headers, {"selected_adapter": adapter, "inner_context": {}}
+
+    async def finalize_proxy_response(self, request, upstream_resp, session, context):
+        adapter = context.get("selected_adapter") if isinstance(context, dict) else None
+        inner_context = context.get("inner_context", {}) if isinstance(context, dict) else {}
+        if adapter is not None and hasattr(adapter, "finalize_proxy_response"):
+            return await adapter.finalize_proxy_response(  # type: ignore[attr-defined]
+                request,
+                upstream_resp,
+                session,
+                inner_context,
+            )
+        return None

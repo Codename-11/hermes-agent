@@ -16,6 +16,7 @@ import pytest
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.openai_codex import OpenAICodexAdapter
 from hermes_cli.proxy.adapters.routed import RoutedOAuthAdapter
 
 
@@ -395,6 +396,24 @@ class FakeAdapter(UpstreamAdapter):
         )
 
 
+class FakeCodexAdapter(OpenAICodexAdapter):
+    """Codex adapter wired to a local fake upstream for transform tests."""
+
+    def __init__(self, base_url: str, bearer: str = "codex-bearer"):
+        self._base_url = base_url
+        self._bearer = bearer
+
+    def is_authenticated(self):
+        return True
+
+    def get_credential(self):
+        return UpstreamCredential(
+            bearer=self._bearer,
+            base_url=self._base_url,
+            expires_at="2099-01-01T00:00:00Z",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Routed adapter
 # ---------------------------------------------------------------------------
@@ -583,6 +602,147 @@ def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application"
     app = web.Application()
     app.router.add_route("*", "/v1/chat/completions", maybe_unauthorized)
     return app
+
+
+def _build_fake_codex_responses_upstream(captured: Dict[str, Any]) -> "web.Application":
+    async def responses(request):
+        body = await request.read()
+        captured["requests"].append({
+            "method": request.method,
+            "path": request.path,
+            "auth": request.headers.get("Authorization"),
+            "body": body.decode("utf-8") if body else "",
+        })
+        resp = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        await resp.prepare(request)
+        for line in [
+            b'event: response.output_text.delta\n',
+            b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+            b'event: response.output_text.done\n',
+            b'data: {"type":"response.output_text.done","text":"ok"}\n\n',
+            b'event: response.completed\n',
+            b'data: {"type":"response.completed","response":{"id":"resp_test","model":"gpt-5.5"}}\n\n',
+        ]:
+            await resp.write(line)
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_route("*", "/v1/responses", responses)
+    return app
+
+
+def test_codex_adapter_translates_chat_completion_request_shape():
+    adapter = OpenAICodexAdapter()
+    rel_path, body, headers, context = adapter.prepare_proxy_request(
+        "/chat/completions",
+        json.dumps({
+            "model": "gpt-5.5",
+            "messages": [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "Reply exactly: ok"},
+            ],
+            "stream": False,
+            "temperature": 0.2,
+        }).encode("utf-8"),
+        {"Content-Type": "application/json"},
+    )
+
+    payload = json.loads(body.decode("utf-8"))
+    assert rel_path == "/responses"
+    assert headers["Content-Type"] == "application/json"
+    assert context["codex_chat_completion"] is True
+    assert context["client_stream"] is False
+    assert payload["model"] == "gpt-5.5"
+    assert payload["instructions"] == "Be terse."
+    assert payload["store"] is False
+    assert payload["stream"] is True
+    assert payload["temperature"] == 0.2
+    assert payload["input"] == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Reply exactly: ok"}],
+        }
+    ]
+
+
+def test_codex_adapter_translates_nonstream_chat_completion_response():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(
+            _build_fake_codex_responses_upstream(captured)
+        )
+        adapter = FakeCodexAdapter(f"{upstream_base}/v1", bearer="real-codex-key")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.5",
+                        "messages": [{"role": "user", "content": "Reply exactly: ok"}],
+                        "stream": False,
+                    },
+                    headers={"Authorization": "Bearer client-dummy-key"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["object"] == "chat.completion"
+                    assert data["model"] == "gpt-5.5"
+                    assert data["choices"][0]["message"] == {
+                        "role": "assistant",
+                        "content": "ok",
+                    }
+                    assert data["choices"][0]["finish_reason"] == "stop"
+
+            assert len(captured["requests"]) == 1
+            req = captured["requests"][0]
+            assert req["path"] == "/v1/responses"
+            assert req["auth"] == "Bearer real-codex-key"
+            upstream_payload = json.loads(req["body"])
+            assert upstream_payload["store"] is False
+            assert upstream_payload["stream"] is True
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_codex_adapter_translates_stream_chat_completion_response():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(
+            _build_fake_codex_responses_upstream(captured)
+        )
+        adapter = FakeCodexAdapter(f"{upstream_base}/v1", bearer="real-codex-key")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.5",
+                        "messages": [{"role": "user", "content": "Reply exactly: ok"}],
+                        "stream": True,
+                    },
+                ) as resp:
+                    assert resp.status == 200
+                    assert resp.headers.get("Content-Type", "").startswith("text/event-stream")
+                    body = await resp.text()
+                    assert '"object": "chat.completion.chunk"' in body
+                    assert '"delta": {"content": "ok"}' in body
+                    assert "data: [DONE]" in body
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
 
 
 def test_server_forwards_chat_completions():
