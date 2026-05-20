@@ -7443,6 +7443,83 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     ]
 
 
+def _detect_concurrent_hermes_instances(
+    scripts_dir: Path, *, exclude_pid: int | None = None
+) -> list[tuple[int, str]]:
+    """Find other live processes whose .exe is one of our entry-point shims.
+
+    Windows blocks DELETE/REPLACE on a running .exe when another process holds
+    the same shim. Enumerate other live Hermes launcher processes so update
+    tests and Windows update safeguards have the expected helper surface.
+
+    Returns an empty list off-Windows, on missing psutil, or when no other
+    instances exist. Never raises — process enumeration is best-effort.
+    """
+    if not _is_windows():
+        return []
+
+    try:
+        import psutil
+    except Exception:
+        return []
+
+    if exclude_pid is None:
+        exclude_pid = os.getpid()
+
+    shim_paths: set[str] = set()
+    for shim in _hermes_exe_shims(scripts_dir):
+        try:
+            shim_paths.add(str(shim.resolve()).lower())
+        except OSError:
+            shim_paths.add(str(shim).lower())
+    if not shim_paths:
+        return []
+
+    matches: list[tuple[int, str]] = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe", "name"])
+    except Exception:
+        return []
+
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid = info.get("pid")
+        exe = info.get("exe")
+        if not exe or pid is None or pid == exclude_pid:
+            continue
+        try:
+            exe_norm = str(Path(exe).resolve()).lower()
+        except (OSError, ValueError):
+            exe_norm = str(exe).lower()
+        if exe_norm in shim_paths:
+            name = info.get("name") or Path(exe).name
+            matches.append((int(pid), str(name)))
+
+    return matches
+
+
+def _format_concurrent_instances_message(
+    matches: list[tuple[int, str]], scripts_dir: Path
+) -> str:
+    """Build a human-readable explanation + remediation hint for the user."""
+    shim = scripts_dir / "hermes.exe"
+    lines = ["✗ Another hermes.exe is running:"]
+    for pid, name in matches:
+        lines.append(f"    PID {pid}  {name}")
+    lines.append("")
+    lines.append(f"  Updating now would fail to overwrite {shim} because")
+    lines.append("  Windows blocks REPLACE on a running executable.")
+    lines.append("")
+    lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
+    lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
+    lines.append("  Override with `hermes update --force` if you've already")
+    lines.append("  confirmed those processes will not write to the venv.")
+    return "\n".join(lines)
+
+
 def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]:
     """Pre-empt Windows file lock on the running ``hermes.exe``.
 
