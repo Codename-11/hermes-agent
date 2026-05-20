@@ -287,6 +287,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY` | No | `true` | When roundtable mode is enabled, controls whether other bots' recent messages are included in history backfill. |
 | `DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS` | No | `"escape"` | `"escape"` prevents accidental live mentions of configured participant bots in Hermes replies. `"allow"` leaves them unchanged. |
 | `DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS` | No | — | Comma-separated Discord bot user IDs whose outbound mentions should be guarded in roundtable mode. |
+| `DISCORD_ROUNDTABLE_AGENTS` | No | — | Optional comma-separated `name:bot_user_id` map used by `/roundtable call <name> ...` for explicit one-shot agent summons. `HERMES_ROUNDTABLE_AGENTS` is also supported for a shared profile-wide map. |
 | `DISCORD_ROUNDTABLE_CHANNELS` | No | — | Optional comma-separated channel/thread IDs for the bundled roundtable circuit breaker. When unset, the breaker applies to all admitted Discord bot-authored turns. |
 | `HERMES_ROUNDTABLE_CHANNELS` | No | — | Same as `DISCORD_ROUNDTABLE_CHANNELS`; useful when the channel gate is shared across profiles. |
 | `HERMES_ROUNDTABLE_STATE` | No | `~/.hermes/roundtable_state.json` | Optional path for the shared roundtable circuit-breaker state file used by `/roundtable status|stop|start`. |
@@ -389,8 +390,9 @@ discord:
     include_bot_history: true
     outbound_bot_mentions: escape
     participant_bot_ids:
-      - "123456789012345678"  # another Hermes bot user ID
       - "987654321098765432"
+    agents:
+      mizu: "987654321098765432" # optional names for /roundtable call
 plugins:
   enabled:
     - roundtable-orchestrator  # optional runtime stop/start circuit breaker
@@ -404,9 +406,10 @@ If the bundled `roundtable-orchestrator` plugin is enabled, operators can pause 
 /roundtable status
 /roundtable stop <optional reason>
 /roundtable start <optional reason>
+/roundtable call <agent> <one-shot message>
 ```
 
-The plugin is intentionally a circuit breaker, not a conversation scheduler. `/roundtable start` only opens the plugin gate; `discord.allow_bots` still controls whether bot-authored messages can reach Hermes at all. Keep `allow_bots: none` for the safest posture, and switch to `mentions` only during controlled human-facilitated tests.
+The plugin is intentionally a circuit breaker plus explicit handoff tool, not a conversation scheduler. `/roundtable start` only opens the plugin gate; `discord.allow_bots` still controls whether bot-authored messages can reach Hermes at all. `/roundtable call` sends one real mention to a named agent with Discord `allowed_mentions.users` constrained to that target, bypassing only the normal outbound bot-mention escape for that one send. Keep `allow_bots: none` for the safest posture, and switch to `mentions` only during controlled human-facilitated tests.
 
 #### `discord.free_response_channels`
 

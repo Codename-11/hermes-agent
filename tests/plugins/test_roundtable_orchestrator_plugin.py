@@ -104,6 +104,71 @@ class TestRoundtableGate:
         ) == {"action": "skip", "reason": "roundtable-stopped"}
 
 
+class TestRoundtableCall:
+    @pytest.mark.asyncio
+    async def test_call_sends_single_fire_discord_mention_with_precise_allowed_mentions(
+        self, roundtable_mod, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_ROUNDTABLE_CHANNELS", "roundtable")
+
+        sent = []
+
+        class Adapter:
+            async def send(self, chat_id, content, metadata=None):
+                sent.append((chat_id, content, metadata))
+                return SimpleNamespace(success=True, message_id="msg-123")
+
+        event = _event(is_bot=False, chat_id="roundtable")
+        gateway = SimpleNamespace(
+            adapters={"discord": Adapter()},
+            config={
+                "discord": {
+                    "roundtable": {
+                        "agents": {"mizu": "1489797340448428202"},
+                    }
+                }
+            },
+        )
+
+        result = roundtable_mod._handle_roundtable_command(
+            "call mizu Please give product perspective.",
+            session_id="sess1",
+            gateway=gateway,
+            event=event,
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+
+        assert result == "Called mizu in <#roundtable> (message msg-123)."
+        assert sent == [
+            (
+                "roundtable",
+                "<@1489797340448428202> Please give product perspective.",
+                {
+                    "allowed_mentions_user_ids": ["1489797340448428202"],
+                    "allow_roundtable_bot_mentions": True,
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_call_rejects_non_roundtable_channel(self, roundtable_mod, monkeypatch):
+        monkeypatch.setenv("HERMES_ROUNDTABLE_CHANNELS", "roundtable")
+        event = _event(is_bot=False, chat_id="elsewhere")
+        gateway = SimpleNamespace(
+            adapters={},
+            config={"discord": {"roundtable": {"agents": {"mizu": "1489797340448428202"}}}},
+        )
+
+        result = roundtable_mod._handle_roundtable_command(
+            "call mizu hello", gateway=gateway, event=event
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+
+        assert "only available in configured roundtable channels" in result
+
+
 class TestRegistration:
     def test_register_wires_hook_and_gateway_command(self, roundtable_mod):
         calls = []
@@ -121,4 +186,4 @@ class TestRegistration:
         assert hook[1][0] == "pre_gateway_dispatch"
         assert command[1][0] == "roundtable"
         assert command[2]["gateway_only"] is True
-        assert command[2]["args_hint"] == "<status|stop|start> [reason]"
+        assert command[2]["args_hint"] == "<status|stop|start|call> [target] [message]"

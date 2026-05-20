@@ -7404,11 +7404,22 @@ class GatewayRunner:
                             session_id = None
                         if session_id is not None:
                             try:
-                                result = handler(user_args, session_id=session_id)
+                                result = handler(
+                                    user_args,
+                                    session_id=session_id,
+                                    gateway=self,
+                                    event=event,
+                                )
+                            except TypeError:
+                                try:
+                                    result = handler(user_args, session_id=session_id)
+                                except TypeError:
+                                    result = handler(user_args)
+                        else:
+                            try:
+                                result = handler(user_args, gateway=self, event=event)
                             except TypeError:
                                 result = handler(user_args)
-                        else:
-                            result = handler(user_args)
                     except Exception as inner:
                         logger.exception(
                             "Plugin '%s' command '/%s' handler raised",

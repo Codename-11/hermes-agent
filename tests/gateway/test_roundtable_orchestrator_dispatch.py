@@ -234,3 +234,43 @@ async def test_roundtable_pre_dispatch_does_not_block_internal_events(installed_
 
     assert response == "internal response"
     assert len(agent_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_roundtable_call_dispatch_passes_gateway_and_event_to_plugin(installed_roundtable_plugin):
+    """Regression: plugin gateway commands can receive context for one-shot Discord sends."""
+    _roundtable_mod, _manager = installed_roundtable_plugin
+    runner = _runner()
+    sent = []
+
+    class Adapter:
+        async def send(self, chat_id, content, metadata=None):
+            sent.append((chat_id, content, metadata))
+            return SimpleNamespace(success=True, message_id="msg-456")
+
+    runner.adapters = {Platform.DISCORD: Adapter()}
+    runner.config = {
+        "quick_commands": {},
+        "discord": {
+            "roundtable": {
+                "channels": ["1506727103587029082"],
+                "agents": {"mizu": "1489797340448428202"},
+            }
+        },
+    }
+
+    response = await runner._handle_message(
+        _event("/roundtable call mizu Please weigh in once.")
+    )
+
+    assert response == "Called mizu in <#1506727103587029082> (message msg-456)."
+    assert sent == [
+        (
+            "1506727103587029082",
+            "<@1489797340448428202> Please weigh in once.",
+            {
+                "allowed_mentions_user_ids": ["1489797340448428202"],
+                "allow_roundtable_bot_mentions": True,
+            },
+        )
+    ]

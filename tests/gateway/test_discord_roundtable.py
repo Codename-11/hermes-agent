@@ -242,3 +242,40 @@ def test_discord_roundtable_config_yaml_bridges_to_extra_and_env(monkeypatch, tm
             "DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS",
         ]:
             os.environ.pop(name, None)
+
+
+@pytest.mark.asyncio
+async def test_send_can_single_fire_roundtable_bot_mention_with_precise_allowed_mentions(monkeypatch):
+    monkeypatch.delenv("DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS", raising=False)
+    adapter = _adapter({
+        "roundtable": {
+            "enabled": True,
+            "participant_bot_ids": ["123"],
+            "outbound_bot_mentions": "escape",
+        }
+    })
+    sent = []
+
+    class Channel:
+        async def send(self, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(id=999)
+
+    adapter._client = SimpleNamespace(
+        user=_user("456", bot=True),
+        get_channel=lambda channel_id: Channel(),
+        fetch_channel=None,
+    )
+
+    result = await adapter.send(
+        "42",
+        "<@123> please respond once",
+        metadata={
+            "allow_roundtable_bot_mentions": True,
+            "allowed_mentions_user_ids": ["123"],
+        },
+    )
+
+    assert result.success is True
+    assert sent[0]["content"] == "<@123> please respond once"
+    assert sent[0]["allowed_mentions"] is not None

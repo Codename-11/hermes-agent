@@ -1,5 +1,23 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-20 — Add single-fire Discord roundtable calls
+
+### Summary
+
+Extended the bundled `roundtable-orchestrator` plugin with an explicit `/roundtable call`/`summon` primitive so a human-facilitated agent can pull exactly one other Discord bot into a shared roundtable without relaxing the default outbound mention guard.
+
+### What changed
+
+- Added `/roundtable call <agent> <message>` and aliases `summon`/`page` backed by `discord.roundtable.agents` or `HERMES_ROUNDTABLE_AGENTS`/`DISCORD_ROUNDTABLE_AGENTS` name-to-bot-ID mappings.
+- Passed gateway command context (`gateway`, `event`) into plugin command handlers with backwards-compatible fallback for older handlers.
+- Added a Discord send metadata escape hatch for controlled one-shot bot mentions using precise `allowed_mentions.users`, while keeping normal roundtable replies escaped by default.
+- Updated plugin/gateway/Discord adapter regression coverage for the single-fire call path and rejected non-roundtable channels.
+
+### Verification
+
+- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/run.py gateway/platforms/discord.py` → OK
+- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/gateway/test_discord_roundtable.py -q -o 'addopts='` → 33 passed.
+
 ## 2026-05-20 — Add roundtable circuit breaker plugin
 
 ### Summary

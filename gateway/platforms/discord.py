@@ -1445,10 +1445,29 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
-            # Format, escape unsafe roundtable bot mentions, and split message if needed
+            # Format, escape unsafe roundtable bot mentions, and split message if needed.
+            # A controlled one-shot summon may opt out via metadata so the
+            # roundtable plugin can send exactly one real bot mention while
+            # normal LLM text remains protected by outbound mention escaping.
             formatted = self.format_message(content)
-            formatted = self._escape_outbound_roundtable_bot_mentions(formatted)
+            if not (metadata and metadata.get("allow_roundtable_bot_mentions")):
+                formatted = self._escape_outbound_roundtable_bot_mentions(formatted)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+            allowed_mentions = None
+            if metadata and metadata.get("allowed_mentions_user_ids") and discord is not None:
+                users = []
+                for user_id in metadata.get("allowed_mentions_user_ids") or []:
+                    try:
+                        users.append(discord.Object(id=int(user_id)))
+                    except Exception:
+                        continue
+                allowed_mentions = discord.AllowedMentions(
+                    everyone=False,
+                    roles=False,
+                    users=users or False,
+                    replied_user=False,
+                )
 
             message_ids = []
             reference = None
@@ -1469,10 +1488,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if allowed_mentions is not None:
+                        send_kwargs["allowed_mentions"] = allowed_mentions
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -1491,10 +1513,13 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        retry_kwargs = {
+                            "content": chunk,
+                            "reference": None,
+                        }
+                        if allowed_mentions is not None:
+                            retry_kwargs["allowed_mentions"] = allowed_mentions
+                        msg = await channel.send(**retry_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
