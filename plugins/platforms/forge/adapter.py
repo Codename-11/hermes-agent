@@ -70,11 +70,24 @@ def _env_enablement() -> Dict[str, Any]:
 
 
 class ForgeAdapter(BasePlatformAdapter):
-    """Outbound-only Forge platform adapter.
+    """Outbound Forge platform adapter with streaming draft support.
 
-    Incoming Forge events are handled by the webhook adapter, not here.  Keeping
-    this adapter outbound-only lets the generic cross-platform delivery path
-    treat Forge like any other messaging destination.
+    Incoming Forge events are handled by the webhook adapter, not here. This
+    adapter is the outbound half — three call shapes:
+
+      - ``send(chat_id, content)``: when there's no active draft for this
+        thread, posts via ``chat.appendMessage``. When a draft *is* active
+        (because send_draft was called during streaming), the final ``send``
+        commits the accumulated body via ``chat.finalizeDraft``, which both
+        clears the streaming-preview bubble client-side and persists the
+        final AGENT message in a single round-trip.
+      - ``send_draft(chat_id, draft_id, content)``: incremental streaming
+        path. First call per ``(chat_id, draft_id)`` opens a Forge draft via
+        ``chat.startDraft``; subsequent calls compute the delta against the
+        last-sent content and broadcast it via ``chat.appendDraftChunk`` so
+        the Forge UI animates a typewriter preview.
+      - Fallback: if streaming ever raises, we silently degrade to
+        ``chat.appendMessage`` so the operator still gets the reply.
     """
 
     def __init__(self, config: PlatformConfig):
@@ -82,6 +95,9 @@ class ForgeAdapter(BasePlatformAdapter):
         self.api_key = _api_key_from_config(config)
         self.base_url = _base_url_from_config(config)
         self.rpc_url = f"{self.base_url}/api/mcp/rpc"
+        # Active draft state, keyed by (chat_id, draft_id) → {forge_draft_id, last_body}.
+        # Cleared on finalize OR on a fallback to appendMessage.
+        self._drafts: Dict[tuple, Dict[str, Any]] = {}
 
     async def connect(self) -> bool:
         if not self.api_key:
@@ -94,6 +110,60 @@ class ForgeAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._mark_disconnected()
         logger.info("[Forge] Disconnected")
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Forge supports the chat.startDraft/appendDraftChunk/finalizeDraft
+        streaming protocol on every ChatThread. There is no per-thread
+        capability gate, so we always return True.
+        """
+        return True
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        thread_id = str(chat_id or "").strip()
+        body = str(content or "")
+        if not thread_id:
+            return SendResult(success=False, error="Missing Forge thread id")
+        key = (thread_id, int(draft_id))
+        state = self._drafts.get(key)
+
+        try:
+            if state is None:
+                # First chunk for this (chat, draft_id) — open the draft.
+                start = await asyncio.to_thread(self._call_tool, "chat.startDraft", {
+                    "threadId": thread_id,
+                })
+                if not isinstance(start, dict) or not start.get("draftId"):
+                    raise RuntimeError(f"chat.startDraft returned no draftId: {start!r}")
+                forge_draft_id = str(start["draftId"])
+                state = {"forge_draft_id": forge_draft_id, "last_body": ""}
+                self._drafts[key] = state
+            # appendDraftChunk wants the *delta* — compute against last_body so
+            # repeated send_draft calls with growing content animate naturally.
+            last_body = str(state.get("last_body") or "")
+            delta = body[len(last_body):] if body.startswith(last_body) else body
+            if delta:
+                await asyncio.to_thread(self._call_tool, "chat.appendDraftChunk", {
+                    "threadId": thread_id,
+                    "draftId": state["forge_draft_id"],
+                    "delta": delta,
+                })
+            state["last_body"] = body
+            return SendResult(success=True)
+        except Exception as exc:
+            logger.exception("[Forge] send_draft failed; clearing draft state for thread %s", thread_id)
+            # Drop the draft so the final send() falls through to appendMessage.
+            self._drafts.pop(key, None)
+            return SendResult(success=False, error=str(exc))
 
     async def send(
         self,
@@ -109,7 +179,26 @@ class ForgeAdapter(BasePlatformAdapter):
         if not body or body == "[SILENT]":
             # Treat explicit silence as delivered so echoed AGENT events do not
             # create empty/noisy chat messages.
+            self._cleanup_drafts_for_thread(thread_id)
             return SendResult(success=True)
+
+        # If a draft is outstanding for this thread, finalize via chat.finalizeDraft
+        # so the streaming bubble swaps cleanly to the persisted message instead
+        # of leaving the preview hanging client-side and posting a duplicate.
+        active = self._pop_first_draft_for_thread(thread_id)
+        if active is not None:
+            try:
+                result = await asyncio.to_thread(self._call_tool, "chat.finalizeDraft", {
+                    "threadId": thread_id,
+                    "draftId": active["forge_draft_id"],
+                    "body": body,
+                })
+                message_id = self._extract_message_id(result)
+                logger.info("[Forge] Finalized draft on thread %s", thread_id)
+                return SendResult(success=True, message_id=message_id)
+            except Exception:
+                # Fall through to appendMessage so the user still gets the reply.
+                logger.exception("[Forge] chat.finalizeDraft failed; falling back to appendMessage")
 
         try:
             result = await asyncio.to_thread(self._call_tool, "chat.appendMessage", {
@@ -120,14 +209,28 @@ class ForgeAdapter(BasePlatformAdapter):
             logger.exception("[Forge] Failed to append chat message to thread %s", thread_id)
             return SendResult(success=False, error=str(exc))
 
-        message_id = None
-        try:
-            if isinstance(result, dict):
-                message_id = str(result.get("id") or result.get("messageId") or "") or None
-        except Exception:
-            message_id = None
+        message_id = self._extract_message_id(result)
         logger.info("[Forge] Appended chat message to thread %s", thread_id)
         return SendResult(success=True, message_id=message_id)
+
+    def _extract_message_id(self, result: Any) -> Optional[str]:
+        try:
+            if isinstance(result, dict):
+                return str(result.get("id") or result.get("messageId") or "") or None
+        except Exception:
+            return None
+        return None
+
+    def _pop_first_draft_for_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
+        for key in list(self._drafts.keys()):
+            if key[0] == thread_id:
+                return self._drafts.pop(key, None)
+        return None
+
+    def _cleanup_drafts_for_thread(self, thread_id: str) -> None:
+        for key in list(self._drafts.keys()):
+            if key[0] == thread_id:
+                self._drafts.pop(key, None)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"id": chat_id, "name": f"Forge thread {chat_id}", "type": "forge_thread"}
