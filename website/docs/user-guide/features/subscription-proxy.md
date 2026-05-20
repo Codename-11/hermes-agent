@@ -29,12 +29,14 @@ proxy when you just want **the model** through your subscription.
 ### 1. Log into your provider (one-time)
 
 ```bash
-hermes login nous
+hermes login --provider nous
 ```
 
-This opens your browser for the Nous Portal OAuth flow. Hermes stores
-the refresh token in `~/.hermes/auth.json` — the same place all Hermes
-provider logins live.
+This opens your browser for the provider OAuth flow. Hermes stores the
+refresh token in `~/.hermes/auth.json` — the same place all Hermes provider
+logins live. Use `hermes proxy providers` to see which proxy adapters are
+available in your checkout; local/forked deployments may include additional
+OAuth-backed adapters beyond Nous.
 
 ### 2. Start the proxy
 
@@ -72,9 +74,10 @@ automatically when the bearer approaches expiry.
 hermes proxy providers
 ```
 
-Currently shipped: `nous` (Nous Portal). More OAuth providers can be
-added by implementing the `UpstreamAdapter` interface in
-`hermes_cli/proxy/adapters/`.
+Baseline upstream builds ship the `nous` adapter for Nous Portal. Local or
+forked deployments may also register adapters such as `openai-codex`,
+`xai-oauth`, and `auto`/`routed`. Always trust `hermes proxy providers` and
+`hermes proxy status` from the live checkout over stale examples.
 
 ## Check status
 
@@ -88,10 +91,30 @@ Hermes proxy upstream adapters
   [nous    ] Nous Portal — ready (bearer expires 2026-05-15T06:43:21Z)
 ```
 
-If you see `not logged in`, run `hermes login nous`. If you see
+If you see `not logged in`, run `hermes login --provider nous`. If you see
 `credentials need attention`, your refresh token was revoked (rare —
 happens if you signed out from the Portal web UI) — just re-run
-`hermes login nous`.
+`hermes login --provider nous`.
+
+## Model discovery and routed catalogs
+
+OpenAI-compatible clients should usually discover models from the proxy:
+
+```bash
+curl -fsS http://127.0.0.1:8645/v1/models \
+  -H 'Authorization: Bearer unused' | jq '.data[].id'
+```
+
+For `auto`/`routed` deployments, `/v1/models` should be derived from the
+currently authenticated proxy adapters and Hermes' provider model catalogs,
+not from a duplicate hand-maintained default list. That keeps downstream
+routers such as ModelFoundry aligned when Codex, xAI, or Nous catalogs add new
+models. Chat-oriented routed catalogs should filter non-chat media model IDs
+such as image, video, vision, or imagine models.
+
+If an external router refresh misses a model that you know should exist, check
+the proxy's own `/v1/models` response first. Fix stale proxy discovery before
+adding downstream router overrides.
 
 ## Allowed paths
 
@@ -167,6 +190,10 @@ machines on your network use it:
 ```bash
 hermes proxy start --host 0.0.0.0 --port 8645
 ```
+
+Use whatever port your deployment actually exposes. For example, Axiom's
+Docker-Server uses `:8648` for the OpenAI-compatible model router endpoint and
+keeps `:8645` for general health/status checks.
 
 ⚠ **Be aware:** anyone on your network can now use your Portal
 subscription. The proxy has no auth of its own — it accepts any bearer.
