@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -1529,6 +1530,32 @@ class DiscordAdapter(BasePlatformAdapter):
             if message_ids:
                 _target_id = thread_id or chat_id
                 self._last_self_message_id[_target_id] = message_ids[-1]
+
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                sender_bot_id = ""
+                if self._client and getattr(self._client, "user", None):
+                    sender_bot_id = str(getattr(self._client.user, "id", "") or "")
+                hook_results = _invoke_hook(
+                    "post_gateway_send",
+                    platform="discord",
+                    chat_id=str(thread_id or chat_id),
+                    parent_chat_id=str(chat_id) if thread_id else None,
+                    thread_id=str(thread_id) if thread_id else None,
+                    content=content,
+                    formatted_content=formatted,
+                    message_id=message_ids[0] if message_ids else None,
+                    message_ids=message_ids,
+                    sender_bot_id=sender_bot_id,
+                    adapter=self,
+                    metadata=metadata or {},
+                )
+                for hook_result in hook_results:
+                    if inspect.isawaitable(hook_result):
+                        await hook_result
+            except Exception as hook_exc:
+                logger.warning("[%s] post_gateway_send hook failed: %s", self.name, hook_exc)
 
             return SendResult(
                 success=True,

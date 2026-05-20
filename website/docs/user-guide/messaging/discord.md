@@ -392,7 +392,8 @@ discord:
     participant_bot_ids:
       - "987654321098765432"
     agents:
-      mizu: "987654321098765432" # optional names for /roundtable call
+      victor: "876543210987654321" # optional names for /roundtable call/debate
+      mizu: "987654321098765432"
 plugins:
   enabled:
     - roundtable-orchestrator  # optional runtime stop/start circuit breaker
@@ -407,9 +408,12 @@ If the bundled `roundtable-orchestrator` plugin is enabled, operators can pause 
 /roundtable stop <optional reason>
 /roundtable start <optional reason>
 /roundtable call <agent> <one-shot message>
+/roundtable debate <agent1,agent2[,agent3]> [--rounds N] <topic>
 ```
 
-The plugin is intentionally a circuit breaker plus explicit handoff tool, not a conversation scheduler. `/roundtable start` only opens the plugin gate; `discord.allow_bots` still controls whether bot-authored messages can reach Hermes at all. `/roundtable call` sends one real mention to a named agent with Discord `allowed_mentions.users` constrained to that target, bypassing only the normal outbound bot-mention escape for that one send. Keep `allow_bots: none` for the safest posture, and switch to `mentions` only during controlled human-facilitated tests.
+The plugin is intentionally a circuit breaker plus explicit handoff/debate tool, not an ambient all-bot scheduler. `/roundtable start` only opens the plugin gate; `discord.allow_bots` still controls whether bot-authored messages can reach Hermes at all. `/roundtable call` sends one real mention to a named agent with Discord `allowed_mentions.users` constrained to that target, bypassing only the normal outbound bot-mention escape for that one send.
+
+`/roundtable debate` is a bounded orchestrator for supervised turn-taking. It stores active debate state in `~/.hermes/roundtable_state.json`, sends exactly one controlled mention to the next named agent, advances only after the expected bot sends its response, and auto-stops either when the round limit is reached or when an expected participant ends with `ROUND_TABLE_DECISION: CONSENSUS`. On consensus or round-limit stop it posts a normal non-mention summary message. Keep `allow_bots: none` for the safest posture, and switch to `mentions` only during controlled human-facilitated tests.
 
 #### `discord.free_response_channels`
 

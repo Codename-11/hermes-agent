@@ -34,7 +34,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Set
@@ -51,12 +53,16 @@ _DEFAULT_STATE = {
     "updated_from": None,
 }
 _HELP = (
-    "Usage: /roundtable <status|stop|start|call> [target] [message]\n"
+    "Usage: /roundtable <status|stop|start|call|debate> [args]\n"
     "• stop — disable bot-authored roundtable turns before LLM dispatch\n"
     "• start — re-enable the plugin gate (Discord allow_bots still applies)\n"
     "• status — show shared state\n"
-    "• call <agent> <message> — send one controlled Discord mention to an agent"
+    "• call <agent> <message> — send one controlled Discord mention to an agent\n"
+    "• debate <agent1,agent2[,agent3]> [--rounds N] <topic> — run a bounded debate that auto-stops on consensus"
 )
+_MAX_DEBATE_ROUNDS = 3
+_DEFAULT_DEBATE_ROUNDS = 2
+_CONSENSUS_RE = re.compile(r"ROUND[_ -]?TABLE[_ -]?DECISION\s*:\s*(CONSENSUS|AGREE|AGREEMENT)", re.I)
 
 
 def _now() -> str:
@@ -107,6 +113,7 @@ def _read_state() -> Dict[str, Any]:
 
 
 def _write_state(enabled: bool, *, reason: str = "", updated_by: str = "", updated_from: str = "") -> Dict[str, Any]:
+    existing = _read_state()
     state = {
         "version": _STATE_VERSION,
         "enabled": bool(enabled),
@@ -115,8 +122,25 @@ def _write_state(enabled: bool, *, reason: str = "", updated_by: str = "", updat
         "updated_by": updated_by or None,
         "updated_from": updated_from or None,
     }
-    _atomic_write_json(_state_path(), state)
+    debate = existing.get("debate")
+    if isinstance(debate, dict):
+        debate = dict(debate)
+        if not enabled and debate.get("active"):
+            debate["active"] = False
+            debate["stop_reason"] = "roundtable-stopped"
+            debate["stopped_at"] = state["updated_at"]
+        state["debate"] = debate
+    _write_full_state(state)
     return state
+
+
+def _write_full_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    full = dict(_DEFAULT_STATE)
+    full.update(state)
+    full["version"] = _STATE_VERSION
+    full["enabled"] = bool(full.get("enabled"))
+    _atomic_write_json(_state_path(), full)
+    return full
 
 
 def _csv_set(value: Any) -> Set[str]:
@@ -199,13 +223,23 @@ def _format_status(state: Dict[str, Any], gateway: Any = None) -> str:
     channel_text = ", ".join(channels) if channels else "all admitted Discord bot turns"
     updated = state.get("updated_at") or "never"
     reason = state.get("reason") or "none"
-    return (
-        f"Roundtable is **{status}**.\n"
-        f"Channels: {channel_text}\n"
-        f"Reason: {reason}\n"
-        f"Updated: {updated}\n"
-        "Note: Discord `allow_bots` still controls whether bot-authored messages reach this plugin."
-    )
+    lines = [
+        f"Roundtable is **{status}**.",
+        f"Channels: {channel_text}",
+        f"Reason: {reason}",
+        f"Updated: {updated}",
+    ]
+    debate = state.get("debate") if isinstance(state.get("debate"), dict) else None
+    if debate:
+        debate_status = "active" if debate.get("active") else f"stopped ({debate.get('stop_reason') or 'unknown'})"
+        participants = " → ".join(debate.get("participants") or []) or "unknown"
+        lines.append(
+            f"Debate: {debate_status}; participants={participants}; "
+            f"turn={int(debate.get('turn_index') or 0)}/{int(debate.get('rounds') or 1) * max(1, len(debate.get('participants') or []))}; "
+            f"topic={debate.get('topic') or 'n/a'}"
+        )
+    lines.append("Note: Discord `allow_bots` still controls whether bot-authored messages reach this plugin.")
+    return "\n".join(lines)
 
 
 def _parse_command(args: str) -> tuple[str, str]:
@@ -321,21 +355,296 @@ async def _handle_roundtable_call(rest: str, *, gateway: Any = None, event: Any 
     chat_id = str(getattr(source, "chat_id", "") or "").strip()
     if not chat_id:
         return "Could not determine the current Discord channel for /roundtable call."
-
-    metadata = {
-        "allowed_mentions_user_ids": [bot_id],
-        "allow_roundtable_bot_mentions": True,
-    }
-    thread_id = getattr(source, "thread_id", None)
-    if thread_id:
-        metadata["thread_id"] = str(thread_id)
-
-    result = await adapter.send(chat_id, f"<@{bot_id}> {message}", metadata=metadata)
+    result = await _send_controlled_mention(adapter, chat_id, bot_id, message, thread_id=getattr(source, "thread_id", None))
     if not getattr(result, "success", False):
         error = getattr(result, "error", "unknown error")
         return f"✗ Failed to call {target}: {error}"
     message_id = getattr(result, "message_id", None) or "sent"
     return f"Called {target} in <#{chat_id}> (message {message_id})."
+
+
+def _parse_debate_args(rest: str) -> tuple[list[str], int, str] | tuple[None, None, str]:
+    raw = (rest or "").strip()
+    if not raw:
+        return None, None, "Usage: /roundtable debate <agent1,agent2[,agent3]> [--rounds N] <topic>"
+    parts = raw.split()
+    participants_raw = parts.pop(0)
+    participants = [p.strip().lower() for p in participants_raw.replace("+", ",").split(",") if p.strip()]
+    rounds = _DEFAULT_DEBATE_ROUNDS
+    topic_parts: list[str] = []
+    i = 0
+    while i < len(parts):
+        token = parts[i]
+        if token == "--rounds" and i + 1 < len(parts):
+            try:
+                rounds = max(1, min(_MAX_DEBATE_ROUNDS, int(parts[i + 1])))
+            except ValueError:
+                return None, None, "Invalid --rounds value; use an integer."
+            i += 2
+            continue
+        if token.startswith("--rounds="):
+            try:
+                rounds = max(1, min(_MAX_DEBATE_ROUNDS, int(token.split("=", 1)[1])))
+            except ValueError:
+                return None, None, "Invalid --rounds value; use an integer."
+            i += 1
+            continue
+        topic_parts.extend(parts[i:])
+        break
+    topic = " ".join(topic_parts).strip()
+    if len(participants) < 2:
+        return None, None, "Debate needs at least two agents, e.g. `/roundtable debate victor,mizu <topic>`."
+    if not topic:
+        return None, None, "Debate needs a topic/message after the participant list."
+    return participants, rounds, topic
+
+
+def _current_bot_id(adapter: Any) -> Optional[str]:
+    client = getattr(adapter, "_client", None)
+    user = getattr(client, "user", None)
+    bot_id = getattr(user, "id", None)
+    return str(bot_id) if bot_id is not None else None
+
+
+def _next_turn_agent(debate: Dict[str, Any]) -> Optional[str]:
+    participants = list(debate.get("participants") or [])
+    if not participants:
+        return None
+    turn_index = int(debate.get("turn_index") or 0)
+    max_turns = int(debate.get("rounds") or 1) * len(participants)
+    if turn_index >= max_turns:
+        return None
+    return str(participants[turn_index % len(participants)]).lower()
+
+
+def _truncate_for_prompt(text: str, limit: int = 900) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 20].rstrip() + "… [truncated]"
+
+
+def _build_debate_prompt(debate: Dict[str, Any], target: str) -> str:
+    participants = list(debate.get("participants") or [])
+    turn_index = int(debate.get("turn_index") or 0)
+    round_no = (turn_index // max(1, len(participants))) + 1
+    rounds = int(debate.get("rounds") or 1)
+    topic = debate.get("topic") or "(no topic)"
+    transcript = list(debate.get("transcript") or [])[-3:]
+    if transcript:
+        context_lines = "\n".join(
+            f"- {entry.get('agent')}: {_truncate_for_prompt(str(entry.get('content') or ''), 420)}"
+            for entry in transcript
+        )
+    else:
+        context_lines = "- First turn; no prior agent response yet."
+    return (
+        f"Roundtable debate — {target}, round {round_no}/{rounds}.\n"
+        f"Topic: {topic}\n\n"
+        f"Recent context:\n{context_lines}\n\n"
+        "Give your position concisely. If you believe the group has reached actionable consensus, "
+        "end your message with `ROUND_TABLE_DECISION: CONSENSUS`. Otherwise end with "
+        "`ROUND_TABLE_DECISION: CONTINUE`. Do not mention or summon other bots directly; the "
+        "roundtable orchestrator will route the next turn."
+    )
+
+
+async def _send_controlled_mention(
+    adapter: Any,
+    chat_id: str,
+    bot_id: str,
+    message: str,
+    *,
+    thread_id: Any = None,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    metadata = {
+        "allowed_mentions_user_ids": [str(bot_id)],
+        "allow_roundtable_bot_mentions": True,
+    }
+    if thread_id:
+        metadata["thread_id"] = str(thread_id)
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    return await adapter.send(str(chat_id), f"<@{bot_id}> {message}", metadata=metadata)
+
+
+async def _send_debate_turn(gateway: Any, debate: Dict[str, Any], target: str, adapter: Any = None) -> Any:
+    adapter = adapter or _discord_adapter(gateway)
+    if adapter is None:
+        return None
+    bot_id = (debate.get("agent_ids") or {}).get(target)
+    if not bot_id:
+        return None
+    prompt = _build_debate_prompt(debate, target)
+    return await _send_controlled_mention(
+        adapter,
+        str(debate.get("channel_id")),
+        str(bot_id),
+        prompt,
+        thread_id=debate.get("thread_id"),
+        extra_metadata={"roundtable_debate_id": debate.get("id")},
+    )
+
+
+async def _send_debate_notice(gateway: Any, debate: Dict[str, Any], content: str, adapter: Any = None) -> None:
+    adapter = adapter or _discord_adapter(gateway)
+    if adapter is None:
+        return
+    metadata = {"allow_roundtable_bot_mentions": False, "roundtable_debate_id": debate.get("id")}
+    if debate.get("thread_id"):
+        metadata["thread_id"] = str(debate.get("thread_id"))
+    await adapter.send(str(debate.get("channel_id")), content, metadata=metadata)
+
+
+async def _handle_roundtable_debate(rest: str, *, gateway: Any = None, event: Any = None) -> str:
+    parsed_participants, rounds, topic_or_error = _parse_debate_args(rest)
+    if parsed_participants is None:
+        return str(topic_or_error)
+    participants = parsed_participants
+    topic = str(topic_or_error)
+
+    source = getattr(event, "source", None)
+    platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
+    if str(platform).lower() != "discord":
+        return "/roundtable debate is only available from Discord."
+    channels = _configured_channels(gateway)
+    source_ids = _source_channel_ids(source)
+    if channels and not (source_ids & channels):
+        return "/roundtable debate is only available in configured roundtable channels."
+
+    agents = _configured_agents(gateway)
+    unknown = [name for name in participants if name not in agents]
+    if unknown:
+        known = ", ".join(sorted(agents)) or "none configured"
+        return f"Unknown roundtable agent(s): {', '.join(unknown)}. Known agents: {known}"
+
+    adapter = _discord_adapter(gateway)
+    if adapter is None:
+        return "Discord adapter is not available for /roundtable debate."
+    chat_id = str(getattr(source, "chat_id", "") or "").strip()
+    if not chat_id:
+        return "Could not determine the current Discord channel for /roundtable debate."
+
+    state = _read_state()
+    existing = state.get("debate") if isinstance(state.get("debate"), dict) else None
+    if existing and existing.get("active") and str(existing.get("channel_id")) == chat_id:
+        return "A roundtable debate is already active in this channel. Use `/roundtable stop` to cancel it first."
+
+    # If the command was invoked on a participant's own bot, rotate so the first
+    # Discord mention wakes another bot rather than trying to summon itself.
+    own_bot_id = _current_bot_id(adapter)
+    if own_bot_id and agents.get(participants[0]) == own_bot_id and len(participants) > 1:
+        participants = participants[1:] + participants[:1]
+
+    debate = {
+        "id": f"debate-{uuid.uuid4().hex[:10]}",
+        "active": True,
+        "channel_id": chat_id,
+        "thread_id": str(getattr(source, "thread_id", "") or "") or None,
+        "participants": participants,
+        "agent_ids": {name: agents[name] for name in participants},
+        "topic": topic,
+        "rounds": rounds,
+        "turn_index": 0,
+        "transcript": [],
+        "started_at": _now(),
+        "started_by": getattr(source, "user_id", None),
+    }
+    state["enabled"] = True
+    state["reason"] = "debate-active"
+    state["updated_at"] = _now()
+    state["updated_from"] = "roundtable-debate"
+    state["debate"] = debate
+    _write_full_state(state)
+
+    first = _next_turn_agent(debate)
+    result = await _send_debate_turn(gateway, debate, first) if first else None
+    if result is not None and not getattr(result, "success", False):
+        debate["active"] = False
+        debate["stop_reason"] = "send-failed"
+        state["debate"] = debate
+        _write_full_state(state)
+        return f"✗ Failed to start debate: {getattr(result, 'error', 'unknown error')}"
+    return (
+        f"Debate started ({debate['id']}): {' → '.join(participants)}; "
+        f"rounds={rounds}; topic={topic}"
+    )
+
+
+async def _post_gateway_send(
+    *,
+    platform: str = "",
+    chat_id: str = "",
+    content: str = "",
+    sender_bot_id: str = "",
+    message_id: str = "",
+    gateway: Any = None,
+    adapter: Any = None,
+    **_: Any,
+) -> None:
+    if str(platform).lower() != "discord" or not sender_bot_id:
+        return
+    state = _read_state()
+    debate = state.get("debate") if isinstance(state.get("debate"), dict) else None
+    if not debate or not debate.get("active"):
+        return
+    if str(debate.get("channel_id")) != str(chat_id):
+        return
+    expected = _next_turn_agent(debate)
+    agent_ids = debate.get("agent_ids") or {}
+    if not expected or str(agent_ids.get(expected)) != str(sender_bot_id):
+        return
+
+    transcript = list(debate.get("transcript") or [])
+    transcript.append({
+        "agent": expected,
+        "content": content,
+        "message_id": message_id or None,
+        "at": _now(),
+    })
+    debate["transcript"] = transcript
+    debate["turn_index"] = int(debate.get("turn_index") or 0) + 1
+    debate["last_agent"] = expected
+    debate["last_message_id"] = message_id or None
+
+    if _CONSENSUS_RE.search(content or ""):
+        debate["active"] = False
+        debate["stop_reason"] = "consensus"
+        debate["stopped_at"] = _now()
+        state["debate"] = debate
+        _write_full_state(state)
+        await _send_debate_notice(
+            gateway,
+            debate,
+            "✅ Consensus reached. Roundtable debate auto-stopped.\n"
+            f"Topic: {debate.get('topic')}\n"
+            f"Turns completed: {len(transcript)}.",
+            adapter=adapter,
+        )
+        return
+
+    next_agent = _next_turn_agent(debate)
+    if not next_agent:
+        debate["active"] = False
+        debate["stop_reason"] = "max-turns"
+        debate["stopped_at"] = _now()
+        state["debate"] = debate
+        _write_full_state(state)
+        await _send_debate_notice(
+            gateway,
+            debate,
+            "🏁 Debate round limit reached; auto-stopped.\n"
+            f"Topic: {debate.get('topic')}\n"
+            f"Turns completed: {len(transcript)}. If consensus is unclear, restart with a narrower topic.",
+            adapter=adapter,
+        )
+        return
+
+    state["debate"] = debate
+    _write_full_state(state)
+    await _send_debate_turn(gateway, debate, next_agent, adapter=adapter)
+
 
 
 def _handle_roundtable_command(
@@ -355,6 +664,8 @@ def _handle_roundtable_command(
         return "Roundtable enabled.\n" + _format_status(state, gateway)
     if sub in {"call", "summon", "page"}:
         return _handle_roundtable_call(reason, gateway=gateway, event=event)
+    if sub in {"debate", "discuss"}:
+        return _handle_roundtable_debate(reason, gateway=gateway, event=event)
     return f"Unknown roundtable subcommand: {sub}\n\n{_HELP}"
 
 
@@ -373,12 +684,13 @@ def _pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -> O
 
 def register(ctx) -> None:
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
+    ctx.register_hook("post_gateway_send", _post_gateway_send)
     ctx.register_command(
         "roundtable",
         handler=_handle_roundtable_command,
         description="Control the shared Discord multi-agent roundtable circuit breaker.",
-        args_hint="<status|stop|start|call> [target] [message]",
-        subcommands=("status", "stop", "start", "call", "summon"),
+        args_hint="<status|stop|start|call|debate> [args]",
+        subcommands=("status", "stop", "start", "call", "summon", "debate", "discuss"),
         category="Gateway",
         gateway_only=True,
     )

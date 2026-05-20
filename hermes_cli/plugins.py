@@ -158,6 +158,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Gateway/platform post-send hook. Fired after an adapter successfully
+    # sends a platform message; async callbacks are awaited by adapters that
+    # support this hook. Kwargs vary by platform but include platform, chat_id,
+    # content, message_ids/message_id, sender_bot_id, adapter, gateway.
+    "post_gateway_send",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

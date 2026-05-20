@@ -169,6 +169,150 @@ class TestRoundtableCall:
         assert "only available in configured roundtable channels" in result
 
 
+class TestRoundtableDebate:
+    @pytest.mark.asyncio
+    async def test_debate_starts_bounded_turns_and_mentions_first_agent(self, roundtable_mod, monkeypatch):
+        monkeypatch.setenv("HERMES_ROUNDTABLE_CHANNELS", "roundtable")
+        sent = []
+
+        class Adapter:
+            async def send(self, chat_id, content, metadata=None):
+                sent.append((chat_id, content, metadata))
+                return SimpleNamespace(success=True, message_id=f"msg-{len(sent)}")
+
+        event = _event(is_bot=False, chat_id="roundtable")
+        gateway = SimpleNamespace(
+            adapters={"discord": Adapter()},
+            config={
+                "discord": {
+                    "roundtable": {
+                        "agents": {
+                            "victor": "111",
+                            "mizu": "222",
+                        },
+                    }
+                }
+            },
+        )
+
+        result = roundtable_mod._handle_roundtable_command(
+            "debate victor,mizu --rounds 2 Should we ship this?",
+            session_id="sess1",
+            gateway=gateway,
+            event=event,
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+
+        assert "Debate started" in result
+        assert "victor → mizu" in result
+        assert sent[0][0] == "roundtable"
+        assert sent[0][1].startswith("<@111> Roundtable debate")
+        assert "Should we ship this?" in sent[0][1]
+        assert sent[0][2]["allowed_mentions_user_ids"] == ["111"]
+        assert sent[0][2]["allow_roundtable_bot_mentions"] is True
+        debate = roundtable_mod._read_state()["debate"]
+        assert debate["active"] is True
+        assert debate["participants"] == ["victor", "mizu"]
+        assert debate["rounds"] == 2
+        assert debate["turn_index"] == 0
+
+    @pytest.mark.asyncio
+    async def test_debate_routes_next_turn_after_expected_agent_response(self, roundtable_mod, monkeypatch):
+        monkeypatch.setenv("HERMES_ROUNDTABLE_CHANNELS", "roundtable")
+        sent = []
+
+        class Adapter:
+            async def send(self, chat_id, content, metadata=None):
+                sent.append((chat_id, content, metadata))
+                return SimpleNamespace(success=True, message_id=f"msg-{len(sent)}")
+
+        gateway = SimpleNamespace(adapters={"discord": Adapter()}, config={})
+        roundtable_mod._write_state(True, reason="test")
+        state = roundtable_mod._read_state()
+        state["debate"] = {
+            "id": "debate-1",
+            "active": True,
+            "channel_id": "roundtable",
+            "participants": ["victor", "mizu"],
+            "agent_ids": {"victor": "111", "mizu": "222"},
+            "topic": "Ship it?",
+            "rounds": 1,
+            "turn_index": 0,
+            "transcript": [],
+            "started_at": "now",
+        }
+        roundtable_mod._write_full_state(state)
+
+        result = roundtable_mod._post_gateway_send(
+            platform="discord",
+            chat_id="roundtable",
+            content="Engineering view: yes, with tests. ROUND_TABLE_DECISION: CONTINUE",
+            sender_bot_id="111",
+            message_id="victor-msg",
+            gateway=gateway,
+        )
+        if hasattr(result, "__await__"):
+            await result
+
+        debate = roundtable_mod._read_state()["debate"]
+        assert debate["turn_index"] == 1
+        assert debate["transcript"][0]["agent"] == "victor"
+        assert len(sent) == 1
+        assert sent[0][0] == "roundtable"
+        assert "<@222> Roundtable debate" in sent[0][1]
+        assert sent[0][2] == {
+            "allowed_mentions_user_ids": ["222"],
+            "allow_roundtable_bot_mentions": True,
+            "roundtable_debate_id": "debate-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_debate_consensus_marker_stops_and_announces_summary(self, roundtable_mod):
+        sent = []
+
+        class Adapter:
+            async def send(self, chat_id, content, metadata=None):
+                sent.append((chat_id, content, metadata))
+                return SimpleNamespace(success=True, message_id=f"msg-{len(sent)}")
+
+        gateway = SimpleNamespace(adapters={"discord": Adapter()}, config={})
+        roundtable_mod._write_state(True, reason="test")
+        state = roundtable_mod._read_state()
+        state["debate"] = {
+            "id": "debate-1",
+            "active": True,
+            "channel_id": "roundtable",
+            "participants": ["victor", "mizu"],
+            "agent_ids": {"victor": "111", "mizu": "222"},
+            "topic": "Ship it?",
+            "rounds": 2,
+            "turn_index": 1,
+            "transcript": [{"agent": "victor", "content": "yes with tests"}],
+            "started_at": "now",
+        }
+        roundtable_mod._write_full_state(state)
+
+        result = roundtable_mod._post_gateway_send(
+            platform="discord",
+            chat_id="roundtable",
+            content="Product agrees. ROUND_TABLE_DECISION: CONSENSUS",
+            sender_bot_id="222",
+            message_id="mizu-msg",
+            gateway=gateway,
+        )
+        if hasattr(result, "__await__"):
+            await result
+
+        debate = roundtable_mod._read_state()["debate"]
+        assert debate["active"] is False
+        assert debate["stop_reason"] == "consensus"
+        assert len(sent) == 1
+        assert sent[0][0] == "roundtable"
+        assert "Consensus reached" in sent[0][1]
+        assert sent[0][2] == {"allow_roundtable_bot_mentions": False, "roundtable_debate_id": "debate-1"}
+
+
 class TestRegistration:
     def test_register_wires_hook_and_gateway_command(self, roundtable_mod):
         calls = []
@@ -181,9 +325,9 @@ class TestRegistration:
                 calls.append(("command", args, kwargs))
 
         roundtable_mod.register(Ctx())
-        hook = next(call for call in calls if call[0] == "hook")
+        hooks = [call for call in calls if call[0] == "hook"]
         command = next(call for call in calls if call[0] == "command")
-        assert hook[1][0] == "pre_gateway_dispatch"
+        assert [hook[1][0] for hook in hooks] == ["pre_gateway_dispatch", "post_gateway_send"]
         assert command[1][0] == "roundtable"
         assert command[2]["gateway_only"] is True
-        assert command[2]["args_hint"] == "<status|stop|start|call> [target] [message]"
+        assert command[2]["args_hint"] == "<status|stop|start|call|debate> [args]"

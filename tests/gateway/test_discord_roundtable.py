@@ -279,3 +279,46 @@ async def test_send_can_single_fire_roundtable_bot_mention_with_precise_allowed_
     assert result.success is True
     assert sent[0]["content"] == "<@123> please respond once"
     assert sent[0]["allowed_mentions"] is not None
+
+
+@pytest.mark.asyncio
+async def test_send_invokes_post_gateway_send_hook_and_awaits_async_results(monkeypatch):
+    adapter = _adapter()
+    sent = []
+    hook_calls = []
+    awaited = []
+
+    class Channel:
+        async def send(self, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(id=999)
+
+    adapter._client = SimpleNamespace(
+        user=_user("456", bot=True),
+        get_channel=lambda channel_id: Channel(),
+        fetch_channel=None,
+    )
+
+    async def async_result():
+        awaited.append(True)
+
+    def fake_invoke_hook(name, **kwargs):
+        hook_calls.append((name, kwargs))
+        return [async_result()]
+
+    import hermes_cli.plugins as plugins_mod
+
+    monkeypatch.setattr(plugins_mod, "invoke_hook", fake_invoke_hook)
+
+    result = await adapter.send("42", "hello debate")
+
+    assert result.success is True
+    assert sent[0]["content"] == "hello debate"
+    assert awaited == [True]
+    assert hook_calls[0][0] == "post_gateway_send"
+    assert hook_calls[0][1]["platform"] == "discord"
+    assert hook_calls[0][1]["chat_id"] == "42"
+    assert hook_calls[0][1]["content"] == "hello debate"
+    assert hook_calls[0][1]["message_id"] == "999"
+    assert hook_calls[0][1]["sender_bot_id"] == "456"
+    assert hook_calls[0][1]["adapter"] is adapter

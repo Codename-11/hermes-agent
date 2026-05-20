@@ -1,5 +1,26 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-20 — Add bounded Discord roundtable debate mode
+
+### Summary
+
+Added `/roundtable debate` as a supervised turn scheduler for Victor/Mizu/Sentinel-style Discord rooms. Normal roundtable remains safe shared-room behavior; debate mode is explicit, bounded, and auto-stops with a summary on consensus or max turns.
+
+### What changed
+
+- Added `/roundtable debate <agent1,agent2[,agent3]> [--rounds N] <topic>` to the `roundtable-orchestrator` plugin.
+- Persisted active debate state in `~/.hermes/roundtable_state.json` alongside the existing circuit breaker.
+- Added controlled per-turn Discord mentions, with only the next expected participant allowed in `allowed_mentions.users`.
+- Added `post_gateway_send` plugin hook support in the Discord adapter so debate state advances after the expected bot posts its response.
+- Added consensus auto-stop: expected participants can end with `ROUND_TABLE_DECISION: CONSENSUS`; the orchestrator then posts a non-mention summary and marks the debate stopped.
+- Added max-turn auto-stop for bounded rounds when consensus is not reached.
+- Updated docs/skill/Obsidian references for call vs debate vs normal safe-room behavior.
+
+### Verification
+
+- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/platforms/discord.py hermes_cli/plugins.py tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_roundtable.py tests/gateway/test_roundtable_orchestrator_dispatch.py` → OK
+- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_roundtable.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/hermes_cli/test_plugins.py -q -o 'addopts='` → 119 passed.
+
 ## 2026-05-20 — Add single-fire Discord roundtable calls
 
 ### Summary
