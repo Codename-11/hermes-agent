@@ -227,7 +227,11 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
         return None
     try:
         raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError happens when a previous writer was killed mid-
+        # write or the file got corrupted (we've seen `0x86` bytes in
+        # platform-status payloads on rapid reconnect). Treat both as
+        # "couldn't read; start fresh" so the caller writes a clean record.
         return None
     if not raw:
         return None

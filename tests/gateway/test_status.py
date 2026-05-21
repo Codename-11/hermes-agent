@@ -246,6 +246,18 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_read_json_file_treats_corrupt_utf8_as_missing(self, tmp_path):
+        path = tmp_path / "gateway_state.json"
+        path.write_bytes(b'{"ok": true}\x86')
+
+        assert status._read_json_file(path) is None
+
+    def test_read_json_file_reads_valid_json_object(self, tmp_path):
+        path = tmp_path / "gateway_state.json"
+        path.write_text('{"ok": true}', encoding="utf-8")
+
+        assert status._read_json_file(path) == {"ok": True}
+
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         calls = []
