@@ -37,7 +37,7 @@ import os
 import re
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Set
 
@@ -60,13 +60,34 @@ _HELP = (
     "• call <agent> <message> — send one controlled Discord mention to an agent\n"
     "• debate <agent1,agent2[,agent3]> [--rounds N] <topic> — run a bounded debate that auto-stops on consensus"
 )
-_MAX_DEBATE_ROUNDS = 3
-_DEFAULT_DEBATE_ROUNDS = 2
+_MAX_DEBATE_ROUNDS = 5
+_DEFAULT_DEBATE_ROUNDS = 3
+_CALL_TTL_SECONDS = 300
 _CONSENSUS_RE = re.compile(r"ROUND[_ -]?TABLE[_ -]?DECISION\s*:\s*(CONSENSUS|AGREE|AGREEMENT)", re.I)
+_DECISION_LINE_RE = re.compile(r"\s*ROUND[_ -]?TABLE[_ -]?DECISION\s*:\s*(CONSENSUS|AGREE|AGREEMENT|CONTINUE)\s*", re.I)
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _iso_in(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _parse_time(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 def _state_path() -> Path:
@@ -130,6 +151,14 @@ def _write_state(enabled: bool, *, reason: str = "", updated_by: str = "", updat
             debate["stop_reason"] = "roundtable-stopped"
             debate["stopped_at"] = state["updated_at"]
         state["debate"] = debate
+    pending_call = existing.get("pending_call")
+    if isinstance(pending_call, dict):
+        pending_call = dict(pending_call)
+        if not enabled and pending_call.get("active"):
+            pending_call["active"] = False
+            pending_call["stop_reason"] = "roundtable-stopped"
+            pending_call["stopped_at"] = state["updated_at"]
+        state["pending_call"] = pending_call
     _write_full_state(state)
     return state
 
@@ -238,8 +267,84 @@ def _format_status(state: Dict[str, Any], gateway: Any = None) -> str:
             f"turn={int(debate.get('turn_index') or 0)}/{int(debate.get('rounds') or 1) * max(1, len(debate.get('participants') or []))}; "
             f"topic={debate.get('topic') or 'n/a'}"
         )
+    pending_call = state.get("pending_call") if isinstance(state.get("pending_call"), dict) else None
+    if pending_call and pending_call.get("active"):
+        lines.append(
+            "Pending call: "
+            f"{pending_call.get('target') or pending_call.get('target_bot_id')} "
+            f"until {pending_call.get('expires_at') or 'unknown'}"
+        )
     lines.append("Note: Discord `allow_bots` still controls whether bot-authored messages reach this plugin.")
     return "\n".join(lines)
+
+
+def _source_user_id(source: Any) -> str:
+    for attr in ("user_id", "author_id", "sender_id"):
+        value = getattr(source, attr, None)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _event_text(event: Any) -> str:
+    for attr in ("text", "raw_message"):
+        value = getattr(event, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _mentions_bot(text: str, bot_id: str) -> bool:
+    return f"<@{bot_id}>" in (text or "") or f"<@!{bot_id}>" in (text or "")
+
+
+def _consume_pending_call_if_matches(state: Dict[str, Any], event: Any) -> bool:
+    """Allow exactly one stopped-gate bot turn for /roundtable call.
+
+    The incoming event is authored by the *calling* bot and mentions the target
+    bot. Adapter-level ``allow_bots: mentions`` already ensures only the
+    mentioned target bot receives the event, so this plugin gate verifies the
+    shared call token and consumes it before LLM dispatch.
+    """
+    pending = state.get("pending_call") if isinstance(state.get("pending_call"), dict) else None
+    if not pending or not pending.get("active"):
+        return False
+
+    expires_at = _parse_time(pending.get("expires_at"))
+    if expires_at and expires_at < datetime.now(timezone.utc):
+        pending["active"] = False
+        pending["expired_at"] = _now()
+        pending["stop_reason"] = "expired"
+        state["pending_call"] = pending
+        _write_full_state(state)
+        return False
+
+    source = getattr(event, "source", None)
+    source_ids = _source_channel_ids(source)
+    expected_channels = {str(pending.get("channel_id") or "").strip()}
+    thread_id = str(pending.get("thread_id") or "").strip()
+    if thread_id:
+        expected_channels.add(thread_id)
+    expected_channels.discard("")
+    if expected_channels and not (source_ids & expected_channels):
+        return False
+
+    caller_bot_id = str(pending.get("caller_bot_id") or "").strip()
+    if caller_bot_id and _source_user_id(source) != caller_bot_id:
+        return False
+
+    target_bot_id = str(pending.get("target_bot_id") or "").strip()
+    if target_bot_id and not _mentions_bot(_event_text(event), target_bot_id):
+        return False
+
+    pending["active"] = False
+    pending["accepted_at"] = _now()
+    pending["accepted_by"] = target_bot_id or None
+    state["pending_call"] = pending
+    state["updated_at"] = _now()
+    state["updated_from"] = "roundtable-call"
+    _write_full_state(state)
+    return True
 
 
 def _parse_command(args: str) -> tuple[str, str]:
@@ -355,12 +460,39 @@ async def _handle_roundtable_call(rest: str, *, gateway: Any = None, event: Any 
     chat_id = str(getattr(source, "chat_id", "") or "").strip()
     if not chat_id:
         return "Could not determine the current Discord channel for /roundtable call."
-    result = await _send_controlled_mention(adapter, chat_id, bot_id, message, thread_id=getattr(source, "thread_id", None))
+    thread_id = getattr(source, "thread_id", None)
+    caller_bot_id = _current_bot_id(adapter)
+    result = await _send_controlled_mention(adapter, chat_id, bot_id, message, thread_id=thread_id)
     if not getattr(result, "success", False):
         error = getattr(result, "error", "unknown error")
         return f"✗ Failed to call {target}: {error}"
     message_id = getattr(result, "message_id", None) or "sent"
-    return f"Called {target} in <#{chat_id}> (message {message_id})."
+
+    state = _read_state()
+    state["pending_call"] = {
+        "id": f"call-{uuid.uuid4().hex[:10]}",
+        "active": True,
+        "target": target,
+        "target_bot_id": str(bot_id),
+        "caller_bot_id": caller_bot_id,
+        "channel_id": chat_id,
+        "thread_id": str(thread_id) if thread_id else None,
+        "message": message,
+        "mention_message_id": message_id,
+        "created_at": _now(),
+        "expires_at": _iso_in(_CALL_TTL_SECONDS),
+        "created_by": getattr(source, "user_id", None),
+    }
+    state["enabled"] = False
+    state["reason"] = "single-call-pending"
+    state["updated_at"] = _now()
+    state["updated_from"] = "roundtable-call"
+    _write_full_state(state)
+
+    return (
+        f"📣 Called **{target}** in <#{chat_id}> (message {message_id}).\n"
+        "One reply from the target bot is authorized; the roundtable remains stopped for every other bot-authored turn."
+    )
 
 
 def _parse_debate_args(rest: str) -> tuple[list[str], int, str] | tuple[None, None, str]:
@@ -484,6 +616,43 @@ async def _send_debate_turn(gateway: Any, debate: Dict[str, Any], target: str, a
         prompt,
         thread_id=debate.get("thread_id"),
         extra_metadata={"roundtable_debate_id": debate.get("id")},
+    )
+
+
+def _clean_decision_text(content: str) -> str:
+    text = _DECISION_LINE_RE.sub("\n", content or "").strip()
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text or "(No final text beyond the decision marker.)"
+
+
+def _format_debate_completion_notice(debate: Dict[str, Any], *, reason: str) -> str:
+    transcript = list(debate.get("transcript") or [])
+    turns_done = len(transcript)
+    total_turns = int(debate.get("rounds") or 1) * max(1, len(debate.get("participants") or []))
+    topic = debate.get("topic") or "n/a"
+    if reason == "consensus":
+        last = transcript[-1] if transcript else {}
+        agent = last.get("agent") or "unknown"
+        final = _truncate_for_prompt(_clean_decision_text(str(last.get("content") or "")), 1200)
+        quoted = "\n".join(f"> {line}" if line else ">" for line in final.splitlines())
+        return (
+            "✅ **Roundtable consensus reached — gate closed.**\n"
+            f"**Topic:** {topic}\n"
+            f"**Turns:** {turns_done}/{total_turns}\n"
+            f"**Final result ({agent}):**\n{quoted}\n\n"
+            "No further bot-authored turns will be admitted unless you start a new debate, use `/roundtable call`, or run `/roundtable start`."
+        )
+
+    last = transcript[-1] if transcript else {}
+    last_agent = last.get("agent") or "unknown"
+    last_text = _truncate_for_prompt(_clean_decision_text(str(last.get("content") or "")), 900)
+    quoted = "\n".join(f"> {line}" if line else ">" for line in last_text.splitlines())
+    return (
+        "🏁 **Roundtable round limit reached — gate closed.**\n"
+        f"**Topic:** {topic}\n"
+        f"**Turns:** {turns_done}/{total_turns}\n"
+        f"**Last turn ({last_agent}):**\n{quoted}\n\n"
+        "If the result is unclear, restart with a narrower topic."
     )
 
 
@@ -621,9 +790,7 @@ async def _post_gateway_send(
         await _send_debate_notice(
             gateway,
             debate,
-            "✅ Consensus reached. Roundtable debate auto-stopped.\n"
-            f"Topic: {debate.get('topic')}\n"
-            f"Turns completed: {len(transcript)}.",
+            _format_debate_completion_notice(debate, reason="consensus"),
             adapter=adapter,
         )
         return
@@ -642,9 +809,7 @@ async def _post_gateway_send(
         await _send_debate_notice(
             gateway,
             debate,
-            "🏁 Debate round limit reached; auto-stopped.\n"
-            f"Topic: {debate.get('topic')}\n"
-            f"Turns completed: {len(transcript)}. If consensus is unclear, restart with a narrower topic.",
+            _format_debate_completion_notice(debate, reason="max-turns"),
             adapter=adapter,
         )
         return
@@ -683,6 +848,8 @@ def _pre_gateway_dispatch(event: Any = None, gateway: Any = None, **_: Any) -> O
         return None
     state = _read_state()
     if state.get("enabled"):
+        return None
+    if _consume_pending_call_if_matches(state, event):
         return None
     return {
         "action": "skip",

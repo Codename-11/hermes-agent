@@ -39,15 +39,24 @@ def roundtable_mod(tmp_path, monkeypatch):
     return mod
 
 
-def _event(*, is_bot=True, platform="discord", chat_id="roundtable", parent_chat_id=None):
+def _event(
+    *,
+    is_bot=True,
+    platform="discord",
+    chat_id="roundtable",
+    parent_chat_id=None,
+    user_id="caller-bot",
+    text="hello",
+):
     source = SimpleNamespace(
         platform=platform,
         is_bot=is_bot,
         chat_id=chat_id,
         parent_chat_id=parent_chat_id,
         thread_id=None,
+        user_id=user_id,
     )
-    return SimpleNamespace(source=source, text="hello")
+    return SimpleNamespace(source=source, text=text)
 
 
 class TestRoundtableState:
@@ -114,6 +123,9 @@ class TestRoundtableCall:
         sent = []
 
         class Adapter:
+            def __init__(self):
+                self._client = SimpleNamespace(user=SimpleNamespace(id="caller-bot"))
+
             async def send(self, chat_id, content, metadata=None):
                 sent.append((chat_id, content, metadata))
                 return SimpleNamespace(success=True, message_id="msg-123")
@@ -139,7 +151,8 @@ class TestRoundtableCall:
         if hasattr(result, "__await__"):
             result = await result
 
-        assert result == "Called mizu in <#roundtable> (message msg-123)."
+        assert result.startswith("📣 Called **mizu** in <#roundtable> (message msg-123).")
+        assert "One reply" in result
         assert sent == [
             (
                 "roundtable",
@@ -150,6 +163,44 @@ class TestRoundtableCall:
                 },
             )
         ]
+        state = roundtable_mod._read_state()
+        assert state["enabled"] is False
+        assert state["reason"] == "single-call-pending"
+        assert state["pending_call"]["active"] is True
+        assert state["pending_call"]["target"] == "mizu"
+        assert state["pending_call"]["caller_bot_id"] == "caller-bot"
+
+    def test_pending_call_allows_one_matching_bot_mention_while_stopped(self, roundtable_mod):
+        roundtable_mod._write_state(False, reason="test-stop")
+        state = roundtable_mod._read_state()
+        state["pending_call"] = {
+            "id": "call-1",
+            "active": True,
+            "target": "mizu",
+            "target_bot_id": "222",
+            "caller_bot_id": "111",
+            "channel_id": "roundtable",
+            "created_at": roundtable_mod._now(),
+            "expires_at": roundtable_mod._iso_in(60),
+        }
+        roundtable_mod._write_full_state(state)
+
+        event = _event(
+            chat_id="roundtable",
+            user_id="111",
+            text="<@222> Please answer once.",
+        )
+
+        assert roundtable_mod._pre_gateway_dispatch(event=event) is None
+        consumed = roundtable_mod._read_state()["pending_call"]
+        assert consumed["active"] is False
+        assert consumed["accepted_by"] == "222"
+
+        # The same call token cannot admit a second bot-authored turn.
+        assert roundtable_mod._pre_gateway_dispatch(event=event) == {
+            "action": "skip",
+            "reason": "roundtable-stopped",
+        }
 
     @pytest.mark.asyncio
     async def test_call_rejects_non_roundtable_channel(self, roundtable_mod, monkeypatch):
@@ -216,6 +267,43 @@ class TestRoundtableDebate:
         assert debate["participants"] == ["victor", "mizu"]
         assert debate["rounds"] == 2
         assert debate["turn_index"] == 0
+
+    @pytest.mark.asyncio
+    async def test_debate_defaults_to_three_rounds_and_caps_at_five(self, roundtable_mod, monkeypatch):
+        monkeypatch.setenv("HERMES_ROUNDTABLE_CHANNELS", "roundtable")
+
+        class Adapter:
+            async def send(self, chat_id, content, metadata=None):
+                return SimpleNamespace(success=True, message_id="msg-1")
+
+        event = _event(is_bot=False, chat_id="roundtable")
+        gateway = SimpleNamespace(
+            adapters={"discord": Adapter()},
+            config={"discord": {"roundtable": {"agents": {"victor": "111", "mizu": "222"}}}},
+        )
+
+        result = roundtable_mod._handle_roundtable_command(
+            "debate victor,mizu Should we ship this?",
+            session_id="sess1",
+            gateway=gateway,
+            event=event,
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+        assert "rounds=3" in result
+        assert roundtable_mod._read_state()["debate"]["rounds"] == 3
+        roundtable_mod._write_state(False, reason="test-reset")
+
+        result = roundtable_mod._handle_roundtable_command(
+            "debate victor,mizu --rounds 9 Should we ship this?",
+            session_id="sess1",
+            gateway=gateway,
+            event=event,
+        )
+        if hasattr(result, "__await__"):
+            result = await result
+        assert "rounds=5" in result
+        assert roundtable_mod._read_state()["debate"]["rounds"] == 5
 
     @pytest.mark.asyncio
     async def test_debate_routes_next_turn_after_expected_agent_response(self, roundtable_mod, monkeypatch):
@@ -310,7 +398,10 @@ class TestRoundtableDebate:
         assert roundtable_mod._read_state()["enabled"] is False
         assert len(sent) == 1
         assert sent[0][0] == "roundtable"
-        assert "Consensus reached" in sent[0][1]
+        assert "Roundtable consensus reached" in sent[0][1]
+        assert "Final result (mizu)" in sent[0][1]
+        assert "Product agrees." in sent[0][1]
+        assert "ROUND_TABLE_DECISION" not in sent[0][1]
         assert sent[0][2] == {"allow_roundtable_bot_mentions": False, "roundtable_debate_id": "debate-1"}
 
     @pytest.mark.asyncio
@@ -356,6 +447,7 @@ class TestRoundtableDebate:
         assert state["debate"]["stop_reason"] == "max-turns"
         assert len(sent) == 1
         assert "round limit reached" in sent[0][1]
+        assert "Last turn (mizu)" in sent[0][1]
 
 
 class TestRegistration:

@@ -3157,6 +3157,62 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        # Plugin commands are normally mirrored as a generic single ``args``
+        # field below.  Roundtable benefits from the same richer Discord UX as
+        # built-ins like /model and /voice, so register a typed command when
+        # the plugin is enabled: action choices plus separate fields for agent,
+        # participant list, round count, and prompt/message.
+        try:
+            from hermes_cli.commands import _iter_plugin_command_entries as _plugin_entries_for_roundtable
+
+            _roundtable_enabled = any(
+                name == "roundtable" for name, _desc, _hint in _plugin_entries_for_roundtable()
+            )
+        except Exception:
+            _roundtable_enabled = False
+
+        _app_commands = getattr(discord, "app_commands", None)
+        if _roundtable_enabled and _app_commands is not None:
+            @tree.command(name="roundtable", description="Control Discord multi-agent roundtable calls and debates")
+            @_app_commands.describe(
+                action="Roundtable action",
+                agent="Agent name for call (for example: mizu, victor, sentinel)",
+                participants="Comma-separated agents for debate (for example: victor,mizu)",
+                rounds="Debate rounds (1-5). Leave empty for the default.",
+                message="Reason, call message, or debate topic",
+            )
+            @_app_commands.choices(action=[
+                _app_commands.Choice(name="status — show shared gate state", value="status"),
+                _app_commands.Choice(name="stop — close the shared gate", value="stop"),
+                _app_commands.Choice(name="start — open the shared gate", value="start"),
+                _app_commands.Choice(name="call — authorize one reply from an agent", value="call"),
+                _app_commands.Choice(name="debate — bounded agent debate", value="debate"),
+            ])
+            async def slash_roundtable(
+                interaction,
+                action: str = "status",
+                agent: str = "",
+                participants: str = "",
+                rounds: int = 0,
+                message: str = "",
+            ):
+                action = (action or "status").strip().lower()
+                agent = (agent or "").strip()
+                participants = (participants or "").strip()
+                message = (message or "").strip()
+
+                if action in {"status", "stop", "start"}:
+                    command = f"/roundtable {action} {message}".strip()
+                elif action == "call":
+                    command = f"/roundtable call {agent} {message}".strip()
+                elif action == "debate":
+                    roster = participants or agent
+                    rounds_arg = f" --rounds {rounds}" if rounds else ""
+                    command = f"/roundtable debate {roster}{rounds_arg} {message}".strip()
+                else:
+                    command = "/roundtable status"
+                await self._run_simple_slash(interaction, command)
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash

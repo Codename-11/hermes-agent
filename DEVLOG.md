@@ -1,5 +1,26 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-20 — Improve Discord roundtable call UX
+
+### Summary
+
+Tightened `/roundtable call` so it actually admits the target agent's one reply while keeping the shared circuit breaker closed, and improved Discord roundtable usability/output.
+
+### What changed
+
+- `/roundtable call` now writes a short-lived `pending_call` token after the controlled mention. The stopped gate admits exactly one matching bot-authored event from the caller bot, in the expected channel/thread, mentioning the target bot, then consumes the token.
+- `/roundtable stop` cancels any pending call along with active debates.
+- Consensus/max-turn debate notices now post a cleaner result block with topic, turn count, final/last turn text, and the decision marker stripped.
+- Discord native `/roundtable` now has richer slash input: action choices plus separate `agent`, `participants`, `rounds`, and `message` fields instead of only one opaque args field.
+- Debate defaults now allow a little more room: omitted `rounds` defaults to 3, and explicit rounds are capped at 5.
+- Updated roundtable plugin tests and the reusable Hermes skill reference.
+
+### Verification
+
+- `python -m py_compile gateway/platforms/discord.py plugins/roundtable_orchestrator/__init__.py` → OK
+- `python -m pytest tests/gateway/test_discord_roundtable.py tests/gateway/test_discord_allowed_mentions.py tests/plugins/test_roundtable_orchestrator_plugin.py -q -o 'addopts='` → 56 passed.
+- Hermetic Discord sweep with temp `HERMES_HOME`: `python -m pytest tests/gateway/test_discord*.py tests/plugins/test_roundtable_orchestrator_plugin.py -q -o 'addopts='` → 395 passed.
+
 ## 2026-05-20 — Stop Discord roundtable consensus loops
 
 ### Summary
