@@ -7594,7 +7594,9 @@ def _format_concurrent_instances_message(
     return "\n".join(lines)
 
 
-def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]:
+def _quarantine_running_hermes_exe(
+    scripts_dir: Path, *, max_attempts: int = 4
+) -> list[tuple[Path, Path]]:
     """Pre-empt Windows file lock on the running ``hermes.exe``.
 
     Windows allows RENAMING a mapped/running executable (the kernel tracks the
@@ -7607,27 +7609,127 @@ def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]
     fresh shims at the original paths. The ``.old`` files are cleaned up on
     the next hermes invocation by ``_cleanup_quarantined_exes``.
 
+    Rename can still fail when *another* process has opened the .exe without
+    ``FILE_SHARE_DELETE`` — typically AV real-time scanners with transient
+    handles (recovers in <1s), or the Hermes Desktop backend child process
+    (won't recover until the user closes it). We mitigate:
+
+    1. Retry up to ``max_attempts`` times with exponential backoff
+       (100/250/500/1000 ms). Handles the AV-scanner case.
+    2. If all retries fail, schedule the .exe for replacement on next
+       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
+       lets uv create a fresh shim at the original path (Windows will keep
+       the old file's content under a new name until the reboot), so the
+       update can complete; the user just needs to reboot to fully unload
+       the stale image.
+    3. Print a clear warning naming the most likely culprit (running
+       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement.
+    back if the install itself fails before uv writes a replacement. Pairs
+    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
+    are already deferred and roll-back is meaningless.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
         return moved
 
     import time
+
     stamp = int(time.time() * 1000)
+    # Backoff schedule: first attempt is immediate, subsequent ones sleep.
+    # 100ms / 250ms / 500ms covers the typical AV scanner re-scan window.
+    backoff_ms = [0, 100, 250, 500, 1000]
+    attempts = max(1, min(max_attempts, len(backoff_ms)))
+
     for shim in _hermes_exe_shims(scripts_dir):
         if not shim.exists():
             continue
         target = shim.with_suffix(shim.suffix + f".old.{stamp}")
-        try:
-            shim.rename(target)
-            moved.append((shim, target))
-        except OSError as e:
-            # Best-effort: keep going. uv's failure later will surface the
-            # real error; this is a heuristic, not a hard guarantee.
-            print(f"  ⚠ Could not quarantine {shim.name}: {e}")
+
+        last_exc: OSError | None = None
+        for attempt in range(attempts):
+            delay = backoff_ms[attempt] / 1000.0
+            if delay:
+                time.sleep(delay)
+            try:
+                shim.rename(target)
+                moved.append((shim, target))
+                last_exc = None
+                break
+            except OSError as e:
+                last_exc = e
+                continue
+
+        if last_exc is None:
+            continue
+
+        # All in-process renames failed. Try MoveFileEx with
+        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
+        # exact case where the inline rename failed (another process holds
+        # the handle without share-delete), at the cost of requiring a
+        # reboot to fully reclaim the old .exe.
+        scheduled = _schedule_replace_on_reboot(shim, target)
+        if scheduled:
+            print(
+                f"  ⚠ {shim.name} is locked by another process; scheduled "
+                f"replacement on next reboot."
+            )
+            print(
+                "    The new shim was written at the same path, but a "
+                "reboot is needed to fully unload the old one."
+            )
+            # Do NOT append to ``moved``: we don't want roll-back to undo a
+            # reboot-deferred operation.
+            continue
+
+        # Truly couldn't budge the .exe. Print an actionable warning and let
+        # uv try its luck — sometimes uv's own retry handling pulls through.
+        print(
+            f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
+            f"another process is holding it open)."
+        )
+        print(
+            "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
+            "gateway, or pause AV scanning, then re-run `hermes update`."
+        )
+
     return moved
+
+
+def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
+    """Schedule ``shim`` -> ``quarantine_target`` via PendingFileRenameOperations.
+
+    Uses Win32 ``MoveFileExW`` with ``MOVEFILE_REPLACE_EXISTING |
+    MOVEFILE_DELAY_UNTIL_REBOOT``. The OS persists the rename in
+    ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
+    PendingFileRenameOperations`` and applies it before any user-mode code
+    runs on next boot — at which point no process can hold the .exe.
+
+    Returns ``True`` if the schedule call succeeded, ``False`` otherwise
+    (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
+    """
+    if not _is_windows():
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        MOVEFILE_REPLACE_EXISTING = 0x1
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+
+        MoveFileExW = ctypes.windll.kernel32.MoveFileExW
+        MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        MoveFileExW.restype = wintypes.BOOL
+
+        ok = MoveFileExW(
+            str(shim),
+            str(quarantine_target),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
+        )
+        return bool(ok)
+    except Exception:
+        return False
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
@@ -8451,6 +8553,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("⚕ Updating Hermes Agent...")
     print()
+
+    # On Windows, abort early if another hermes.exe is holding the venv shim
+    # open. Continuing would result in a string of WinError 32 warnings and
+    # then either a deferred-rename leftover or a failed git-pull fast path
+    # that silently falls back to the slower ZIP route. See issue #26670.
+    if _is_windows() and not getattr(args, "force", False):
+        scripts_dir = _venv_scripts_dir()
+        if scripts_dir is not None:
+            concurrent = _detect_concurrent_hermes_instances(scripts_dir)
+            if concurrent:
+                print(_format_concurrent_instances_message(concurrent, scripts_dir))
+                sys.exit(2)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
