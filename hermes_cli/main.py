@@ -5731,6 +5731,80 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
+# Critical files that every ``hermes`` invocation imports at startup. If any
+# of these fail to parse after a pull, the CLI is bricked — the user can't
+# even run ``hermes update`` again to roll forward. The post-pull syntax
+# guard validates these and auto-rolls-back on failure.
+_UPDATE_CRITICAL_FILES = (
+    "hermes_cli/main.py",
+    "hermes_cli/config.py",
+    "hermes_cli/__init__.py",
+    "cli.py",
+    "run_agent.py",
+    "model_tools.py",
+    "toolsets.py",
+    "hermes_constants.py",
+)
+
+
+def _capture_head_sha(git_cmd, cwd) -> str | None:
+    """Return the current HEAD SHA, or None if it can't be resolved."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip() or None
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
+    """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
+
+    These are the files imported on every ``hermes`` startup; if any of them
+    has a syntax error (orphan merge-conflict markers, bad ref to a name
+    that no longer exists, etc.) the CLI can't bootstrap at all. We validate
+    them after a successful ``git pull`` so we can auto-roll-back instead of
+    leaving the user with a bricked install.
+
+    The compiled ``.pyc`` is written to a temp directory rather than the
+    source tree's ``__pycache__/`` so we don't race with concurrent test
+    workers that walk the same dir, and so we don't leave a stale pyc
+    behind in production if the next interpreter run picks a different
+    Python version. The pyc is discarded on function return either way —
+    we only care about the compile-or-not signal.
+
+    Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
+    file parsed cleanly.
+    """
+    import py_compile
+    import tempfile
+
+    root = Path(root)
+    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
+        for relpath in _UPDATE_CRITICAL_FILES:
+            path = root / relpath
+            if not path.exists():
+                # Missing file is suspicious but not necessarily fatal — a future
+                # refactor may legitimately remove one of these. Skip and move on.
+                continue
+            # Mirror the relative path under the tmpdir so two different
+            # files with the same basename don't collide on the cfile name.
+            cfile = Path(tmpdir) / (relpath.replace("/", "__") + "c")
+            try:
+                py_compile.compile(str(path), cfile=str(cfile), doraise=True)
+            except py_compile.PyCompileError as exc:
+                return False, str(path), str(exc)
+            except OSError as exc:
+                return False, str(path), f"could not read: {exc}"
+    return True, None, None
+
+
+
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
     """File-based IPC prompt for gateway mode.
 
