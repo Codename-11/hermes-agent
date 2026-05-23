@@ -4591,7 +4591,17 @@ def _mount_plugin_api_routes():
     # API routes are not sidebar entries.  Keep bundled demo plugins hidden
     # from the production dashboard while still mounting their backend routes
     # for tests and local SDK examples.
-    for plugin in _discover_dashboard_plugins(include_suppressed_bundled=True):
+    #
+    # Prefer an explicitly populated cache when present: security regression
+    # tests and future callers may inject synthetic entries to exercise the
+    # mount-time guard directly.  On normal import/startup the cache is empty,
+    # so discover with suppressed bundled dashboard plugins included.
+    plugins = (
+        _dashboard_plugins_cache
+        if _dashboard_plugins_cache is not None
+        else _discover_dashboard_plugins(include_suppressed_bundled=True)
+    )
+    for plugin in plugins:
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue

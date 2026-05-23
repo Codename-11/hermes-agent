@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
+import os
 import sys
 
 import pytest
@@ -75,6 +76,14 @@ class FakeThread:
 
 @pytest.fixture
 def adapter(monkeypatch):
+    # Keep these unit tests hermetic on live gateway hosts where the
+    # process environment may carry production Discord allowlists and
+    # roundtable policy.  Each test sets only the Discord env vars it is
+    # explicitly asserting.
+    for key in list(os.environ):
+        if key.startswith("DISCORD_"):
+            monkeypatch.delenv(key, raising=False)
+
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
 
