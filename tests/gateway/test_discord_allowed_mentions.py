@@ -81,7 +81,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import _build_allowed_mentions  # noqa: E402
+from plugins.platforms.discord.adapter import _build_allowed_mentions  # noqa: E402
 from gateway.platforms.base import _thread_metadata_for_source  # noqa: E402
 from gateway.config import Platform  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
