@@ -1487,21 +1487,77 @@ class APIServerAdapter(BasePlatformAdapter):
                     {"session_id": session_id, "run_id": run_id, "message_id": assistant_message_id, "delta": delta},
                 )
 
-        def _on_tool_progress(name, preview, args):
-            if name == "_thinking":
-                _queue_event(
-                    "tool.progress",
-                    {"session_id": session_id, "run_id": run_id, "message_id": assistant_message_id, "delta": preview},
-                )
+        # Track which tool_call_ids have emitted a live "started"/"completed"
+        # lifecycle event via the structured callbacks below, so (a) a
+        # completion without a matching start is dropped (can't be correlated
+        # client-side) and (b) the post-run reconciliation loop skips tools we
+        # already completed in real time instead of double-emitting.
+        _started_tool_call_ids: set = set()
+        _completed_tool_call_ids: set = set()
+
+        def _on_tool_progress(*cb_args):
+            # Current agent builds invoke tool_progress_callback with a leading
+            # event-type arg and variable arity:
+            #   ("tool.started", name, preview, args)        — tool start
+            #   ("_thinking", first_line)                    — thinking delta
+            #   ("reasoning.available", "_thinking", text, None)
+            # We only forward thinking/reasoning deltas here. tool.started /
+            # tool.completed are emitted by the structured tool_start_callback /
+            # tool_complete_callback below, which carry the tool_call_id needed
+            # for client-side start↔complete correlation. (Historically this
+            # handler used a fixed (name, preview, args) signature, so the
+            # 4-arg agent calls raised TypeError and were swallowed at debug —
+            # which is why session chat showed no live tool progress.)
+            if not cb_args:
                 return
-            payload = {
+            event_type = cb_args[0]
+            if event_type in ("_thinking", "reasoning.available"):
+                preview = next(
+                    (a for a in reversed(cb_args[1:]) if isinstance(a, str) and a != "_thinking"),
+                    None,
+                )
+                if preview:
+                    _queue_event(
+                        "tool.progress",
+                        {"session_id": session_id, "run_id": run_id, "message_id": assistant_message_id, "delta": preview},
+                    )
+
+        def _on_tool_start(tool_call_id, function_name, function_args):
+            """Emit a real-time ``tool.started`` carrying the tool_call_id.
+
+            Mirrors the chat-completions structured callback (#16588). Skips
+            internal tools (``_``-prefixed) so events like ``_thinking`` stay
+            off the wire, matching the prior progress-callback filter.
+            """
+            if not tool_call_id or function_name.startswith("_"):
+                return
+            _started_tool_call_ids.add(tool_call_id)
+            _queue_event("tool.started", {
                 "session_id": session_id,
                 "run_id": run_id,
-                "tool_name": name,
-                "preview": preview,
-                "args": args,
-            }
-            _queue_event("tool.started", payload)
+                "tool_call_id": tool_call_id,
+                "tool_name": function_name,
+                "args": function_args,
+            })
+
+        def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            """Emit the matching real-time ``tool.completed``.
+
+            Dropped when the start was filtered/never seen so clients never
+            get an orphaned completion they can't correlate.
+            """
+            if not tool_call_id or tool_call_id not in _started_tool_call_ids:
+                return
+            _started_tool_call_ids.discard(tool_call_id)
+            _completed_tool_call_ids.add(tool_call_id)
+            _queue_event("tool.completed", {
+                "session_id": session_id,
+                "run_id": run_id,
+                "tool_call_id": tool_call_id,
+                "tool_name": function_name,
+                "args": function_args,
+                "result_preview": _result_preview(function_result),
+            })
 
         agent_ref = [None]
         loop = asyncio.get_event_loop()
@@ -1514,6 +1570,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_on_delta,
                     tool_progress_callback=_on_tool_progress,
                 )
+                # _create_agent only forwards tool_progress_callback; the
+                # richer per-tool lifecycle callbacks (which carry the
+                # tool_call_id and fire in real time) are plain agent
+                # attributes, so set them directly.
+                agent.tool_start_callback = _on_tool_start
+                agent.tool_complete_callback = _on_tool_complete
                 agent._session_db = db  # Enable session persistence
                 agent_ref[0] = agent
                 return agent.run_conversation(
@@ -1591,11 +1653,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 last_activity = time.monotonic()
 
             result = await agent_task
+            # Reconciliation fallback: tool.completed is normally emitted in
+            # real time by _on_tool_complete above. This loop only covers tool
+            # results whose live completion never fired (e.g. the start was
+            # filtered, or a build that doesn't invoke tool_complete_callback),
+            # so we skip anything already completed to avoid double-emitting.
             tools = _tool_map(result.get("messages") or [])
             for item in result.get("messages") or []:
                 if item.get("role") != "tool":
                     continue
                 tool_id = item.get("tool_call_id")
+                if tool_id in _completed_tool_call_ids:
+                    continue
                 tool_meta = tools.get(tool_id, {})
                 await response.write(_encode_sse("tool.completed", {
                     "session_id": session_id,
