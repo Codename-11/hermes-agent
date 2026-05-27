@@ -281,20 +281,29 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # module-import time). Without this, config.yaml's toggle is ignored because
 # the setup_logging() call below imports agent.redact, which reads the env var
 # exactly once. Env var in .env still wins — this is config.yaml fallback only.
+#
+# We also read network.force_ipv4 from the same yaml load to avoid two
+# separate config.yaml reads (saves ~17ms on every CLI startup — the second
+# `load_config()` was doing a full deep-merge for one boolean lookup).
+_FORCE_IPV4_EARLY = False
 try:
-    if "HERMES_REDACT_SECRETS" not in os.environ:
-        import yaml as _yaml_early
+    import yaml as _yaml_early
 
-        _cfg_path = get_hermes_home() / "config.yaml"
-        if _cfg_path.exists():
-            with open(_cfg_path, encoding="utf-8") as _f:
-                _early_sec_cfg = (_yaml_early.safe_load(_f) or {}).get("security", {})
+    _cfg_path = get_hermes_home() / "config.yaml"
+    if _cfg_path.exists():
+        with open(_cfg_path, encoding="utf-8") as _f:
+            _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        if "HERMES_REDACT_SECRETS" not in os.environ:
+            _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
-            del _early_sec_cfg
-        del _cfg_path
+        _early_net_cfg = _early_cfg_raw.get("network", {})
+        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
+            _FORCE_IPV4_EARLY = True
+        del _early_cfg_raw
+    del _cfg_path
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
 
@@ -308,17 +317,15 @@ except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
-try:
-    from hermes_cli.config import load_config as _load_config_early
-    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+# We already determined whether to force IPv4 from the raw yaml read above —
+# this just calls the toggle without a redundant load_config() round trip.
+if _FORCE_IPV4_EARLY:
+    try:
+        from hermes_constants import apply_ipv4_preference as _apply_ipv4
 
-    _early_cfg = _load_config_early()
-    _net = _early_cfg.get("network", {})
-    if isinstance(_net, dict) and _net.get("force_ipv4"):
         _apply_ipv4(force=True)
-    del _early_cfg, _net
-except Exception:
-    pass  # best-effort — don't crash if config isn't available yet
+    except Exception:
+        pass  # best-effort — don't crash if hermes_constants not importable yet
 
 import logging
 import threading
@@ -2215,7 +2222,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "xai-oauth":
-        _model_flow_xai_oauth(config, current_model)
+        _model_flow_xai_oauth(config, current_model, args=args)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "minimax-oauth":
@@ -2253,6 +2260,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
     elif selected_provider in {
+        "openai-api",
         "gemini",
         "deepseek",
         "xai",
@@ -2644,7 +2652,7 @@ def _aux_flow_provider_model(
 
 def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
-    import getpass
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
     display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
     current_base_url = str(task_cfg.get("base_url") or "").strip()
@@ -2678,7 +2686,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         return
     model = model or current_model
     try:
-        api_key = getpass.getpass(
+        api_key = masked_secret_prompt(
             "API key (optional, blank = use OPENAI_API_KEY): "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -3126,8 +3134,8 @@ def _model_flow_openai_codex(config, current_model=""):
         print("No change.")
 
 
-def _model_flow_xai_oauth(_config, current_model=""):
-    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+def _model_flow_xai_oauth(_config, current_model="", *, args=None):
+    """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_xai_oauth_auth_status,
         _prompt_model_selection,
@@ -3142,7 +3150,7 @@ def _model_flow_xai_oauth(_config, current_model=""):
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
-        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
+        print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
         print("    1. Use existing credentials")
         print("    2. Reauthenticate (new OAuth login)")
@@ -3157,7 +3165,15 @@ def _model_flow_xai_oauth(_config, current_model=""):
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
-                mock_args = argparse.Namespace()
+                # Forward CLI flags from ``hermes model --manual-paste``
+                # / ``--no-browser`` / ``--timeout`` into the loopback
+                # login. Without this, browser-only remotes (#26923)
+                # can't reach the manual-paste path via ``hermes model``.
+                mock_args = argparse.Namespace(
+                    manual_paste=bool(getattr(args, "manual_paste", False)),
+                    no_browser=bool(getattr(args, "no_browser", False)),
+                    timeout=getattr(args, "timeout", None),
+                )
                 _login_xai_oauth(
                     mock_args,
                     PROVIDER_REGISTRY["xai-oauth"],
@@ -3172,10 +3188,14 @@ def _model_flow_xai_oauth(_config, current_model=""):
         elif choice == "3":
             return
     else:
-        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+        print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
         print()
         try:
-            mock_args = argparse.Namespace()
+            mock_args = argparse.Namespace(
+                manual_paste=bool(getattr(args, "manual_paste", False)),
+                no_browser=bool(getattr(args, "no_browser", False)),
+                timeout=getattr(args, "timeout", None),
+            )
             _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
         except SystemExit:
             print("Login cancelled or failed.")
@@ -3202,7 +3222,7 @@ def _model_flow_xai_oauth(_config, current_model=""):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")
 
@@ -3388,6 +3408,7 @@ def _model_flow_custom(config):
     """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -3403,9 +3424,7 @@ def _model_flow_custom(config):
         base_url = input(
             f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
         ).strip()
-        import getpass
-
-        api_key = getpass.getpass(
+        api_key = masked_secret_prompt(
             f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -3769,11 +3788,27 @@ def _save_custom_provider(
 
 
 def _model_flow_azure_foundry(config, current_model=""):
-    """Azure Foundry provider: configure endpoint, API mode, API key, and model.
+    """Azure Foundry provider: configure endpoint, auth mode, API mode, and model.
 
     Azure Foundry supports both OpenAI-style (``/v1/chat/completions``) and
-    Anthropic-style (``/v1/messages``) endpoints.  The wizard auto-detects
-    the transport and available models when possible:
+    Anthropic-style (``/v1/messages``) endpoints, and two authentication
+    modes:
+
+    * **API key** (default) — uses ``AZURE_FOUNDRY_API_KEY`` from .env.
+    * **Microsoft Entra ID** — keyless, RBAC-based auth via the
+      ``azure-identity`` SDK (Managed Identity / Workload Identity / az
+      login / VS Code / azd / service principal env vars). Works on both
+      OpenAI-style and Anthropic-style endpoints — Microsoft RBAC is
+      per-resource and the same ``Azure AI User`` role grants
+      both. For OpenAI-style the OpenAI SDK's native callable
+      ``api_key=`` contract is used; for Anthropic-style an
+      ``httpx.Client`` with a request event hook (built by
+      :func:`agent.azure_identity_adapter.build_bearer_http_client`)
+      mints a fresh JWT per request because the Anthropic SDK does not
+      accept a callable ``auth_token`` natively.
+
+    The wizard auto-detects the transport and available models when
+    possible:
 
     * URLs ending in ``/anthropic`` → Anthropic Messages API.
     * Successful ``GET <base>/models`` probe → OpenAI-style + populates
@@ -3793,16 +3828,20 @@ def _model_flow_azure_foundry(config, current_model=""):
         save_config,
     )
     from hermes_cli import azure_detect
-    import getpass
 
     # ── Load current Azure Foundry configuration ─────────────────────
     model_cfg = config.get("model", {})
     if isinstance(model_cfg, dict) and model_cfg.get("provider") == "azure-foundry":
         current_base_url = str(model_cfg.get("base_url", "") or "")
         current_api_mode = str(model_cfg.get("api_mode", "") or "")
+        current_auth_mode = str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
+        _cur_entra = model_cfg.get("entra") or {}
+        current_entra = _cur_entra if isinstance(_cur_entra, dict) else {}
     else:
         current_base_url = ""
         current_api_mode = ""
+        current_auth_mode = "api_key"
+        current_entra = {}
 
     current_api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
 
@@ -3817,22 +3856,29 @@ def _model_flow_azure_foundry(config, current_model=""):
     print()
 
     if current_base_url:
-        print(f"  Current endpoint: {current_base_url}")
+        print(f"  Current endpoint:  {current_base_url}")
     if current_api_mode:
         _lbl = (
             "OpenAI-style"
             if current_api_mode == "chat_completions"
             else "Anthropic-style"
         )
-        print(f"  Current API mode: {_lbl}")
-    if current_api_key:
-        print(f"  Current API key:  {current_api_key[:8]}...")
+        print(f"  Current API mode:  {_lbl}")
+    if current_auth_mode == "entra_id":
+        print(f"  Current auth mode: Microsoft Entra ID (keyless)")
+    elif current_api_key:
+        print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
     print()
 
     # ── Step 1: endpoint URL ─────────────────────────────────────────
     try:
+        _placeholder = (
+            current_base_url
+            or "e.g. https://<resource>.openai.azure.com/openai/v1 "
+              "or https://<resource>.services.ai.azure.com/anthropic"
+        )
         base_url = input(
-            f"API endpoint URL [{current_base_url or 'e.g. https://your-resource.openai.azure.com/openai/v1'}]: "
+            f"API endpoint URL [{_placeholder}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
@@ -3846,25 +3892,127 @@ def _model_flow_azure_foundry(config, current_model=""):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
 
-    # ── Step 2: API key ──────────────────────────────────────────────
+    # ── Step 2: authentication mode ──────────────────────────────────
     print()
+    print("Authentication:")
+    print("  1. API key                  (AZURE_FOUNDRY_API_KEY in .env)")
+    print("  2. Microsoft Entra ID       (managed identity / workload identity / az login)")
+    print("     Recommended by Microsoft. Works for both OpenAI-style and Anthropic-style endpoints.")
+    print("     Requires the 'Azure AI User' role on the Foundry resource.")
     try:
-        api_key = getpass.getpass(
-            f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
-        ).strip()
+        _auth_default = "2" if current_auth_mode == "entra_id" else "1"
+        auth_choice = (
+            input(f"Authentication mode [1/2] ({_auth_default}): ").strip()
+            or _auth_default
+        )
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
+    use_entra = auth_choice == "2"
+    auth_mode_label = "entra_id" if use_entra else "api_key"
 
-    effective_key = api_key or current_api_key
-    if not effective_key:
-        print("No API key provided. Cancelled.")
-        return
+    # ── Step 3: credentials (key OR Entra preflight) ─────────────────
+    effective_key: str = ""
+    entra_overrides: dict = {}
+    token_provider = None  # callable when entra
+    entra_scope = ""
 
-    # ── Step 3: auto-detect transport + models ───────────────────────
+    if use_entra:
+        try:
+            from agent.azure_identity_adapter import (
+                EntraIdentityConfig,
+                SCOPE_AI_AZURE_DEFAULT,
+                build_token_provider,
+                describe_active_credential,
+                has_azure_identity_installed,
+            )
+        except ImportError as exc:
+            print()
+            print(f"⚠ Could not import azure-identity adapter: {exc}")
+            print("  Falling back to API key auth.")
+            use_entra = False
+            auth_mode_label = "api_key"
+
+    if use_entra:
+        print()
+        if not has_azure_identity_installed():
+            print("◐ The 'azure-identity' package is not installed yet.")
+            print(
+                "  Hermes will install it now (the preflight below "
+                "triggers the lazy-install). To skip lazy installs, "
+                "run:  pip install azure-identity"
+            )
+
+        # Preserve only the optional scope override. Identity selection
+        # (tenant, user-assigned MI, workload identity, service principal)
+        # stays in Azure SDK env vars such as AZURE_CLIENT_ID.
+        _persisted_scope_override = str(current_entra.get("scope") or "").strip()
+        entra_scope = _persisted_scope_override or SCOPE_AI_AZURE_DEFAULT
+
+        entra_overrides = {}
+        if _persisted_scope_override:
+            entra_overrides["scope"] = _persisted_scope_override
+
+        print()
+        print("◐ Probing Microsoft Entra ID credential chain (up to 10s)...")
+        _config = EntraIdentityConfig(
+            scope=entra_scope,
+        )
+        info = describe_active_credential(config=_config, timeout_seconds=10.0)
+        if info.get("ok"):
+            env_sources = info.get("env_sources") or []
+            tag = ", ".join(env_sources) if env_sources else "default chain"
+            print(f"✓ Entra ID token acquired ({tag}, scope={entra_scope})")
+        else:
+            err = info.get("error") or "credential chain exhausted"
+            hint = info.get("hint") or (
+                "Run `az login`, attach a managed identity to this VM, or "
+                "set AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET."
+            )
+            print(f"⚠ {err}")
+            print(f"  Hint: {hint}")
+            try:
+                ans = input("Save Entra config anyway and validate later? [Y/n]: ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+            if ans and ans not in ("y", "yes"):
+                print("Cancelled.")
+                return
+
+        # Build the token provider for the detection probe (best-effort —
+        # if the credential chain failed above, this will silently return
+        # None inside azure_detect and the probe falls back to manual).
+        try:
+            token_provider = build_token_provider(config=_config)
+        except Exception as exc:
+            print(f"⚠ Could not build token provider for probing: {exc}")
+            token_provider = None
+    else:
+        print()
+        from hermes_cli.secret_prompt import masked_secret_prompt
+
+        try:
+            api_key = masked_secret_prompt(
+                f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+
+        effective_key = api_key or current_api_key
+        if not effective_key:
+            print("No API key provided. Cancelled.")
+            return
+
+    # ── Step 4: auto-detect transport + models ───────────────────────
     print()
     print("◐ Probing endpoint to auto-detect transport and models...")
-    detection = azure_detect.detect(effective_url, effective_key)
+    detection = azure_detect.detect(
+        effective_url,
+        api_key=effective_key,
+        token_provider=token_provider,
+    )
 
     discovered_models: list[str] = list(detection.models)
     api_mode: str = detection.api_mode or ""
@@ -3899,7 +4047,7 @@ def _model_flow_azure_foundry(config, current_model=""):
             return
         api_mode = "anthropic_messages" if mode_choice == "2" else "chat_completions"
 
-    # ── Step 4: model name ───────────────────────────────────────────
+    # ── Step 5: model name ───────────────────────────────────────────
     print()
     effective_model = ""
     if discovered_models:
@@ -3938,15 +4086,17 @@ def _model_flow_azure_foundry(config, current_model=""):
         print("No model name provided. Cancelled.")
         return
 
-    # ── Step 5: context-length lookup ────────────────────────────────
+    # ── Step 6: context-length lookup ────────────────────────────────
     ctx_len = azure_detect.lookup_context_length(
         effective_model,
         effective_url,
-        effective_key,
+        api_key=effective_key,
+        token_provider=token_provider,
     )
 
-    # ── Step 6: persist ──────────────────────────────────────────────
-    save_env_value("AZURE_FOUNDRY_API_KEY", effective_key)
+    # ── Step 7: persist ──────────────────────────────────────────────
+    if not use_entra:
+        save_env_value("AZURE_FOUNDRY_API_KEY", effective_key)
 
     cfg = load_config()
     model = cfg.get("model")
@@ -3958,6 +4108,22 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["base_url"] = effective_url
     model["api_mode"] = api_mode
     model["default"] = effective_model
+    model["auth_mode"] = auth_mode_label
+    if use_entra:
+        # Persist only the non-default Entra scope so config.yaml stays tidy.
+        # Azure identity selection stays in standard AZURE_* env vars.
+        clean_entra: dict = {}
+        for key in ("scope",):
+            val = entra_overrides.get(key)
+            if val:
+                clean_entra[key] = val
+        if clean_entra:
+            model["entra"] = clean_entra
+        elif "entra" in model:
+            del model["entra"]
+    else:
+        if "entra" in model:
+            del model["entra"]
     if ctx_len:
         model["context_length"] = ctx_len
 
@@ -3973,10 +4139,14 @@ def _model_flow_azure_foundry(config, current_model=""):
         save_env_value("OPENAI_API_KEY", "")
 
     mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
+    auth_label = (
+        "Microsoft Entra ID (keyless)" if use_entra else "API key"
+    )
     print()
     print("✓ Azure Foundry configured:")
     print(f"    Endpoint:       {effective_url}")
     print(f"    API mode:       {mode_label}")
+    print(f"    Auth:           {auth_label}")
     print(f"    Model:          {effective_model}")
     if ctx_len:
         print(f"    Context length: {ctx_len:,} tokens")
@@ -4388,10 +4558,10 @@ def _model_flow_copilot(config, current_model=""):
                 print(f"  Login failed: {exc}")
                 return
         elif choice == "2":
-            try:
-                import getpass
+            from hermes_cli.secret_prompt import masked_secret_prompt
 
-                new_key = getpass.getpass("  Token (COPILOT_GITHUB_TOKEN): ").strip()
+            try:
+                new_key = masked_secret_prompt("  Token (COPILOT_GITHUB_TOKEN): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -4642,10 +4812,9 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     ``return`` immediately — the user cancelled entry, declined to replace, or
     cleared the key and is now unconfigured.
     """
-    import getpass
-
     from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
     from hermes_cli.config import save_env_value
+    from hermes_cli.secret_prompt import masked_secret_prompt
 
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
@@ -4655,7 +4824,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         else:
             prompt = f"{key_env} (or Enter to cancel): "
         try:
-            entered = getpass.getpass(prompt).strip()
+            entered = masked_secret_prompt(prompt).strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return ""
@@ -4969,10 +5138,10 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     else:
         print(f"  Endpoint: {mantle_base_url}")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            api_key = getpass.getpass("  Bedrock API Key: ").strip()
+        try:
+            api_key = masked_secret_prompt("  Bedrock API Key: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -5543,10 +5712,10 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         print("  If the setup-token was displayed above, paste it here:")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            manual_token = getpass.getpass(
+        try:
+            manual_token = masked_secret_prompt(
                 "  Paste setup-token (or Enter to cancel): "
             ).strip()
         except (KeyboardInterrupt, EOFError):
@@ -5574,10 +5743,10 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         print("  Or paste an existing setup-token now (sk-ant-oat-...):")
         print()
-        try:
-            import getpass
+        from hermes_cli.secret_prompt import masked_secret_prompt
 
-            token = getpass.getpass("  Setup-token (or Enter to cancel): ").strip()
+        try:
+            token = masked_secret_prompt("  Setup-token (or Enter to cancel): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return False
@@ -5692,10 +5861,10 @@ def _model_flow_anthropic(config, current_model=""):
             print()
             print("  Get an API key at: https://platform.claude.com/settings/keys")
             print()
-            try:
-                import getpass
+            from hermes_cli.secret_prompt import masked_secret_prompt
 
-                api_key = getpass.getpass("  API key (sk-ant-...): ").strip()
+            try:
+                api_key = masked_secret_prompt("  API key (sk-ant-...): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -5841,6 +6010,19 @@ def cmd_doctor(args):
     from hermes_cli.doctor import run_doctor
 
     run_doctor(args)
+
+
+def cmd_security(args):
+    """Dispatch `hermes security <subcmd>`."""
+    sub = getattr(args, "security_command", None)
+    if sub in ("audit", None):
+        from hermes_cli.security_audit import cmd_security_audit
+
+        # Default subcommand is `audit` when no subcmd is given.
+        code = cmd_security_audit(args)
+        sys.exit(int(code or 0))
+    print(f"unknown security subcommand: {sub}", file=sys.stderr)
+    sys.exit(2)
 
 
 def cmd_dump(args):
@@ -6725,8 +6907,13 @@ def _update_via_zip(args):
         urlretrieve(zip_url, zip_path)
 
         print("→ Extracting...")
+        import stat as _stat
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # Validate paths to prevent zip-slip (path traversal)
+            # Validate paths to prevent zip-slip (path traversal) AND reject
+            # symlink members. A GitHub source ZIP for hermes-agent itself
+            # should never contain symlinks — they'd point outside the
+            # extracted tree and let an attacker who can compromise the
+            # update mirror plant arbitrary files via the update path.
             tmp_dir_real = os.path.realpath(tmp_dir)
             for member in zf.infolist():
                 member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
@@ -6736,6 +6923,13 @@ def _update_via_zip(args):
                 ):
                     raise ValueError(
                         f"Zip-slip detected: {member.filename} escapes extraction directory"
+                    )
+                # Unix mode lives in the upper 16 bits of external_attr;
+                # mask to the file-type bits.
+                mode = (member.external_attr >> 16) & 0o170000
+                if _stat.S_ISLNK(mode):
+                    raise ValueError(
+                        f"ZIP contains unsupported symlink member: {member.filename}"
                     )
             zf.extractall(tmp_dir)
 
@@ -7937,9 +8131,20 @@ def _detect_concurrent_hermes_instances(
 ) -> list[tuple[int, str]]:
     """Find other live processes whose .exe is one of our entry-point shims.
 
-    Windows blocks DELETE/REPLACE on a running .exe when another process holds
-    the same shim. Enumerate other live Hermes launcher processes so update
-    tests and Windows update safeguards have the expected helper surface.
+    Windows blocks DELETE/REPLACE on a running .exe — and even RENAME on the
+    same .exe when another process opened it without ``FILE_SHARE_DELETE``.
+    The Hermes Desktop Electron app spawns ``hermes.EXE`` as a backend child,
+    so during ``hermes update`` the user-invoked process and the desktop's
+    child both hold the same file. The quarantine rename then fails with
+    ``[WinError 32]`` and uv inherits the lock.
+
+    This helper enumerates processes whose ``exe`` matches one of the venv's
+    shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
+    process_name)`` pairs. The caller's own PID and its entire ancestor
+    chain are excluded so the running ``hermes update`` invocation never
+    reports itself — this matters on Windows where the setuptools .exe
+    launcher (``hermes.exe``) is a separate process from the Python
+    interpreter it loads (``python.exe``).
 
     Returns an empty list off-Windows, on missing psutil, or when no other
     instances exist. Never raises — process enumeration is best-effort.
@@ -7952,8 +8157,38 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    if exclude_pid is None:
-        exclude_pid = os.getpid()
+    # Build a set of PIDs to exclude: the Python process itself plus its
+    # entire parent chain. On Windows the setuptools-generated hermes.exe
+    # launcher is a separate native process that spawns python.exe (the
+    # interpreter that runs our code).  os.getpid() returns the Python PID,
+    # but the launcher (which holds the file lock) is the parent.  Without
+    # walking the parent chain, every ``hermes update`` reports its own
+    # launcher as a concurrent instance — a false positive.
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {exclude_pid}
+    else:
+        exclude_pids = {os.getpid()}
+    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
+    # AccessDenied) we stop walking and use whatever we've collected so far.
+    # Broader Exception catch on the outer block guards against partially-
+    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
+    # NoSuchProcess) — the surrounding update flow documents this helper as
+    # "never raises".
+    try:
+        current = psutil.Process(next(iter(exclude_pids)))
+        while True:
+            try:
+                parent = current.parent()
+            except Exception:
+                break
+            if parent is None or parent.pid <= 0:
+                break
+            if parent.pid in exclude_pids:
+                break  # loop detected
+            exclude_pids.add(parent.pid)
+            current = parent
+    except Exception:
+        pass
 
     shim_paths: set[str] = set()
     for shim in _hermes_exe_shims(scripts_dir):
@@ -7977,7 +8212,7 @@ def _detect_concurrent_hermes_instances(
             continue
         pid = info.get("pid")
         exe = info.get("exe")
-        if not exe or pid is None or pid == exclude_pid:
+        if not exe or pid is None or pid in exclude_pids:
             continue
         try:
             exe_norm = str(Path(exe).resolve()).lower()
@@ -10296,6 +10531,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "honcho",
         "claw",
         "plugins",
+        "security",
         "acp",
         "webhook",
         "memory",
@@ -11136,7 +11372,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat", "secrets",
+        "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -12406,6 +12642,58 @@ def main():
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================
+    # security command — on-demand supply-chain audit
+    # =========================================================================
+    security_parser = subparsers.add_parser(
+        "security",
+        help="Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers",
+        description=(
+            "On-demand vulnerability scan against OSV.dev. Covers the Hermes "
+            "venv (installed PyPI dists), Python deps declared by plugins under "
+            "~/.hermes/plugins/, and pinned npx/uvx MCP servers in config.yaml. "
+            "Does NOT scan globally-installed packages or editor/browser extensions."
+        ),
+    )
+    security_subparsers = security_parser.add_subparsers(
+        dest="security_command",
+        metavar="<subcommand>",
+    )
+
+    audit_parser = security_subparsers.add_parser(
+        "audit",
+        help="Run a one-shot supply-chain audit",
+        description="Query OSV.dev for known vulnerabilities in installed components.",
+    )
+    audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of human-readable text",
+    )
+    audit_parser.add_argument(
+        "--fail-on",
+        default="critical",
+        choices=["low", "moderate", "high", "critical"],
+        help="Exit non-zero when any finding meets this severity (default: critical)",
+    )
+    audit_parser.add_argument(
+        "--skip-venv",
+        action="store_true",
+        help="Skip scanning the Hermes Python venv",
+    )
+    audit_parser.add_argument(
+        "--skip-plugins",
+        action="store_true",
+        help="Skip scanning plugin requirements files",
+    )
+    audit_parser.add_argument(
+        "--skip-mcp",
+        action="store_true",
+        help="Skip scanning pinned MCP servers in config.yaml",
+    )
+    audit_parser.set_defaults(func=cmd_security)
+    security_parser.set_defaults(func=cmd_security)
+
+    # =========================================================================
     # dump command
     # =========================================================================
     dump_parser = subparsers.add_parser(
@@ -13268,6 +13556,24 @@ Examples:
         help="Force re-authentication for an OAuth-based MCP server",
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+
+    # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
+    mcp_sub.add_parser(
+        "picker",
+        help="Interactive catalog picker (also the default for `hermes mcp`)",
+    )
+    mcp_sub.add_parser(
+        "catalog",
+        help="List Nous-approved MCPs available for one-click install",
+    )
+    mcp_install_p = mcp_sub.add_parser(
+        "install",
+        help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)",
+    )
+    mcp_install_p.add_argument(
+        "identifier",
+        help="Catalog entry name (or `official/<name>`)",
+    )
 
     _add_accept_hooks_flag(mcp_parser)
 

@@ -44,9 +44,10 @@ def cmd_proxy_start(args: Any) -> int:
         return 2
 
     if not adapter.is_authenticated():
+        auth_hint = getattr(adapter, "auth_hint", f"hermes auth add {adapter.name}")
         print(
             f"Not logged into {adapter.display_name}. "
-            f"Run `hermes login {adapter.name}` first.",
+            f"Run `{auth_hint}` first.",
             file=sys.stderr,
         )
         return 2
