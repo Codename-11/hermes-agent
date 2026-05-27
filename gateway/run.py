@@ -774,31 +774,29 @@ if _config_path.exists():
                         os.environ[_env_var] = str(_val)
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
-        # Auxiliary model/direct-endpoint overrides (vision, web_extract).
-        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
+        # Auxiliary model/direct-endpoint overrides (vision, web_extract,
+        # approval, plus any plugin-registered auxiliary tasks).
+        # Each task has provider/model/base_url/api_key; bridge non-default
+        # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
+        # hard-coded list (vision/web_extract/approval) is replaced by a
+        # dynamic loop so plugin-registered tasks benefit from the same
+        # config→env bridging without core knowing about each one.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
         if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            _aux_task_env = {
-                "vision": {
-                    "provider": "AUXILIARY_VISION_PROVIDER",
-                    "model": "AUXILIARY_VISION_MODEL",
-                    "base_url": "AUXILIARY_VISION_BASE_URL",
-                    "api_key": "AUXILIARY_VISION_API_KEY",
-                },
-                "web_extract": {
-                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-                },
-                "approval": {
-                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                    "model": "AUXILIARY_APPROVAL_MODEL",
-                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
-                },
-            }
-            for _task_key, _env_map in _aux_task_env.items():
+            # Built-in tasks that previously had explicit env-var bridging.
+            # Kept here as the canonical bridged set; plugin tasks are added
+            # below via the plugin auxiliary registry.
+            _aux_bridged_keys = {"vision", "web_extract", "approval"}
+            try:
+                from hermes_cli.plugins import get_plugin_auxiliary_tasks
+                for _entry in get_plugin_auxiliary_tasks():
+                    _aux_bridged_keys.add(_entry["key"])
+            except Exception:
+                # Plugin discovery failure must not break gateway startup;
+                # built-in bridging stays intact.
+                pass
+
+            for _task_key in _aux_bridged_keys:
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})
                 if not isinstance(_task_cfg, dict):
                     continue
@@ -806,14 +804,15 @@ if _config_path.exists():
                 _model = str(_task_cfg.get("model", "")).strip()
                 _base_url = str(_task_cfg.get("base_url", "")).strip()
                 _api_key = str(_task_cfg.get("api_key", "")).strip()
+                _upper = _task_key.upper()
                 if _prov and _prov != "auto":
-                    os.environ[_env_map["provider"]] = _prov
+                    os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
                 if _model:
-                    os.environ[_env_map["model"]] = _model
+                    os.environ[f"AUXILIARY_{_upper}_MODEL"] = _model
                 if _base_url:
-                    os.environ[_env_map["base_url"]] = _base_url
+                    os.environ[f"AUXILIARY_{_upper}_BASE_URL"] = _base_url
                 if _api_key:
-                    os.environ[_env_map["api_key"]] = _api_key
+                    os.environ[f"AUXILIARY_{_upper}_API_KEY"] = _api_key
         # config.yaml is the documented, authoritative source for these
         # settings — it unconditionally wins over .env values. Previously
         # the guards below read `if X not in os.environ` and let stale
@@ -840,6 +839,8 @@ if _config_path.exists():
         if _display_cfg and isinstance(_display_cfg, dict):
             if "busy_input_mode" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
+            if "busy_text_mode" in _display_cfg:
+                os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
@@ -964,6 +965,12 @@ _AGENT_PENDING_SENTINEL = object()
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
+    Provider is read from ``config.yaml`` ``model.provider`` (the single
+    source of truth). ``resolve_runtime_provider()`` falls through to env
+    var lookups internally for legacy compatibility, but the gateway does
+    not consult environment variables for behavioral config — config.yaml
+    is authoritative.
+
     If the primary provider fails with an authentication error, attempt to
     resolve credentials using the fallback provider chain from config.yaml
     before giving up.
@@ -975,9 +982,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.auth import AuthError
 
     try:
-        runtime = resolve_runtime_provider(
-            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
-        )
+        runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
         # Primary provider auth failed (expired token, revoked key, etc.).
         # Try the fallback provider chain before raising.
@@ -1552,6 +1557,7 @@ class GatewayRunner:
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
+    _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1578,6 +1584,7 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -2825,6 +2832,17 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
+    def _load_busy_text_mode() -> str:
+        """Load normal busy TEXT follow-up behavior from config/env."""
+        mode = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
+        if not mode:
+            cfg = _load_gateway_runtime_config()
+            mode = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
+        if mode == "interrupt":
+            return "interrupt"
+        return "queue"
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -2971,11 +2989,19 @@ class GatewayRunner:
 
         running_agent = self._running_agents.get(session_key)
 
+        effective_mode = self._busy_input_mode
+        busy_text_mode = getattr(self, "_busy_text_mode", "queue")
+        if (
+            event.message_type == MessageType.TEXT
+            and busy_text_mode == "queue"
+            and effective_mode != "steer"
+        ):
+            return False
+
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
-        effective_mode = self._busy_input_mode
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -3000,7 +3026,12 @@ class GatewayRunner:
         # successful steer — the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
         if not steered:
-            merge_pending_message_event(adapter._pending_messages, session_key, event)
+            merge_pending_message_event(
+                adapter._pending_messages,
+                session_key,
+                event,
+                merge_text=event.message_type == MessageType.TEXT,
+            )
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -3932,6 +3963,7 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter._busy_text_mode = self._busy_text_mode
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -5544,6 +5576,7 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter._busy_text_mode = self._busy_text_mode
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
