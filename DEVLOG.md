@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-05-28 — Add route-level webhook toolsets
+
+### Summary
+
+Restored trusted GitHub Actions remediation webhooks without undoing the safe default webhook hardening. Webhook routes can now specify their own `toolsets` list, so public/generic webhooks stay constrained while signed internal automation can get the code-capable tools it needs.
+
+### What changed
+
+- Added `MessageEvent.enabled_toolsets` as a per-message toolset override.
+- Webhook routes now accept `toolsets` as a list or comma-separated string and attach the cleaned value to the generated `MessageEvent`.
+- Gateway agent creation resolves route-level webhook toolsets through the same toolset resolver used by `platform_toolsets`, preserving MCP/default semantics unless `no_mcp` is specified.
+- Added `hermes webhook subscribe --toolsets ...` and list/create display output.
+- Updated the live `orca-merge-remediation` subscription with `web`, `terminal`, `file`, `code_execution`, `skills`, and `session_search` while leaving generic webhook defaults untouched.
+- Updated webhook docs, bundled/local skill references, SYSTEM.md, and Obsidian Hermes/Forge notes.
+
+### Verification
+
+- `python -m pytest tests/gateway/test_webhook_adapter.py::TestRouteToolsets tests/gateway/test_webhook_adapter.py::TestHTTPHandling::test_route_toolsets_attached_to_message_event tests/gateway/test_reasoning_command.py::TestReasoningCommand::test_run_agent_accepts_per_event_toolset_override tests/hermes_cli/test_webhook_cli.py::TestSubscribe::test_with_options -q -o 'addopts='` → 6 passed.
+
 ## 2026-05-20 — Improve Discord roundtable call UX
 
 ### Summary

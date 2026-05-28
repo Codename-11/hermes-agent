@@ -12498,6 +12498,14 @@ def main():
         "--skills", default="", help="Comma-separated skill names to load"
     )
     wh_sub.add_argument(
+        "--toolsets",
+        default="",
+        help=(
+            "Comma-separated toolsets for this webhook route only. "
+            "Omit to use platform_toolsets.webhook / hermes-webhook defaults."
+        ),
+    )
+    wh_sub.add_argument(
         "--deliver",
         default="log",
         help="Delivery target: log, telegram, discord, slack, etc.",

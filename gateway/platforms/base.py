@@ -1194,6 +1194,11 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Optional per-message toolset override.  Used by authenticated webhook
+    # routes that intentionally need a narrower/wider tool surface than the
+    # platform default; normal platform adapters leave this unset.
+    enabled_toolsets: Optional[List[str]] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the

@@ -33,6 +33,7 @@ def _make_args(**kwargs):
         "events": "",
         "description": "",
         "skills": "",
+        "toolsets": "",
         "deliver": "log",
         "deliver_chat_id": "",
         "secret": "",
@@ -57,6 +58,7 @@ class TestSubscribe:
             name="gh-issues",
             events="issues,pull_request",
             prompt="Issue: {issue.title}",
+            toolsets="web,terminal,file",
             deliver="telegram",
             deliver_chat_id="12345",
             description="Watch GitHub",
@@ -65,6 +67,7 @@ class TestSubscribe:
         route = subs["gh-issues"]
         assert route["events"] == ["issues", "pull_request"]
         assert route["prompt"] == "Issue: {issue.title}"
+        assert route["toolsets"] == ["web", "terminal", "file"]
         assert route["deliver"] == "telegram"
         assert route["deliver_extra"] == {"chat_id": "12345"}
 

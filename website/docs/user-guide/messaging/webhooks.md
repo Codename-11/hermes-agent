@@ -82,6 +82,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. |
 | `skills` | No | List of skill names to load for the agent run. |
+| `toolsets` | No | Route-level toolset override for this webhook run only (e.g. `["web", "terminal", "file"]`). If omitted, Hermes uses `platform_toolsets.webhook` or the safe `hermes-webhook` default. Use only for trusted, HMAC-signed automation routes. |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
@@ -108,6 +109,8 @@ platforms:
             Diff URL: {pull_request.diff_url}
             Action: {action}
           skills: ["github-code-review"]
+          # Optional: route-scoped tools. Omit for normal safe webhook defaults.
+          toolsets: ["web"]
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"
@@ -118,6 +121,22 @@ platforms:
           prompt: "New push to {repository.full_name} branch {ref}: {head_commit.message}"
           deliver: "telegram"
 ```
+
+### Route-level toolsets
+
+By default, webhook-originated agent runs use the webhook platform's configured tool surface. On current secure defaults, `hermes-webhook` is intentionally narrow because public webhook payloads can contain untrusted text such as PR titles, comments, commit messages, and CI logs.
+
+For a trusted internal automation route, you can grant a different tool surface on that route only:
+
+```bash
+hermes webhook subscribe orca-merge-remediation \
+  --prompt "{prompt}" \
+  --skills "github-pr-workflow,systematic-debugging,test-driven-development" \
+  --toolsets "web,terminal,file,code_execution,skills,session_search" \
+  --deliver discord
+```
+
+The `toolsets` value is resolved the same way as `platform_toolsets.<platform>`: configured MCP servers remain available unless the route includes the `no_mcp` sentinel. Leave `toolsets` unset for public or third-party routes; route-level elevation is intended for HMAC-signed automation where you control the caller and the workflow constrains side effects (for example, bot branch + PR rather than direct deploy pushes).
 
 ### Prompt Templates
 

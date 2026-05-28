@@ -8810,6 +8810,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                enabled_toolsets_override=event.enabled_toolsets,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -15879,6 +15880,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15917,7 +15919,16 @@ class GatewayRunner:
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        if enabled_toolsets_override is not None:
+            route_config = dict(user_config)
+            route_platform_toolsets = dict(route_config.get("platform_toolsets") or {})
+            route_platform_toolsets[platform_key] = [
+                str(ts) for ts in enabled_toolsets_override
+            ]
+            route_config["platform_toolsets"] = route_platform_toolsets
+            enabled_toolsets = sorted(_get_platform_tools(route_config, platform_key))
+        else:
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

@@ -11,6 +11,7 @@ Each route defines:
   - secret: HMAC secret for signature validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
+  - toolsets: optional list of Hermes toolsets for this route only
   - deliver: where to send the response (github_comment, telegram, etc.)
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
   - deliver_only: if true, skip the agent — the rendered prompt IS the
@@ -95,6 +96,24 @@ def _is_loopback_host(host: str) -> bool:
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+def _normalize_route_toolsets(raw: Any) -> Optional[List[str]]:
+    """Return a cleaned per-route toolset override, or None for fallback.
+
+    Dynamic subscriptions are JSON/YAML authored by humans and agents, so be
+    forgiving about comma-separated strings while rejecting non-string entries.
+    An empty list is a deliberate deny-all override; missing/invalid values mean
+    the gateway should use the platform-level webhook toolset.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, list):
+        cleaned = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+        return cleaned
+    return None
 
 
 class WebhookAdapter(BasePlatformAdapter):
@@ -601,6 +620,7 @@ class WebhookAdapter(BasePlatformAdapter):
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            enabled_toolsets=_normalize_route_toolsets(route_config.get("toolsets")),
         )
 
         logger.info(
