@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Axiom merge-drop guard (optional, opt-in).
+#
+# Install (local, untracked — never conflicts with upstream):
+#   ln -sf ../../scripts/hooks/pre-push .git/hooks/pre-push
+#   chmod +x scripts/hooks/pre-push
+#
+# When a MERGE commit is pushed to the `axiom` branch, audit it for upstream
+# content silently dropped during conflict resolution. Advisory only: prints
+# findings, never blocks the push. Manual/strict run:
+#   scripts/check-merge-drops.py            # exits 1 on findings
+#   scripts/check-merge-drops.py --merge SHA
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+checker="$repo_root/scripts/check-merge-drops.py"
+[ -f "$checker" ] || exit 0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in */axiom) ;; *) continue ;; esac
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+    # Only audit merge commits (2+ parents).
+    nparents=$(git rev-list --parents -n1 "$local_sha" 2>/dev/null | wc -w)
+    [ "${nparents:-0}" -ge 3 ] || continue
+    echo "── pre-push: auditing merge $local_sha for dropped upstream content ──" >&2
+    python3 "$checker" --merge "$local_sha" --warn-only >&2 || true
+    echo "── (advisory; push continues. Run scripts/check-merge-drops.py for a blocking check) ──" >&2
+done
+exit 0
