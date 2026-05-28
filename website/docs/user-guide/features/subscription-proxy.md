@@ -74,10 +74,12 @@ automatically when the bearer approaches expiry.
 hermes proxy providers
 ```
 
-Baseline upstream builds ship the `nous` adapter for Nous Portal. Local or
-forked deployments may also register adapters such as `openai-codex`,
-`xai-oauth`, and `auto`/`routed`. Always trust `hermes proxy providers` and
-`hermes proxy status` from the live checkout over stale examples.
+Baseline upstream builds ship the `nous` adapter for Nous Portal and the `xai`
+adapter for xAI/Grok. Local or forked deployments may also register adapters
+such as `openai-codex`, `xai-oauth`, and `auto`/`routed`. Always trust
+`hermes proxy providers` and `hermes proxy status` from the live checkout over
+stale examples. More OAuth providers can be added by implementing the
+`UpstreamAdapter` interface in `hermes_cli/proxy/adapters/`.
 
 ## Check status
 

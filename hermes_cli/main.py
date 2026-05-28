@@ -65,6 +65,39 @@ import os
 import sys
 
 
+# Mouse-tracking residue suppression — runs BEFORE every other import on the
+# TUI hot path so the terminal stops emitting SGR/X10 mouse reports while the
+# Python launcher is still doing imports (≈100–300ms in cooked + echo mode,
+# before the Node TUI takes stdin into raw mode). During that window any
+# incoming bytes are echoed straight back to the user's shell scrollback as
+# ``^[[<…M`` text. The TUI itself runs `resetTerminalModes()` again in
+# `entry.tsx`; this is just the earlier cousin. ``HERMES_TUI_NO_EARLY_DISABLE``
+# escapes the behaviour for diagnostics.
+def _suppress_mouse_residue_early() -> None:
+    if os.environ.get("HERMES_TUI_NO_EARLY_DISABLE") == "1":
+        return
+    if not (os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]):
+        return
+    try:
+        # Skip when stdout is redirected (`hermes --tui … >log`, CI capture):
+        # the bytes can't reach the terminal anyway and would just pollute
+        # the log with raw CSI.
+        if not os.isatty(1):
+            return
+        # Disable every mouse-tracking variant we know about. Idempotent and
+        # safe to send even when no tracking is currently asserted.
+        os.write(
+            1,
+            b"\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l\x1b[?9l"
+            b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?2029l",
+        )
+    except OSError:
+        pass
+
+
+_suppress_mouse_residue_early()
+
+
 def _is_termux_startup_environment_fast() -> bool:
     """Tiny Termux check for pre-import startup shortcuts."""
     prefix = os.environ.get("PREFIX", "")
@@ -333,7 +366,7 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
-from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -1969,6 +2002,13 @@ def cmd_postinstall(args):
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
+    if getattr(args, "refresh", False):
+        try:
+            from hermes_cli.models import clear_provider_models_cache
+            clear_provider_models_cache()
+            print("  Cleared model picker cache.")
+        except Exception:
+            pass
     select_provider_and_model(args=args)
 
 
@@ -2215,8 +2255,6 @@ def select_provider_and_model(args=None):
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
-    elif selected_provider == "ai-gateway":
-        _model_flow_ai_gateway(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
@@ -2803,62 +2841,12 @@ def _model_flow_openrouter(config, current_model=""):
         print("No change.")
 
 
-def _model_flow_ai_gateway(config, current_model=""):
-    """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
-    from hermes_cli.auth import (
-        PROVIDER_REGISTRY,
-        _prompt_model_selection,
-        _save_model_choice,
-        deactivate_provider,
-    )
-    from hermes_cli.config import get_env_value
-
-    # Route through _prompt_api_key so users can replace a stale/broken key
-    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
-    pconfig = PROVIDER_REGISTRY["ai-gateway"]
-    existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
-    if not existing_key:
-        print(
-            "Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway"
-        )
-        print("Add a payment method to get $5 in free credits.")
-        print()
-    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="ai-gateway")
-    if abort:
-        return
-
-    from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
-
-    models_list = ai_gateway_model_ids(force_refresh=True)
-    pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
-
-    selected = _prompt_model_selection(
-        models_list, current_model=current_model, pricing=pricing
-    )
-    if selected:
-        _save_model_choice(selected)
-
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        model = cfg.get("model")
-        if not isinstance(model, dict):
-            model = {"default": model} if model else {}
-            cfg["model"] = model
-        model["provider"] = "ai-gateway"
-        model["base_url"] = AI_GATEWAY_BASE_URL
-        model["api_mode"] = "chat_completions"
-        save_config(cfg)
-        deactivate_provider()
-        print(f"Default model set to: {selected} (via Vercel AI Gateway)")
-    else:
-        print("No change.")
-
 
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_provider_auth_state,
+        NOUS_INFERENCE_AUTH_MODE_LEGACY,
         _prompt_model_selection,
         _save_model_choice,
         _update_config_for_provider,
@@ -2954,8 +2942,21 @@ def _model_flow_nous(config, current_model="", args=None):
     # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("nous")
 
-    # Check if user is on free tier
-    free_tier = check_nous_free_tier()
+    # Force fresh account data for model selection so recent credit purchases
+    # are reflected immediately.
+    free_tier = check_nous_free_tier(force_fresh=True)
+    if not free_tier:
+        try:
+            refreshed_creds = resolve_nous_runtime_credentials(
+                min_key_ttl_seconds=5 * 60,
+                inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+            )
+            if refreshed_creds:
+                creds = refreshed_creds
+        except Exception:
+            # Runtime inference has its own paid-entitlement recovery path; do
+            # not block model selection if this opportunistic remint fails.
+            pass
 
     # Resolve portal URL early — needed both for upgrade links and for the
     # freeRecommendedModels endpoint below.
@@ -2977,7 +2978,24 @@ def _model_flow_nous(config, current_model="", args=None):
     # newly-launched paid models surface in the picker too — independent
     # of CLI release cadence.
     unavailable_models: list[str] = []
+    unavailable_message = ""
     if free_tier:
+        try:
+            from hermes_cli.nous_account import (
+                format_nous_portal_entitlement_message,
+                get_nous_portal_account_info,
+            )
+
+            _account_info = get_nous_portal_account_info(force_fresh=True)
+            unavailable_message = (
+                format_nous_portal_entitlement_message(
+                    _account_info,
+                    capability="paid Nous models",
+                )
+                or ""
+            )
+        except Exception:
+            unavailable_message = ""
         model_ids, pricing = union_with_portal_free_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
@@ -2999,7 +3017,7 @@ def _model_flow_nous(config, current_model="", args=None):
             from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
 
             _url = (_nous_portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
-            print(f"Upgrade at {_url} to access paid models.")
+            print(unavailable_message or f"Upgrade at {_url} to access paid models.")
         return
 
     print(
@@ -3012,6 +3030,7 @@ def _model_flow_nous(config, current_model="", args=None):
         pricing=pricing,
         unavailable_models=unavailable_models,
         portal_url=_nous_portal_url,
+        unavailable_message=unavailable_message,
     )
     if selected:
         _save_model_choice(selected)
@@ -6255,6 +6274,39 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     return True, None, None
 
 
+def _validate_update_after_pull(git_cmd, root, pre_pull_sha: str | None) -> None:
+    """Validate critical startup files after a pull and roll back on syntax failure."""
+    ok, failing_path, error_message = _validate_critical_files_syntax(root)
+    if ok:
+        return
+
+    print("✗ Updated code failed startup syntax validation.")
+    if failing_path:
+        print(f"  File: {failing_path}")
+    if error_message:
+        first_line = str(error_message).splitlines()[0]
+        print(f"  {first_line}")
+
+    if pre_pull_sha:
+        print(f"  → Rolling back to {pre_pull_sha[:12]}...")
+        rollback = subprocess.run(
+            git_cmd + ["reset", "--hard", pre_pull_sha],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if rollback.returncode == 0:
+            print("  ✓ Rollback complete. Re-run 'hermes update' after the upstream fix lands.")
+        else:
+            print("  ✗ Automatic rollback failed.")
+            if rollback.stderr.strip():
+                print(f"    {rollback.stderr.strip().splitlines()[0]}")
+            print(f"    Try manually: git reset --hard {pre_pull_sha}")
+    else:
+        print("  No pre-pull SHA was available for automatic rollback.")
+    sys.exit(1)
+
+
 
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
     """File-based IPC prompt for gateway mode.
@@ -6340,6 +6392,104 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
         if mp.exists() and mp.stat().st_mtime > dist_mtime:
             return True
     return False
+
+
+def _run_with_idle_timeout(
+    cmd: list[str],
+    cwd: Path,
+    *,
+    idle_timeout_seconds: int = 180,
+    indent: str = "    ",
+) -> subprocess.CompletedProcess:
+    """Run a subprocess that streams output, with an idle-output timeout.
+
+    Issue #33788: ``npm run build`` (Vite) was invoked with
+    ``capture_output=True`` and no timeout. On low-memory hosts (notably
+    WSL2 with the default 4 GB cap) the build can stall or sit silent for
+    minutes; users see a frozen terminal, assume the update is hung, and
+    reboot — leaving the editable install in a half-state with the
+    ``hermes`` launcher present but ``hermes_cli`` not importable.
+
+    This helper fixes both halves: stdout is streamed (so the user sees
+    progress), and if no bytes have appeared on stdout/stderr for
+    ``idle_timeout_seconds``, the process is terminated and the call
+    returns with a non-zero ``returncode``. The caller's existing
+    stale-dist fallback (#23817) takes over from there.
+
+    Returns a ``CompletedProcess`` with merged stdout (text), empty
+    stderr, and an integer returncode. Never raises on idle timeout —
+    propagation of failure is via the returncode.
+    """
+    merged_chunks: list[str] = []
+    last_output_ts = _time.monotonic()
+    lock = threading.Lock()
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except OSError as exc:
+        # E.g. npm not on PATH between the which() check and now.
+        return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
+
+    def _reader() -> None:
+        nonlocal last_output_ts
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            try:
+                print(f"{indent}{line.rstrip()}", flush=True)
+            except UnicodeEncodeError:
+                # Windows cp1252 fallback — same pattern as _say().
+                enc = getattr(sys.stdout, "encoding", None) or "ascii"
+                safe = line.rstrip().encode(enc, errors="replace").decode(enc, errors="replace")
+                print(f"{indent}{safe}", flush=True)
+            with lock:
+                merged_chunks.append(line)
+                last_output_ts = _time.monotonic()
+
+    reader_thread = threading.Thread(target=_reader, daemon=True)
+    reader_thread.start()
+
+    idle_killed = False
+    while True:
+        try:
+            rc = proc.wait(timeout=5)
+            break
+        except subprocess.TimeoutExpired:
+            with lock:
+                idle = _time.monotonic() - last_output_ts
+            if idle > idle_timeout_seconds:
+                idle_killed = True
+                proc.terminate()
+                try:
+                    rc = proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    rc = proc.wait()
+                break
+
+    # Drain reader so we don't leak the stdout file descriptor.
+    reader_thread.join(timeout=2)
+
+    combined = "".join(merged_chunks)
+    if idle_killed:
+        msg = (
+            f"\n  ⚠ Build produced no output for {idle_timeout_seconds}s — terminated.\n"
+            "    Common causes: out-of-memory on a low-RAM host (WSL/container),\n"
+            "    a stuck Node process, or an antivirus scan stalling I/O.\n"
+        )
+        combined += msg
+        # Force a non-zero rc even if terminate() raced with a clean exit.
+        if rc == 0:
+            rc = 124  # GNU `timeout` convention
+    return subprocess.CompletedProcess(cmd, rc, stdout=combined, stderr="")
 
 
 def _run_npm_install_deterministic(
@@ -6447,31 +6597,26 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             _say("  Run manually:  cd web && npm install && npm run build")
         return False
-    # First attempt
-    r2 = subprocess.run(
-        [npm, "run", "build"],
-        cwd=web_dir,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    # First attempt — stream output via idle-timeout helper (issue #33788).
+    # capture_output=True on a long Vite build looks identical to a hang;
+    # users react by rebooting, which leaves the editable install in a
+    # half-state. Streaming + idle-kill makes failures observable AND
+    # recoverable (the stale-dist fallback below handles the kill path).
+    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
     if r2.returncode != 0:
         # Retry once after a short delay — covers boot-time races on Windows
         # (antivirus scanning Node.js binaries, npm cache not ready, transient
         # I/O when launched via Scheduled Task at logon). See issue #23817.
         _time.sleep(3)
-        r2 = subprocess.run(
-            [npm, "run", "build"],
-            cwd=web_dir,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
 
     if r2.returncode != 0:
-        stderr_preview = (r2.stderr or "").strip()
+        # _run_with_idle_timeout merges stderr into stdout; older callers
+        # using subprocess.run kept them split. Pull from whichever has
+        # content so the error surfaces regardless of which path produced
+        # the CompletedProcess.
+        build_output = (r2.stderr or "") + (r2.stdout or "")
+        stderr_preview = build_output.strip()
         stderr_tail = "\n  ".join(stderr_preview.splitlines()[-10:]) if stderr_preview else ""
         dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
         dist_index = dist_dir / "index.html"
@@ -6895,7 +7040,25 @@ def _update_via_zip(args):
     import zipfile
     from urllib.request import urlretrieve
 
-    branch = "main"
+    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
+    # static archive from GitHub, which is fine for the default "main"
+    # channel but would silently ignore --branch and update from main even
+    # if the user asked for something else — exactly the silent-divergence
+    # bug --branch was added to prevent. Refuse to proceed in that case
+    # rather than lie.
+    branch = _resolve_update_branch(args)
+    if branch != "main":
+        print(
+            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
+            "update path."
+        )
+        print(
+            "  This path runs when git file I/O is broken on the system. "
+            "Either resolve the git-side breakage (typically an antivirus "
+            "or NTFS filter holding files open) and rerun `hermes update "
+            f"--branch {branch}`, or update against main with `hermes update`."
+        )
+        sys.exit(1)
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -7008,6 +7171,11 @@ def _update_via_zip(args):
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
     _update_node_dependencies()
+    # Core (Python deps + git pull / ZIP extract) is now complete; the CLI
+    # is functional from this point onward. The web UI build below is
+    # optional — a failure here only affects ``hermes dashboard``. Make
+    # that visible so users don't panic and reboot mid-build (#33788).
+    print("→ Core update complete. Building dashboard (optional)...")
     _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
@@ -8570,37 +8738,18 @@ def _install_psutil_android_compat(
     nothing is persisted in the repository.
 
     Stopgap: remove this once https://github.com/giampaolo/psutil/pull/2762
-    merges and ships in a release. ``scripts/install_psutil_android.py``
-    contains the same logic for ``scripts/install.sh`` (fresh installs).
-    Both copies should be removed together.
+    merges and ships in a release. The standalone installer script uses the
+    same shared helper and should be removed together.
     """
-    import tarfile
     import tempfile
     import urllib.request
-
-    psutil_url = (
-        "https://files.pythonhosted.org/packages/aa/c6/"
-        "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
-        "psutil-7.2.2.tar.gz"
-    )
+    from hermes_cli.psutil_android import PSUTIL_URL, prepare_patched_psutil_sdist
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         archive = tmp_path / "psutil.tar.gz"
-        urllib.request.urlretrieve(psutil_url, archive)
-        with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
-
-        src_root = next(
-            p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")
-        )
-        common_py = src_root / "psutil" / "_common.py"
-        content = common_py.read_text(encoding="utf-8")
-        marker = 'LINUX = sys.platform.startswith("linux")'
-        replacement = 'LINUX = sys.platform.startswith(("linux", "android"))'
-        if marker not in content:
-            raise RuntimeError("psutil Android compatibility patch marker not found")
-        common_py.write_text(content.replace(marker, replacement), encoding="utf-8")
+        urllib.request.urlretrieve(PSUTIL_URL, archive)
+        src_root = prepare_patched_psutil_sdist(archive, tmp_path)
 
         _run_install_with_heartbeat(
             install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)],
@@ -8836,13 +8985,44 @@ def _finalize_update_output(state):
             pass
 
 
-def _cmd_update_check():
-    """Implement ``hermes update --check``: fetch and report without installing."""
+def _resolve_update_branch(args) -> str:
+    """Normalize ``args.branch`` into a non-empty branch name.
+
+    Centralizes the "default to main, accept --branch override, treat empty
+    or whitespace-only values as the default" parsing so every consumer of
+    ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
+    the same answer.
+    """
+    return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+    """Implement ``hermes update --check``: fetch and report without installing.
+
+    ``branch`` selects which branch the check compares against. Default is
+    "main"; callers can pass another branch to ask "are there new commits
+    on origin/<branch>?" without performing the update.
+
+    On Axiom-style deploy branches (for example ``axiom``), the default check
+    reports both live checkout drift from ``origin/<deploy>`` and upstream drift
+    not yet merged into ``origin/<deploy>``. Explicit ``--branch`` remains the
+    upstream behavior: compare against that branch directly.
+    """
     from hermes_cli.config import detect_install_method
     method = detect_install_method(PROJECT_ROOT)
+    if method == "docker":
+        # Docker can't ``git fetch`` from within the container. Surface the
+        # same long-form ``docker pull`` guidance ``hermes update`` (apply
+        # path) uses — telling the user to "reinstall via curl" or that
+        # ".git is missing" would point them at the wrong remediation.
+        from hermes_cli.config import format_docker_update_message
+        print(format_docker_update_message())
+        sys.exit(1)
     if method == "pip":
         from hermes_cli.config import recommended_update_command
         from hermes_cli.banner import check_via_pypi
+        if branch_explicit and branch != "main":
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
         result = check_via_pypi()
         if result is None:
             print("✗ Could not reach PyPI to check for updates.")
@@ -8863,15 +9043,26 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    print("→ Fetching from origin...")
-    fetch_origin = subprocess.run(
-        git_cmd + ["fetch", "origin"],
+    current_branch_result = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
+        check=True,
     )
-    if fetch_origin.returncode != 0:
-        stderr = fetch_origin.stderr.strip()
+    current_branch = current_branch_result.stdout.strip()
+
+    def _fetch(remote: str) -> subprocess.CompletedProcess:
+        print(f"→ Fetching from {remote}...")
+        return subprocess.run(
+            git_cmd + ["fetch", remote],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+
+    def _handle_fetch_failure(result: subprocess.CompletedProcess) -> None:
+        stderr = (result.stderr or "").strip()
         if "Could not resolve host" in stderr or "unable to access" in stderr:
             print("✗ Network error — cannot reach the remote repository.")
         elif "Authentication failed" in stderr or "could not read Username" in stderr:
@@ -8883,38 +9074,40 @@ def _cmd_update_check():
         sys.exit(1)
 
     upstream_exists = _has_upstream_remote(git_cmd, PROJECT_ROOT)
-    upstream_fetched = False
-    if upstream_exists:
-        print("→ Fetching from upstream...")
-        fetch_upstream = subprocess.run(
-            git_cmd + ["fetch", "upstream"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        if fetch_upstream.returncode == 0:
-            upstream_fetched = True
-        else:
-            stderr = fetch_upstream.stderr.strip()
+    use_deploy_check = (
+        not branch_explicit
+        and current_branch in DEPLOY_BRANCHES
+        and upstream_exists
+    )
+
+    if use_deploy_check:
+        fetch_origin = _fetch("origin")
+        if fetch_origin.returncode != 0:
+            _handle_fetch_failure(fetch_origin)
+        fetch_upstream = _fetch("upstream")
+        upstream_fetched = fetch_upstream.returncode == 0
+        if not upstream_fetched:
+            stderr = (fetch_upstream.stderr or "").strip()
             print("⚠ Failed to fetch upstream; checking origin only.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
 
-    current_branch_result = subprocess.run(
-        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    current_branch = current_branch_result.stdout.strip()
-
-    if current_branch in DEPLOY_BRANCHES:
         remote_ref = f"origin/{current_branch}"
+        verify_result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "--quiet", remote_ref],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if verify_result.returncode != 0:
+            print(f"✗ Branch '{current_branch}' not found on origin.")
+            sys.exit(1)
+
         origin_ahead = _count_commits_between(git_cmd, PROJECT_ROOT, "HEAD", remote_ref)
         if origin_ahead < 0:
             print(f"✗ Could not compare HEAD against {remote_ref}.")
             sys.exit(1)
+
         upstream_ahead = 0
         if upstream_fetched:
             upstream_ahead = _count_commits_between(
@@ -8923,20 +9116,42 @@ def _cmd_update_check():
             if upstream_ahead < 0:
                 print(f"✗ Could not compare {remote_ref} against upstream/main.")
                 sys.exit(1)
+
         behind = origin_ahead + upstream_ahead
-        compare_branch = f"{remote_ref}"
+        compare_branch = remote_ref
         if upstream_fetched:
             compare_branch += " + upstream/main"
     else:
-        compare_branch = "upstream/main" if upstream_fetched else "origin/main"
-        rev_result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
+        # Upstream behavior for normal installs and explicit --branch checks.
+        if branch == "main":
+            fetch_result = _fetch("upstream") if upstream_exists else subprocess.CompletedProcess([], 1)
+            if fetch_result.returncode == 0:
+                compare_branch = "upstream/main"
+            else:
+                fetch_result = _fetch("origin")
+                if fetch_result.returncode != 0:
+                    _handle_fetch_failure(fetch_result)
+                compare_branch = "origin/main"
+        else:
+            fetch_result = _fetch("origin")
+            if fetch_result.returncode != 0:
+                _handle_fetch_failure(fetch_result)
+            compare_branch = f"origin/{branch}"
+
+        verify_result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            check=True,
         )
-        behind = int(rev_result.stdout.strip())
+        if verify_result.returncode != 0:
+            print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
+            sys.exit(1)
+
+        behind = _count_commits_between(git_cmd, PROJECT_ROOT, "HEAD", compare_branch)
+        if behind < 0:
+            print(f"✗ Could not compare HEAD against {compare_branch}.")
+            sys.exit(1)
 
     if behind == 0:
         print("✓ Already up to date.")
@@ -8946,7 +9161,6 @@ def _cmd_update_check():
         from hermes_cli.config import recommended_update_command
 
         print(f"  Run '{recommended_update_command()}' to install.")
-
 
 def _ensure_fhs_path_guard() -> None:
     """Ensure /usr/local/bin is on PATH for RHEL-family root non-login shells.
@@ -9140,14 +9354,35 @@ def cmd_update(args):
     runs the update, then restores stdio on the way out (even on
     ``sys.exit`` or unhandled exceptions).
     """
-    from hermes_cli.config import is_managed, managed_error
+    from hermes_cli.config import (
+        detect_install_method,
+        format_docker_update_message,
+        is_managed,
+        managed_error,
+    )
 
     if is_managed():
         managed_error("update Hermes Agent")
         return
 
+    # Docker users can't ``git pull`` — the image excludes ``.git`` from
+    # the build context.  Bail with a friendly explanation pointing at
+    # ``docker pull`` BEFORE any of the apply-path / check-path branches
+    # below get a chance to error out with misleading "Not a git
+    # repository" text.  See format_docker_update_message() for the full
+    # rationale and tag-pinning / config-persistence notes.
+    if detect_install_method(PROJECT_ROOT) == "docker":
+        print(format_docker_update_message())
+        sys.exit(1)
+
     if getattr(args, "check", False):
-        _cmd_update_check()
+        # --check honors --branch so the "any new commits?" answer matches
+        # what a subsequent `hermes update --branch=<x>` would actually pull.
+        branch = _resolve_update_branch(args)
+        _cmd_update_check(
+            branch=branch,
+            branch_explicit=bool(getattr(args, "branch", None)),
+        )
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -9313,23 +9548,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
+        branch = _resolve_update_branch(args)
+
         # --- Deploy branch detection ---
-        # If the current branch is a deploy/integration branch (e.g. "axiom")
-        # that merges feature branches on top of main, use a different update
-        # strategy: merge upstream into origin/<deploy-branch> in a temporary
-        # worktree, push the merged deploy artifact, then fast-forward the live
-        # checkout.  This avoids the rebase-on-main flow which would destroy
-        # the merge-based branch structure.
+        # Axiom/TGI-style deploy branches are not ordinary feature branches.
+        # They carry local integration commits on top of upstream/main, so the
+        # correct update path is transactional reconciliation in a temporary
+        # worktree: upstream/main → origin/<deploy> → live checkout.  Preserve
+        # that local contract unless the user explicitly asks for another
+        # branch via --branch.
         is_deploy_branch = (
-            current_branch in DEPLOY_BRANCHES
+            not getattr(args, "branch", None)
+            and current_branch in DEPLOY_BRANCHES
             and is_fork
             and _has_upstream_remote(git_cmd, PROJECT_ROOT)
         )
 
         if is_deploy_branch:
-            # Deploy branch update: upstream → origin/deploy → live checkout.
-            # Integration happens in a temporary worktree; the live checkout
-            # only fast-forwards after the merge has succeeded and been pushed.
             print(f"→ Deploy branch: {current_branch}")
             print(f"  upstream → origin/{current_branch} → live checkout")
             print()
@@ -9339,7 +9574,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             try:
                 pre_update_head = subprocess.run(
                     git_cmd + ["rev-parse", "HEAD"],
-                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
                 ).stdout.strip()
             except Exception:
                 pre_update_head = ""
@@ -9390,33 +9628,55 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if auto_stash_ref is not None:
                 _preserve_deploy_branch_stash(auto_stash_ref)
         else:
-            # --- Standard update flow (main branch or non-deploy branch) ---
-
-            # Always update against main
-            branch = "main"
-
-            # Capture pre-update HEAD so the changelog brief can diff against it.
+            # --- Standard update flow (main branch or explicit --branch) ---
+            # Upstream v0.15.0 added --branch, Docker guidance, snapshot keep
+            # limits, syntax validation/rollback, and Windows hardening.  Keep
+            # those semantics for non-deploy channels.
             try:
                 pre_update_head = subprocess.run(
                     git_cmd + ["rev-parse", "HEAD"],
-                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
-                ).stdout.strip()
-            except Exception:
-                pre_update_head = ""
-
-            # If user is on a non-main branch or detached HEAD, switch to main
-            if current_branch != "main":
-                label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
-                print(f"  ⚠ Currently on {label} — switching to main for update...")
-                # Stash before checkout so uncommitted work isn't lost
-                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-                subprocess.run(
-                    git_cmd + ["checkout", "main"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                     check=True,
+                ).stdout.strip()
+            except Exception:
+                pre_update_head = ""
+
+            if current_branch != branch:
+                label = (
+                    "detached HEAD"
+                    if current_branch == "HEAD"
+                    else f"branch '{current_branch}'"
                 )
+                print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+                checkout_result = subprocess.run(
+                    git_cmd + ["checkout", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if checkout_result.returncode != 0:
+                    track_result = subprocess.run(
+                        git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if track_result.returncode != 0:
+                        if auto_stash_ref is not None:
+                            _restore_stashed_changes(
+                                git_cmd,
+                                PROJECT_ROOT,
+                                auto_stash_ref,
+                                prompt_user=False,
+                                input_fn=gw_input_fn,
+                            )
+                        print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                        if track_result.stderr.strip():
+                            print(f"  {track_result.stderr.strip().splitlines()[0]}")
+                        sys.exit(1)
             else:
                 auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
@@ -9426,7 +9686,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
             )
 
-            # Check if there are updates
             result = subprocess.run(
                 git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
                 cwd=PROJECT_ROOT,
@@ -9439,42 +9698,54 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if commit_count == 0:
                 # For forks: even if origin is current, check upstream before
                 # declaring "up to date" — upstream may have new commits that
-                # haven't been synced to the fork yet.
+                # haven't been synced to the fork yet.  This is only meaningful
+                # for main; explicit non-main branches intentionally track origin.
                 if is_fork and branch == "main":
-                    # Snapshot HEAD before sync so we can detect if upstream changed us
                     pre_sync_head = subprocess.run(
                         git_cmd + ["rev-parse", "HEAD"],
-                        cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=True,
                     ).stdout.strip()
 
                     _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
                     post_sync_head = subprocess.run(
                         git_cmd + ["rev-parse", "HEAD"],
-                        cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=True,
                     ).stdout.strip()
 
                     if pre_sync_head != post_sync_head:
-                        # Upstream sync changed HEAD — count those as new commits
-                        # so we fall through to reinstall deps + restart gateway
                         commit_count = _count_commits_between(
-                            git_cmd, PROJECT_ROOT, pre_sync_head, post_sync_head,
+                            git_cmd,
+                            PROJECT_ROOT,
+                            pre_sync_head,
+                            post_sync_head,
                         )
                         if commit_count <= 0:
-                            commit_count = 1  # at minimum, something changed
+                            commit_count = 1
 
                 if commit_count == 0:
                     _invalidate_update_cache()
                     if auto_stash_ref is not None:
                         _restore_stashed_changes(
-                            git_cmd, PROJECT_ROOT, auto_stash_ref,
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
                             prompt_user=prompt_for_restore,
                             input_fn=gw_input_fn,
                         )
-                    if current_branch not in ("main", "HEAD"):
+                    if current_branch not in {branch, "HEAD"}:
                         subprocess.run(
                             git_cmd + ["checkout", current_branch],
-                            cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                            check=False,
                         )
                     print("✓ Already up to date!")
                     return
@@ -9483,22 +9754,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # Snapshot critical state (state.db, config, pairing JSONs, etc.)
             # before pulling so a user can recover if something goes wrong.
-            # Issue #15733 reported missing pairing data after an update; even
-            # though `git pull` can't touch $HERMES_HOME, this is cheap
-            # belt-and-suspenders insurance and gives the user something to
-            # restore from via `/snapshot list` / `/snapshot restore <id>`.
             try:
                 from hermes_cli.backup import create_quick_snapshot
 
-                snap_id = create_quick_snapshot(label="pre-update")
+                snap_id = create_quick_snapshot(label="pre-update", keep=1)
                 if snap_id:
                     print(f"  ✓ Pre-update snapshot: {snap_id}")
             except Exception as exc:
-                # Never let a snapshot failure block an update.
                 logger.debug("Pre-update snapshot failed: %s", exc)
 
             print("→ Pulling updates...")
             update_succeeded = False
+            pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
             try:
                 pull_result = subprocess.run(
                     git_cmd + ["pull", "--ff-only", "origin", branch],
@@ -9507,10 +9774,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                 )
                 if pull_result.returncode != 0:
-                    # ff-only failed — local and remote have diverged (e.g. upstream
-                    # force-pushed or rebase).  Since local changes are already
-                    # stashed, reset to match the remote exactly.
-                    print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
                     reset_result = subprocess.run(
                         git_cmd + ["reset", "--hard", f"origin/{branch}"],
                         cwd=PROJECT_ROOT,
@@ -9521,16 +9787,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"✗ Failed to reset to origin/{branch}.")
                         if reset_result.stderr.strip():
                             print(f"  {reset_result.stderr.strip()}")
-                        print("  Try manually: git fetch origin && git reset --hard origin/main")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
                         sys.exit(1)
                 update_succeeded = True
+                _validate_update_after_pull(git_cmd, PROJECT_ROOT, pre_pull_sha)
             finally:
                 if auto_stash_ref is not None:
-                    # Don't attempt stash restore if the code update itself failed —
-                    # working tree is in an unknown state.
                     if not update_succeeded:
                         print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
-                        print(f"  Restore manually with: git stash apply")
+                        print("  Restore manually with: git stash apply")
                     else:
                         _restore_stashed_changes(
                             git_cmd,
@@ -9540,7 +9807,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             input_fn=gw_input_fn,
                         )
 
-            # Fork upstream sync logic (only for main branch on forks)
             if is_fork and branch == "main":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
@@ -9607,6 +9873,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refresh_active_lazy_features()
 
         _update_node_dependencies()
+        # See note above (ZIP path): core is now complete, web UI build is
+        # optional from a CLI perspective. Telegraphing this avoids the
+        # "stuck at webui-build → reboot → broken install" trap (#33788).
+        print("→ Core update complete. Building dashboard (optional)...")
         _build_web_ui(PROJECT_ROOT / "web")
 
         print()
@@ -11291,6 +11561,22 @@ def cmd_dashboard(args):
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
 
+    # Discover and load plugins so any DashboardAuthProvider plugin
+    # (e.g. plugins/dashboard_auth/nous) registers BEFORE start_server's
+    # fail-closed gate check runs. The top-level argparse setup skips
+    # plugin discovery for built-in subcommands like ``dashboard`` to
+    # save ~500ms startup; we have to trigger it explicitly here because
+    # the dashboard's server-side runtime depends on plugin-registered
+    # providers (image_gen, web, dashboard_auth, …).
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception as exc:
+        # Discovery failures must not block dashboard startup outright —
+        # log and proceed; the gate's fail-closed branch will surface
+        # the missing-provider state if it matters.
+        print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
+
     from hermes_cli.web_server import start_server
 
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
@@ -11676,6 +11962,11 @@ def main():
         description="Interactively select your inference provider and default model",
     )
     model_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Wipe the model picker disk cache and re-fetch every provider's live /v1/models list.",
+    )
+    model_parser.add_argument(
         "--portal-url",
         help="Portal base URL for Nous login (default: production portal)",
     )
@@ -11850,6 +12141,19 @@ def main():
         "--replace",
         action="store_true",
         help="Replace any existing gateway instance (useful for systemd)",
+    )
+    gateway_run.add_argument(
+        "--no-supervise",
+        action="store_true",
+        help=(
+            "Inside the s6-overlay Docker image, normally `gateway run` is "
+            "automatically redirected to the supervised s6 service (so the "
+            "gateway gets auto-restart on crash, plus a supervised dashboard "
+            "if HERMES_DASHBOARD is set). Pass --no-supervise to opt out and "
+            "get the historical pre-s6 foreground behavior: the gateway is "
+            "the container's main process and the container exits with the "
+            "gateway's exit code. No effect outside an s6 container."
+        ),
     )
     _add_accept_hooks_flag(gateway_run)
     _add_accept_hooks_flag(gateway_parser)
@@ -12962,6 +13266,11 @@ Examples:
         ],
     )
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
+    skills_search.add_argument(
+        "--json",
+        action="store_true",
+        help="Output JSON instead of a table (full identifiers, scripting-friendly)",
+    )
 
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument(
@@ -13053,6 +13362,31 @@ Examples:
         help="Also delete the current copy and re-copy the bundled version",
     )
     skills_reset.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt when using --restore",
+    )
+
+    skills_repair_official = skills_subparsers.add_parser(
+        "repair-official",
+        help="Backfill or restore official optional skills from repo source",
+        description=(
+            "Repair official optional skill provenance. By default, only backfills "
+            "hub metadata for exact matches. Pass --restore to replace missing or "
+            "mutated active copies from optional-skills/, moving existing copies to "
+            "a restore backup first. Use name 'all' to repair every optional skill."
+        ),
+    )
+    skills_repair_official.add_argument(
+        "name", help="Official optional skill folder/frontmatter name, or 'all'"
+    )
+    skills_repair_official.add_argument(
+        "--restore",
+        action="store_true",
+        help="Restore from official optional source, backing up existing matching copies",
+    )
+    skills_repair_official.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -13995,6 +14329,23 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Update against this branch instead of the default (main). "
+            "If the local checkout is on a different branch, hermes will "
+            "switch to the requested branch first (auto-stashing any "
+            "uncommitted changes)."
+        ),
+    )
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
     )
     update_parser.set_defaults(func=cmd_update)
 
