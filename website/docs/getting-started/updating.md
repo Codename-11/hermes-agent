@@ -59,6 +59,12 @@ hermes update --check --branch experimental   # preview behindness only
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
+### Maintaining a patched deploy branch
+
+For long-lived deploy branches that intentionally carry local behavior on top of upstream `main`, keep `main` as an upstream mirror and commit custom runtime behavior on the deploy branch. Reconcile by merging `upstream/main` into the deploy branch, resolving conflicts, running focused tests, and pushing the tested deploy commit so live checkouts can fast-forward.
+
+When upstream touches the same area as a local patch, prefer upstream if it now satisfies the same outcome. Preserve the required behavior with tests and carry only the smallest missing delta. If `hermes update` preserves deploy-branch working changes in a stash, reapply that stash onto the updated branch, resolve it with the same upstream-first rule, test, commit, push, and then drop the stash.
+
 ### Preview-only: `hermes update --check`
 
 Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".

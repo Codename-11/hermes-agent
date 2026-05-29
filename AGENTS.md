@@ -986,6 +986,27 @@ file will silently overwrite recent fixes on main when squashed. Verify
 with `git diff HEAD~1..HEAD` after merging — unexpected deletions are a
 red flag.
 
+### Deploy branches must preserve outcomes, not stale patches
+Long-lived deploy branches such as `tgi` and `axiom` intentionally carry
+runtime patches on top of upstream `main`. Keep `main` aligned with
+`upstream/main`; reconcile deploy branches by merging `upstream/main` into
+the deploy branch, resolving conflicts, running focused tests, and pushing
+the tested deploy commit to `origin/<branch>` so live checkouts can
+fast-forward cleanly.
+
+When resolving conflicts, read upstream first. If upstream now provides a
+cleaner implementation that satisfies the same requirement, keep upstream
+and drop the old custom hunk. Preserve the desired behavior through focused
+tests, not by blindly replaying our previous diff. Reapply only the smallest
+missing delta needed for our deployment.
+
+If `hermes update` preserves local changes in a stash on a deploy branch,
+treat that stash as intentional runtime work until proven otherwise. Reapply
+it onto the updated branch, resolve any conflicts with the upstream-first
+rule above, run focused tests, commit it on the deploy branch, push it, and
+only then drop the stash. Do not leave required deploy behavior as an
+uncommitted live-checkout change.
+
 ### Don't wire in dead code without E2E validation
 Unused code that was never shipped was dead for a reason. Before wiring an
 unused module into a live code path, E2E test the real resolution chain
