@@ -828,6 +828,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
+                if plat == Platform.SLACK and "top_level_messages_use_channel_session" in platform_cfg:
+                    bridged["top_level_messages_use_channel_session"] = platform_cfg["top_level_messages_use_channel_session"]
+                if plat == Platform.SLACK and "top_level_channel_session" in platform_cfg:
+                    bridged["top_level_channel_session"] = platform_cfg["top_level_channel_session"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:

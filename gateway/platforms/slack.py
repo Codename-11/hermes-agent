@@ -1067,6 +1067,21 @@ class SlackAdapter(BasePlatformAdapter):
             return True  # default: each DM thread is its own session
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
+    def _top_level_messages_use_channel_session(self) -> bool:
+        """Whether top-level Slack channel messages share the channel lane.
+
+        When enabled and ``reply_in_thread`` is false, a top-level message in a
+        channel is keyed to the channel/user session instead of to the message's
+        own timestamp. Real Slack thread replies still keep their ``thread_ts``
+        and remain separate sub-conversations.
+        """
+        raw = self.config.extra.get("top_level_messages_use_channel_session")
+        if raw is None:
+            raw = self.config.extra.get("top_level_channel_session")
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
     def _resolve_thread_ts(
         self,
         reply_to: Optional[str] = None,
@@ -2051,10 +2066,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Build thread_ts for session keying.
         # In channels: real Slack thread replies keep their thread_ts.  For
         # top-level channel messages, fall back to ts so each top-level @mention
-        # starts a new session, except in free-response channels with
-        # reply_in_thread=false.  Those are ambient channel-chat lanes; using the
-        # top-level message ts there fragments context into one session per
-        # message.
+        # starts a new session, except when reply_in_thread=false and either
+        # (a) the channel is a free-response ambient lane, or (b) the explicit
+        # top_level_messages_use_channel_session knob is enabled. In those
+        # modes the channel/user session is the main lane; real Slack threads
+        # remain separate side conversations.
         # In DMs: fall back to ts so each top-level DM reply thread gets
         #   its own session key (matching channel behavior). Set
         #   dm_top_level_threads_as_sessions: false in config to revert to
@@ -2067,8 +2083,11 @@ class SlackAdapter(BasePlatformAdapter):
             if event.get("thread_ts"):
                 thread_ts = event["thread_ts"]
             elif (
-                channel_id in self._slack_free_response_channels()
-                and not self.config.extra.get("reply_in_thread", True)
+                not self.config.extra.get("reply_in_thread", True)
+                and (
+                    channel_id in self._slack_free_response_channels()
+                    or self._top_level_messages_use_channel_session()
+                )
             ):
                 thread_ts = None
             else:

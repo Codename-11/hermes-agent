@@ -10070,6 +10070,59 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    def _stop_candidates_for_source(self, source: SessionSource, *, same_user: bool = True) -> List[tuple[str, SessionSource | None]]:
+        """Return running-agent sessions in the same platform/channel/user lane.
+
+        This is primarily for Slack: native slash commands may arrive as a
+        top-level channel command while the active task was keyed to a synthetic
+        top-level message thread. Match by live cached SessionSource first, then
+        fall back to parsed session keys only when user scoping is not required.
+        """
+        candidates: List[tuple[str, SessionSource | None]] = []
+        running = getattr(self, "_running_agents", {}) or {}
+        for session_key, agent in running.items():
+            if not agent:
+                continue
+            cached = self._get_cached_session_source(session_key)
+            if cached is not None:
+                if cached.platform != source.platform:
+                    continue
+                if (cached.chat_id or "") != (source.chat_id or ""):
+                    continue
+                if same_user and source.user_id and cached.user_id and cached.user_id != source.user_id:
+                    continue
+                candidates.append((session_key, cached))
+                continue
+
+            if same_user and source.user_id:
+                # Without cached source metadata we cannot safely tell whether
+                # this belongs to the invoking user. Do not cross that wire.
+                continue
+            parsed = _parse_session_key(session_key)
+            if not parsed:
+                continue
+            platform_value = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            if parsed.get("platform") != platform_value:
+                continue
+            if parsed.get("chat_id") != source.chat_id:
+                continue
+            candidates.append((session_key, None))
+
+        candidates.sort(key=lambda item: self._running_agents_ts.get(item[0], 0), reverse=True)
+        return candidates
+
+    def _format_stop_candidates(self, candidates: List[tuple[str, SessionSource | None]], *, limit: int = 8) -> str:
+        lines = []
+        now = time.time()
+        for session_key, cached in candidates[:limit]:
+            age = int(max(0, now - self._running_agents_ts.get(session_key, now)))
+            thread = getattr(cached, "thread_id", None) if cached else None
+            suffix = f" · thread `{thread}`" if thread else ""
+            lines.append(f"- `{session_key}` · {format_uptime_short(age)}{suffix}")
+        if len(candidates) > limit:
+            lines.append(f"- …and {len(candidates) - limit} more")
+        return "\n".join(lines)
+
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
 
@@ -10082,8 +10135,28 @@ class GatewayRunner:
         The session is preserved so the user can continue the conversation.
         """
         source = event.source
+        stop_arg = (event.get_command_args() or "").strip().lower().split(maxsplit=1)[0] if event.get_command_args() else ""
+        stop_all = stop_arg == "all"
+        stop_latest = stop_arg == "latest"
+
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+
+        if stop_all:
+            candidates = self._stop_candidates_for_source(source, same_user=True)
+            if session_key not in {key for key, _ in candidates} and self._running_agents.get(session_key):
+                candidates.insert(0, (session_key, source))
+            if not candidates:
+                return t("gateway.stop.no_active")
+            for candidate_key, candidate_source in candidates:
+                await self._interrupt_and_clear_session(
+                    candidate_key,
+                    candidate_source or source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="stop_command_all",
+                )
+            logger.info("STOP all for %s — stopped %d matching session(s)", session_key, len(candidates))
+            return EphemeralReply(f"✓ Stopped {len(candidates)} active task{'s' if len(candidates) != 1 else ''} in this channel/user lane.")
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
@@ -10107,6 +10180,37 @@ class GatewayRunner:
             )
             return EphemeralReply(t("gateway.stop.stopped"))
         else:
+            candidates = self._stop_candidates_for_source(source, same_user=True)
+            # Do not include the exact idle session; this branch means it has
+            # no running agent. We are looking for a sibling synthetic-thread
+            # session in the same Slack channel/user lane.
+            candidates = [(key, candidate_source) for key, candidate_source in candidates if key != session_key]
+            if stop_latest and candidates:
+                candidate_key, candidate_source = candidates[0]
+                await self._interrupt_and_clear_session(
+                    candidate_key,
+                    candidate_source or source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="stop_command_latest_fallback",
+                )
+                logger.info("STOP latest fallback for %s — stopped %s", session_key, candidate_key)
+                return EphemeralReply("✓ Stopped the latest active task in this channel/user lane.")
+            if len(candidates) == 1:
+                candidate_key, candidate_source = candidates[0]
+                await self._interrupt_and_clear_session(
+                    candidate_key,
+                    candidate_source or source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="stop_command_single_fallback",
+                )
+                logger.info("STOP fallback for %s — stopped sibling session %s", session_key, candidate_key)
+                return EphemeralReply("✓ Stopped the active task in this channel/user lane.")
+            if len(candidates) > 1:
+                return EphemeralReply(
+                    "I found multiple active tasks for you in this channel, so I did not guess.\n"
+                    f"{self._format_stop_candidates(candidates)}\n\n"
+                    "Use `/stop latest` to stop the newest one, or `/stop all` to stop all of them."
+                )
             return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
