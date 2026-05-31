@@ -58,6 +58,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
+| `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
 | `hermes backup` | Back up Hermes home directory to a zip file. |
 | `hermes checkpoints` | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
@@ -227,6 +228,7 @@ Options:
 | Option | Description |
 |--------|-------------|
 | `--all` | On `start` / `restart` / `stop`: act on **every profile's** gateway, not just the active `HERMES_HOME`. Useful if you run multiple profiles side-by-side and want to restart them all after `hermes update`. |
+| `--no-supervise` | On `run`: inside the s6-overlay Docker image, opt out of auto-supervision and use pre-s6 foreground semantics — gateway runs as the container's main process with no auto-restart. No-op outside the s6 image. Equivalent to setting `HERMES_GATEWAY_NO_SUPERVISE=1`. |
 
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
@@ -885,6 +887,50 @@ Lines without a parseable timestamp are included when `--since` is active (they 
 
 Hermes uses Python's `RotatingFileHandler`. Old logs are rotated automatically — look for `agent.log.1`, `agent.log.2`, etc. The `hermes logs list` subcommand shows all log files including rotated ones.
 
+
+## `hermes prompt-size`
+
+```bash
+hermes prompt-size [--platform <name>] [--json]
+```
+
+Reports the fixed prompt budget for a fresh session — what gets sent on every
+API call *before* any conversation content. Useful when a downstream adapter or
+proxy has a tighter prompt budget than the model's context window, or when you
+want to see which block (skills index, memory, profile) dominates.
+
+It builds the same system prompt the agent would, then breaks it down:
+
+- **System prompt total** — full assembled prompt (identity, guidance, skills
+  index, context files, memory, profile, timestamp).
+- **Skills index** — the `<available_skills>` block. This is often the largest
+  single block when many skills are installed.
+- **Memory** and **user profile** — your `MEMORY.md` / `USER.md` snapshots.
+- **Prompt tiers** — stable / context / volatile, matching how Hermes layers
+  the prompt for cache-friendliness.
+- **Tool schemas** — the JSON for all enabled tools (the other half of the
+  fixed per-call payload).
+
+Runs entirely offline — no API call, works with no credentials configured.
+
+```bash
+# Human-readable breakdown for the CLI platform (default)
+hermes prompt-size
+
+# Simulate a messaging platform's prompt (different platform hint)
+hermes prompt-size --platform telegram
+
+# Machine-readable output for scripts
+hermes prompt-size --json
+```
+
+:::tip
+The skills index and tool schemas scale with how many skills and tools you have
+enabled. To shrink the prompt, disable unused toolsets (`hermes tools`) or
+uninstall skills you don't need (`hermes skills`). Context files (AGENTS.md,
+.cursorrules) in your current directory also count toward the total.
+:::
+
 ## `hermes config`
 
 ```bash
@@ -1372,7 +1418,7 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--check] [--backup] [--restart-gateway]
+hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
@@ -1381,12 +1427,15 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 
 | Option | Description |
 |--------|-------------|
-| `--check` | Fetch remotes, report whether the current install is behind the update target, and exit without pulling, installing, or restarting. Standard git installs compare against the main update target; deploy branches compare against `origin/<deploy-branch>` plus upstream commits not yet merged there. |
-| `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `update.backup: true` in `config.yaml`. |
-| `--restart-gateway` | After a successful update, restart the running gateway service. Implies `--all` semantics if multiple profiles are installed. |
+| `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
+| `--check` | Fetch remotes, report whether the current install is behind the update target, and exit without pulling, installing dependencies, or restarting anything. Standard git installs compare against the main update target; deploy branches compare against `origin/<deploy-branch>` plus upstream commits not yet merged there. |
+| `--no-backup` | Skip the pre-update backup for this run, even if `updates.pre_update_backup` is enabled in `config.yaml`. |
+| `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `updates.pre_update_backup: true` in `config.yaml`. |
+| `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
 
 Additional behavior:
 
+- **Gateway restart.** After a successful update, Hermes attempts to restart all running gateway profiles automatically so they pick up the new code. Use `hermes gateway restart` when you want to restart a gateway without applying an update.
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
 - **Fork deploy branches.** When a forked install runs from a configured deploy branch such as `axiom`, `hermes update` treats `origin/<deploy-branch>` as the deploy artifact. It merges new `upstream/main` commits into that branch in a temporary worktree, pushes the merge to origin, then fast-forwards the live checkout. Merge conflicts leave the live checkout untouched and print a handoff block with the retained worktree and conflict list.
 - **Deploy-branch status checks.** `hermes version` and `hermes update --check` use the deploy branch as the baseline, not a stale local `main` branch. They check live `HEAD` against `origin/<deploy-branch>` and then check `upstream/main` against that deploy branch.
