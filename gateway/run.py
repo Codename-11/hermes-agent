@@ -8572,6 +8572,11 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+        session_entry, history = self._maybe_migrate_slack_top_level_session(
+            source, session_entry, history,
+        )
+        context.session_id = session_entry.session_id
+        context.session_key = session_entry.session_key
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -10069,6 +10074,153 @@ class GatewayRunner:
             lines.append(t("gateway.agents.none"))
 
         return "\n".join(lines)
+
+    _SLACK_TS_THREAD_RE = re.compile(r"^\d{10}\.\d{6}$")
+
+    def _find_slack_previous_top_level_sessions(
+        self,
+        source: SessionSource,
+        current_entry,
+        *,
+        limit: int = 3,
+    ) -> List[Any]:
+        """Find old Slack top-level sessions keyed by message timestamp.
+
+        Before ``top_level_messages_use_channel_session`` existed, top-level
+        Slack mentions could be persisted as synthetic thread sessions with a
+        Slack ``ts`` value in ``thread_id``.  When the same user now lands in
+        the Discord-like channel/user lane, these are the safe candidates for
+        migration or a short recall note.
+        """
+        if getattr(source, "platform", None) != Platform.SLACK:
+            return []
+        if (getattr(source, "chat_type", "") or "") != "group":
+            return []
+        if getattr(source, "thread_id", None):
+            return []
+
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return []
+
+        try:
+            entries = store.list_sessions()
+        except Exception:
+            return []
+
+        matches: List[Any] = []
+        current_session_id = (
+            current_entry
+            if isinstance(current_entry, str)
+            else getattr(current_entry, "session_id", None)
+        )
+        for entry in entries:
+            if getattr(entry, "session_id", None) == current_session_id:
+                continue
+            if getattr(entry, "platform", None) != Platform.SLACK:
+                continue
+            if (getattr(entry, "chat_type", "") or "") != "group":
+                continue
+            origin = getattr(entry, "origin", None)
+            if origin is None:
+                continue
+            if (getattr(origin, "chat_id", None) or "") != (getattr(source, "chat_id", None) or ""):
+                continue
+            origin_user = getattr(origin, "user_id", None)
+            source_user = getattr(source, "user_id", None)
+            if source_user and origin_user and origin_user != source_user:
+                continue
+            thread_id = getattr(origin, "thread_id", None)
+            if not thread_id or not self._SLACK_TS_THREAD_RE.match(str(thread_id)):
+                continue
+            try:
+                if not store.load_transcript(entry.session_id):
+                    continue
+            except Exception:
+                continue
+            matches.append(entry)
+
+        matches.sort(key=lambda entry: getattr(entry, "updated_at", datetime.min), reverse=True)
+        return matches[:limit]
+
+    def _maybe_migrate_slack_top_level_session(
+        self,
+        source: SessionSource,
+        session_entry,
+        history: List[Dict[str, Any]],
+    ):
+        """Point an empty new Slack channel/user lane at the latest legacy lane.
+
+        Migration is deliberately conservative: only an empty current transcript
+        is switched.  If the new lane already has conversation, we leave it in
+        place and rely on the non-persistent previous-session recall note.
+        """
+        if history:
+            return session_entry, history
+        matches = self._find_slack_previous_top_level_sessions(source, session_entry, limit=1)
+        if not matches:
+            return session_entry, history
+        target = matches[0]
+        store = getattr(self, "session_store", None)
+        try:
+            switched = store.switch_session(session_entry.session_key, target.session_id)
+            if switched is None:
+                return session_entry, history
+            migrated_history = store.load_transcript(switched.session_id)
+            logger.info(
+                "Migrated Slack top-level channel session %s to legacy transcript %s",
+                getattr(session_entry, "session_key", ""),
+                target.session_id,
+            )
+            return switched, migrated_history
+        except Exception as exc:
+            logger.debug("Slack top-level session migration failed: %s", exc)
+            return session_entry, history
+
+    def _build_slack_previous_session_recall_note(
+        self,
+        source: SessionSource,
+        session_entry,
+        *,
+        current_history: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, str]]:
+        """Build a compact system note from recent legacy Slack top-level chats."""
+        if not current_history:
+            return None
+        matches = self._find_slack_previous_top_level_sessions(source, session_entry, limit=2)
+        if not matches:
+            return None
+
+        parts = [
+            "[System note: Recent previous Slack top-level session context exists for this same channel/user lane. "
+            "It was stored under the old timestamp-derived Slack session key before channel/user sessions were enabled. "
+            "Use this only as lightweight recall if relevant; do not assume it answers the user's current request.]"
+        ]
+        store = getattr(self, "session_store", None)
+        for entry in matches:
+            try:
+                transcript = store.load_transcript(entry.session_id)
+            except Exception:
+                transcript = []
+            snippets = []
+            for msg in transcript[-8:]:
+                role = msg.get("role")
+                if role not in {"user", "assistant"}:
+                    continue
+                content = str(msg.get("content") or "").strip().replace("\n", " ")
+                if not content:
+                    continue
+                if len(content) > 500:
+                    content = content[:497] + "..."
+                snippets.append(f"- {role}: {content}")
+            if snippets:
+                parts.append(
+                    f"Previous Slack top-level session `{entry.session_id}` excerpts:\n"
+                    + "\n".join(snippets)
+                )
+        if len(parts) == 1:
+            return None
+        return {"role": "system", "content": "\n\n".join(parts)}
 
     def _stop_candidates_for_source(self, source: SessionSource, *, same_user: bool = True) -> List[tuple[str, SessionSource | None]]:
         """Return running-agent sessions in the same platform/channel/user lane.
@@ -17321,6 +17473,13 @@ class GatewayRunner:
                 history,
                 channel_prompt=channel_prompt,
             )
+            _slack_recall_note = self._build_slack_previous_session_recall_note(
+                source,
+                session_id,
+                current_history=history,
+            )
+            if _slack_recall_note:
+                agent_history.insert(0, _slack_recall_note)
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:

@@ -495,6 +495,54 @@ class TestSlackThreadContext:
         # No additional API call
         assert mock_client.conversations_replies.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_fetch_channel_context_formats_recent_scrollback(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_history = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.2", "user": "U2", "text": "second message"},
+                {"ts": "1000.1", "user": "U1", "text": "first message"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice", "U2": "Bob"}
+
+        context = await adapter._fetch_channel_context(
+            channel_id="C1",
+            current_ts="1000.3",
+            team_id="T1",
+        )
+
+        assert "[Channel context" in context
+        assert context.index("Alice: first message") < context.index("Bob: second message")
+        mock_client.conversations_history.assert_awaited_once_with(
+            channel="C1",
+            latest="1000.3",
+            inclusive=False,
+            limit=20,
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_channel_context_skips_self_bot_messages(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_history = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.2", "user": "U2", "text": "user context"},
+                {"ts": "1000.1", "user": "U_BOT", "bot_id": "B_SELF", "text": "self reply"},
+            ]
+        })
+        adapter._user_name_cache = {"U2": "Bob"}
+
+        context = await adapter._fetch_channel_context(
+            channel_id="C1",
+            current_ts="1000.3",
+            team_id="T1",
+        )
+
+        assert "user context" in context
+        assert "self reply" not in context
+
 
 # ===========================================================================
 # _has_active_session_for_thread — session key fix (#5833)

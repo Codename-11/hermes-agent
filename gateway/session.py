@@ -322,8 +322,9 @@ def build_session_context_prompt(
             "You do NOT have access to Slack-specific APIs — you cannot search "
             "channel history, pin/unpin messages, manage channels, or list users. "
             "Do not promise to perform these actions. The gateway may inline the "
-            "current message's Slack block/attachment payload when available, but "
-            "you still cannot call Slack APIs yourself."
+            "current message's Slack block/attachment payload and bounded recent "
+            "thread/channel context when available, but you still cannot call Slack "
+            "APIs yourself."
         )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has

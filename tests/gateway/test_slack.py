@@ -1270,6 +1270,7 @@ class TestMessageRouting:
     @pytest.mark.asyncio
     async def test_channel_mention_strips_bot_id(self, adapter):
         """When mentioned in a channel, the bot mention should be stripped."""
+        adapter._app.client.conversations_history = AsyncMock(return_value={"messages": []})
         event = {
             "text": "<@U_BOT> what's the weather?",
             "user": "U_USER",
@@ -1325,6 +1326,7 @@ class TestMessageRouting:
     @pytest.mark.asyncio
     async def test_mention_gated_top_level_channel_message_keeps_ts_session(self, adapter):
         """Mention-gated top-level channel asks keep legacy per-message sessions."""
+        adapter._app.client.conversations_history = AsyncMock(return_value={"messages": []})
         event = {
             "text": "<@U_BOT> start a fresh ask",
             "user": "U_USER",
@@ -1337,6 +1339,56 @@ class TestMessageRouting:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.source.thread_id == "1234567890.000001"
+
+    @pytest.mark.asyncio
+    async def test_mention_gated_top_level_channel_message_gets_channel_context(self, adapter):
+        """Explicit top-level @mentions should carry recent Slack scrollback."""
+        event = {
+            "text": "<@U_BOT> what did I miss?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+
+        with patch.object(
+            adapter,
+            "_fetch_channel_context",
+            new=AsyncMock(return_value="[Channel context]\nAlice: prior note"),
+        ) as fetch_context:
+            await adapter._handle_slack_message(event)
+
+        fetch_context.assert_awaited_once_with(
+            channel_id="C123",
+            current_ts="1234567890.000001",
+            team_id="",
+        )
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "what did I miss?"
+        assert msg_event.channel_context == "[Channel context]\nAlice: prior note"
+
+    @pytest.mark.asyncio
+    async def test_free_response_top_level_channel_message_skips_channel_context_fetch(self, adapter):
+        """Free-response channels already dispatch every message, so no backfill."""
+        adapter.config.extra["free_response_channels"] = "C123"
+        event = {
+            "text": "<@U_BOT> what did I miss?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+
+        with patch.object(
+            adapter,
+            "_fetch_channel_context",
+            new=AsyncMock(return_value="[Channel context]\nAlice: prior note"),
+        ) as fetch_context:
+            await adapter._handle_slack_message(event)
+
+        fetch_context.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.channel_context is None
 
     @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):

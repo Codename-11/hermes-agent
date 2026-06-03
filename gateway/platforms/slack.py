@@ -337,6 +337,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._ASSISTANT_THREADS_MAX = 5000
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
+        # Cache for _fetch_channel_context results: cache_key → _ThreadContextCache
+        self._channel_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
@@ -2168,6 +2170,19 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_context:
                 text = thread_context + text
 
+        channel_context = None
+        if (
+            not is_dm
+            and not is_thread_reply
+            and is_mentioned
+            and channel_id not in self._slack_free_response_channels()
+        ):
+            channel_context = await self._fetch_channel_context(
+                channel_id=channel_id,
+                current_ts=ts,
+                team_id=team_id,
+            ) or None
+
         # Determine message type
         msg_type = MessageType.TEXT
         if (original_text or "").startswith("/"):
@@ -2368,6 +2383,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
+            channel_context=channel_context,
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,
         )
@@ -2855,6 +2871,124 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            return ""
+
+    def _slack_channel_history_backfill_limit(self) -> int:
+        raw = self.config.extra.get("channel_history_backfill_limit")
+        if raw is None:
+            raw = os.getenv("SLACK_CHANNEL_HISTORY_BACKFILL_LIMIT", "20")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 20
+        return max(0, min(value, 50))
+
+    async def _fetch_channel_context(
+        self, channel_id: str, current_ts: str, team_id: str = "",
+    ) -> str:
+        """Fetch recent top-level channel messages before an explicit mention.
+
+        Slack only delivers messages the app subscribes to. In mention-gated
+        channels, non-mention chatter is intentionally not dispatched to the
+        agent, so a fresh @mention can otherwise lack the visible scrollback
+        the user is referring to.
+        """
+        limit = self._slack_channel_history_backfill_limit()
+        if limit <= 0 or not current_ts:
+            return ""
+
+        cache_key = f"{channel_id}:{current_ts}:{team_id}"
+        now = time.monotonic()
+        cached = self._channel_context_cache.get(cache_key)
+        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.content
+
+        try:
+            client = self._get_client(channel_id)
+            result = None
+            for attempt in range(3):
+                try:
+                    result = await client.conversations_history(
+                        channel=channel_id,
+                        latest=current_ts,
+                        inclusive=False,
+                        limit=limit,
+                    )
+                    break
+                except Exception as exc:
+                    err_str = str(exc).lower()
+                    is_rate_limit = (
+                        "ratelimited" in err_str
+                        or "429" in err_str
+                        or "rate_limited" in err_str
+                    )
+                    if is_rate_limit and attempt < 2:
+                        retry_after = 1.0 * (2 ** attempt)
+                        logger.warning(
+                            "[Slack] conversations.history rate limited; retrying in %.1fs (attempt %d/3)",
+                            retry_after,
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+                    raise
+
+            if result is None:
+                return ""
+
+            messages = list(result.get("messages", []) or [])
+            if not messages:
+                return ""
+
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            context_parts = []
+            for msg in reversed(messages):
+                msg_ts = msg.get("ts", "")
+                if msg_ts == current_ts:
+                    continue
+
+                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+                msg_user = msg.get("user", "")
+                msg_team = msg.get("team") or team_id
+                self_bot_uid = (
+                    self._team_bot_user_ids.get(msg_team)
+                    if msg_team
+                    else None
+                ) or self._bot_user_id
+                if is_bot and self_bot_uid and msg_user == self_bot_uid:
+                    continue
+
+                msg_text = str(msg.get("text") or "").strip()
+                if not msg_text and msg.get("blocks"):
+                    msg_text = _extract_text_from_slack_blocks(msg.get("blocks") or []).strip()
+                if not msg_text:
+                    continue
+
+                if bot_uid:
+                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+
+                display_user = msg_user or msg.get("username") or "unknown"
+                name = await self._resolve_user_name(display_user, chat_id=channel_id)
+                context_parts.append(f"{name}: {msg_text}")
+
+            content = ""
+            if context_parts:
+                content = (
+                    "[Channel context — recent Slack messages before this mention "
+                    "(not yet in conversation history):]\n"
+                    + "\n".join(context_parts)
+                    + "\n[End of channel context]"
+                )
+
+            self._channel_context_cache[cache_key] = _ThreadContextCache(
+                content=content,
+                fetched_at=now,
+                message_count=len(context_parts),
+            )
+            return content
+
+        except Exception as e:
+            logger.warning("[Slack] Failed to fetch channel context: %s", e)
             return ""
 
     async def _fetch_thread_parent_text(
