@@ -1,5 +1,28 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-03 — Sync upstream into axiom deploy branch
+
+### Summary
+
+Merged the pending upstream/main changes into the `axiom` deploy branch after `hermes update` stopped on conflicts, then reran the update path so the live checkout fast-forwarded and active Hermes services refreshed.
+
+### What changed
+
+- Resolved `hermes_cli/main.py` conflicts by keeping upstream TUI freshness/workspace install handling and combining dashboard PID exclusions for both systemd-managed dashboard restarts and Desktop child backends.
+- Resolved `tests/hermes_cli/test_update_stale_dashboard.py` by preserving coverage for systemd dashboard PID exclusion and upstream Desktop child PID exclusion.
+- Pushed the resolved deploy branch to `origin/axiom` and reran `hermes update`; the rerun pulled two additional upstream commits and completed dependency refresh, web UI build, skill sync, config migration, and service restarts.
+- Cleared the stale `.update_handoff.json` marker after confirming live `HEAD == origin/axiom` and `upstream/main` is included in the deploy branch.
+- Restarted `hermes-dashboard.service` and `hermes-proxy.service` manually after verifying their process start times predated the update restart wave.
+
+### Verification
+
+- `python -m py_compile gateway/platforms/api_server.py gateway/run.py hermes_cli/main.py hermes_cli/web_server.py tui_gateway/server.py tests/hermes_cli/test_update_stale_dashboard.py` → OK.
+- `python -m pytest -q -o addopts='' tests/hermes_cli/test_update_stale_dashboard.py tests/hermes_cli/test_update_concurrent_quarantine.py tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_update_check.py` → 107 passed.
+- `python -m pytest -q -o addopts='' tests/gateway/test_api_server.py tests/hermes_cli/test_proxy.py tests/hermes_cli/test_web_server.py` → 423 passed.
+- Post-update focused rerun: `python -m pytest -q -o addopts='' tests/hermes_cli/test_update_stale_dashboard.py` → 22 passed.
+- `hermes --version` → Hermes Agent v0.15.1 (2026.5.29), branch `axiom`, up to date.
+- Live smoke: API `/health` OK, dashboard GET on `172.16.24.250:9119` returned HTML, proxy `/v1/models` returned 4 models, all active Hermes gateway/profile/dashboard/proxy units reported `active`.
+
 ## 2026-05-28 — Add route-level webhook toolsets
 
 ### Summary
