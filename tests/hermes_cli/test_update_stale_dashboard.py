@@ -185,11 +185,12 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids()
         assert pids == [12345]
 
-    def test_exclude_pids_filters_systemd_managed(self):
-        """``hermes update`` restarts ``hermes-dashboard.service`` first, then
-        runs the stale-process sweep.  Without exclusion, the freshly-spawned
-        managed PID gets SIGTERMed and systemd has to respawn it again.  The
-        ``exclude_pids`` arg is the seam that prevents that.
+    def test_exclude_pids_filters_specified_pids(self):
+        """exclude_pids removes specific PIDs from the result.
+
+        ``hermes update`` uses this seam to protect freshly-spawned
+        systemd-managed dashboard PIDs, and the Desktop Electron app uses it
+        to protect its own backend child.  (#37532)
         """
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -197,14 +198,38 @@ class TestFindStaleDashboardPids:
                 stdout="\n".join([
                     _ps_line(11111, "python -m hermes_cli.main dashboard --port 9119"),
                     _ps_line(22222, "hermes dashboard --port 9120"),
+                    _ps_line(33333, "hermes dashboard --port 9121"),
                 ]) + "\n",
                 stderr="",
             )
-            assert _find_stale_dashboard_pids() == [11111, 22222]
-            assert _find_stale_dashboard_pids(exclude_pids={11111}) == [22222]
+            assert _find_stale_dashboard_pids() == [11111, 22222, 33333]
+            assert _find_stale_dashboard_pids(exclude_pids={11111}) == [22222, 33333]
+            assert _find_stale_dashboard_pids(exclude_pids={22222}) == [11111, 33333]
             assert _find_stale_dashboard_pids(
-                exclude_pids={11111, 22222}
+                exclude_pids={11111, 22222, 33333}
             ) == []
+
+    def test_exclude_pids_none_is_noop(self):
+        """Passing exclude_pids=None (the default) changes nothing."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids(exclude_pids=None)
+        assert pids == [12345]
+
+    def test_exclude_all_pids_returns_empty(self):
+        """If all matched PIDs are excluded, the result is empty."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids(exclude_pids={12345})
+        assert pids == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")

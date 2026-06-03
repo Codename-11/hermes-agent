@@ -208,7 +208,6 @@ git log --oneline -10
 
 # Roll back to a specific commit
 git checkout <commit-hash>
-git submodule update --init --recursive
 uv pip install -e ".[all]"
 
 # Restart the gateway if running
@@ -219,7 +218,6 @@ To roll back to a specific release tag (substitute your previous tag — e.g. a 
 
 ```bash
 git checkout vX.Y.Z
-git submodule update --init --recursive
 uv pip install -e ".[all]"
 ```
 
