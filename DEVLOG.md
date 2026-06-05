@@ -1,5 +1,28 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-05 — Remove duplicate API session route registration
+
+### Summary
+
+Cleaned up the `axiom` API-server patch layer after upstream landed the baseline session-control surface in `f7527b0fdb54f01691547df03fc65a6d367f9fde`.
+
+### What changed
+
+- Removed the duplicate legacy `/api/sessions/*` route registration block from `APIServerAdapter.connect()`.
+- Preserved Axiom/Relay-only compatibility routes: `/api/sessions/search`, `/api/memory`, `/api/skills`, `/api/config`, and `/api/available-models`.
+- Moved the Hermes-Relay bootstrap feature-detection hook until after native fork routes are registered so bootstrap shims no-op instead of shadowing first-class handlers.
+- Added a route-registration regression test that fails if the adapter registers the same method/path more than once.
+- Merged fork PR #3 into `origin/axiom`.
+
+### Verification
+
+- RED check before implementation: `python -m pytest -q -o addopts='' tests/gateway/test_api_server.py::test_connect_registers_each_route_once` → failed with 9 duplicate route registrations.
+- `python -m py_compile gateway/platforms/api_server.py` → OK.
+- `python -m pytest -q -o addopts='' tests/gateway/test_api_server.py tests/gateway/test_session_api.py --tb=short` → 175 passed, 112 existing aiohttp AppKey warnings.
+- GitHub PR checks for #3 → all passed (`changes`, dependency bounds, supply-chain scan, nix macOS, nix Ubuntu).
+- Post-merge focused rerun: `python -m pytest -q -o addopts='' tests/gateway/test_api_server.py::test_connect_registers_each_route_once tests/gateway/test_session_api.py --tb=short` → 11 passed.
+- Route parse check on merged `axiom`: 49 route registrations, 49 unique method/path pairs, no duplicates.
+
 ## 2026-06-03 — Sync upstream into axiom deploy branch
 
 ### Summary
