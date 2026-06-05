@@ -228,10 +228,11 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     try:
         raw = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
-        # UnicodeDecodeError happens when a previous writer was killed mid-
-        # write or the file got corrupted (we've seen `0x86` bytes in
-        # platform-status payloads on rapid reconnect). Treat both as
-        # "couldn't read; start fresh" so the caller writes a clean record.
+        # OSError: file vanished or permission flipped between exists() and
+        # read. UnicodeDecodeError: file holds non-UTF-8 / binary garbage
+        # (a truncated or clobbered status file; observed as stray 0x86 bytes
+        # in platform-status payloads on rapid reconnect). Either way, treat
+        # it as unusable so the caller can write a clean record.
         return None
     if not raw:
         return None
@@ -253,8 +254,9 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
 
     try:
         raw = pid_path.read_text().strip()
-    except OSError:
-        # File was deleted between exists() and read_text(), or permission flipped.
+    except (OSError, UnicodeDecodeError):
+        # File was deleted between exists() and read_text(), permission
+        # flipped, or it holds non-UTF-8 / binary garbage.
         return None
     if not raw:
         return None
