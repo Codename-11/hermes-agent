@@ -5367,10 +5367,26 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
-            # Store the adapter after native routes are registered. Local Hermes-Relay
-            # bootstrap shims use this key as a feature-detection hook; registering
-            # native routes first lets those shims no-op instead of shadowing the
-            # upstream session-control handlers.
+            # Axiom/Relay compatibility routes that are still outside upstream's
+            # baseline session-control surface. Register these before exposing
+            # the adapter through app["api_server_adapter"] so Hermes-Relay's
+            # bootstrap hook sees the native fork routes and no-ops instead of
+            # injecting shadow handlers.
+            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
+            self._app.router.add_get("/api/memory", self._handle_get_memory)
+            self._app.router.add_post("/api/memory", self._handle_add_memory)
+            self._app.router.add_patch("/api/memory", self._handle_replace_memory)
+            self._app.router.add_delete("/api/memory", self._handle_delete_memory)
+            self._app.router.add_get("/api/skills", self._handle_list_skills)
+            self._app.router.add_get("/api/skills/{name}", self._handle_view_skill)
+            self._app.router.add_get("/api/config", self._handle_get_config)
+            self._app.router.add_patch("/api/config", self._handle_update_config)
+            self._app.router.add_get("/api/available-models", self._handle_available_models)
+
+            # Store the adapter after all native routes are registered. Local
+            # Hermes-Relay bootstrap shims use this key as a feature-detection
+            # hook; registering native routes first lets those shims no-op
+            # instead of shadowing first-class handlers.
             self._app["api_server_adapter"] = self
 
             # Start background sweep to clean up orphaned (unconsumed) run streams
@@ -5381,25 +5397,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
-            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
-            self._app.router.add_post("/api/sessions", self._handle_create_session)
-            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
-            self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
-            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_get_session_messages)
-            self._app.router.add_patch("/api/sessions/{session_id}", self._handle_update_session)
-            self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
-            self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
-            self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
-            self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
-            self._app.router.add_get("/api/memory", self._handle_get_memory)
-            self._app.router.add_post("/api/memory", self._handle_add_memory)
-            self._app.router.add_patch("/api/memory", self._handle_replace_memory)
-            self._app.router.add_delete("/api/memory", self._handle_delete_memory)
-            self._app.router.add_get("/api/skills", self._handle_list_skills)
-            self._app.router.add_get("/api/skills/{name}", self._handle_view_skill)
-            self._app.router.add_get("/api/config", self._handle_get_config)
-            self._app.router.add_patch("/api/config", self._handle_update_config)
-            self._app.router.add_get("/api/available-models", self._handle_available_models)
 
             # Refuse to start without authentication. The API server can
             # dispatch terminal-capable agent work, so every deployment needs

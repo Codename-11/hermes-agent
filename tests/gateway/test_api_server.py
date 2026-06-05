@@ -54,6 +54,42 @@ class TestCheckRequirements:
 
 
 # ---------------------------------------------------------------------------
+# Route registration
+# ---------------------------------------------------------------------------
+
+
+def test_connect_registers_each_route_once():
+    """Regression guard: upstream-native session routes must not be re-added.
+
+    Hermes-Relay's bootstrap detects native routes by method/path. Registering
+    duplicate aiohttp routes makes route ownership ambiguous and can leave the
+    live API surface depending on registration order instead of the upstream
+    canonical handlers.
+    """
+    from collections import Counter
+    import inspect
+    import re
+
+    source = inspect.getsource(APIServerAdapter.connect)
+    registrations = [
+        (method.upper(), path)
+        for method, path in re.findall(
+            r'self\._app\.router\.add_(\w+)\("([^"]+)"',
+            source,
+        )
+    ]
+
+    duplicate_routes = {
+        route: count
+        for route, count in Counter(registrations).items()
+        if count > 1
+    }
+
+    assert duplicate_routes == {}
+    assert ("GET", "/api/sessions/search") in registrations
+
+
+# ---------------------------------------------------------------------------
 # ResponseStore
 # ---------------------------------------------------------------------------
 
