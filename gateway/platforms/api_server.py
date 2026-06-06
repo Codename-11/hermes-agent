@@ -1169,6 +1169,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        disabled_toolsets: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1188,6 +1189,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
         from hermes_cli.tools_config import _get_platform_tools
+        from agent.runtime_tool_policy import merge_disabled_toolsets
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
@@ -1195,6 +1197,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        agent_cfg = user_config.get("agent") if isinstance(user_config, dict) else {}
+        config_disabled_toolsets = (
+            agent_cfg.get("disabled_toolsets")
+            if isinstance(agent_cfg, dict)
+            else None
+        )
+        effective_disabled_toolsets = merge_disabled_toolsets(
+            config_disabled_toolsets,
+            disabled_toolsets,
+        )
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -1210,6 +1222,7 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=effective_disabled_toolsets,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
@@ -3999,6 +4012,29 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+        if "tool_allowlist" in body and not isinstance(
+            body.get("tool_allowlist"),
+            (str, list, tuple, set),
+        ):
+            return web.json_response(
+                _openai_error("'tool_allowlist' must be an array or comma-separated string"),
+                status=400,
+            )
+        if (
+            "runtime_policy" in body
+            and body.get("runtime_policy") is not None
+            and not isinstance(body.get("runtime_policy"), dict)
+        ):
+            return web.json_response(
+                _openai_error("'runtime_policy' must be an object"),
+                status=400,
+            )
+        from agent.runtime_tool_policy import build_run_tool_policy
+
+        host_tool_policy = build_run_tool_policy(
+            tool_allowlist=body.get("tool_allowlist"),
+            runtime_policy=body.get("runtime_policy"),
+        )
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
 
@@ -4820,6 +4856,29 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+        if "tool_allowlist" in body and not isinstance(
+            body.get("tool_allowlist"),
+            (str, list, tuple, set),
+        ):
+            return web.json_response(
+                _openai_error("'tool_allowlist' must be an array or comma-separated string"),
+                status=400,
+            )
+        if (
+            "runtime_policy" in body
+            and body.get("runtime_policy") is not None
+            and not isinstance(body.get("runtime_policy"), dict)
+        ):
+            return web.json_response(
+                _openai_error("'runtime_policy' must be an object"),
+                status=400,
+            )
+        from agent.runtime_tool_policy import build_run_tool_policy
+
+        host_tool_policy = build_run_tool_policy(
+            tool_allowlist=body.get("tool_allowlist"),
+            runtime_policy=body.get("runtime_policy"),
+        )
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
@@ -4898,6 +4957,14 @@ class APIServerAdapter(BasePlatformAdapter):
             created_at=created_at,
             session_id=session_id,
             model=body.get("model", self._model_name),
+            engagement_mode=body.get("engagement_mode"),
+            forge_contract_version=body.get("forge_contract_version"),
+            runtime_policy=host_tool_policy.get("runtime_policy"),
+            host_tool_policy={
+                "provided": host_tool_policy.get("provided"),
+                "allowed_host_tools": host_tool_policy.get("allowed_host_tools"),
+                "denied_toolsets": host_tool_policy.get("denied_toolsets"),
+            },
         )
 
         async def _run_and_close():
@@ -4909,6 +4976,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    disabled_toolsets=host_tool_policy.get("denied_toolsets"),
                 )
                 self._active_run_agents[run_id] = agent
 

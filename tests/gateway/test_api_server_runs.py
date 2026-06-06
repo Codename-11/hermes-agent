@@ -125,6 +125,52 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_start_applies_host_tool_allowlist(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "engagement_mode": "REVIEW",
+                        "forge_contract_version": "test-contract",
+                        "tool_allowlist": [],
+                        "runtime_policy": {
+                            "allowed_host_tools": [],
+                            "contract_version": "test-contract",
+                        },
+                    },
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+                for _ in range(20):
+                    if mock_create.called:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert mock_create.called
+                disabled = set(mock_create.call_args.kwargs.get("disabled_toolsets") or [])
+                assert {"terminal", "file", "code_execution", "desktop"} <= disabled
+                assert "delegation" not in disabled
+
+                status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
+                assert status_resp.status == 200
+                status = await status_resp.json()
+                assert status["engagement_mode"] == "REVIEW"
+                assert status["forge_contract_version"] == "test-contract"
+                assert status["host_tool_policy"]["allowed_host_tools"] == []
+                assert "terminal" in status["host_tool_policy"]["denied_toolsets"]
+
+    @pytest.mark.asyncio
     async def test_start_invalid_json_returns_400(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

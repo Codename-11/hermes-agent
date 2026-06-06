@@ -1167,6 +1167,7 @@ def _build_child_agent(
         provider_sort=child_provider_sort,
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
+        disabled_toolsets=getattr(parent_agent, "disabled_toolsets", None),
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -1300,7 +1301,9 @@ def _dump_subagent_timeout_diagnostic(
 
         _w("## Toolsets")
         enabled = getattr(child, "enabled_toolsets", None)
+        disabled = getattr(child, "disabled_toolsets", None)
         _w(f"  enabled_toolsets:  {enabled!r}")
+        _w(f"  disabled_toolsets: {disabled!r}")
         tool_names = getattr(child, "valid_tool_names", None)
         if tool_names:
             _w(f"  loaded tool count: {len(tool_names)}")

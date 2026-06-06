@@ -1,5 +1,34 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-06 — Enforce Forge per-run host tool policy
+
+### Summary
+
+Added Hermes host-side enforcement for Forge `/v1/runs` `tool_allowlist` /
+`runtime_policy` payloads without disabling the rest of the Hermes agent
+surface.
+
+### What changed
+
+- Added runtime tool-policy helpers that translate Forge host tools
+  (`terminal`, `filesystem`, `git`) into Hermes disabled toolsets.
+- `/v1/runs` now validates/stores engagement mode, contract version, runtime
+  policy, and host tool policy, then passes the derived disabled toolsets into
+  `AIAgent`.
+- `handle_function_call()` now blocks disabled toolsets before registry
+  dispatch, so denied tools cannot run even if a model emits an old schema.
+- Restricted Forge runs deny local terminal/file/code/desktop surfaces but keep
+  Hermes skills, memory, web/search, Forge context tools, and delegation
+  available.
+- Delegated subagents inherit the parent's disabled toolsets, so a Review or
+  Research run can still use Hermes orchestration without regaining local repo
+  access.
+
+### Verification
+
+- `venv/bin/python -m pytest tests/agent/test_runtime_tool_policy.py tests/test_model_tools.py::TestHandleFunctionCall::test_disabled_toolset_blocks_before_dispatch tests/gateway/test_api_server_toolset.py::TestApiServerAdapterToolset::test_create_agent_merges_run_disabled_toolsets tests/gateway/test_api_server_runs.py::TestStartRun::test_start_applies_host_tool_allowlist` → 9 passed.
+- `venv/bin/python -m pytest tests/tools/test_delegate.py -k inherits_disabled_toolsets` → 1 passed.
+
 ## 2026-06-05 — Remove duplicate API session route registration
 
 ### Summary
