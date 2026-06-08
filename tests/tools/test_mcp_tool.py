@@ -861,6 +861,61 @@ class TestMCPServerTask:
                 "mcp_srv_get_prompt",
             }
 
+    def test_refresh_tools_replaces_schema_for_unchanged_tool_name(self):
+        """Dynamic refresh updates an existing MCP wrapper schema in-place."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import MCPServerTask
+
+        old_tool = _make_mcp_tool(
+            "convert_order",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "so_no": {"type": "integer"},
+                    "quote_no": {"type": "integer"},
+                },
+                "required": ["so_no", "quote_no"],
+            },
+        )
+        new_tool = _make_mcp_tool(
+            "convert_order",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "so_no": {"type": "integer"},
+                    "quote_no": {"type": "integer", "default": None},
+                },
+                "required": ["so_no"],
+            },
+        )
+
+        mock_registry = ToolRegistry()
+        server = MCPServerTask("srv")
+        server._config = {"command": "test"}
+        server._tools = [old_tool]
+        server._registered_tool_names = ["mcp_srv_convert_order"]
+        server.session = MagicMock()
+        server.session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[new_tool]))
+
+        with patch("tools.registry.registry", mock_registry):
+            mock_registry.register(
+                name="mcp_srv_convert_order",
+                toolset="mcp-srv",
+                schema={
+                    "name": "mcp_srv_convert_order",
+                    "description": "old",
+                    "parameters": old_tool.inputSchema,
+                },
+                handler=lambda *_args, **_kwargs: "{}",
+            )
+
+            asyncio.run(server._refresh_tools())
+
+            entry = mock_registry.get_entry("mcp_srv_convert_order")
+            assert entry is not None
+            assert entry.schema["parameters"]["required"] == ["so_no"]
+            assert "quote_no" not in entry.schema["parameters"]["required"]
+
     def test_schedule_tools_refresh_keeps_task_until_done(self):
         """Background refresh tasks are strongly referenced and then discarded."""
         from tools.mcp_tool import MCPServerTask

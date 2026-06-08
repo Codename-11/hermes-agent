@@ -552,8 +552,69 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _refresh_agent_tools_if_registry_changed(agent) -> None:
+    """Refresh a live agent's tool schemas after dynamic registry mutation.
+
+    ``AIAgent`` snapshots ``agent.tools`` at session initialization. MCP
+    servers, however, can legitimately update schemas later via
+    ``notifications/tools/list_changed`` (for example, changing an argument
+    from required to optional). The registry and ``get_tool_definitions`` cache
+    already track those mutations via ``registry._generation``; this bridges
+    that freshness signal back into long-lived agent sessions before the next
+    provider request is built.
+    """
+    try:
+        from tools.registry import registry
+
+        current_generation = getattr(registry, "_generation", None)
+        if current_generation is None:
+            return
+        if getattr(agent, "_tool_registry_generation", None) == current_generation:
+            return
+
+        refreshed_tools = _ra().get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            quiet_mode=True,
+        )
+
+        # Preserve memory-provider schemas that are injected per agent rather
+        # than registered in the global tool registry. Mirrors agent_init.py.
+        memory_manager = getattr(agent, "_memory_manager", None)
+        enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+        if memory_manager and (
+            enabled_toolsets is None or "memory" in enabled_toolsets
+        ):
+            existing_names = {
+                t.get("function", {}).get("name")
+                for t in refreshed_tools
+                if isinstance(t, dict)
+            }
+            for schema in memory_manager.get_all_tool_schemas():
+                tool_name = schema.get("name", "")
+                if tool_name and tool_name in existing_names:
+                    continue
+                refreshed_tools.append({"type": "function", "function": schema})
+                if tool_name:
+                    existing_names.add(tool_name)
+
+        agent.tools = refreshed_tools
+        agent.valid_tool_names = {
+            tool["function"]["name"]
+            for tool in refreshed_tools
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        }
+        agent._tool_registry_generation = current_generation
+    except Exception as exc:
+        logger.warning(
+            "%s⚠️ Failed to refresh tool schemas after registry update: %s",
+            getattr(agent, "log_prefix", ""), exc,
+        )
+
+
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    _refresh_agent_tools_if_registry_changed(agent)
     tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":

@@ -948,6 +948,12 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    try:
+        from tools.registry import registry as _tool_registry
+
+        agent._tool_registry_generation = getattr(_tool_registry, "_generation", None)
+    except Exception:
+        agent._tool_registry_generation = None
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
