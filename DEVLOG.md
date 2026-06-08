@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-08 — Create Axiom fork contract and pause daily sync
+
+### Summary
+
+Paused the Sentinel `Hermes Axiom Sync` cron job while the fork is hardened, then created `FORK.md` as the canonical contract for Axiom-specific Hermes behavior.
+
+### What changed
+
+- Paused cron job `44f7334c4efc` (`Hermes Axiom Sync`) so the daily upstream merge attempt stops paging on known unresolved fork conflicts.
+- Added `FORK.md` with the protected behavior contract for Hermes-Relay/API compatibility, Forge, Discord roundtable safety, webhook route-level toolsets, proxy/provider routing, update/deploy behavior, TUI/plugin-command cards, and local memory/Lucid surfaces.
+- Inventoried the current fork-only commit surface: 95 non-merge fork-only commits, 107 changed files from the fork merge-base to `origin/axiom`, and major hotspots in `hermes_cli/main.py`, `gateway/platforms/api_server.py`, `gateway/run.py`, and `tui_gateway/server.py`.
+- Recorded required validation commands and open questions before resuming automated upstream sync.
+
+### Verification
+
+- `cronjob(action="list")` confirmed `44f7334c4efc` is paused.
+- `git cat-file -e origin/axiom:FORK.md` and `git cat-file -e upstream/main:FORK.md` confirmed neither remote branch already had `FORK.md`.
+- `git cherry -v upstream/main origin/axiom` showed 95 non-merge fork commits as not patch-equivalent to upstream.
+
 ## 2026-06-06 — Enforce Forge per-run host tool policy
 
 ### Summary
