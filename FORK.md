@@ -129,37 +129,7 @@ tests/test_model_tools.py
 tests/tools/test_delegate.py
 ```
 
-### 3. Discord multi-agent / roundtable safety
-
-Protected behavior:
-
-- Discord bot-message admission remains gated and explicit.
-- `discord.allow_bots` and `discord.roundtable` behavior remains config/env controllable.
-- Roundtable circuit breaker defaults fail closed.
-- `/roundtable call` admits exactly one controlled bot response and then consumes the pending call.
-- `/roundtable debate` remains bounded and can auto-stop on consensus or max turns.
-- Outbound bot mentions are escaped unless explicitly controlled through allowed mention metadata.
-- Reply metadata from bot-authored messages must not retrigger agent cascades.
-
-Known references:
-
-- `DEVLOG.md` 2026-05-20 entries for Discord roundtable safety controls, circuit breaker, debate mode, consensus-loop fix, and call UX.
-
-Primary files:
-
-```text
-gateway/platforms/discord.py
-plugins/roundtable_orchestrator/*
-gateway/platforms/base.py
-gateway/run.py
-tests/gateway/test_discord_roundtable.py
-tests/gateway/test_discord_allowed_mentions.py
-tests/gateway/test_discord_send.py
-tests/gateway/test_roundtable_orchestrator_dispatch.py
-tests/plugins/test_roundtable_orchestrator_plugin.py
-```
-
-### 4. Webhook route-level toolsets
+### 3. Webhook route-level toolsets
 
 Protected behavior:
 
@@ -282,6 +252,10 @@ tests/agent/test_context_compressor.py
 tests/plugins/memory/test_mempalace_provider.py
 ```
 
+## Retired fork surface
+
+Discord multi-agent orchestration code and documentation were intentionally removed on 2026-06-08 at operator direction. Do not reintroduce the removed plugin, slash commands, env vars, or docs during upstream sync unless explicitly requested. Keep the generic Discord bot-admission safety controls (`allow_bots`, `thread_require_mention`, safe allowed mentions, reply-ping suppression) because they are still useful outside that retired feature.
+
 ## Fork-only commit inventory
 
 `git cherry -v upstream/main origin/axiom` reported all 95 non-merge fork commits as `+` (not patch-equivalent to upstream). These must be classified before merge hardening is considered complete.
@@ -293,7 +267,6 @@ update-deploy:       26
 misc/unknown:        20
 proxy-provider:      16
 api-relay:           15
-discord-roundtable:   8
 docs:                 3
 forge:                3
 tui-relay:            2
@@ -327,19 +300,6 @@ b78288ed0 refactor(api-server): remove duplicate session routes (#3)
 b14096f91 fix: restore forge platform delivery adapter
 307415786 feat(forge): streaming draft support via chat.startDraft/appendDraftChunk/finalizeDraft
 d95b9381e Enforce Forge run tool policy
-```
-
-### discord-roundtable
-
-```text
-a5eeed378 discord(lucid): register /remember, /recall, /classify on all profiles
-1f42e44c9 feat: add Discord roundtable safeguards
-706d56ca9 feat: add discord roundtable circuit breaker
-661f3df98 docs: document roundtable circuit breaker
-fbf19fdd0 Add Discord roundtable single-fire call
-a81426291 feat: add Discord roundtable debate mode
-b7ecff05b fix: stop Discord roundtable consensus loops
-f759c76bf fix: improve Discord roundtable call UX
 ```
 
 ### webhook
@@ -481,12 +441,9 @@ Top repeatedly touched files by fork commits:
 8  agent/anthropic_adapter.py
 6  run_agent.py
 6  gateway/platforms/discord.py
-5  tests/plugins/test_roundtable_orchestrator_plugin.py
-5  plugins/roundtable_orchestrator/__init__.py
 5  hermes_cli/commands.py
 4  website/docs/user-guide/messaging/discord.md
 4  tests/hermes_cli/test_proxy.py
-4  tests/gateway/test_discord_roundtable.py
 4  hermes_cli/proxy/adapters/routed.py
 4  hermes_cli/plugins.py
 3  tui_gateway/server.py
@@ -501,7 +458,6 @@ Hotspot interpretation:
 
 - `hermes_cli/main.py` is the highest-risk file because upstream is actively extracting CLI subcommands from it.
 - `gateway/platforms/api_server.py` is high-risk because upstream has landed baseline session APIs that overlap Axiom/Hermes-Relay compatibility routes.
-- `gateway/run.py`, `gateway/platforms/discord.py`, `plugins/roundtable_orchestrator/*`, and `tui_gateway/server.py` carry Axiom gateway/TUI behavior that can silently regress if conflict resolution only checks compile success.
 
 ## Required validation before merging upstream into `origin/axiom`
 
@@ -535,11 +491,8 @@ python -m pytest -q -o addopts='' \
   tests/gateway/test_webhook_adapter.py \
   tests/hermes_cli/test_webhook_cli.py \
   tests/gateway/test_reasoning_command.py \
-  tests/gateway/test_discord_roundtable.py \
   tests/gateway/test_discord_allowed_mentions.py \
   tests/gateway/test_discord_send.py \
-  tests/gateway/test_roundtable_orchestrator_dispatch.py \
-  tests/plugins/test_roundtable_orchestrator_plugin.py \
   tests/hermes_cli/test_proxy.py \
   tests/agent/test_anthropic_adapter.py \
   tests/hermes_cli/test_plugins.py \
@@ -581,6 +534,5 @@ plugin command card metadata and TUI rendering
 1. Which Axiom API compatibility routes are still required by active Hermes-Relay/Desktop/Workspace clients?
 2. Which fork-only update/deploy behaviors are still needed now that upstream has refactored CLI subcommands?
 3. Should `webapi/*` remain fork-owned, be retired in favor of upstream API server behavior, or become a plugin/module seam?
-4. Should Discord roundtable remain bundled fork code, become a standalone plugin, or be upstreamed as a generalized multi-bot safety feature?
 5. Should routed OAuth proxy adapters stay fork-local or be proposed upstream?
 6. Which `misc/unknown` commits are dead code, config-only candidates, or protected behavior?

@@ -58,20 +58,26 @@ class TestCheckRequirements:
 # ---------------------------------------------------------------------------
 
 
-def test_connect_registers_each_route_once():
-    """Regression guard: upstream-native session routes must not be re-added.
+RELAY_COMPATIBILITY_ROUTES = {
+    ("GET", "/api/sessions/search"),
+    ("GET", "/api/memory"),
+    ("POST", "/api/memory"),
+    ("PATCH", "/api/memory"),
+    ("DELETE", "/api/memory"),
+    ("GET", "/api/skills"),
+    ("GET", "/api/skills/{name}"),
+    ("GET", "/api/config"),
+    ("PATCH", "/api/config"),
+    ("GET", "/api/available-models"),
+}
 
-    Hermes-Relay's bootstrap detects native routes by method/path. Registering
-    duplicate aiohttp routes makes route ownership ambiguous and can leave the
-    live API surface depending on registration order instead of the upstream
-    canonical handlers.
-    """
-    from collections import Counter
+
+def _connect_route_registrations():
     import inspect
     import re
 
     source = inspect.getsource(APIServerAdapter.connect)
-    registrations = [
+    return [
         (method.upper(), path)
         for method, path in re.findall(
             r'self\._app\.router\.add_(\w+)\("([^"]+)"',
@@ -79,6 +85,18 @@ def test_connect_registers_each_route_once():
         )
     ]
 
+
+def test_connect_registers_each_route_once():
+    """Regression guard: native and Relay compatibility routes are unique.
+
+    Hermes-Relay's bootstrap detects native routes by method/path. Registering
+    duplicate aiohttp routes makes route ownership ambiguous and can leave the
+    live API surface depending on registration order instead of the canonical
+    handlers.
+    """
+    from collections import Counter
+
+    registrations = _connect_route_registrations()
     duplicate_routes = {
         route: count
         for route, count in Counter(registrations).items()
@@ -86,7 +104,24 @@ def test_connect_registers_each_route_once():
     }
 
     assert duplicate_routes == {}
-    assert ("GET", "/api/sessions/search") in registrations
+    assert RELAY_COMPATIBILITY_ROUTES.issubset(set(registrations))
+
+
+def test_api_server_adapter_has_no_duplicate_handler_methods():
+    """Merge-conflict guard: later duplicate method defs silently override earlier ones."""
+    import ast
+    from collections import Counter
+    import inspect
+
+    source = inspect.getsource(APIServerAdapter)
+    cls = ast.parse(source).body[0]
+    method_names = [
+        node.name
+        for node in cls.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    duplicates = {name: count for name, count in Counter(method_names).items() if count > 1}
+    assert duplicates == {}
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +501,24 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     return app
 
 
+def _create_relay_compat_app(adapter: APIServerAdapter) -> web.Application:
+    """Create only the Relay compatibility API surface for focused tests."""
+    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws)
+    app["api_server_adapter"] = adapter
+    app.router.add_get("/api/sessions/search", adapter._handle_search_sessions)
+    app.router.add_get("/api/memory", adapter._handle_get_memory)
+    app.router.add_post("/api/memory", adapter._handle_add_memory)
+    app.router.add_patch("/api/memory", adapter._handle_replace_memory)
+    app.router.add_delete("/api/memory", adapter._handle_delete_memory)
+    app.router.add_get("/api/skills", adapter._handle_list_skills)
+    app.router.add_get("/api/skills/{name}", adapter._handle_view_skill)
+    app.router.add_get("/api/config", adapter._handle_get_config)
+    app.router.add_patch("/api/config", adapter._handle_update_config)
+    app.router.add_get("/api/available-models", adapter._handle_available_models)
+    return app
+
+
 @pytest.fixture
 def adapter():
     return _make_adapter()
@@ -543,6 +596,20 @@ class TestHealthEndpoint:
             assert data["platform"] == "hermes-agent"
 
     @pytest.mark.asyncio
+    async def test_health_reports_version(self, adapter):
+        """GET /health must expose a non-empty version so orchestrators (e.g.
+        AgentOS) can read the gateway version without scraping. Regression
+        guard for the missing-version gap."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert "version" in data
+            assert isinstance(data["version"], str)
+            assert data["version"] != ""
+
+    @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
         """GET /v1/health should return the same response as /health."""
         app = _create_app(adapter)
@@ -552,6 +619,7 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+            assert data.get("version")
 
 
 # ---------------------------------------------------------------------------
@@ -2628,6 +2696,63 @@ class TestEndpointAuth:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
             assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# Hermes-Relay compatibility routes
+# ---------------------------------------------------------------------------
+
+
+class TestRelayCompatibilityAPI:
+    @pytest.mark.asyncio
+    async def test_compatibility_routes_require_auth_when_key_configured(self, auth_adapter):
+        app = _create_relay_compat_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            requests = [
+                ("GET", "/api/sessions/search?q=hello", None),
+                ("GET", "/api/memory", None),
+                ("POST", "/api/memory", {"target": "memory", "content": "x"}),
+                ("PATCH", "/api/memory", {"target": "memory", "old_text": "x", "content": "y"}),
+                ("DELETE", "/api/memory", {"target": "memory", "old_text": "x"}),
+                ("GET", "/api/skills", None),
+                ("GET", "/api/skills/test-skill", None),
+                ("GET", "/api/config", None),
+                ("PATCH", "/api/config", {"model": "test"}),
+                ("GET", "/api/available-models", None),
+            ]
+            for method, path, payload in requests:
+                if method == "GET":
+                    resp = await cli.get(path)
+                elif method == "POST":
+                    resp = await cli.post(path, json=payload)
+                elif method == "PATCH":
+                    resp = await cli.patch(path, json=payload)
+                elif method == "DELETE":
+                    resp = await cli.delete(path, json=payload)
+                else:  # pragma: no cover
+                    raise AssertionError(method)
+                assert resp.status == 401, f"{method} {path} returned {resp.status}"
+
+    @pytest.mark.asyncio
+    async def test_session_search_contract(self, adapter, monkeypatch):
+        fake_results = [
+            {"session_id": "sess_1", "role": "user", "content": "hello relay"},
+        ]
+        fake_db = MagicMock()
+        fake_db.search_messages.return_value = list(fake_results)
+        monkeypatch.setattr(adapter, "_get_session_db", lambda: fake_db)
+
+        app = _create_relay_compat_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            missing = await cli.get("/api/sessions/search")
+            assert missing.status == 400
+
+            resp = await cli.get("/api/sessions/search?q=relay&limit=7&offset=2")
+            assert resp.status == 200
+            data = await resp.json()
+
+        fake_db.search_messages.assert_called_once_with(query="relay", limit=7, offset=2)
+        assert data == {"query": "relay", "count": 1, "results": fake_results}
 
 
 # ---------------------------------------------------------------------------
