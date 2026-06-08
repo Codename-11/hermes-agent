@@ -6826,12 +6826,14 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             _mark_skip_upstream_prompt()
             return
 
-    # Fetch upstream
+    # Fetch upstream main only. This sync compares upstream/main with
+    # origin/main, so there's no reason to pull every upstream ref — and a bare
+    # fetch drags in thousands of auto-generated branches.
     print()
     print("→ Fetching upstream...")
     try:
         subprocess.run(
-            git_cmd + ["fetch", "upstream", "--quiet"],
+            git_cmd + ["fetch", "upstream", "main", "--quiet"],
             cwd=cwd,
             capture_output=True,
             check=True,
@@ -8126,10 +8128,17 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     )
     current_branch = current_branch_result.stdout.strip()
 
-    def _fetch(remote: str) -> subprocess.CompletedProcess:
-        print(f"→ Fetching from {remote}...")
+    # Fetch only the branch we compare against. A bare `git fetch <remote>`
+    # pulls every ref, and this repo has thousands of auto-generated branches,
+    # so scope network fetches to the target ref.
+    def _fetch(remote: str, ref: Optional[str] = None) -> subprocess.CompletedProcess:
+        label = f"{remote}/{ref}" if ref else remote
+        print(f"→ Fetching from {label}...")
+        cmd = git_cmd + ["fetch", remote]
+        if ref:
+            cmd.append(ref)
         return subprocess.run(
-            git_cmd + ["fetch", remote],
+            cmd,
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8155,10 +8164,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     )
 
     if use_deploy_check:
-        fetch_origin = _fetch("origin")
+        fetch_origin = _fetch("origin", current_branch)
         if fetch_origin.returncode != 0:
             _handle_fetch_failure(fetch_origin)
-        fetch_upstream = _fetch("upstream")
+        fetch_upstream = _fetch("upstream", "main")
         upstream_fetched = fetch_upstream.returncode == 0
         if not upstream_fetched:
             stderr = (fetch_upstream.stderr or "").strip()
@@ -8198,16 +8207,16 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     else:
         # Upstream behavior for normal installs and explicit --branch checks.
         if branch == "main":
-            fetch_result = _fetch("upstream") if upstream_exists else subprocess.CompletedProcess([], 1)
+            fetch_result = _fetch("upstream", "main") if upstream_exists else subprocess.CompletedProcess([], 1)
             if fetch_result.returncode == 0:
                 compare_branch = "upstream/main"
             else:
-                fetch_result = _fetch("origin")
+                fetch_result = _fetch("origin", branch)
                 if fetch_result.returncode != 0:
                     _handle_fetch_failure(fetch_result)
                 compare_branch = "origin/main"
         else:
-            fetch_result = _fetch("origin")
+            fetch_result = _fetch("origin", branch)
             if fetch_result.returncode != 0:
                 _handle_fetch_failure(fetch_result)
             compare_branch = f"origin/{branch}"
@@ -8697,9 +8706,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Fetch and pull
     try:
 
+        # Resolve the target branch up front so the fetch can be scoped to it.
+        # A bare `git fetch origin` pulls every ref, and this repo carries
+        # thousands of auto-generated branches — an unscoped fetch can stall for
+        # minutes on a non-single-branch checkout. Fetch only what we update
+        # against.
+        branch = _resolve_update_branch(args)
+
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
