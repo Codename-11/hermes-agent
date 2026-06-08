@@ -65,6 +65,24 @@ For long-lived deploy branches that intentionally carry local behavior on top of
 
 When upstream touches the same area as a local patch, prefer upstream if it now satisfies the same outcome. Preserve the required behavior with tests and carry only the smallest missing delta. If `hermes update` preserves deploy-branch working changes in a stash, reapply that stash onto the updated branch, resolve it with the same upstream-first rule, test, commit, push, and then drop the stash.
 
+### Local changes on non-interactive updates
+
+When you run `hermes update` in a terminal, Hermes stashes any uncommitted source-tree changes, pulls, then **asks** whether to restore them — exactly as it always has. Nothing changes for interactive updates.
+
+When the update runs **without a terminal** — from the desktop/chat app's "Update" button or a gateway-triggered update — there's no prompt to answer. The `updates.non_interactive_local_changes` setting decides what happens to your stashed changes:
+
+```yaml
+# ~/.hermes/config.yaml
+updates:
+  non_interactive_local_changes: stash   # default: keep + auto-restore
+  # non_interactive_local_changes: discard  # throw local source edits away
+```
+
+- `stash` (default) — auto-stash, pull, then auto-restore your changes on top of the updated code. Nothing is lost; if a restore hits conflicts they're preserved in a git stash for manual recovery.
+- `discard` — auto-stash and drop the stash after the pull, so the update always lands on a clean tree. Use this only on machines where you never intend to keep local edits to the Hermes source. It stash-drops (not `git reset --hard` + `git clean -fd`), so ignored paths like `node_modules`, `venv`, and build outputs are never touched.
+
+In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
+
 ### Preview-only: `hermes update --check`
 
 Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
