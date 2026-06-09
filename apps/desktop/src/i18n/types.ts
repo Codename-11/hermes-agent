@@ -1191,6 +1191,8 @@ export interface Translations {
     terminalFocus: string
     terminalSplit: string
     addToChat: string
+    remoteLocalFiles: string
+    remoteLocalFilesTip: (cwd: string) => string
   }
 
   preview: {
