@@ -59,6 +59,8 @@ Chatting against a Hermes instance on another machine instead of the bundled loc
 
 Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
 
+The file browser reads paths from the machine running the **Desktop app**. When Desktop is connected to a remote backend, chat and tools run against that remote Hermes instance, but the Files pane does not automatically browse the remote server's filesystem. Pick a local folder from the Files pane when you want local file previews/attachments; remote server paths reported by the backend are kept separate so they do not overwrite your local workspace or show misleading `ENOENT` errors.
+
 ### Voice
 
 Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.
@@ -201,6 +203,10 @@ You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_U
 
 :::note Per-profile remote hosts
 The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
+:::
+
+:::note Files pane stays local
+Remote-backend mode does not turn the Desktop Files pane into a remote filesystem browser. The app keeps the local Desktop workspace cwd separate from the remote runtime cwd reported by `session.info` events, so a server path such as `/home/project` will not replace a local workspace such as `C:\Users\you\project`. Use agent tools or a terminal session for remote filesystem work until remote file browsing is explicitly enabled.
 :::
 
 ### Troubleshooting
