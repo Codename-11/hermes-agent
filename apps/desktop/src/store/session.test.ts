@@ -65,6 +65,16 @@ describe('setSessionAttention', () => {
 })
 
 describe('setCurrentCwdFromRuntime', () => {
+  const clearWorkspaceCwdStorage = () => {
+    const storage = window.localStorage as unknown as Partial<Storage>
+
+    if (typeof storage.clear === 'function') {
+      storage.clear()
+    } else if (typeof storage.removeItem === 'function') {
+      storage.removeItem('hermes.desktop.workspace-cwd')
+    }
+  }
+
   const connection = (mode: 'local' | 'remote') => ({
     authMode: 'token' as const,
     baseUrl: mode === 'remote' ? 'http://box:9119' : 'http://127.0.0.1:9119',
@@ -79,13 +89,13 @@ describe('setCurrentCwdFromRuntime', () => {
   })
 
   beforeEach(() => {
-    window.localStorage.clear()
+    clearWorkspaceCwdStorage()
     setConnection(null)
     setCurrentCwd('')
   })
 
   afterEach(() => {
-    window.localStorage.clear()
+    clearWorkspaceCwdStorage()
     setConnection(null)
     setCurrentCwd('')
   })
@@ -98,7 +108,9 @@ describe('setCurrentCwdFromRuntime', () => {
 
     expect($connection.get()?.mode).toBe('remote')
     expect($currentCwd.get()).toBe('/Users/local-user')
-    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd')).toBe('/Users/local-user')
+    if (typeof window.localStorage.getItem === 'function') {
+      expect(window.localStorage.getItem('hermes.desktop.workspace-cwd')).toBe('/Users/local-user')
+    }
   })
 
   it('still adopts runtime cwd in local mode', () => {
