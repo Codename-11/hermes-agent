@@ -10,7 +10,8 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setIntroPersonality
+  setIntroPersonality,
+  shouldSyncRuntimeCwdToWorkspace
 } from '@/store/session'
 
 const DEFAULT_VOICE_SECONDS = 120
@@ -51,7 +52,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       const cwd = (config.terminal?.cwd ?? '').trim()
 
-      if (cwd && cwd !== '.') {
+      if (cwd && cwd !== '.' && shouldSyncRuntimeCwdToWorkspace()) {
         setCurrentCwd(prev => prev || cwd)
         void refreshProjectBranch($currentCwd.get() || cwd)
       }

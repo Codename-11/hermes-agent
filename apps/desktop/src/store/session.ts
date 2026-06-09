@@ -171,6 +171,18 @@ export const setCurrentCwd = (next: Updater<string>) => {
   persistString(WORKSPACE_CWD_KEY, $currentCwd.get().trim() || null)
 }
 
+export const shouldSyncRuntimeCwdToWorkspace = (): boolean => $connection.get()?.mode !== 'remote'
+
+export const setCurrentCwdFromRuntime = (cwd: string) => {
+  const trimmed = cwd.trim()
+
+  if (!trimmed || !shouldSyncRuntimeCwdToWorkspace()) {
+    return
+  }
+
+  setCurrentCwd(trimmed)
+}
+
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)

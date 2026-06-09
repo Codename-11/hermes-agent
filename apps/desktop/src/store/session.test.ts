@@ -1,13 +1,18 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  $connection,
+  $currentCwd,
   $attentionSessionIds,
   $workingSessionIds,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
+  setConnection,
+  setCurrentCwd,
+  setCurrentCwdFromRuntime,
   setSessionAttention,
   setSessionWorking
 } from './session'
@@ -56,6 +61,53 @@ describe('setSessionAttention', () => {
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
+  })
+})
+
+describe('setCurrentCwdFromRuntime', () => {
+  const connection = (mode: 'local' | 'remote') => ({
+    authMode: 'token' as const,
+    baseUrl: mode === 'remote' ? 'http://box:9119' : 'http://127.0.0.1:9119',
+    isFullscreen: false,
+    logs: [],
+    mode,
+    nativeOverlayWidth: 0,
+    source: mode === 'remote' ? ('settings' as const) : ('local' as const),
+    token: 't',
+    windowButtonPosition: null,
+    wsUrl: mode === 'remote' ? 'ws://box:9119/api/ws?token=t' : 'ws://127.0.0.1:9119/api/ws?token=t'
+  })
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    setConnection(null)
+    setCurrentCwd('')
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    setConnection(null)
+    setCurrentCwd('')
+  })
+
+  it('does not replace the local workspace cwd with a remote runtime cwd', () => {
+    setConnection(connection('remote'))
+    setCurrentCwd('/Users/local-user')
+
+    setCurrentCwdFromRuntime('/home/stegeler')
+
+    expect($connection.get()?.mode).toBe('remote')
+    expect($currentCwd.get()).toBe('/Users/local-user')
+    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd')).toBe('/Users/local-user')
+  })
+
+  it('still adopts runtime cwd in local mode', () => {
+    setConnection(connection('local'))
+    setCurrentCwd('/Users/local-user')
+
+    setCurrentCwdFromRuntime('/Users/local-user/Documents/Hermes')
+
+    expect($currentCwd.get()).toBe('/Users/local-user/Documents/Hermes')
   })
 })
 

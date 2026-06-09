@@ -64,6 +64,8 @@ import {
   setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdFromRuntime,
+  shouldSyncRuntimeCwdToWorkspace,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
@@ -658,9 +660,16 @@ export function DesktopController() {
       // The next message creates the backend session in $currentCwd, so seed
       // it (and the branch) from the workspace the user clicked the + on.
       setCurrentCwd(target)
+
+      if (!shouldSyncRuntimeCwdToWorkspace()) {
+        setCurrentBranch('')
+
+        return
+      }
+
       void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
         .then(info => {
-          setCurrentCwd(info.cwd || target)
+          setCurrentCwdFromRuntime(info.cwd || target)
           setCurrentBranch(info.branch || '')
         })
         .catch(() => undefined)
