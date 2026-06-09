@@ -77,8 +77,8 @@ class FakeThread:
 @pytest.fixture
 def adapter(monkeypatch):
     # Keep these unit tests hermetic on live gateway hosts where the
-    # process environment may carry production Discord allowlists and
-    # roundtable policy.  Each test sets only the Discord env vars it is
+    # process environment may carry production Discord allowlists.
+    # Each test sets only the Discord env vars it is
     # explicitly asserting.
     for key in list(os.environ):
         if key.startswith("DISCORD_"):
@@ -333,40 +333,23 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
 
 
-def test_config_bridges_allow_bots_and_roundtable(monkeypatch, tmp_path):
-    """Discord plugin YAML bridge preserves Axiom bot/roundtable settings."""
+def test_config_bridges_allow_bots(monkeypatch, tmp_path):
+    """Discord plugin YAML bridge preserves bot-admission settings."""
     import yaml
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.dump({
         "discord": {
             "allow_bots": "mentions",
-            "roundtable": {
-                "enabled": True,
-                "include_bot_history": False,
-                "outbound_bot_mentions": "escape",
-                "participant_bot_ids": ["111", "222"],
-            },
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    for key in (
-        "DISCORD_ALLOW_BOTS",
-        "DISCORD_ROUNDTABLE_ENABLED",
-        "DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY",
-        "DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS",
-        "DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
 
     from gateway.config import load_gateway_config
     load_gateway_config()
 
     import os
     assert os.getenv("DISCORD_ALLOW_BOTS") == "mentions"
-    assert os.getenv("DISCORD_ROUNDTABLE_ENABLED") == "true"
-    assert os.getenv("DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY") == "false"
-    assert os.getenv("DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS") == "escape"
-    assert os.getenv("DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS") == "111,222"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

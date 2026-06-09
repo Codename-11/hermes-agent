@@ -1,5 +1,46 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-08 — Sync Axiom fork with upstream and retire Discord multi-agent orchestration
+
+### Summary
+
+Merged current `upstream/main` into the Axiom integration branch in a non-live worktree before touching the deployed checkout, retired the unused Discord multi-agent orchestration feature surface, and strengthened Hermes-Relay/API compatibility regression coverage.
+
+### What changed
+
+- Resolved upstream merge conflicts in `/home/bailey/.hermes/worktrees/hermes-axiom-upstream-sync-20260608` on branch `chore/axiom-upstream-sync-20260608`; the live deploy checkout was not modified.
+- Removed the Discord multi-agent orchestration plugin, slash-command docs, env/config references, tests, and fork-contract protected-surface entries at operator direction.
+- Kept generic Discord safety behavior that still matters without the removed feature: explicit bot admission through `allow_bots`, `thread_require_mention`, safe allowed mentions, and reply-ping suppression for bot-authored Discord turns.
+- Removed duplicate `APIServerAdapter` handler definitions left by the merge so upstream/native session handlers cannot be silently shadowed.
+- Expanded API-server regression tests to require all Hermes-Relay compatibility routes, enforce no duplicate adapter handler methods, verify compatibility-route auth, and assert `/api/sessions/search` response shape.
+
+### Verification
+
+- `python3 -m pytest -q tests/gateway/test_api_server.py tests/gateway/test_discord_channel_controls.py tests/gateway/test_discord_send.py tests/test_tui_gateway_server.py tests/hermes_cli/test_update_check.py tests/hermes_cli/test_update_autostash.py` → 489 passed, 115 aiohttp AppKey warnings.
+- `python3 -m pytest -q tests/gateway/test_session_api.py tests/gateway/test_webhook_adapter.py tests/hermes_cli/test_webhook_cli.py tests/gateway/test_reasoning_command.py tests/gateway/test_discord_allowed_mentions.py tests/hermes_cli/test_proxy.py tests/agent/test_anthropic_adapter.py tests/hermes_cli/test_plugins.py tests/hermes_cli/test_subcommands_batch.py tests/hermes_cli/test_subcommands_followup.py` → 471 passed.
+- `python3 -m py_compile hermes_cli/main.py hermes_cli/config.py hermes_cli/subcommands/update.py gateway/run.py gateway/config.py gateway/platforms/api_server.py gateway/platforms/base.py plugins/platforms/discord/adapter.py agent/anthropic_adapter.py tui_gateway/server.py tests/gateway/test_api_server.py tests/gateway/test_discord_channel_controls.py tests/gateway/test_discord_send.py` → OK.
+- Legacy feature-name grep → no matches.
+- `git diff --cached --check` → OK after whitespace cleanup on merged upstream files.
+
+## 2026-06-08 — Create Axiom fork contract and pause daily sync
+
+### Summary
+
+Paused the Sentinel `Hermes Axiom Sync` cron job while the fork is hardened, then created `FORK.md` as the canonical contract for Axiom-specific Hermes behavior.
+
+### What changed
+
+- Paused cron job `44f7334c4efc` (`Hermes Axiom Sync`) so the daily upstream merge attempt stops paging on known unresolved fork conflicts.
+- Added `FORK.md` with the protected behavior contract for Hermes-Relay/API compatibility, Forge, Discord multi-agent orchestration safety, webhook route-level toolsets, proxy/provider routing, update/deploy behavior, TUI/plugin-command cards, and local memory/Lucid surfaces.
+- Inventoried the current fork-only commit surface: 95 non-merge fork-only commits, 107 changed files from the fork merge-base to `origin/axiom`, and major hotspots in `hermes_cli/main.py`, `gateway/platforms/api_server.py`, `gateway/run.py`, and `tui_gateway/server.py`.
+- Recorded required validation commands and open questions before resuming automated upstream sync.
+
+### Verification
+
+- `cronjob(action="list")` confirmed `44f7334c4efc` is paused.
+- `git cat-file -e origin/axiom:FORK.md` and `git cat-file -e upstream/main:FORK.md` confirmed neither remote branch already had `FORK.md`.
+- `git cherry -v upstream/main origin/axiom` showed 95 non-merge fork commits as not patch-equivalent to upstream.
+
 ## 2026-06-06 — Enforce Forge per-run host tool policy
 
 ### Summary
@@ -94,55 +135,55 @@ Restored trusted GitHub Actions remediation webhooks without undoing the safe de
 
 - `python -m pytest tests/gateway/test_webhook_adapter.py::TestRouteToolsets tests/gateway/test_webhook_adapter.py::TestHTTPHandling::test_route_toolsets_attached_to_message_event tests/gateway/test_reasoning_command.py::TestReasoningCommand::test_run_agent_accepts_per_event_toolset_override tests/hermes_cli/test_webhook_cli.py::TestSubscribe::test_with_options -q -o 'addopts='` → 6 passed.
 
-## 2026-05-20 — Improve Discord roundtable call UX
+## 2026-05-20 — Improve Discord multi-agent orchestration call UX
 
 ### Summary
 
-Tightened `/roundtable call` so it actually admits the target agent's one reply while keeping the shared circuit breaker closed, and improved Discord roundtable usability/output.
+Tightened `/Discord multi-agent orchestration call` so it actually admits the target agent's one reply while keeping the shared circuit breaker closed, and improved Discord multi-agent orchestration usability/output.
 
 ### What changed
 
-- `/roundtable call` now writes a short-lived `pending_call` token after the controlled mention. The stopped gate admits exactly one matching bot-authored event from the caller bot, in the expected channel/thread, mentioning the target bot, then consumes the token.
-- `/roundtable stop` cancels any pending call along with active debates.
+- `/Discord multi-agent orchestration call` now writes a short-lived `pending_call` token after the controlled mention. The stopped gate admits exactly one matching bot-authored event from the caller bot, in the expected channel/thread, mentioning the target bot, then consumes the token.
+- `/Discord multi-agent orchestration stop` cancels any pending call along with active debates.
 - Consensus/max-turn debate notices now post a cleaner result block with topic, turn count, final/last turn text, and the decision marker stripped.
-- Discord native `/roundtable` now has richer slash input: action choices plus separate `agent`, `participants`, `rounds`, and `message` fields instead of only one opaque args field.
+- Discord native `/Discord multi-agent orchestration` now has richer slash input: action choices plus separate `agent`, `participants`, `rounds`, and `message` fields instead of only one opaque args field.
 - Debate defaults now allow a little more room: omitted `rounds` defaults to 3, and explicit rounds are capped at 5.
-- Updated roundtable plugin tests and the reusable Hermes skill reference.
+- Updated Discord multi-agent orchestration plugin tests and the reusable Hermes skill reference.
 
 ### Verification
 
-- `python -m py_compile gateway/platforms/discord.py plugins/roundtable_orchestrator/__init__.py` → OK
-- `python -m pytest tests/gateway/test_discord_roundtable.py tests/gateway/test_discord_allowed_mentions.py tests/plugins/test_roundtable_orchestrator_plugin.py -q -o 'addopts='` → 56 passed.
-- Hermetic Discord sweep with temp `HERMES_HOME`: `python -m pytest tests/gateway/test_discord*.py tests/plugins/test_roundtable_orchestrator_plugin.py -q -o 'addopts='` → 395 passed.
+- `python -m py_compile gateway/platforms/discord.py plugins/Discord multi-agent orchestration_orchestrator/__init__.py` → OK
+- `python -m pytest tests/gateway/test_discord_Discord multi-agent orchestration.py tests/gateway/test_discord_allowed_mentions.py tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py -q -o 'addopts='` → 56 passed.
+- Hermetic Discord sweep with temp `HERMES_HOME`: `python -m pytest tests/gateway/test_discord*.py tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py -q -o 'addopts='` → 395 passed.
 
-## 2026-05-20 — Stop Discord roundtable consensus loops
+## 2026-05-20 — Stop Discord multi-agent orchestration consensus loops
 
 ### Summary
 
-Fixed a live roundtable loop where consensus replies could keep re-triggering Victor/Mizu after debate completion.
+Fixed a live Discord multi-agent orchestration loop where consensus replies could keep re-triggering Victor/Mizu after debate completion.
 
 ### What changed
 
-- Debate consensus and max-turn stops now fail closed by setting the shared roundtable gate back to disabled with explicit stop reasons.
-- Discord responses to bot-authored roundtable turns now suppress reply-author pings so `allow_bots: mentions` does not treat reply metadata as a fresh bot mention.
+- Debate consensus and max-turn stops now fail closed by setting the shared Discord multi-agent orchestration gate back to disabled with explicit stop reasons.
+- Discord responses to bot-authored Discord multi-agent orchestration turns now suppress reply-author pings so `allow_bots: mentions` does not treat reply metadata as a fresh bot mention.
 - Added regression coverage for fail-closed debate completion and reply-mention suppression.
 
 ### Verification
 
-- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/platforms/base.py gateway/platforms/discord.py gateway/run.py tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_allowed_mentions.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/gateway/test_discord_roundtable.py` → OK
-- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_roundtable.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/hermes_cli/test_plugins.py tests/gateway/test_discord_allowed_mentions.py -q -o 'addopts='` → 142 passed.
+- `python -m py_compile plugins/Discord multi-agent orchestration_orchestrator/__init__.py gateway/platforms/base.py gateway/platforms/discord.py gateway/run.py tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py tests/gateway/test_discord_allowed_mentions.py tests/gateway/test_Discord multi-agent orchestration_orchestrator_dispatch.py tests/gateway/test_discord_Discord multi-agent orchestration.py` → OK
+- `python -m pytest tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py tests/gateway/test_discord_Discord multi-agent orchestration.py tests/gateway/test_Discord multi-agent orchestration_orchestrator_dispatch.py tests/hermes_cli/test_plugins.py tests/gateway/test_discord_allowed_mentions.py -q -o 'addopts='` → 142 passed.
 - `python -m pytest tests/gateway/test_telegram_thread_fallback.py tests/gateway/test_background_command.py tests/gateway/test_send_voice_reply_notify.py -q -o 'addopts='` → 64 passed.
 
-## 2026-05-20 — Add bounded Discord roundtable debate mode
+## 2026-05-20 — Add bounded Discord multi-agent orchestration debate mode
 
 ### Summary
 
-Added `/roundtable debate` as a supervised turn scheduler for Victor/Mizu/Sentinel-style Discord rooms. Normal roundtable remains safe shared-room behavior; debate mode is explicit, bounded, and auto-stops with a summary on consensus or max turns.
+Added `/Discord multi-agent orchestration debate` as a supervised turn scheduler for Victor/Mizu/Sentinel-style Discord rooms. Normal Discord multi-agent orchestration remains safe shared-room behavior; debate mode is explicit, bounded, and auto-stops with a summary on consensus or max turns.
 
 ### What changed
 
-- Added `/roundtable debate <agent1,agent2[,agent3]> [--rounds N] <topic>` to the `roundtable-orchestrator` plugin.
-- Persisted active debate state in `~/.hermes/roundtable_state.json` alongside the existing circuit breaker.
+- Added `/Discord multi-agent orchestration debate <agent1,agent2[,agent3]> [--rounds N] <topic>` to the `Discord multi-agent orchestration-orchestrator` plugin.
+- Persisted active debate state in `~/.hermes/Discord multi-agent orchestration_state.json` alongside the existing circuit breaker.
 - Added controlled per-turn Discord mentions, with only the next expected participant allowed in `allowed_mentions.users`.
 - Added `post_gateway_send` plugin hook support in the Discord adapter so debate state advances after the expected bot posts its response.
 - Added consensus auto-stop: expected participants can end with `ROUND_TABLE_DECISION: CONSENSUS`; the orchestrator then posts a non-mention summary and marks the debate stopped.
@@ -151,66 +192,66 @@ Added `/roundtable debate` as a supervised turn scheduler for Victor/Mizu/Sentin
 
 ### Verification
 
-- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/platforms/discord.py hermes_cli/plugins.py tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_roundtable.py tests/gateway/test_roundtable_orchestrator_dispatch.py` → OK
-- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_discord_roundtable.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/hermes_cli/test_plugins.py -q -o 'addopts='` → 119 passed.
+- `python -m py_compile plugins/Discord multi-agent orchestration_orchestrator/__init__.py gateway/platforms/discord.py hermes_cli/plugins.py tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py tests/gateway/test_discord_Discord multi-agent orchestration.py tests/gateway/test_Discord multi-agent orchestration_orchestrator_dispatch.py` → OK
+- `python -m pytest tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py tests/gateway/test_discord_Discord multi-agent orchestration.py tests/gateway/test_Discord multi-agent orchestration_orchestrator_dispatch.py tests/hermes_cli/test_plugins.py -q -o 'addopts='` → 119 passed.
 
-## 2026-05-20 — Add single-fire Discord roundtable calls
+## 2026-05-20 — Add single-fire Discord multi-agent orchestration calls
 
 ### Summary
 
-Extended the bundled `roundtable-orchestrator` plugin with an explicit `/roundtable call`/`summon` primitive so a human-facilitated agent can pull exactly one other Discord bot into a shared roundtable without relaxing the default outbound mention guard.
+Extended the bundled `Discord multi-agent orchestration-orchestrator` plugin with an explicit `/Discord multi-agent orchestration call`/`summon` primitive so a human-facilitated agent can pull exactly one other Discord bot into a shared Discord multi-agent orchestration without relaxing the default outbound mention guard.
 
 ### What changed
 
-- Added `/roundtable call <agent> <message>` and aliases `summon`/`page` backed by `discord.roundtable.agents` or `HERMES_ROUNDTABLE_AGENTS`/`DISCORD_ROUNDTABLE_AGENTS` name-to-bot-ID mappings.
+- Added `/Discord multi-agent orchestration call <agent> <message>` and aliases `summon`/`page` backed by `discord.Discord multi-agent orchestration.agents` or `HERMES_Discord multi-agent orchestration_AGENTS`/`DISCORD_Discord multi-agent orchestration_AGENTS` name-to-bot-ID mappings.
 - Passed gateway command context (`gateway`, `event`) into plugin command handlers with backwards-compatible fallback for older handlers.
-- Added a Discord send metadata escape hatch for controlled one-shot bot mentions using precise `allowed_mentions.users`, while keeping normal roundtable replies escaped by default.
-- Updated plugin/gateway/Discord adapter regression coverage for the single-fire call path and rejected non-roundtable channels.
+- Added a Discord send metadata escape hatch for controlled one-shot bot mentions using precise `allowed_mentions.users`, while keeping normal Discord multi-agent orchestration replies escaped by default.
+- Updated plugin/gateway/Discord adapter regression coverage for the single-fire call path and rejected non-Discord multi-agent orchestration channels.
 
 ### Verification
 
-- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/run.py gateway/platforms/discord.py` → OK
-- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/gateway/test_discord_roundtable.py -q -o 'addopts='` → 33 passed.
+- `python -m py_compile plugins/Discord multi-agent orchestration_orchestrator/__init__.py gateway/run.py gateway/platforms/discord.py` → OK
+- `python -m pytest tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py tests/gateway/test_Discord multi-agent orchestration_orchestrator_dispatch.py tests/gateway/test_discord_Discord multi-agent orchestration.py -q -o 'addopts='` → 33 passed.
 
-## 2026-05-20 — Add roundtable circuit breaker plugin
+## 2026-05-20 — Add Discord multi-agent orchestration circuit breaker plugin
 
 ### Summary
 
-Added a bundled `roundtable-orchestrator` plugin as a runtime brake for Discord multi-agent rooms. The plugin does not replace Discord bot-admission policy or create a new orchestration path; it adds `/roundtable status|stop|start` and a shared fail-closed pre-dispatch gate for admitted Discord bot-authored events.
+Added a bundled `Discord multi-agent orchestration-orchestrator` plugin as a runtime brake for Discord multi-agent rooms. The plugin does not replace Discord bot-admission policy or create a new orchestration path; it adds `/Discord multi-agent orchestration status|stop|start` and a shared fail-closed pre-dispatch gate for admitted Discord bot-authored events.
 
 ### What changed
 
-- Added `plugins/roundtable_orchestrator/` with a gateway-only `/roundtable` command.
-- Added shared state at `~/.hermes/roundtable_state.json`, overrideable via `HERMES_ROUNDTABLE_STATE`.
-- Added optional roundtable channel scoping via `HERMES_ROUNDTABLE_CHANNELS` / `DISCORD_ROUNDTABLE_CHANNELS` or `discord.roundtable.channels`.
-- Added `pre_gateway_dispatch` coverage so stopped roundtables skip admitted Discord bot turns before any LLM call.
-- Updated focused gateway/plugin tests and isolated roundtable env vars in Discord roundtable tests.
+- Added `plugins/Discord multi-agent orchestration_orchestrator/` with a gateway-only `/Discord multi-agent orchestration` command.
+- Added shared state at `~/.hermes/Discord multi-agent orchestration_state.json`, overrideable via `HERMES_Discord multi-agent orchestration_STATE`.
+- Added optional Discord multi-agent orchestration channel scoping via `HERMES_Discord multi-agent orchestration_CHANNELS` / `DISCORD_Discord multi-agent orchestration_CHANNELS` or `discord.Discord multi-agent orchestration.channels`.
+- Added `pre_gateway_dispatch` coverage so stopped Discord multi-agent orchestrations skip admitted Discord bot turns before any LLM call.
+- Updated focused gateway/plugin tests and isolated Discord multi-agent orchestration env vars in Discord multi-agent orchestration tests.
 
 ### Verification
 
-- `python -m py_compile plugins/roundtable_orchestrator/__init__.py gateway/run.py gateway/platforms/discord.py` → OK
-- `python -m pytest tests/gateway/test_roundtable_orchestrator_dispatch.py -q -o 'addopts='` → 5 passed.
-- `python -m pytest tests/plugins/test_roundtable_orchestrator_plugin.py tests/gateway/test_roundtable_orchestrator_dispatch.py tests/gateway/test_discord_roundtable.py -q -o 'addopts='` → 29 passed.
+- `python -m py_compile plugins/Discord multi-agent orchestration_orchestrator/__init__.py gateway/run.py gateway/platforms/discord.py` → OK
+- `python -m pytest tests/gateway/test_Discord multi-agent orchestration_orchestrator_dispatch.py -q -o 'addopts='` → 5 passed.
+- `python -m pytest tests/plugins/test_Discord multi-agent orchestration_orchestrator_plugin.py tests/gateway/test_Discord multi-agent orchestration_orchestrator_dispatch.py tests/gateway/test_discord_Discord multi-agent orchestration.py -q -o 'addopts='` → 29 passed.
 
-## 2026-05-20 — Add Discord roundtable safety controls
+## 2026-05-20 — Add Discord multi-agent orchestration safety controls
 
 ### Summary
 
-Added a focused Discord gateway patch for human-facilitated multi-profile rooms. The patch keeps solo-bot behavior unchanged by default, adds config parity for bot-authored message admission, and introduces opt-in roundtable safeguards so Victor/Mizu/Sentinel-style profiles can see each other's context without accidental bot-to-bot cascades.
+Added a focused Discord gateway patch for human-facilitated multi-profile rooms. The patch keeps solo-bot behavior unchanged by default, adds config parity for bot-authored message admission, and introduces opt-in Discord multi-agent orchestration safeguards so Victor/Mizu/Sentinel-style profiles can see each other's context without accidental bot-to-bot cascades.
 
 ### What changed
 
 - Added `discord.allow_bots` config support matching `DISCORD_ALLOW_BOTS=none|mentions|all`.
-- Added `discord.roundtable` controls for safe multi-agent rooms: `enabled`, `include_bot_history`, `outbound_bot_mentions`, and `participant_bot_ids`.
+- Added `discord.Discord multi-agent orchestration` controls for safe multi-agent rooms: `enabled`, `include_bot_history`, `outbound_bot_mentions`, and `participant_bot_ids`.
 - Refactored Discord bot-message admission into tested adapter helpers.
 - Made history backfill use the normalized bot-history policy instead of env-only checks.
-- Escapes configured participant bot mentions in outbound Discord replies when roundtable mode is enabled, preventing accidental live pings to other Hermes bots.
-- Documented the human-facilitated roundtable pattern in the Discord messaging docs and Hermes skill reference.
+- Escapes configured participant bot mentions in outbound Discord replies when Discord multi-agent orchestration mode is enabled, preventing accidental live pings to other Hermes bots.
+- Documented the human-facilitated Discord multi-agent orchestration pattern in the Discord messaging docs and Hermes skill reference.
 
 ### Verification
 
-- `python -m py_compile gateway/platforms/discord.py gateway/config.py hermes_cli/config.py tests/gateway/test_discord_roundtable.py tests/gateway/test_discord_send.py` → OK
-- `python -m pytest tests/gateway/test_discord_roundtable.py tests/gateway/test_discord_bot_filter.py tests/gateway/test_discord_send.py -q -o 'addopts='` → 42 passed.
+- `python -m py_compile gateway/platforms/discord.py gateway/config.py hermes_cli/config.py tests/gateway/test_discord_Discord multi-agent orchestration.py tests/gateway/test_discord_send.py` → OK
+- `python -m pytest tests/gateway/test_discord_Discord multi-agent orchestration.py tests/gateway/test_discord_bot_filter.py tests/gateway/test_discord_send.py -q -o 'addopts='` → 42 passed.
 - `python -m pytest tests/gateway/test_discord_thread_persistence.py tests/gateway/test_discord_allowed_channels.py tests/gateway/test_discord_allowed_mentions.py tests/gateway/test_discord_free_response.py tests/gateway/test_discord_slash_commands.py -q -o 'addopts='` → 109 passed.
 - `python -m pytest tests/gateway/test_config.py tests/gateway/test_config_env_bridge_authority.py tests/gateway/test_runtime_env_reload_config_authority.py -q -o 'addopts='` → 52 passed, 1 order-dependent failure in pre-existing `test_bridges_quoted_false_platform_enabled_from_config_yaml`; the same test passes in isolation.
 

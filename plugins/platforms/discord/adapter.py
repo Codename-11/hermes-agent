@@ -32,7 +32,6 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 _DISCORD_ALLOW_BOTS_VALUES = {"none", "mentions", "all"}
-_DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS_VALUES = {"escape", "allow"}
 
 try:
     import discord
@@ -606,6 +605,7 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
+    supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -1490,13 +1490,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
-            # Format, escape unsafe roundtable bot mentions, and split message if needed.
-            # A controlled one-shot summon may opt out via metadata so the
-            # roundtable plugin can send exactly one real bot mention while
-            # normal LLM text remains protected by outbound mention escaping.
+            # Format and split message if needed.
             formatted = self.format_message(content)
-            if not (metadata and metadata.get("allow_roundtable_bot_mentions")):
-                formatted = self._escape_outbound_roundtable_bot_mentions(formatted)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             allowed_mentions = None
@@ -1514,11 +1509,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     replied_user=False,
                 )
             elif metadata and metadata.get("suppress_reply_mentions"):
-                # Bot-authored roundtable turns may arrive as Discord reply
-                # references.  If our response reply-pings the bot we answered,
-                # `allow_bots: mentions` admits that bot again and creates a
-                # cascade outside the orchestrator.  Keep normal user mentions
-                # governed by env defaults, but suppress the reply-author ping.
+                # Suppress reply-author pings when upstream routing marks a
+                # message as unsafe to reply-ping. Normal user mentions remain
+                # governed by env defaults.
                 allowed_mentions = _build_allowed_mentions(replied_user=False)
 
             message_ids = []
@@ -1631,7 +1624,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        formatted = self._escape_outbound_roundtable_bot_mentions(formatted)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
         thread_name = _derive_forum_thread_name(content)
@@ -3421,62 +3413,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
-        # Plugin commands are normally mirrored as a generic single ``args``
-        # field below.  Roundtable benefits from the same richer Discord UX as
-        # built-ins like /model and /voice, so register a typed command when
-        # the plugin is enabled: action choices plus separate fields for agent,
-        # participant list, round count, and prompt/message.
-        try:
-            from hermes_cli.commands import _iter_plugin_command_entries as _plugin_entries_for_roundtable
-
-            _roundtable_enabled = any(
-                name == "roundtable" for name, _desc, _hint in _plugin_entries_for_roundtable()
-            )
-        except Exception:
-            _roundtable_enabled = False
-
-        _app_commands = getattr(discord, "app_commands", None)
-        if _roundtable_enabled and _app_commands is not None:
-            @tree.command(name="roundtable", description="Control Discord multi-agent roundtable calls and debates")
-            @_app_commands.describe(
-                action="Roundtable action",
-                agent="Agent name for call (for example: mizu, victor, sentinel)",
-                participants="Comma-separated agents for debate (for example: victor,mizu)",
-                rounds="Debate rounds (1-5). Leave empty for the default.",
-                message="Reason, call message, or debate topic",
-            )
-            @_app_commands.choices(action=[
-                _app_commands.Choice(name="status — show shared gate state", value="status"),
-                _app_commands.Choice(name="stop — close the shared gate", value="stop"),
-                _app_commands.Choice(name="start — open the shared gate", value="start"),
-                _app_commands.Choice(name="call — authorize one reply from an agent", value="call"),
-                _app_commands.Choice(name="debate — bounded agent debate", value="debate"),
-            ])
-            async def slash_roundtable(
-                interaction,
-                action: str = "status",
-                agent: str = "",
-                participants: str = "",
-                rounds: int = 0,
-                message: str = "",
-            ):
-                action = (action or "status").strip().lower()
-                agent = (agent or "").strip()
-                participants = (participants or "").strip()
-                message = (message or "").strip()
-
-                if action in {"status", "stop", "start"}:
-                    command = f"/roundtable {action} {message}".strip()
-                elif action == "call":
-                    command = f"/roundtable call {agent} {message}".strip()
-                elif action == "debate":
-                    roster = participants or agent
-                    rounds_arg = f" --rounds {rounds}" if rounds else ""
-                    command = f"/roundtable debate {roster}{rounds_arg} {message}".strip()
-                else:
-                    command = "/roundtable status"
-                await self._run_simple_slash(interaction, command)
-
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
@@ -4030,82 +3966,9 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         return True
 
-    def _discord_roundtable_config(self) -> Dict[str, Any]:
-        """Return normalized Discord roundtable safety config.
-
-        Roundtable mode never makes the bot ambiently respond; it only exposes
-        safer multi-agent defaults such as bot-history inclusion and outbound
-        bot-mention escaping.
-        """
-        raw = self.config.extra.get("roundtable")
-        cfg = raw if isinstance(raw, dict) else {}
-
-        enabled_raw = os.getenv("DISCORD_ROUNDTABLE_ENABLED")
-        include_history_raw = os.getenv("DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY")
-        outbound_raw = os.getenv("DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS")
-        participants_raw = os.getenv("DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS")
-
-        outbound = str(outbound_raw if outbound_raw is not None else cfg.get("outbound_bot_mentions", "escape")).strip().lower()
-        if outbound not in _DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS_VALUES:
-            logger.warning(
-                "[%s] Invalid discord roundtable outbound_bot_mentions value %r; using 'escape'",
-                self.name,
-                outbound,
-            )
-            outbound = "escape"
-
-        return {
-            "enabled": _coerce_discord_bool(
-                enabled_raw if enabled_raw is not None else cfg.get("enabled"),
-                False,
-            ),
-            "include_bot_history": _coerce_discord_bool(
-                include_history_raw if include_history_raw is not None else cfg.get("include_bot_history"),
-                True,
-            ),
-            "outbound_bot_mentions": outbound,
-            "participant_bot_ids": _csv_or_list_to_set(
-                participants_raw if participants_raw is not None else cfg.get("participant_bot_ids", [])
-            ),
-        }
-
     def _discord_include_bot_history(self) -> bool:
         """Return whether other bots should be included in history backfill."""
-        roundtable = self._discord_roundtable_config()
-        if roundtable["enabled"]:
-            return bool(roundtable["include_bot_history"])
         return self._discord_allow_bots() != "none"
-
-    def _escape_outbound_roundtable_bot_mentions(self, content: str) -> str:
-        """Escape configured participant bot mentions to prevent cascades."""
-        roundtable = self._discord_roundtable_config()
-        if not roundtable["enabled"] or roundtable["outbound_bot_mentions"] != "escape":
-            return content
-
-        participant_ids = set(roundtable["participant_bot_ids"])
-        if self._client and getattr(self._client, "user", None):
-            participant_ids.discard(str(getattr(self._client.user, "id", "")))
-        if not participant_ids:
-            return content
-
-        escaped = content
-        for bot_id in sorted(participant_ids, key=len, reverse=True):
-            escaped = escaped.replace(f"<@{bot_id}>", f"<@\u200b{bot_id}>")
-            escaped = escaped.replace(f"<@!{bot_id}>", f"<@!\u200b{bot_id}>")
-        return escaped
-
-    def _discord_roundtable_status(self) -> Dict[str, Any]:
-        """Return client-safe status for shared multi-agent Discord rooms."""
-        roundtable = dict(self._discord_roundtable_config())
-        roundtable["participant_bot_ids"] = sorted(roundtable.get("participant_bot_ids") or [])
-        return {
-            "allow_bots": self._discord_allow_bots(),
-            "require_mention": self._discord_require_mention(),
-            "thread_require_mention": self._discord_thread_require_mention(),
-            "history_backfill": self._discord_history_backfill(),
-            "include_bot_history": self._discord_include_bot_history(),
-            "roundtable": roundtable,
-        }
 
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
@@ -5562,34 +5425,35 @@ def _component_check_auth(
 ) -> bool:
     """Shared user-or-role OR semantics for component view button clicks.
 
-    Mirrors ``DiscordAdapter._is_allowed_user`` / the slash and on_message
-    gates so every Discord interaction surface honors the same trust
-    boundary. Component views (ExecApprovalView, SlashConfirmView,
-    UpdatePromptView, ModelPickerView) used to receive only
-    ``allowed_user_ids``: in role-only deployments
-    (DISCORD_ALLOWED_ROLES set, DISCORD_ALLOWED_USERS empty) the user
-    set was empty and the legacy "no allowlist = allow everyone" branch
-    let any guild member click the buttons -- approving exec commands,
-    cancelling slash confirmations, switching the model.
+    Mirrors the gateway's external-surface authorization model: component
+    button clicks must be explicitly authorized by a Discord user/role
+    allowlist, a global user allowlist, or an explicit allow-all flag.
 
     Behavior:
 
-      - both allowlists empty -> allow (preserves existing no-allowlist
-        deployments, no regression)
-      - user is in user allowlist -> allow
+      - DISCORD_ALLOW_ALL_USERS or GATEWAY_ALLOW_ALL_USERS -> allow
+      - user is in DISCORD_ALLOWED_USERS or GATEWAY_ALLOWED_USERS -> allow
       - role allowlist set + user has a role in it -> allow
       - role allowlist set + interaction.user has no resolvable
         ``roles`` attribute (e.g. DM context with a role policy active)
         -> reject (fail closed)
       - otherwise -> reject
     """
-    user_set = allowed_user_ids or set()
-    role_set = allowed_role_ids or set()
-    has_users = bool(user_set)
-    has_roles = bool(role_set)
-    if not has_users and not has_roles:
+    if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+        return True
+    if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
         return True
 
+    user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
+    global_allowed = {
+        uid.strip()
+        for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",")
+        if uid.strip()
+    }
+    user_set.update(global_allowed)
+    role_set = set(allowed_role_ids or set())
+    has_users = bool(user_set)
+    has_roles = bool(role_set)
     user = getattr(interaction, "user", None)
     if user is None:
         return False
@@ -5599,7 +5463,7 @@ def _component_check_auth(
             uid = str(user.id)
         except AttributeError:
             uid = ""
-        if uid and uid in user_set:
+        if "*" in user_set or (uid and uid in user_set):
             return True
 
     if has_roles:
@@ -6741,8 +6605,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
     throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
-    ``DISCORD_ALLOW_BOTS``, ``DISCORD_ROUNDTABLE_*``,
-    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
+    ``DISCORD_ALLOW_BOTS``, ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
@@ -6784,20 +6647,6 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
         os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
-    roundtable_cfg = discord_cfg.get("roundtable")
-    if isinstance(roundtable_cfg, dict):
-        for yaml_key, env_key in (
-            ("enabled", "DISCORD_ROUNDTABLE_ENABLED"),
-            ("include_bot_history", "DISCORD_ROUNDTABLE_INCLUDE_BOT_HISTORY"),
-            ("outbound_bot_mentions", "DISCORD_ROUNDTABLE_OUTBOUND_BOT_MENTIONS"),
-        ):
-            if yaml_key in roundtable_cfg and not os.getenv(env_key):
-                os.environ[env_key] = str(roundtable_cfg[yaml_key]).lower()
-        participant_bot_ids = roundtable_cfg.get("participant_bot_ids")
-        if participant_bot_ids is not None and not os.getenv("DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS"):
-            if isinstance(participant_bot_ids, list):
-                participant_bot_ids = ",".join(str(v) for v in participant_bot_ids)
-            os.environ["DISCORD_ROUNDTABLE_PARTICIPANT_BOT_IDS"] = str(participant_bot_ids)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
@@ -6888,7 +6737,7 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
-        # allow_bots, roundtable.*, auto_thread, reactions, ignored_channels, allowed_channels,
+        # allow_bots, auto_thread, reactions, ignored_channels, allowed_channels,
         # no_thread_channels, allow_mentions.*, reply_to_mode,
         # thread_require_mention) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block

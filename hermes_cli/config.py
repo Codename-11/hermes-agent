@@ -805,6 +805,9 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Global active chat session cap across CLI, TUI/dashboard, and messaging.
+    # None/0 = unbounded.
+    "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -1824,12 +1827,6 @@ DEFAULT_CONFIG = {
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "allow_bots": "none",            # none|mentions|all: whether bot-authored messages can trigger this bot
-        "roundtable": {                   # Safe multi-agent Discord room controls
-            "enabled": False,             # Keep false unless humans explicitly facilitate multi-bot turn-taking
-            "include_bot_history": True,  # Include other bots in history backfill when roundtable is enabled
-            "outbound_bot_mentions": "escape",  # escape|allow configured participant bot mentions in replies
-            "participant_bot_ids": [],    # Known roundtable bot user IDs whose outbound mentions should be guarded
-        },
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
@@ -2275,6 +2272,12 @@ DEFAULT_CONFIG = {
     # never fires again.  Users can wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
+        # Structured profile-build path offered on the very first gateway
+        # message ever. "ask" (default) -> offer to build a user profile
+        # (opt-in, consent-gated; the agent asks before any lookup and never
+        # reads connected accounts silently). "off" -> plain intro only.
+        # The offer fires at most once (latched under onboarding.seen).
+        "profile_build": "ask",
     },
 
     # ``hermes update`` behaviour.
