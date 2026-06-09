@@ -157,6 +157,10 @@ export interface DesktopUpdateStatus {
   currentSha?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]
+  upstreamBranch?: string
+  upstreamSha?: string
+  upstreamAhead?: number
+  upstreamBehind?: number
   dirty?: boolean
   fetchedAt?: number
 }

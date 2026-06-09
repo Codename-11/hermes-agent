@@ -1335,6 +1335,35 @@ async function resolveHealedBranch(updateRoot, branch) {
   return 'main'
 }
 
+async function readUpstreamDivergence(updateRoot) {
+  const remote = await runGit(['remote', 'get-url', 'upstream'], { cwd: updateRoot })
+  if (remote.code !== 0) {
+    return null
+  }
+
+  const fetched = await runGit(['fetch', '--quiet', 'upstream', 'main'], { cwd: updateRoot })
+  if (fetched.code !== 0) {
+    rememberLog(`[updates] upstream/main fetch failed: ${firstLine(fetched.stderr) || 'unknown error'}`)
+    return null
+  }
+
+  const git = args => runGit(args, { cwd: updateRoot }).then(r => (r.code === 0 ? r.stdout.trim() : ''))
+  const [upstreamSha, counts] = await Promise.all([
+    git(['rev-parse', 'upstream/main']),
+    git(['rev-list', '--left-right', '--count', 'upstream/main...HEAD'])
+  ])
+  const [behindStr, aheadStr] = counts.split(/\s+/)
+  const upstreamBehind = Number.parseInt(behindStr, 10) || 0
+  const upstreamAhead = Number.parseInt(aheadStr, 10) || 0
+
+  return {
+    upstreamBranch: 'upstream/main',
+    upstreamSha: upstreamSha || undefined,
+    upstreamAhead,
+    upstreamBehind
+  }
+}
+
 async function checkUpdates() {
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
@@ -1373,6 +1402,7 @@ async function checkUpdates() {
 
   const behind = Number.parseInt(countStr, 10) || 0
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  const upstream = await readUpstreamDivergence(updateRoot)
 
   return {
     supported: true,
@@ -1382,6 +1412,7 @@ async function checkUpdates() {
     currentSha,
     targetSha,
     commits,
+    ...(upstream ?? {}),
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
     fetchedAt: Date.now()

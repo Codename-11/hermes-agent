@@ -9,6 +9,7 @@ This repository is Bailey/Axiom's deploy fork of `NousResearch/hermes-agent`.
 - Axiom-Desktop install path: `%LOCALAPPDATA%\hermes\hermes-agent`.
 - Axiom-Desktop tracks `origin/axiom`; do not silently switch it back to upstream `main`.
 - Bare `hermes update` is intentionally supported on `axiom`; the Desktop update prompt should keep showing `hermes update` for this deploy branch.
+- Desktop's update UI should distinguish deploy-branch freshness from upstream disparity: it checks `HEAD..origin/axiom` for update availability and also surfaces `upstream/main` ahead/behind counts so Axiom can see carried fork delta without treating it as an update blocker.
 
 ## Update contract
 

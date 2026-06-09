@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
+import type { DesktopUpdateStatus } from '@/global'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -20,6 +21,22 @@ import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
+
+function upstreamDisparity(status: DesktopUpdateStatus | null): string | null {
+  if (!status?.upstreamBranch) {
+    return null
+  }
+
+  const ahead = status.upstreamAhead ?? 0
+  const behind = status.upstreamBehind ?? 0
+  const parts = []
+
+  if (ahead > 0) parts.push(`+${ahead} carried`)
+  if (behind > 0) parts.push(`${behind} behind`)
+  if (parts.length === 0) parts.push('aligned')
+
+  return `${status.upstreamBranch}: ${parts.join(', ')}`
+}
 
 function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {
@@ -63,6 +80,8 @@ export function AboutSettings() {
   const behind = status?.behind ?? 0
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
+  const upstreamHint = upstreamDisparity(status)
+  const versionHint = a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')
 
   const handleCheck = async () => {
     setJustChecked(false)
@@ -165,7 +184,7 @@ export function AboutSettings() {
 
         <ListRow
           description={a.automaticUpdatesDesc}
-          hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          hint={upstreamHint ? `${versionHint} · ${upstreamHint}` : versionHint}
           title={a.automaticUpdates}
         />
 

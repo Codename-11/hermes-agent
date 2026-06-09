@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import type { DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import {
   Activity,
@@ -53,6 +54,22 @@ import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
 import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
+
+function upstreamDisparityLabel(status: DesktopUpdateStatus | null | undefined): string | null {
+  if (!status?.upstreamBranch) {
+    return null
+  }
+
+  const ahead = status.upstreamAhead ?? 0
+  const behind = status.upstreamBehind ?? 0
+  const parts = []
+
+  if (ahead > 0) parts.push(`+${ahead} carried`)
+  if (behind > 0) parts.push(`${behind} behind`)
+  if (parts.length === 0) parts.push('aligned')
+
+  return `${status.upstreamBranch}: ${parts.join(', ')}`
+}
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -215,6 +232,7 @@ export function useStatusbarItems({
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+    const upstreamDisparity = upstreamDisparityLabel(updateStatus)
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
@@ -225,7 +243,8 @@ export function useStatusbarItems({
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
       appVersion && copy.desktopVersion(appVersion),
       sha && copy.commit(sha),
-      updateStatus?.branch && copy.branch(updateStatus.branch)
+      updateStatus?.branch && copy.branch(updateStatus.branch),
+      upstreamDisparity
     ]
       .filter(Boolean)
       .join(' · ')
@@ -250,7 +269,10 @@ export function useStatusbarItems({
     updateApply.stage,
     updateStatus?.behind,
     updateStatus?.branch,
-    updateStatus?.currentSha
+    updateStatus?.currentSha,
+    updateStatus?.upstreamAhead,
+    updateStatus?.upstreamBehind,
+    updateStatus?.upstreamBranch
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
