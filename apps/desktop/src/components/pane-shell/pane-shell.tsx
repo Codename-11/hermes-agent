@@ -79,8 +79,8 @@ const HOVER_REVEAL_EASE = 'cubic-bezier(0.32,0.72,0,1)'
 // the mirror axis is offset-x, which is 0). Same color on light + dark.
 const HOVER_REVEAL_SHADOW = '0px -18px 18px -5px #00000012'
 // Edge trigger strip, inset past the OS window-resize grab area.
-const HOVER_REVEAL_TRIGGER_WIDTH = 14
-const HOVER_REVEAL_EDGE_GUTTER = 6
+const HOVER_REVEAL_TRIGGER_WIDTH = 4
+const HOVER_REVEAL_EDGE_GUTTER = 8
 
 // Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
 // from the keyboard, since its store-open toggle is a no-op while collapsed.
