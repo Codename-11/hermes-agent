@@ -264,6 +264,11 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
+// Branches whose bare `hermes update` semantics are intentionally richer than
+// upstream's default-main behavior. Keep Desktop's manual-update prompt on the
+// convenient bare command for these deploy channels; generic feature branches
+// still get an explicit `--branch <name>` pin below.
+const DEPLOY_UPDATE_BRANCHES = new Set(['axiom'])
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
@@ -1590,11 +1595,10 @@ async function applyUpdates(opts = {}) {
       // `hermes desktop`, never the Tauri installer that self-copies
       // hermes-setup.exe into HERMES_HOME). They DO have a working `hermes`
       // on PATH / in the venv, so the correct path is the one-liner in their
-      // native medium. We show the EXACT command, branch-pinned to the
-      // checkout they're on — bare `hermes update` defaults to main and would
-      // silently switch a bb/gui (or any non-main) install off-branch. Mirror
-      // the GUI button's contract: append --branch <current> for non-main
-      // checkouts, keep it bare for main so the card stays clean.
+      // native medium. We show the EXACT command: generic non-main feature
+      // branches stay branch-pinned, while known deploy branches keep the
+      // convenient bare `hermes update` path because their updater has custom
+      // deploy-branch reconciliation semantics.
       const updateRoot = resolveUpdateRoot()
       let command = 'hermes update'
       try {
@@ -1602,7 +1606,7 @@ async function applyUpdates(opts = {}) {
         const current = (head.stdout || '').trim()
         if (head.code === 0 && current && current !== 'HEAD') {
           const branch = await resolveHealedBranch(updateRoot, current)
-          if (branch !== 'main') command = `hermes update --branch ${branch}`
+          if (branch !== 'main' && !DEPLOY_UPDATE_BRANCHES.has(branch)) command = `hermes update --branch ${branch}`
         }
       } catch {
         // Best-effort: fall back to bare `hermes update` if branch detection fails.
