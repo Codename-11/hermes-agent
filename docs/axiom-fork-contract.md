@@ -19,6 +19,8 @@ The `axiom` branch is expected to:
 2. Carry a small, documented patch layer for Axiom-specific deployment and Desktop stability.
 3. Keep fork-only patches narrow and easy to drop when upstream lands equivalent fixes.
 4. Run focused Desktop checks before pushing patches that affect Axiom-Desktop.
+5. Treat upstream disparity as a maintenance signal, not a deploy blocker. `origin/axiom` freshness controls Axiom-Desktop updates; `upstream/main...HEAD` tells maintainers when to review drift.
+6. Do not rely only on merge conflicts to retire fork patches. Conflicts catch same-line overlap, but upstream can land a better adjacent/architectural fix that merges cleanly. During each upstream merge, review the carried Desktop patch layer and drop local fixes only after verifying upstream has an equivalent or better behavior.
 
 Suggested focused verification for Desktop patch work:
 
