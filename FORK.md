@@ -23,6 +23,9 @@ This is not a feature branch and not a place for unrelated experiments. The defa
 - `tgi` is the deploy branch used by the live Atlas/default runtime.
 - `origin/tgi` is the source of truth for the deploy artifact.
 - `hermes update` should reconcile `upstream/main` into `origin/tgi` in a temporary worktree, then fast-forward the live checkout.
+- `hermes update`, `hermes update --check`, and `hermes --version` are intentionally deploy-branch-aware on `tgi`; operators should not need a special Desktop-only update command.
+- Desktop update UI should use `HEAD..origin/tgi` for installable update availability and `upstream/main...HEAD` only for fork-disparity visibility.
+- If upstream has new commits but `origin/tgi` has not moved, Desktop may show upstream disparity, but it should not present that as an installable Desktop update.
 - Manual conflict resolution should happen in the retained update worktree, not in the live checkout, unless doing an intentional recovery.
 - Never force-pull over `tgi`, flatten `tgi` into `main`, or leave required runtime behavior as uncommitted live checkout changes.
 
