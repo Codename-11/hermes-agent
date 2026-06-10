@@ -72,7 +72,7 @@ git stash list --date=local
 
 ## Current divergence summary
 
-As of 2026-06-10, `tgi` is `21` commits ahead of `upstream/main` and `0` behind. The non-merge TGI commits are grouped below by operational requirement.
+As of 2026-06-10, `tgi` is `22` commits ahead of `upstream/main` and `0` behind. The non-merge TGI commits are grouped below by operational requirement.
 
 ### 1. Deploy-branch-safe updater
 
@@ -127,7 +127,42 @@ venv/bin/python -m pytest -o 'addopts=' -q \
   tests/hermes_cli/test_update_interrupted_recovery.py
 ```
 
-### 2. Slack non-threaded/channel-session behavior
+### 2. Desktop deploy-branch update visibility
+
+Commits:
+
+- This commit — `fix(desktop): support TGI deploy update visibility`
+
+Primary files:
+
+- `apps/desktop/electron/main.cjs`
+- `apps/desktop/src/global.d.ts`
+- `apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx`
+- `apps/desktop/src/app/settings/about-settings.tsx`
+
+Why TGI needs it:
+
+- The Desktop updater UI previously only understood `main`/generic non-main branches. On `tgi`, the manual update prompt could degrade to `hermes update --branch tgi` even though the TGI deploy branch expects the richer bare `hermes update` deploy-flow semantics.
+- Desktop update availability must remain tied to `HEAD..origin/tgi`, while upstream disparity should be shown separately as fork-maintenance context via `upstream/main...HEAD`.
+
+Required behavior:
+
+- Keep `tgi` in Desktop's deploy-branch allowlist so the UI preserves bare `hermes update` for TGI.
+- Display upstream disparity (`upstream/main: +N carried`, `N behind`, or `aligned`) in Desktop status/About hints when an `upstream` remote exists.
+- Never use upstream disparity as the update-available signal; `origin/tgi` freshness controls whether Desktop should offer an update.
+
+Retirement criteria:
+
+- Upstream Desktop supports deploy/integration branch metadata generically, separates branch freshness from upstream disparity, and keeps deploy branches on the correct bare update path.
+
+Focused checks:
+
+```bash
+node --check apps/desktop/electron/main.cjs
+cd apps/desktop && npm run type-check
+```
+
+### 3. Slack non-threaded/channel-session behavior
 
 Commits:
 
@@ -186,7 +221,7 @@ venv/bin/python -m pytest -o 'addopts=' -q \
   tests/gateway/test_stop_thread_sibling.py
 ```
 
-### 3. Slack profile-branded slash passthrough
+### 4. Slack profile-branded slash passthrough
 
 Commit:
 
@@ -222,7 +257,7 @@ Focused tests:
 venv/bin/python -m pytest -o 'addopts=' -q tests/gateway/test_slack_mention.py
 ```
 
-### 4. Slack assistant status UX
+### 5. Slack assistant status UX
 
 Commit:
 
@@ -261,7 +296,7 @@ Focused tests:
 venv/bin/python -m pytest -o 'addopts=' -q tests/gateway/test_slack.py
 ```
 
-### 5. Live MCP/tool-schema refresh
+### 6. Live MCP/tool-schema refresh
 
 Commit:
 

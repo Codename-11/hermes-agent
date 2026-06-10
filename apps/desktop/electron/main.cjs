@@ -278,6 +278,11 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
+// Branches whose bare `hermes update` semantics are intentionally richer than
+// upstream's default-main behavior. Keep Desktop's manual-update prompt on the
+// convenient bare command for these deploy channels; generic feature branches
+// still get an explicit `--branch <name>` pin below.
+const DEPLOY_UPDATE_BRANCHES = new Set(['axiom', 'tgi'])
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
@@ -1344,6 +1349,35 @@ async function resolveHealedBranch(updateRoot, branch) {
   return 'main'
 }
 
+async function readUpstreamDivergence(updateRoot) {
+  const remote = await runGit(['remote', 'get-url', 'upstream'], { cwd: updateRoot })
+  if (remote.code !== 0) {
+    return null
+  }
+
+  const fetched = await runGit(['fetch', '--quiet', 'upstream', 'main'], { cwd: updateRoot })
+  if (fetched.code !== 0) {
+    rememberLog(`[updates] upstream/main fetch failed: ${firstLine(fetched.stderr) || 'unknown error'}`)
+    return null
+  }
+
+  const git = args => runGit(args, { cwd: updateRoot }).then(r => (r.code === 0 ? r.stdout.trim() : ''))
+  const [upstreamSha, counts] = await Promise.all([
+    git(['rev-parse', 'upstream/main']),
+    git(['rev-list', '--left-right', '--count', 'upstream/main...HEAD'])
+  ])
+  const [behindStr, aheadStr] = counts.split(/\s+/)
+  const upstreamBehind = Number.parseInt(behindStr, 10) || 0
+  const upstreamAhead = Number.parseInt(aheadStr, 10) || 0
+
+  return {
+    upstreamBranch: 'upstream/main',
+    upstreamSha: upstreamSha || undefined,
+    upstreamAhead,
+    upstreamBehind
+  }
+}
+
 async function checkUpdates() {
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
@@ -1382,6 +1416,7 @@ async function checkUpdates() {
 
   const behind = Number.parseInt(countStr, 10) || 0
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  const upstream = await readUpstreamDivergence(updateRoot)
 
   return {
     supported: true,
@@ -1391,6 +1426,7 @@ async function checkUpdates() {
     currentSha,
     targetSha,
     commits,
+    ...(upstream ?? {}),
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
     fetchedAt: Date.now()
@@ -1616,7 +1652,7 @@ async function applyUpdates(opts = {}) {
         const current = (head.stdout || '').trim()
         if (head.code === 0 && current && current !== 'HEAD') {
           const branch = await resolveHealedBranch(updateRoot, current)
-          if (branch !== 'main') command = `hermes update --branch ${branch}`
+          if (branch !== 'main' && !DEPLOY_UPDATE_BRANCHES.has(branch)) command = `hermes update --branch ${branch}`
         }
       } catch {
         // Best-effort: fall back to bare `hermes update` if branch detection fails.
