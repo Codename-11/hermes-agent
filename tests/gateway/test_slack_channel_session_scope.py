@@ -36,6 +36,11 @@ def adapter():
     a._app = MagicMock()
     a._app.client = AsyncMock()
     a._bot_user_id = "U_BOT"
+    a._team_bot_user_ids = {}
+    a.config.extra["allowed_channels"] = ""
+    a.config.extra["free_response_channels"] = ""
+    a.config.extra["strict_mention"] = False
+    a.config.extra["require_mention"] = True
     a._running = True
     a.handle_message = AsyncMock()
     return a

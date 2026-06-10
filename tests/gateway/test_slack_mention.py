@@ -7,7 +7,29 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig
+
+
+@pytest.fixture(autouse=True)
+def _isolate_slack_env(monkeypatch):
+    """Keep config-bridging tests from leaking Slack env into later tests."""
+    for name in (
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_STRICT_MENTION",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_ALLOWED_CHANNELS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    yield
+    for name in (
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_STRICT_MENTION",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_ALLOWED_CHANNELS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 # ---------------------------------------------------------------------------
