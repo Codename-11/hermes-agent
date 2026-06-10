@@ -1229,7 +1229,9 @@ runtime patches on top of upstream `main`. Keep `main` aligned with
 `upstream/main`; reconcile deploy branches by merging `upstream/main` into
 the deploy branch, resolving conflicts, running focused tests, and pushing
 the tested deploy commit to `origin/<branch>` so live checkouts can
-fast-forward cleanly.
+fast-forward cleanly. For the TGI branch contract, divergence ledger,
+retirement criteria, and focused test map, read `FORK.md` before changing
+or replaying TGI-only patches.
 
 When resolving conflicts, read upstream first. If upstream now provides a
 cleaner implementation that satisfies the same requirement, keep upstream
