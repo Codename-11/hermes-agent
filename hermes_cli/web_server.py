@@ -1775,17 +1775,13 @@ async def update_hermes():
     }
 
 
-def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
-    """Commits the local checkout is behind ``origin/main`` by, newest first.
+def _commit_log_range(base: str, target: str, n: int = 20) -> List[Dict[str, Any]]:
+    """Return commits in ``base..target``, newest first, best-effort.
 
-    Logs the SAME range the behind-count uses (``HEAD..origin/main`` — see
-    ``banner._check_via_local_git``), NOT the branch's ``@{upstream}``. On a
-    feature-branch checkout ``@{upstream}`` is the branch's own tip (zero
-    commits), which would leave the changelog empty even though the count is
-    non-zero. Pinning to ``origin/main`` keeps count and changelog consistent.
-
-    Best-effort: returns [] if not a git checkout, origin/main is unreachable,
-    or git is unavailable. Never raises into the request path.
+    The dashboard and Desktop use this to show the same range that drives the
+    update count. Deploy branches can have two actionable ranges: local deploy
+    freshness (``HEAD..origin/<deploy>``) and upstream work not yet merged into
+    the deploy artifact (``origin/<deploy>..upstream/main``).
     """
     try:
         out = subprocess.run(
@@ -1795,7 +1791,7 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
                 str(PROJECT_ROOT),
                 "log",
                 "--format=%H%x1f%s%x1f%an%x1f%ct",
-                "HEAD..origin/main",
+                f"{base}..{target}",
                 f"-n{int(n)}",
             ],
             capture_output=True,
@@ -1823,6 +1819,112 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
         return []
 
 
+def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
+    """Commits the local checkout is behind by, newest first.
+
+    Mirrors the non-deploy fallback range from ``banner._check_via_local_git``.
+    Deploy branches are handled by ``_backend_deploy_update_breakdown`` so the
+    changelog can explain both deploy-branch and upstream-pending work.
+    """
+    return _commit_log_range("HEAD", "origin/main", n)
+
+
+def _backend_deploy_update_breakdown(limit: int = 20) -> Dict[str, Any]:
+    """Explain actionable backend update work for deploy branches.
+
+    On Axiom/TGI-style deploy branches, ``hermes update`` does two things that a
+    plain branch-behind check cannot explain well:
+
+    * applies pending deploy artifact commits from ``origin/<branch>``; and
+    * merges new ``upstream/main`` commits into that deploy branch through the
+      conflict-handoff workflow.
+
+    Return explicit counts so Desktop can prompt visually when upstream work is
+    pending even if the deploy branch itself has not moved yet.
+    """
+    def git_output(args: List[str], timeout: int = 5) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(PROJECT_ROOT), *args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return (result.stdout or "").strip()
+
+    def count_range(base: str, target: str) -> Optional[int]:
+        value = git_output(["rev-list", "--count", f"{base}..{target}"])
+        if value is None:
+            return None
+        try:
+            return int(value or "0")
+        except ValueError:
+            return None
+
+    branch = git_output(["rev-parse", "--abbrev-ref", "HEAD"])
+    if not branch or branch == "HEAD":
+        return {}
+
+    # Treat any branch with both origin/<branch> and upstream as a deploy branch
+    # for this explanatory backend endpoint. Axiom/TGI carry named deploy
+    # branches; upstream/generic installs still fall back to the normal checker.
+    remote_ref = f"origin/{branch}"
+    if git_output(["rev-parse", "--verify", "--quiet", remote_ref]) is None:
+        return {}
+    if git_output(["remote", "get-url", "upstream"]) is None:
+        return {}
+
+    # Best-effort freshness for the cached remote refs. ``check_for_updates``
+    # already fetched where supported, but keep this endpoint self-explanatory
+    # when the caller is Desktop's forced backend check.
+    git_output(["fetch", "origin", "--quiet"], timeout=10)
+    git_output(["fetch", "upstream", "main", "--quiet"], timeout=10)
+
+    deploy_behind = count_range("HEAD", remote_ref)
+    deploy_behind = max(deploy_behind or 0, 0)
+
+    upstream_count = count_range(remote_ref, "upstream/main")
+    upstream_behind = max(upstream_count or 0, 0)
+
+    total = deploy_behind + upstream_behind
+    commits: List[Dict[str, Any]] = []
+    remaining = limit
+    if deploy_behind > 0 and remaining > 0:
+        commits.extend(_commit_log_range("HEAD", remote_ref, remaining))
+        remaining = max(0, limit - len(commits))
+    if upstream_behind > 0 and remaining > 0:
+        commits.extend(_commit_log_range(remote_ref, "upstream/main", remaining))
+
+    if total <= 0:
+        message = "You're on the latest version."
+    else:
+        parts = []
+        if deploy_behind:
+            parts.append(f"{deploy_behind} deploy branch commit{'s' if deploy_behind != 1 else ''}")
+        if upstream_behind:
+            parts.append(f"{upstream_behind} upstream commit{'s' if upstream_behind != 1 else ''}")
+        message = (
+            f"Pending backend update: {', '.join(parts)}. "
+            f"hermes update will reconcile upstream/main into {branch} and refresh the running backend."
+        )
+
+    return {
+        "branch": branch,
+        "deploy_branch": remote_ref,
+        "deploy_behind": deploy_behind,
+        "upstream_branch": "upstream/main",
+        "upstream_behind": upstream_behind,
+        "behind": total,
+        "update_available": total > 0,
+        "message": message,
+        "commits": commits,
+    }
+
+
 @app.get("/api/hermes/update/check")
 async def check_hermes_update(force: bool = False):
     """Report whether a Hermes update is available, without applying it.
@@ -1843,11 +1945,13 @@ async def check_hermes_update(force: bool = False):
                    user must update out-of-band
         update_command: the recommended command for this install method
         message: human-readable guidance for non-applyable methods
+        branch/deploy_branch/deploy_behind/upstream_behind: for deploy-branch
+                 git installs, explicit count breakdown for Desktop wording
         commits: for git/pip installs that are behind, a list of the commits
-                 the local checkout is behind upstream by — each
-                 {sha, summary, author, at}. Absent/empty otherwise. The
-                 desktop's remote update overlay renders this as "what's
-                 changed". Additive: existing consumers ignore it.
+                 the local checkout is behind by — each {sha, summary,
+                 author, at}. Absent/empty otherwise. The desktop's remote
+                 update overlay renders this as "what's changed". Additive:
+                 existing consumers ignore it.
     """
     install_method = detect_install_method(PROJECT_ROOT)
     update_command = recommended_update_command_for_method(install_method)
@@ -1882,6 +1986,14 @@ async def check_hermes_update(force: bool = False):
     except Exception:
         _log.exception("Update check failed")
         behind = None
+
+    deploy_breakdown: Dict[str, Any] = {}
+    if install_method in ("git", "pip"):
+        deploy_breakdown = await asyncio.to_thread(_backend_deploy_update_breakdown)
+
+    if deploy_breakdown:
+        payload.update(deploy_breakdown)
+        return payload
 
     payload["behind"] = behind
     if behind is None:

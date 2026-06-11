@@ -57,6 +57,27 @@ import type { StatusResponse } from '@/types/hermes'
 import { CRON_ROUTE } from '../../routes'
 import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
 
+
+function backendUpdateLabel(status: DesktopUpdateStatus | null | undefined): string | null {
+  if (!status) {
+    return null
+  }
+
+  const parts = []
+  const deployBehind = status.deployBehind ?? 0
+  const upstreamBehind = status.upstreamBehind ?? 0
+
+  if (deployBehind > 0) parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
+  if (upstreamBehind > 0) parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+
+  if (parts.length > 0) {
+    return `Pending backend update: ${parts.join(', ')}`
+  }
+
+  const behind = status.behind ?? 0
+  return behind > 0 ? `${behind} pending backend update commit${behind === 1 ? '' : 's'}` : null
+}
+
 function upstreamDisparityLabel(status: DesktopUpdateStatus | null | undefined): string | null {
   if (!status?.upstreamBranch) {
     return null
@@ -291,6 +312,7 @@ export function useStatusbarItems({
 
     const base = copy.backendLabel(backendVersion ?? copy.unknown)
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+    const updateBreakdown = backendUpdateLabel(backendUpdateStatus)
 
     const label = applying
       ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
@@ -298,8 +320,9 @@ export function useStatusbarItems({
 
     const tooltip = [
       applying ? backendUpdateApply.message || copy.updateInProgress : null,
-      !applying && behind > 0 && copy.commitsBehind(behind, 'main'),
-      backendVersion && copy.backendVersion(backendVersion)
+      !applying && updateBreakdown,
+      backendVersion && copy.backendVersion(backendVersion),
+      backendUpdateStatus?.backendMessage
     ]
       .filter(Boolean)
       .join(' · ')
@@ -317,7 +340,12 @@ export function useStatusbarItems({
   }, [
     connection?.mode,
     statusSnapshot?.version,
+    backendUpdateStatus?.backendMessage,
     backendUpdateStatus?.behind,
+    backendUpdateStatus?.deployBehind,
+    backendUpdateStatus?.deployBranch,
+    backendUpdateStatus?.upstreamBehind,
+    backendUpdateStatus?.upstreamBranch,
     backendUpdateApply.applying,
     backendUpdateApply.message,
     backendUpdateApply.stage,
