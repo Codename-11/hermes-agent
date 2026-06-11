@@ -1499,28 +1499,53 @@ def _backend_deploy_update_breakdown(limit: int = 20) -> Dict[str, Any]:
     Return explicit counts so Desktop can prompt visually when upstream work is
     pending even if the deploy branch itself has not moved yet.
     """
-    try:
-        from hermes_cli.banner import (
-            _DEPLOY_BRANCHES,
-            _count_git_range,
-            _current_git_branch,
-            _has_git_remote,
-        )
-    except Exception:
+    def git_output(args: List[str], timeout: int = 5) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(PROJECT_ROOT), *args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return (result.stdout or "").strip()
+
+    def count_range(base: str, target: str) -> Optional[int]:
+        value = git_output(["rev-list", "--count", f"{base}..{target}"])
+        if value is None:
+            return None
+        try:
+            return int(value or "0")
+        except ValueError:
+            return None
+
+    branch = git_output(["rev-parse", "--abbrev-ref", "HEAD"])
+    if not branch or branch == "HEAD":
         return {}
 
-    branch = _current_git_branch(PROJECT_ROOT)
-    if not branch or branch not in _DEPLOY_BRANCHES:
-        return {}
-
+    # Treat any branch with both origin/<branch> and upstream as a deploy branch
+    # for this explanatory backend endpoint. Axiom/TGI carry named deploy
+    # branches; upstream/generic installs still fall back to the normal checker.
     remote_ref = f"origin/{branch}"
-    deploy_behind = _count_git_range(PROJECT_ROOT, "HEAD", remote_ref)
+    if git_output(["rev-parse", "--verify", "--quiet", remote_ref]) is None:
+        return {}
+    if git_output(["remote", "get-url", "upstream"]) is None:
+        return {}
+
+    # Best-effort freshness for the cached remote refs. ``check_for_updates``
+    # already fetched where supported, but keep this endpoint self-explanatory
+    # when the caller is Desktop's forced backend check.
+    git_output(["fetch", "origin", "--quiet"], timeout=10)
+    git_output(["fetch", "upstream", "main", "--quiet"], timeout=10)
+
+    deploy_behind = count_range("HEAD", remote_ref)
     deploy_behind = max(deploy_behind or 0, 0)
 
-    upstream_behind = 0
-    if _has_git_remote(PROJECT_ROOT, "upstream"):
-        upstream_count = _count_git_range(PROJECT_ROOT, remote_ref, "upstream/main")
-        upstream_behind = max(upstream_count or 0, 0)
+    upstream_count = count_range(remote_ref, "upstream/main")
+    upstream_behind = max(upstream_count or 0, 0)
 
     total = deploy_behind + upstream_behind
     commits: List[Dict[str, Any]] = []
