@@ -76,7 +76,7 @@ git stash list --date=local
 
 ## Current divergence summary
 
-As of 2026-06-10, `tgi` is `22` commits ahead of `upstream/main` and `0` behind. The non-merge TGI commits are grouped below by operational requirement.
+Use `git rev-list --left-right --count upstream/main...HEAD` for the current left/right divergence. The non-merge TGI commits are grouped below by operational requirement; the live counts move whenever upstream advances or TGI adds patch commits.
 
 ### 1. Deploy-branch-safe updater
 
