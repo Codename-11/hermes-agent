@@ -161,6 +161,9 @@ export interface DesktopUpdateStatus {
   upstreamSha?: string
   upstreamAhead?: number
   upstreamBehind?: number
+  deployBranch?: string
+  deployBehind?: number
+  backendMessage?: string
   dirty?: boolean
   fetchedAt?: number
 }

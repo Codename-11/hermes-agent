@@ -10,7 +10,8 @@ This repository is Bailey/Axiom's deploy fork of `NousResearch/hermes-agent`.
 - Axiom-Desktop tracks `origin/axiom`; do not silently switch it back to upstream `main`.
 - Bare `hermes update`, `hermes update --check`, and `hermes --version` are intentionally deploy-branch-aware on `axiom`; operators should not need a special Desktop-only update command.
 - Desktop's update UI should distinguish deploy-branch freshness from upstream disparity: it checks `HEAD..origin/axiom` for update availability and also surfaces `upstream/main` ahead/behind counts so Axiom can see carried fork delta without treating it as an update blocker.
-- If upstream has new commits but `origin/axiom` has not moved, Desktop may show upstream disparity, but it should not present that as an installable Desktop update.
+- If upstream has new commits but `origin/axiom` has not moved, Desktop's **client** update UI may show upstream disparity, but it should not present that as an installable Desktop-client update.
+- Desktop's **backend** update UI is different: it should prompt when `hermes update` would do useful work, including upstream commits not yet merged into `origin/axiom`. Show the count breakdown (`HEAD..origin/axiom` plus `origin/axiom..upstream/main`) so the operator sees why the backend update is actionable.
 
 ## Update contract
 

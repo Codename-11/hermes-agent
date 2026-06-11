@@ -117,7 +117,12 @@ describe('checkBackendUpdates', () => {
       update_available: true,
       can_apply: true,
       update_command: 'hermes update',
-      message: null,
+      message: 'Pending backend update: 2 upstream commits.',
+      branch: 'axiom',
+      deploy_branch: 'origin/axiom',
+      deploy_behind: 0,
+      upstream_branch: 'upstream/main',
+      upstream_behind: 2,
       commits: [{ sha: 'abc1234', summary: 'feat: x', author: 'a', at: 1 }]
     })
 
@@ -126,6 +131,11 @@ describe('checkBackendUpdates', () => {
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
     expect(result?.behind).toBe(2)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
+    expect(result?.deployBranch).toBe('origin/axiom')
+    expect(result?.deployBehind).toBe(0)
+    expect(result?.upstreamBranch).toBe('upstream/main')
+    expect(result?.upstreamBehind).toBe(2)
+    expect(result?.backendMessage).toContain('upstream commits')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
   })

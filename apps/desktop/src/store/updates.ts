@@ -200,6 +200,12 @@ function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
     supported: res.can_apply,
     message: res.message ?? undefined,
     behind: behind > 0 ? behind : 0,
+    branch: res.branch,
+    deployBranch: res.deploy_branch,
+    deployBehind: res.deploy_behind,
+    upstreamBranch: res.upstream_branch,
+    upstreamBehind: res.upstream_behind,
+    backendMessage: res.message ?? undefined,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,
     fetchedAt: Date.now()
