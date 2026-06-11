@@ -622,6 +622,11 @@ export interface BackendUpdateCheckResponse {
   can_apply: boolean
   update_command: string | null
   message: string | null
+  branch?: string
+  deploy_branch?: string
+  deploy_behind?: number
+  upstream_branch?: string
+  upstream_behind?: number
   commits?: BackendUpdateCommit[]
 }
 

@@ -632,8 +632,10 @@ class TestUpdateCheckEndpoint:
     """
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
+    def _setup(self, _isolate_hermes_home, monkeypatch):
         self.client, _ = _client()
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_backend_deploy_update_breakdown", lambda *a, **k: {})
 
     def test_git_install_reports_behind_count(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -720,6 +722,38 @@ class TestUpdateCheckEndpoint:
         assert isinstance(body["commits"], list)
         assert body["commits"][0]["sha"] == "abc1234"
         assert body["commits"][0]["summary"] == "feat: x"
+
+    def test_deploy_branch_breakdown_overrides_generic_count(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 7)
+        monkeypatch.setattr(
+            ws,
+            "_backend_deploy_update_breakdown",
+            lambda *a, **k: {
+                "branch": "axiom",
+                "deploy_branch": "origin/axiom",
+                "deploy_behind": 1,
+                "upstream_branch": "upstream/main",
+                "upstream_behind": 6,
+                "behind": 7,
+                "update_available": True,
+                "message": "Pending backend update: 1 deploy branch commit, 6 upstream commits.",
+                "commits": [{"sha": "def5678", "summary": "fix: y", "author": "b", "at": 2}],
+            },
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["behind"] == 7
+        assert body["deploy_branch"] == "origin/axiom"
+        assert body["deploy_behind"] == 1
+        assert body["upstream_branch"] == "upstream/main"
+        assert body["upstream_behind"] == 6
+        assert body["update_available"] is True
+        assert "upstream commits" in body["message"]
+        assert body["commits"][0]["summary"] == "fix: y"
 
     def test_up_to_date_omits_commits(self, monkeypatch):
         import hermes_cli.web_server as ws
