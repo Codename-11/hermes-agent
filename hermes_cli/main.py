@@ -5422,6 +5422,149 @@ def _find_stale_dashboard_pids(
     return dashboard_pids
 
 
+def _systemd_dashboard_services_for_pids(pids: set[int]) -> dict[tuple[str, ...], set[int]]:
+    """Return active systemd services whose main PID is one of *pids*.
+
+    ``hermes update`` needs to refresh long-lived dashboard backends after the
+    code/web bundle changes. Most ad-hoc ``hermes dashboard`` processes are
+    unmanaged, so killing them and printing a relaunch hint is still the right
+    fallback. Some installs, however, run the dashboard under a persistent
+    systemd unit. For those, sending SIGTERM directly defeats the service
+    manager: with ``Restart=on-failure`` systemd treats SIGTERM as an
+    intentional clean stop and leaves the dashboard down.
+    """
+    if not pids or sys.platform == "win32":
+        return {}
+
+    services: dict[tuple[str, ...], set[int]] = {}
+    scopes = [("systemctl", "--user"), ("systemctl",)]
+    for scope_cmd in scopes:
+        try:
+            result = subprocess.run(
+                list(scope_cmd)
+                + [
+                    "list-units",
+                    "--type=service",
+                    "--state=running",
+                    "--all",
+                    "--no-legend",
+                    "--no-pager",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+
+        for line in (result.stdout or "").splitlines():
+            parts = line.split(None, 1)
+            if not parts or not parts[0].endswith(".service"):
+                continue
+            unit = parts[0]
+            try:
+                show = subprocess.run(
+                    list(scope_cmd)
+                    + [
+                        "show",
+                        unit,
+                        "--property=MainPID,ExecStart,FragmentPath",
+                        "--no-pager",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                continue
+            if show.returncode != 0:
+                continue
+
+            props: dict[str, str] = {}
+            for prop_line in (show.stdout or "").splitlines():
+                if "=" in prop_line:
+                    key, value = prop_line.split("=", 1)
+                    props[key] = value
+            try:
+                main_pid = int(props.get("MainPID") or "0")
+            except ValueError:
+                continue
+            if main_pid not in pids:
+                continue
+
+            exec_start = props.get("ExecStart", "")
+            fragment = props.get("FragmentPath", "")
+            descriptor = f"{unit} {exec_start} {fragment}"
+            if not (
+                "dashboard" in descriptor
+                and ("hermes" in descriptor or "hermes_cli.main" in descriptor)
+            ):
+                continue
+
+            services.setdefault(scope_cmd + (unit.removesuffix(".service"),), set()).add(main_pid)
+    return services
+
+
+def _restart_systemd_dashboard_services(pids: set[int]) -> set[int]:
+    """Restart service-managed dashboard PIDs and return handled PIDs."""
+    services = _systemd_dashboard_services_for_pids(pids)
+    if not services:
+        return set()
+
+    handled: set[int] = set()
+    print()
+    print(f"⟲ Restarting {len(services)} service-managed dashboard backend(s)")
+    for service_cmd, service_pids in services.items():
+        scope_cmd = list(service_cmd[:-1])
+        svc_name = service_cmd[-1]
+        try:
+            subprocess.run(
+                scope_cmd + ["reset-failed", svc_name],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            restart = subprocess.run(
+                scope_cmd + ["restart", svc_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            print(f"    ✗ failed to restart {svc_name}: {exc}")
+            continue
+        if restart.returncode != 0:
+            err = (restart.stderr or restart.stdout or "").strip()
+            print(f"    ✗ failed to restart {svc_name}: {err}")
+            continue
+
+        active = False
+        import time as _time
+        for _ in range(20):
+            try:
+                check = subprocess.run(
+                    scope_cmd + ["is-active", svc_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                break
+            if (check.stdout or "").strip() == "active":
+                active = True
+                break
+            _time.sleep(0.5)
+
+        if active:
+            handled.update(service_pids)
+            print(f"    ✓ restarted {svc_name}")
+        else:
+            print(f"    ✗ {svc_name} did not become active after restart")
+    return handled
+
+
 def _print_curator_first_run_notice() -> None:
     """Print a short heads-up about the skill curator after `hermes update`.
 
@@ -5551,24 +5694,29 @@ def _format_time_ago(iso_ts: str) -> str:
 
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
+    *,
+    restart_services: bool = False,
 ) -> None:
-    """Kill running ``hermes dashboard`` processes.
+    """Kill or restart running ``hermes dashboard`` processes.
 
     Called at the end of ``hermes update`` (default ``reason``) and also
-    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
-    dashboard has no service manager, so after a code update the running
-    process is guaranteed to be serving stale Python against a
-    freshly-updated JS bundle.  Leaving it alive produces silent
-    frontend/backend mismatches (new auth headers the old backend doesn't
-    recognise → every API call 401s).
+    from ``hermes dashboard --stop`` (which overrides ``reason``).  After a
+    code update, a running dashboard process is guaranteed to be serving stale
+    Python against a freshly-updated JS bundle.  Leaving it alive produces
+    silent frontend/backend mismatches (new auth headers the old backend
+    doesn't recognise → every API call 401s).
 
     POSIX: SIGTERM, wait up to ~3s for graceful exit, SIGKILL any survivors.
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
+    When ``restart_services`` is true, service-managed dashboard processes are
+    restarted through systemd instead of raw-killed.  This preserves persistent
+    units using ``Restart=on-failure``: a direct SIGTERM looks like an
+    intentional stop to systemd and would otherwise leave the dashboard down
+    after ``hermes update``.  Unmanaged dashboards are not auto-restarted
+    because we do not know the original launch args (--host, --port,
+    --insecure, --tui, --no-open).  A relaunch hint is printed for those.
     """
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
@@ -5593,6 +5741,12 @@ def _kill_stale_dashboard_processes(
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
         return
+
+    if restart_services:
+        handled = _restart_systemd_dashboard_services(set(pids))
+        pids = [pid for pid in pids if pid not in handled]
+        if not pids:
+            return
 
     print()
     print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
@@ -5664,7 +5818,7 @@ def _kill_stale_dashboard_processes(
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
 
     if killed:
-        print("  Restart the dashboard when you're ready:")
+        print("  Restart unmanaged dashboard process(es) when you're ready:")
         print("    hermes dashboard --port <port>")
 
 
@@ -10046,12 +10200,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
-        _kill_stale_dashboard_processes()
+        # Refresh stale dashboard processes.  Service-managed dashboards can be
+        # restarted with their original unit args; unmanaged dashboards are
+        # stopped with a relaunch hint because their original command line may
+        # include host/port/auth flags we cannot safely reconstruct.
+        _kill_stale_dashboard_processes(restart_services=True)
 
         print()
         print("Tip: You can now select a provider and model:")
