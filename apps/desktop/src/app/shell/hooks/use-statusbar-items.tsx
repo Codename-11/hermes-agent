@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
+import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import type { DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
@@ -15,6 +16,7 @@ import {
   Hash,
   Loader2,
   Sparkles,
+  Terminal,
   Zap,
   ZapFilled
 } from '@/lib/icons'
@@ -73,6 +75,7 @@ function upstreamDisparityLabel(status: DesktopUpdateStatus | null | undefined):
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
+  chatOpen: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
@@ -90,6 +93,7 @@ interface StatusbarItemsOptions {
 
 export function useStatusbarItems({
   agentsOpen,
+  chatOpen,
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
@@ -107,6 +111,7 @@ export function useStatusbarItems({
   const { t } = useI18n()
   const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
+  const terminalTakeover = useStore($terminalTakeover)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentFastMode = useStore($currentFastMode)
@@ -464,11 +469,21 @@ export function useStatusbarItems({
               variant: 'action' as const
             })
       },
+      {
+        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
+        hidden: !chatOpen,
+        icon: <Terminal className="size-3.5" />,
+        id: 'terminal',
+        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
+        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        variant: 'action'
+      },
       clientVersionItem,
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
       busy,
+      chatOpen,
       contextBar,
       contextUsage,
       copy,
@@ -479,6 +494,7 @@ export function useStatusbarItems({
       modelMenuContent,
       sessionStartedAt,
       showYoloToggle,
+      terminalTakeover,
       toggleYolo,
       turnStartedAt,
       clientVersionItem,

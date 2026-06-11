@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  $activeSessionId,
   $connection,
-  $currentCwd,
   $attentionSessionIds,
+  $currentCwd,
   $workingSessionIds,
+  applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
@@ -14,7 +16,8 @@ import {
   setCurrentCwd,
   setCurrentCwdFromRuntime,
   setSessionAttention,
-  setSessionWorking
+  setSessionWorking,
+  workspaceCwdForNewSession
 } from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
@@ -199,6 +202,43 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+})
+
+describe('workspaceCwdForNewSession', () => {
+  afterEach(() => {
+    applyConfiguredDefaultProjectDir(null)
+    $currentCwd.set('')
+    $activeSessionId.set(null)
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+  })
+
+  it('prefers the configured default over the sticky remembered workspace', () => {
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('falls back to the remembered workspace when no configured default is set', () => {
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/sticky')
+  })
+
+  it('falls back to the live cwd when neither configured nor remembered values exist', () => {
+    $currentCwd.set('/home/user/live')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/live')
+  })
+
+  it('does not rewrite the live cwd while a session is active', () => {
+    $activeSessionId.set('sess-1')
+    $currentCwd.set('/live/session/path')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect($currentCwd.get()).toBe('/live/session/path')
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 })
 
