@@ -456,6 +456,9 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            # Print a one-line summary of resolved modal prompts (approval /
+            # clarify) into scrollback so the decision survives the repaint.
+            "persist_prompts": True,
 
             "skin": "default",
         },
@@ -3426,6 +3429,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # frozen when the agent thread completes, displayed in the status bar.
         self._prompt_start_time: Optional[float] = None  # time.time() when turn started
         self._prompt_duration: float = 0.0  # frozen duration of last completed turn
+        self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         try:
@@ -3503,6 +3507,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # the next submitted input, whether it's the selection or anything
         # else). See #34584.
         self._pending_resume_sessions = None
+        # One-shot agent seed set by a slash handler (e.g. /blueprint <name>)
+        # that wants its output run as the next agent turn. Consumed and cleared
+        # by the interactive loop immediately after process_command() returns.
+        self._pending_agent_seed = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -3812,6 +3820,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    @staticmethod
+    def _format_idle_since(last_finished_at: Optional[float], turn_live: bool) -> str:
+        """Format time since the last final agent response for the status bar.
+
+        Returns an empty string while a turn is live (the per-prompt elapsed
+        timer covers that case) or before the first turn has completed.
+        Compact read-out: ``✓ 42s`` / ``✓ 3m`` / ``✓ 1h 12m``.
+        """
+        if turn_live or last_finished_at is None:
+            return ""
+        idle = max(0.0, time.time() - last_finished_at)
+        return f"✓ {format_duration_compact(idle)}"
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -3834,6 +3855,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 getattr(self, "_prompt_start_time", None),
                 getattr(self, "_prompt_duration", 0.0),
                 live=getattr(self, "_prompt_start_time", None) is not None,
+            ),
+            "idle_since": self._format_idle_since(
+                getattr(self, "_last_turn_finished_at", None),
+                turn_live=getattr(self, "_prompt_start_time", None) is not None,
             ),
             "context_tokens": 0,
             "context_length": None,
@@ -4146,6 +4171,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            idle_since = snapshot.get("idle_since")
+            if idle_since:
+                parts.append(idle_since)
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -4247,6 +4275,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    # Position 8: idle time since the last final agent response
+                    idle_since = snapshot.get("idle_since")
+                    if idle_since:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", idle_since))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -7383,6 +7416,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "suggestions":
+            self._handle_suggestions_command(cmd_original)
+        elif canonical == "blueprint":
+            self._handle_blueprint_command(cmd_original)
         elif canonical == "curator":
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
@@ -7414,6 +7451,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "credits":
+            self._show_credits()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -8314,6 +8353,86 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for line in lines:
             print(f"  {line}")
         return True
+
+    def _show_credits(self):
+        """`/credits` — focused Nous credit balance + top-up handoff.
+
+        Interactive CLI: balance block + identity line + a 3-button panel
+        (Open top-up / Copy link / Cancel). Non-interactive contexts — the TUI
+        slash-worker subprocess and any place without a live prompt_toolkit app
+        (``self._app is None``) — render a text variant (balance + tappable
+        top-up URL), because the modal would try to read the RPC stdin and crash
+        the worker. The terminal never confirms or polls payment (billing phase
+        2a). Fail-open: a portal hiccup or logged-out account degrades to a clear
+        message, never a crash.
+        """
+        from agent.account_usage import build_credits_view
+
+        view = build_credits_view()
+
+        if not view.logged_in:
+            print()
+            print(f"  💳 {_DIM}Not logged into Nous Portal.{_RST}")
+            print("  Run `hermes portal` to log in, then /credits.")
+            return
+
+        print()
+        print("  💳 Nous credits")
+        print(f"  {'─' * 41}")
+        for line in view.balance_lines:
+            # Drop the helper's own "📈 Nous credits" header — we print our own.
+            if line.lstrip().startswith("📈"):
+                continue
+            print(f"  {line}")
+        print(f"  {'─' * 41}")
+        if view.identity_line:
+            print(f"  {view.identity_line}")
+
+        if not view.topup_url:
+            return
+
+        # Non-interactive (TUI slash-worker, piped, no live app): the
+        # prompt_toolkit modal can't run here — it would read the worker's
+        # JSON-RPC stdin and crash the command. Render the text variant: the
+        # tappable URL IS the affordance, same as the messaging surfaces.
+        if not getattr(self, "_app", None):
+            print()
+            print(f"  Top up: {view.topup_url}")
+            print("  Complete your top-up in the browser — credits will appear in /credits shortly.")
+            return
+
+        choices = [
+            ("open", "Open top-up in browser", "launch the portal billing page"),
+            ("copy", "Copy link", "copy the top-up URL to your clipboard"),
+            ("cancel", "Cancel", "do nothing"),
+        ]
+        raw = self._prompt_text_input_modal(
+            title="💳 Add credits?",
+            detail=f"Top-up page:\n{view.topup_url}",
+            choices=choices,
+        )
+        choice = self._normalize_slash_confirm_choice(raw, choices)
+
+        if choice == "open":
+            opened = False
+            try:
+                import webbrowser
+
+                opened = webbrowser.open(view.topup_url)
+            except Exception:
+                opened = False
+            if not opened:
+                print(f"  Open this URL to top up: {view.topup_url}")
+            print()
+            print("  Complete your top-up in the browser — credits will appear in /credits shortly.")
+        elif choice == "copy":
+            try:
+                self._write_osc52_clipboard(view.topup_url)
+                print(f"  📋 Copied: {view.topup_url}")
+            except Exception:
+                print(f"  Top-up URL: {view.topup_url}")
+        else:
+            print("  🟡 Cancelled. No credits added.")
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""
@@ -9327,6 +9446,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
+    def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
+        """Print a one-line scrollback summary of a resolved modal prompt.
+
+        Modal panels (approval / clarify) live in the prompt_toolkit layout and
+        vanish on the next repaint, so the question and the decision leave no
+        trace in the terminal scrollback. When display.persist_prompts is on
+        (default), emit a dim single line after the prompt resolves so the
+        decision survives in chat history.
+        """
+        if not CLI_CONFIG.get("display", {}).get("persist_prompts", True):
+            return
+        detail = " ".join(detail.split())
+        if len(detail) > 120:
+            detail = detail[:119] + "…"
+        outcome = " ".join(outcome.split())
+        if len(outcome) > 120:
+            outcome = outcome[:119] + "…"
+        _cprint(f"\n{_DIM}{icon} {label}: {detail} → {outcome}{_RST}")
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -9366,6 +9504,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 result = response_queue.get(timeout=1)
                 self._clarify_deadline = 0
+                self._persist_prompt_summary("?", "Clarify", question, str(result))
                 return result
             except queue.Empty:
                 remaining = self._clarify_deadline - _time.monotonic()
@@ -9479,6 +9618,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._approval_state = None
                     self._approval_deadline = 0
                     self._paint_now()
+                    _outcome_labels = {
+                        "once": "allowed once",
+                        "session": "allowed for session",
+                        "always": "added to allowlist",
+                        "deny": "denied",
+                    }
+                    self._persist_prompt_summary(
+                        "⚠", "Approval", command,
+                        _outcome_labels.get(result, str(result)),
+                    )
                     return result
                 except queue.Empty:
                     remaining = self._approval_deadline - _time.monotonic()
@@ -9595,7 +9744,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         show_full = state.get("show_full", False)
 
         title = "⚠️  Dangerous Command"
-        cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
+        cmd_display = command
         choice_labels = {
             "once": "Allow once",
             "session": "Allow for this session",
@@ -9619,6 +9768,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Pre-wrap the mandatory content — command + choices must always render.
         cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
+        if not show_full and "view" in choices and len(cmd_wrapped) > 4:
+            cmd_wrapped = cmd_wrapped[:3] + _wrap_panel_text(
+                "… (choose Show full command)",
+                inner_text_width,
+            )
 
         # (choice_index, wrapped_line) so we can re-apply selected styling below
         choice_wrapped: list[tuple[int, str]] = []
@@ -9668,7 +9822,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
         if len(cmd_wrapped) > max_cmd_rows:
             keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
-            cmd_wrapped = cmd_wrapped[:keep] + ["… (command truncated — use /logs or /debug for full text)"]
+            cmd_wrapped = cmd_wrapped[:keep] + _wrap_panel_text(
+                "… (command truncated — use /logs or /debug for full text)",
+                inner_text_width,
+            )
 
         # Allocate any remaining rows to description. The extra -1 in full mode
         # accounts for the blank separator between choices and description.
@@ -10162,6 +10319,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self._prompt_start_time is not None:
                 self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
                 self._prompt_start_time = None
+            # Record when this agent loop finished so the status bar can show
+            # idle time since the last final response.
+            self._last_turn_finished_at = time.time()
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -12798,7 +12958,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             # session. Without this guard a KeyboardInterrupt unwinds
                             # to the outer prompt_toolkit loop and the session dies.
                             _cprint("\n[dim]Command interrupted.[/dim]")
-                        continue
+                            continue
+                        # A slash handler may set a one-shot pending seed (e.g.
+                        # /blueprint <name>) to be run as the next agent turn.
+                        # If present, fall through to the chat path with the seed
+                        # as the user message instead of looping back to idle.
+                        _seed = getattr(self, "_pending_agent_seed", None)
+                        if _seed:
+                            self._pending_agent_seed = None
+                            user_input = _seed
+                        else:
+                            continue
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
