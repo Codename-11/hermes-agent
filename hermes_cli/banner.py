@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -886,6 +887,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
     if release_info:
+        # Rich disables OSC-8 hyperlinks when ``legacy_windows`` is true, even
+        # for modern Windows terminals and forced test consoles. The banner
+        # already emits ANSI colour on Windows; opt this single render path into
+        # Rich's modern terminal mode so the release title link survives.
+        if sys.platform == "win32" and getattr(console, "legacy_windows", False):
+            try:
+                console.legacy_windows = False
+            except Exception:
+                pass
         _tag, _url = release_info
         title_markup = f"[bold {title_color}][link={_url}]{version_label}[/link][/]"
     else:
