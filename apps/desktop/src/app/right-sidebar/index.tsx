@@ -4,18 +4,20 @@ import type { ReactNode } from 'react'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { useI18n } from '@/i18n'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $connection, $currentBranch, $currentCwd } from '@/store/session'
+import { $currentBranch, $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { RemoteFolderPicker } from './files/remote-picker'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 import { $rightSidebarTab, $terminalTakeover, type RightSidebarTabId, setRightSidebarTab } from './store'
@@ -47,12 +49,6 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const currentBranch = useStore($currentBranch).trim()
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
-  const isRemote = $connection.get()?.mode === 'remote'
-  // In remote mode the session cwd is a path on the remote host that does
-  // not exist locally. Use empty string so the Files panel shows "No folder
-  // selected" instead of an unreadable remote path.
-  const filesCwd = isRemote ? '' : currentCwd
-  const filesHasCwd = isRemote ? false : hasCwd
 
   const cwdName = hasCwd
     ? (currentCwd
@@ -71,13 +67,13 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     rootError,
     rootLoading,
     setNodeOpen
-  } = useProjectTree(filesCwd)
+  } = useProjectTree(currentCwd)
 
   const canCollapse = Object.values(openState).some(Boolean)
   const effectiveTab: RightSidebarTabId = terminalTakeover ? 'files' : activeTab
 
   const chooseFolder = async () => {
-    const selected = await window.hermesDesktop?.selectPaths({
+    const selected = await selectDesktopPaths({
       defaultPath: hasCwd ? currentCwd : undefined,
       directories: true,
       multiple: false,
@@ -115,6 +111,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
+      <RemoteFolderPicker />
       <RightSidebarChrome activeTab={effectiveTab} branch={currentBranch} tabs={tabs} />
 
       {effectiveTab === 'terminal' ? (
@@ -123,13 +120,11 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
         <FilesystemTab
           canCollapse={canCollapse}
           collapseNonce={collapseNonce}
-          cwd={filesCwd}
+          cwd={currentCwd}
           cwdName={cwdName}
           data={data}
           error={rootError}
-          hasCwd={filesHasCwd}
-          isRemote={isRemote}
-          remoteCwd={isRemote ? currentCwd : undefined}
+          hasCwd={hasCwd}
           loading={rootLoading}
           onActivateFile={onActivateFile}
           onActivateFolder={onActivateFolder}

@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -122,47 +123,70 @@ _UPDATE_CHECK_CACHE_SCHEMA = 2
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
 _DEPLOY_BRANCHES = {"axiom"}
 
 
-def _current_git_branch(repo_dir: Path) -> Optional[str]:
+def _canonical_github_remote(url: str | None) -> str:
+    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
+    if not url:
+        return ""
+    value = url.strip()
+    if value.startswith("git@github.com:"):
+        value = "github.com/" + value[len("git@github.com:"):]
+    elif value.startswith("ssh://git@github.com/"):
+        value = "github.com/" + value[len("ssh://git@github.com/"):]
+    else:
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            value = f"{parsed.netloc}{parsed.path}"
+    value = value.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.lower()
+
+
+def _is_ssh_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    value = url.strip().lower()
+    return value.startswith("git@") or value.startswith("ssh://")
+
+
+def _is_official_ssh_remote(url: str | None) -> bool:
+    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
         )
     except Exception:
         return None
     if result.returncode != 0:
         return None
-    return result.stdout.strip() or None
+    return (result.stdout or "").strip()
+
+
+def _current_git_branch(repo_dir: Path) -> Optional[str]:
+    return _git_stdout(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir)
 
 
 def _has_git_remote(repo_dir: Path, remote: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", remote],
-            capture_output=True, text=True, timeout=5,
-            cwd=str(repo_dir),
-        )
-    except Exception:
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+    return bool(_git_stdout(["remote", "get-url", remote], cwd=repo_dir))
 
 
 def _count_git_range(repo_dir: Path, base: str, target: str) -> Optional[int]:
-    try:
-        result = subprocess.run(
-            ["git", "rev-list", "--count", f"{base}..{target}"],
-            capture_output=True, text=True, timeout=5,
-            cwd=str(repo_dir),
-        )
-    except Exception:
-        return None
-    if result.returncode != 0:
+    out = _git_stdout(["rev-list", "--count", f"{base}..{target}"], cwd=repo_dir)
+    if out is None:
         return None
     try:
-        return int(result.stdout.strip() or "0")
+        return int(out or "0")
     except ValueError:
         return None
 
@@ -190,6 +214,11 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind the relevant upstream ref in a local checkout."""
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        return _check_via_rev(head_rev) if head_rev else None
+
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
@@ -232,7 +261,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             if count is not None and (behind is None or count > behind):
                 behind = count
     return behind
-
 
 def get_update_preview_range(repo_dir: Optional[Path] = None) -> Optional[tuple[str, str, str]]:
     """Return the git range that ``hermes version`` should preview.
@@ -736,15 +764,26 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         right_lines.append("")
         right_lines.append(f"[bold {accent}]MCP Servers[/]")
         for srv in mcp_status:
+            status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
                     f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
                 )
-            elif srv.get("disabled"):
+            elif srv.get("disabled") or status == "disabled":
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
                     f"[dim {dim}]— disabled[/]"
+                )
+            elif status == "connecting":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[yellow]— connecting[/]"
+                )
+            elif status == "configured":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— configured[/]"
                 )
             else:
                 right_lines.append(
