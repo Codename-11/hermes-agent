@@ -24,7 +24,6 @@ import {
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
-  setCurrentCwdFromRuntime,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -289,7 +288,7 @@ function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeS
   }
 
   if (info.cwd) {
-    setCurrentCwdFromRuntime(info.cwd)
+    setCurrentCwd(info.cwd)
     sessionState.cwd = info.cwd
   }
 
@@ -554,7 +553,7 @@ export function useSessionActions({
         setActiveSessionId(cachedRuntimeId)
         activeSessionIdRef.current = cachedRuntimeId
         syncSessionStateToView(cachedRuntimeId, cachedViewState)
-        setCurrentCwdFromRuntime(cachedViewState.cwd)
+        setCurrentCwd(cachedViewState.cwd)
         setCurrentBranch(cachedViewState.branch)
         setSessionStartedAt(Date.now())
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
@@ -12,9 +12,6 @@ import {
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
-  setConnection,
-  setCurrentCwd,
-  setCurrentCwdFromRuntime,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -64,65 +61,6 @@ describe('setSessionAttention', () => {
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
-  })
-})
-
-describe('setCurrentCwdFromRuntime', () => {
-  const clearWorkspaceCwdStorage = () => {
-    const storage = window.localStorage as unknown as Partial<Storage>
-
-    if (typeof storage.clear === 'function') {
-      storage.clear()
-    } else if (typeof storage.removeItem === 'function') {
-      storage.removeItem('hermes.desktop.workspace-cwd')
-    }
-  }
-
-  const connection = (mode: 'local' | 'remote') => ({
-    authMode: 'token' as const,
-    baseUrl: mode === 'remote' ? 'http://box:9119' : 'http://127.0.0.1:9119',
-    isFullscreen: false,
-    logs: [],
-    mode,
-    nativeOverlayWidth: 0,
-    source: mode === 'remote' ? ('settings' as const) : ('local' as const),
-    token: 't',
-    windowButtonPosition: null,
-    wsUrl: mode === 'remote' ? 'ws://box:9119/api/ws?token=t' : 'ws://127.0.0.1:9119/api/ws?token=t'
-  })
-
-  beforeEach(() => {
-    clearWorkspaceCwdStorage()
-    setConnection(null)
-    setCurrentCwd('')
-  })
-
-  afterEach(() => {
-    clearWorkspaceCwdStorage()
-    setConnection(null)
-    setCurrentCwd('')
-  })
-
-  it('updates the live remote cwd without replacing the remembered remote workspace', () => {
-    setConnection(connection('remote'))
-    setCurrentCwd('/home/manual-workspace')
-
-    setCurrentCwdFromRuntime('/home/stegeler')
-
-    expect($connection.get()?.mode).toBe('remote')
-    expect($currentCwd.get()).toBe('/home/stegeler')
-    if (typeof window.localStorage.getItem === 'function') {
-      expect(window.localStorage.getItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbox%3A9119.default')).toBe('/home/manual-workspace')
-    }
-  })
-
-  it('still adopts runtime cwd in local mode', () => {
-    setConnection(connection('local'))
-    setCurrentCwd('/Users/local-user')
-
-    setCurrentCwdFromRuntime('/Users/local-user/Documents/Hermes')
-
-    expect($currentCwd.get()).toBe('/Users/local-user/Documents/Hermes')
   })
 })
 

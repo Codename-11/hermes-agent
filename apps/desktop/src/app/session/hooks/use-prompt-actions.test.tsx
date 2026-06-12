@@ -7,7 +7,7 @@ import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
 import { $connection, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { readImageForRemoteAttach, uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
+import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
@@ -112,37 +112,6 @@ function Harness({
 
   return null
 }
-
-describe('readImageForRemoteAttach', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
-  })
-
-  it('extracts upload bytes and filename from a local data URL', async () => {
-    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,AAA=')
-    ;(window as unknown as { hermesDesktop: { readFileDataUrl: typeof readFileDataUrl } }).hermesDesktop = {
-      readFileDataUrl
-    }
-
-    const result = await readImageForRemoteAttach('/Users/local-user/Desktop/screen.png')
-
-    expect(result).toEqual({
-      contentBase64: 'AAA=',
-      filename: 'screen.png'
-    })
-    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/local-user/Desktop/screen.png')
-  })
-
-  it('returns null when the local file cannot be read', async () => {
-    const readFileDataUrl = vi.fn(async () => '')
-    ;(window as unknown as { hermesDesktop: { readFileDataUrl: typeof readFileDataUrl } }).hermesDesktop = {
-      readFileDataUrl
-    }
-
-    await expect(readImageForRemoteAttach('/Users/local-user/Desktop/missing.png')).resolves.toBeNull()
-  })
-})
 
 describe('usePromptActions /title', () => {
   beforeEach(() => {

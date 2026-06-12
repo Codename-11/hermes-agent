@@ -127,7 +127,7 @@ function imageFilenameFromPath(filePath: string): string {
 // Remote gateway: the local composer-image file lives on THIS machine's disk,
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
-export async function readImageForRemoteAttach(
+async function readImageForRemoteAttach(
   filePath: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
@@ -588,8 +588,7 @@ export function usePromptActions({
           sid,
           state => ({
             ...state,
-            messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message)),
-            interrupted: false
+            messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
           }),
           selectedStoredSessionIdRef.current
         )

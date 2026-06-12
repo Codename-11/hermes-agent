@@ -256,23 +256,6 @@ export const setCurrentCwd = (next: Updater<string>) => {
   persistString(workspaceCwdKey(), $currentCwd.get().trim() || null)
 }
 
-export const shouldSyncRuntimeCwdToWorkspace = (): boolean => $connection.get()?.mode !== 'remote'
-
-export const setCurrentCwdFromRuntime = (cwd: string) => {
-  const trimmed = cwd.trim()
-
-  if (!trimmed) {
-    return
-  }
-
-  if ($connection.get()?.mode === 'remote') {
-    updateAtom($currentCwd, trimmed)
-    return
-  }
-
-  setCurrentCwd(trimmed)
-}
-
 export const workspaceCwdForNewSession = (): string => {
   if ($connection.get()?.mode === 'remote') {
     return getRememberedWorkspaceCwd()
@@ -280,7 +263,6 @@ export const workspaceCwdForNewSession = (): string => {
 
   return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 }
-
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)

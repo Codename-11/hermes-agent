@@ -25,7 +25,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   setCurrentBranch,
-  setCurrentCwdFromRuntime,
+  setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -705,7 +705,9 @@ export function useMessageStream({
           }
 
           if (typeof payload?.cwd === 'string') {
-            setCurrentCwdFromRuntime(payload.cwd)
+          if (typeof payload?.cwd === 'string') {
+            setCurrentCwd(payload.cwd)
+          }
           }
 
           if (typeof payload?.branch === 'string') {
