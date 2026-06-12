@@ -256,6 +256,15 @@ tests/plugins/memory/test_mempalace_provider.py
 
 Discord multi-agent orchestration code and documentation were intentionally removed on 2026-06-08 at operator direction. Do not reintroduce the removed plugin, slash commands, env vars, or docs during upstream sync unless explicitly requested. Keep the generic Discord bot-admission safety controls (`allow_bots`, `thread_require_mention`, safe allowed mentions, reply-ping suppression) because they are still useful outside that retired feature.
 
+Desktop remote-filesystem workaround patches were reverted on 2026-06-12 after upstream shipped native remote filesystem browsing (read-only) in commits around `969aeb279`. The reverted patches are:
+- `e830ac3e6` — "skip remote session cwd in Files panel to prevent ENOENT" (superseded)
+- `b6d71f248` — "fix desktop remote cwd workspace drift" (superseded)
+- `8e5b55378` — "docs: clarify local files pane in remote mode" (superseded)
+
+Kept without change:
+- `992cfbdfd` — "widen file browser max width" (harmless UI preference)
+- `7c3f8d2d0` — "narrow hover-reveal trigger strip" (scrollbar UX fix)
+
 ## Fork-only commit inventory
 
 `git cherry -v upstream/main origin/axiom` reported all 95 non-merge fork commits as `+` (not patch-equivalent to upstream). These must be classified before merge hardening is considered complete.
