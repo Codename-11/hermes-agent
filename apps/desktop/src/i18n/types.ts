@@ -1219,8 +1219,6 @@ export interface Translations {
     terminalSplit: string
     terminalHide: string
     addToChat: string
-    remoteLocalFiles: string
-    remoteLocalFilesTip: (cwd: string) => string
   }
 
   preview: {

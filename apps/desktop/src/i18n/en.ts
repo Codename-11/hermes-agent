@@ -1556,9 +1556,7 @@ export const en: Translations = {
     terminalFocus: 'Focus terminal view',
     terminalSplit: 'Return to split view',
     terminalHide: 'Hide terminal',
-    addToChat: 'Add to chat',
-    remoteLocalFiles: 'Browsing local files',
-    remoteLocalFilesTip: cwd => `The remote session's cwd (${cwd}) is not accessible locally. Select a local folder to browse.`
+    addToChat: 'Add to chat'
   },
 
   preview: {

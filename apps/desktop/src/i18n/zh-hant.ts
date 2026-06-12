@@ -1649,9 +1649,7 @@ export const zhHant = defineLocale({
     terminalFocus: '聚焦終端機檢視',
     terminalSplit: '返回分割檢視',
     terminalHide: '隱藏終端機',
-    addToChat: '新增至聊天',
-    remoteLocalFiles: '瀏覽本地檔案',
-    remoteLocalFilesTip: cwd => `遠端會話的工作目錄 (${cwd}) 在本機不可用。選擇本機資料夾瀏覽。`
+    addToChat: '新增至聊天'
   },
 
   preview: {
