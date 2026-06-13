@@ -678,8 +678,8 @@ class TestExpiredCodexFallback:
             assert not isinstance(client, type(None)), "Should find a provider after expired Codex"
 
 
-    def test_expired_codex_openrouter_wins(self, tmp_path, monkeypatch):
-        """With expired Codex + OpenRouter key, OpenRouter should win (1st in chain)."""
+    def test_expired_codex_openrouter_key_is_ignored_for_aux_auto(self, tmp_path, monkeypatch):
+        """Aux auto must not use OpenRouter just because OPENROUTER_API_KEY is set."""
         import base64
         import time as _time
 
@@ -716,9 +716,9 @@ class TestExpiredCodexFallback:
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import _resolve_auto
             client, model = _resolve_auto()
-            assert client is not None
-            # OpenRouter is 1st in chain, should win
-            mock_openai.assert_called()
+            assert client is None
+            # OpenRouter is reserved for main-model fallback, not aux auto.
+            mock_openai.assert_not_called()
 
     def test_expired_codex_custom_endpoint_wins(self, tmp_path, monkeypatch):
         """With expired Codex + custom endpoint (Ollama), custom should win (3rd in chain)."""
@@ -1464,11 +1464,11 @@ class TestIsRateLimitError:
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
-    def test_returns_four_entries(self):
+    def test_returns_three_entries(self):
         chain = _get_provider_chain()
-        assert len(chain) == 4
+        assert len(chain) == 3
         labels = [label for label, _ in chain]
-        assert labels == ["openrouter", "nous", "local/custom", "api-key"]
+        assert labels == ["nous", "local/custom", "api-key"]
         # Codex is deliberately NOT in this chain — see _get_provider_chain
         # docstring. ChatGPT-account Codex has a shifting model allow-list;
         # guessing a model to fall back on breaks more often than it helps.
@@ -1477,9 +1477,9 @@ class TestGetProviderChain:
     def test_picks_up_patched_functions(self):
         """Patches on _try_* functions must be visible in the chain."""
         sentinel = lambda: ("patched", "model")
-        with patch("agent.auxiliary_client._try_openrouter", sentinel):
+        with patch("agent.auxiliary_client._try_nous", sentinel):
             chain = _get_provider_chain()
-        assert chain[0] == ("openrouter", sentinel)
+        assert chain[0] == ("nous", sentinel)
 
 
 class TestTryPaymentFallback:
@@ -1522,16 +1522,16 @@ class TestTryPaymentFallback:
     def test_codex_alias_maps_to_chain_label(self):
         """'codex' should map to 'openai-codex' in the skip set."""
         mock_client = MagicMock()
-        with patch("agent.auxiliary_client._try_openrouter", return_value=(mock_client, "or-model")), \
+        with patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
              patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"):
             client, model, label = _try_payment_fallback("openai-codex", task="vision")
         assert client is mock_client
-        assert label == "openrouter"
+        assert label == "nous"
 
     def test_codex_not_in_fallback_chain(self):
         """Codex is deliberately NOT a fallback rung (shifting model allow-list).
 
-        When OR/Nous/custom/api-key all fail, payment-fallback returns None —
+        When Nous/custom/api-key all fail, payment-fallback returns None —
         Codex is never tried with a guessed model.
         """
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
@@ -2815,9 +2815,9 @@ class TestVisionAutoSkipsKimiCoding:
     on every request (#17076).
     """
 
-    def test_kimi_coding_skipped_falls_through_to_openrouter(self, monkeypatch):
-        """kimi-coding as main + vision auto → OpenRouter (not kimi)."""
-        fake_or_client = MagicMock(name="openrouter_client")
+    def test_kimi_coding_skipped_falls_through_to_nous(self, monkeypatch):
+        """kimi-coding as main + vision auto → Nous (not kimi/OpenRouter)."""
+        fake_nous_client = MagicMock(name="nous_client")
 
         monkeypatch.setattr(
             "agent.auxiliary_client._read_main_provider", lambda: "kimi-coding",
@@ -2837,9 +2837,9 @@ class TestVisionAutoSkipsKimiCoding:
 
         def fake_strict(provider, model=None):
             if provider == "openrouter":
-                return fake_or_client, "google/gemini-3-flash-preview"
+                raise AssertionError("vision auto should not try OpenRouter")
             if provider == "nous":
-                return None, None
+                return fake_nous_client, "google/gemini-3-flash-preview"
             raise AssertionError(
                 f"strict vision backend should not be called for {provider!r} "
                 "when main provider is kimi-coding"
@@ -2850,13 +2850,13 @@ class TestVisionAutoSkipsKimiCoding:
         )
 
         provider, client, model = resolve_vision_provider_client()
-        assert provider == "openrouter"
-        assert client is fake_or_client
+        assert provider == "nous"
+        assert client is fake_nous_client
         assert model == "google/gemini-3-flash-preview"
 
     def test_kimi_coding_cn_skipped_too(self, monkeypatch):
         """Same skip applies to the CN variant."""
-        fake_or_client = MagicMock(name="openrouter_client")
+        fake_nous_client = MagicMock(name="nous_client")
 
         monkeypatch.setattr(
             "agent.auxiliary_client._read_main_provider", lambda: "kimi-coding-cn",
@@ -2871,14 +2871,16 @@ class TestVisionAutoSkipsKimiCoding:
         )
         monkeypatch.setattr(
             "agent.auxiliary_client._resolve_strict_vision_backend",
-            lambda p, m=None: (fake_or_client, "gemini")
+            lambda p, m=None: (fake_nous_client, "gemini")
+            if p == "nous"
+            else (_ for _ in ()).throw(AssertionError("vision auto should not try OpenRouter"))
             if p == "openrouter"
             else (None, None),
         )
 
         provider, client, _ = resolve_vision_provider_client()
-        assert provider == "openrouter"
-        assert client is fake_or_client
+        assert provider == "nous"
+        assert client is fake_nous_client
 
     def test_explicit_override_to_kimi_coding_still_honored(self, monkeypatch):
         """When a user *explicitly* requests kimi-coding for vision (e.g.
