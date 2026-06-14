@@ -1355,6 +1355,7 @@ export interface Translations {
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string
+      jumpToApproval: string
       reject: string
       alwaysTitle: string
       alwaysDescription: (pattern: string) => string

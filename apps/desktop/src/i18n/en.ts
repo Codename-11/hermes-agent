@@ -1696,6 +1696,7 @@ export const en: Translations = {
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
       alwaysAllowMenu: 'Always allow…',
+      jumpToApproval: 'Approval needed',
       reject: 'Reject',
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
