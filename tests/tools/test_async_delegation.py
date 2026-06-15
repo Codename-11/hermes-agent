@@ -5,6 +5,7 @@ onto the shared process_registry.completion_queue, the rich re-injection block
 formatting, capacity rejection, and crash handling.
 """
 
+import queue
 import threading
 import time
 
@@ -59,6 +60,35 @@ def test_dispatch_returns_immediately_without_blocking():
     assert ad.active_count() == 1
     assert elapsed < 4.0, f"dispatch blocked {elapsed:.2f}s (gate is 5s)"
     gate.set()
+
+
+def test_async_executor_workers_are_daemon_threads():
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "done"}
+
+    res = ad.dispatch_async_delegation(
+        goal="daemon check", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=runner, max_async_children=1,
+    )
+    assert res["status"] == "dispatched"
+
+    deadline = time.monotonic() + 2
+    worker = None
+    while time.monotonic() < deadline:
+        worker = next(
+            (t for t in threading.enumerate() if t.name.startswith("async-delegate")),
+            None,
+        )
+        if worker is not None:
+            break
+        time.sleep(0.02)
+    assert worker is not None
+    assert worker.daemon is True
+    gate.set()
+    assert _drain_one() is not None
 
 
 def test_completion_event_lands_on_shared_queue_with_session_key():
@@ -395,6 +425,28 @@ def test_gateway_formatter_renders_async_block():
     assert "ASYNC DELEGATION COMPLETE" in txt
     assert "Found the bug in test_foo" in txt
     assert "Investigate flaky test" in txt
+
+
+def test_gateway_watch_drain_requeues_async_without_looping():
+    from gateway.run import _drain_gateway_watch_events
+
+    q = queue.Queue()
+    async_evt = _make_async_evt()
+    watch_evt = {
+        "type": "watch_match",
+        "session_id": "proc_1",
+        "command": "pytest",
+        "pattern": "READY",
+        "output": "READY",
+    }
+    q.put(async_evt)
+    q.put(watch_evt)
+
+    watch_events = _drain_gateway_watch_events(q)
+
+    assert watch_events == [watch_evt]
+    assert q.qsize() == 1
+    assert q.get_nowait() == async_evt
 
 
 def test_gateway_builds_routable_source_from_enriched_event():

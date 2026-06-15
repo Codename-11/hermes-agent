@@ -40,10 +40,46 @@ import logging
 import threading
 import time
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures.thread import _worker
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
+    """ThreadPoolExecutor variant whose workers do not block process exit.
+
+    Stdlib ``ThreadPoolExecutor`` workers are non-daemon. Background
+    delegation is explicitly best-effort detached work, so a long child should
+    be interruptible by ``/stop``/shutdown but must not keep a CLI process alive
+    after the user exits.
+    """
+
+    def _adjust_thread_count(self) -> None:
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def weakref_cb(_, q=self._work_queue):
+            q.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads < self._max_workers:
+            thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            t = threading.Thread(
+                name=thread_name,
+                target=_worker,
+                args=(
+                    weakref.ref(self, weakref_cb),
+                    self._work_queue,
+                    self._initializer,
+                    self._initargs,
+                ),
+                daemon=True,
+            )
+            t.start()
+            self._threads.add(t)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +113,7 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
     with _executor_lock:
         if _executor is None or max_workers > _executor_max_workers:
             # Daemon threads: thread_name_prefix aids debugging in stack dumps.
-            _executor = ThreadPoolExecutor(
+            _executor = _DaemonThreadPoolExecutor(
                 max_workers=max_workers,
                 thread_name_prefix="async-delegate",
             )
