@@ -38,29 +38,40 @@ npm exec -- vitest run --environment jsdom \
 
 If Vitest's jsdom localStorage shim fails in `src/store/session.test.ts`, rerun with the repo's `npm run test:ui -- ...` harness and record the exact failure. Do not treat unrelated harness failures as proof that the Desktop patch is broken.
 
-## Current Desktop file-browser patch layer
+## Current Desktop remote-file/access layer
 
-These patches are carried because Axiom-Desktop commonly connects to a remote Hermes gateway while the Electron shell runs on Windows:
+Axiom-Desktop commonly connects to a remote Hermes gateway while the Electron shell runs on Windows. Keep this layer small, documented, and easy to drop when upstream lands equivalent behavior.
 
-- Upstream PR #42497: `fix(desktop): skip remote session cwd in Files panel to prevent ENOENT`
-  - Remote gateway cwd paths such as `/home/...` are not local Windows paths.
-  - The Files pane shows local browsing semantics instead of trying to `fs.readdir()` the remote cwd locally.
-- Upstream PR #43082: `fix desktop remote cwd workspace drift`
-  - Runtime `session.info.cwd` from a remote gateway must not overwrite Desktop's local workspace cwd.
-  - Keeps local workspace selection stable while remote chat/tool runtime reports its own cwd.
+### Upstream behavior already merged into `main`
+
+- Upstream PR #44326: `feat(desktop): browse remote backend files (salvage #43434)`
+  - Remote Desktop sessions use authenticated read-only `/api/fs/*` backend REST for directory listing, capped text previews, capped data URLs, git-root detection, and backend default cwd.
+  - Local Desktop sessions keep Electron filesystem IPC.
+  - This supersedes the older local-only ENOENT workaround direction from #42497/#43082 for the main Files/sidebar remote-browsing path.
+- Upstream PR #43109: `fix(desktop): stage dropped files into the remote session workspace`
+  - OS/Finder drops upload/stage local bytes into the remote session workspace instead of leaking local absolute paths into remote prompts.
+- Upstream PR #46658: `fix(desktop): sync $connection on profile switch so remote profiles upload image bytes`
+  - Remote-aware surfaces (`image.attach_bytes`, `/api/fs/*`, `/api/media`) follow the active profile/backend after profile switches.
+
+### Carried on `axiom` until upstream replacement lands
+
+- Upstream PR #44538: `fix(desktop): remote-mode chat file links download via the fs bridge instead of dead file:// URLs`
+  - Remote-mode chat/media fallback links fetch bytes through the authenticated `/api/fs/read-data-url` bridge and download locally instead of opening a gateway-host `file://` path on Windows.
+  - Drop this carry once upstream merges #44538 or an equivalent/better remote chat-file download path.
 - Upstream PR #42603: `fix(desktop): narrow hover-reveal trigger strip to avoid blocking scrollbar`
   - Prevents collapsed side-panel hover activation from stealing the scrollbar hit area.
 - Upstream PR #41189, focused manual port: `fix(desktop): raise FILE_BROWSER_MAX_WIDTH from 20rem to 40rem`
   - The PR head is a merge commit with unrelated upstream changes; carry only the `FILE_BROWSER_MAX_WIDTH` change.
 
-## Deliberately not carried yet
+### Deliberately not carried yet
 
-- Upstream PR #40090 (`remote file browser via dashboard API`) is not carried yet.
-  - It exposes remote filesystem directory listing through the dashboard API and changes the security/architecture model.
-  - Revisit only if Axiom explicitly wants Desktop to browse the remote server filesystem.
 - Upstream PR #39122 (`remote workspace + terminal over SSH`) is not carried yet.
   - It is a broad architecture change touching Electron SSH, terminal routing, settings, and file browsing.
   - Evaluate in a dedicated branch before considering it for `axiom`.
+- Upstream PR #39183 (`edit files in place from the preview pane`) is not carried yet.
+  - It is stacked on #39122 and introduces remote write-back/editing. Do not mix it into the read-only remote browse/preview lane.
+- Upstream PR #46663 (`convert file:// URLs to HTTP download for remote gateways`) is not carried.
+  - It overlaps #44538 but currently conflicts with `main`/`axiom`; prefer the cleaner fs-bridge chat-file fix unless upstream lands a consolidated replacement.
 
 ## Axiom-Desktop operational notes
 

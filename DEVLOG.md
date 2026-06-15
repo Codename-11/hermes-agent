@@ -1,5 +1,25 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-15 — Carry remote Desktop chat file downloads
+
+### Summary
+
+Verified the post-update Axiom branch includes upstream's merged remote Desktop file-browser fixes, then carried the remaining clean upstream PR for remote-mode chat/media file downloads while keeping the patch documented for upstream replacement.
+
+### What changed
+
+- Confirmed `axiom` contains upstream remote Desktop file access fixes: #44326 remote `/api/fs/*` browsing, #43109 remote file drop staging, #46658 profile-switch `$connection` sync, and #45057 active-profile new chat behavior.
+- Cherry-picked upstream PR #44538 with authorship preserved and `-x`: remote-mode chat/media fallback links now fetch bytes through the authenticated `/api/fs/read-data-url` bridge instead of opening gateway-host `file://` paths on Windows.
+- Updated `docs/axiom-fork-contract.md` to separate upstream-merged remote file access behavior from the current `axiom` carry and to mark broader remote SSH/workspace editing PRs as deliberately not carried.
+
+### Verification
+
+- `NODE_ENV=test npm run test:ui -- src/lib/media.test.ts` → 4 passed.
+- `npm run typecheck` in `apps/desktop` → OK.
+- `python -m py_compile hermes_cli/web_server.py` → OK.
+- `python -m pytest -q -o addopts='' tests/hermes_cli/test_web_server_fs.py` → 13 passed.
+- `NODE_ENV=test npm run test:ui -- src/lib/desktop-fs.test.ts src/lib/media.test.ts` → 8 passed.
+
 ## 2026-06-08 — Sync Axiom fork with upstream and retire Discord multi-agent orchestration
 
 ### Summary
