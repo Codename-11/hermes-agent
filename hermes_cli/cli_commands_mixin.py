@@ -225,8 +225,7 @@ class CLICommandsMixin:
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
     def _handle_stop_command(self):
-        """Handle /stop — kill all running background processes and
-        background (async) delegations.
+        """Handle /stop — kill all running background processes.
 
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
@@ -236,26 +235,13 @@ class CLICommandsMixin:
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 
-        # Background subagents dispatched via delegate_task(background=true)
-        # live in their own registry, not the process registry.
-        try:
-            from tools.async_delegation import active_count, interrupt_all
-            n_async = active_count()
-        except Exception:
-            n_async = 0
-            interrupt_all = None
-
-        if not running and not n_async:
+        if not running:
             print("  No running background processes.")
             return
 
-        if running:
-            print(f"  Stopping {len(running)} background process(es)...")
-            killed = process_registry.kill_all()
-            print(f"  ✅ Stopped {killed} process(es).")
-        if n_async and interrupt_all is not None:
-            stopped = interrupt_all(reason="/stop")
-            print(f"  ✅ Interrupted {stopped} background delegation(s).")
+        print(f"  Stopping {len(running)} background process(es)...")
+        killed = process_registry.kill_all()
+        print(f"  ✅ Stopped {killed} process(es).")
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""
@@ -274,22 +260,6 @@ class CLICommandsMixin:
 
         if finished:
             _cprint(f"  Recently finished: {len(finished)}")
-
-        # Background (async) delegations — delegate_task(background=true)
-        try:
-            from tools.async_delegation import list_async_delegations
-            delegations = list_async_delegations()
-        except Exception:
-            delegations = []
-        running_d = [d for d in delegations if d.get("status") == "running"]
-        if delegations:
-            _cprint(f"  Background delegations: {len(running_d)} running")
-            for d in delegations:
-                goal = (d.get("goal") or "")[:60]
-                _cprint(
-                    f"    {d.get('delegation_id', '?')} · "
-                    f"{d.get('status', '?')} · {goal}"
-                )
 
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
