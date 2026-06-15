@@ -924,6 +924,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls).not.toContain('session.resume')
   })
 })
+
 describe('usePromptActions eager attachment upload (drop-time)', () => {
   afterEach(() => {
     cleanup()

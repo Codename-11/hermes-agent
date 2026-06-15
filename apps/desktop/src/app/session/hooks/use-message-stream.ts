@@ -740,9 +740,7 @@ export function useMessageStream({
           }
 
           if (typeof payload?.cwd === 'string') {
-          if (typeof payload?.cwd === 'string') {
             setCurrentCwd(payload.cwd)
-          }
           }
 
           if (typeof payload?.branch === 'string') {

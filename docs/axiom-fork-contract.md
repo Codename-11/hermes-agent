@@ -29,38 +29,33 @@ Suggested focused verification for Desktop patch work:
 ```bash
 node --check apps/desktop/electron/main.cjs
 cd apps/desktop
-npm run type-check
-npm exec -- vitest run --environment jsdom \
+npm run typecheck
+NODE_ENV=test npm run test:ui -- \
   src/app/right-sidebar/files/use-project-tree.test.ts \
   src/app/session/hooks/use-prompt-actions.test.tsx \
   src/store/session.test.ts
 ```
 
-If Vitest's jsdom localStorage shim fails in `src/store/session.test.ts`, rerun with the repo's `npm run test:ui -- ...` harness and record the exact failure. Do not treat unrelated harness failures as proof that the Desktop patch is broken.
+Run React/Vitest slices with `NODE_ENV=test`. A production ambient env can make Testing Library resolve React's production build and fail with `TypeError: React.act is not a function`, even when the Desktop code is fine. If Vitest's jsdom localStorage shim fails in `src/store/session.test.ts`, rerun with the repo's `npm run test:ui -- ...` harness and record the exact failure. Do not treat unrelated harness failures as proof that the Desktop patch is broken.
 
-## Current Desktop file-browser patch layer
+## Desktop file-browser patch layer
 
-These patches are carried because Axiom-Desktop commonly connects to a remote Hermes gateway while the Electron shell runs on Windows:
+The old Axiom-specific Desktop remote-filesystem workaround layer was retired on 2026-06-12 after upstream shipped native read-only remote filesystem browsing around `969aeb279`. Do not reintroduce the retired patches during upstream sync unless Bailey explicitly asks for a new Axiom-specific behavior.
 
-- Upstream PR #42497: `fix(desktop): skip remote session cwd in Files panel to prevent ENOENT`
-  - Remote gateway cwd paths such as `/home/...` are not local Windows paths.
-  - The Files pane shows local browsing semantics instead of trying to `fs.readdir()` the remote cwd locally.
-- Upstream PR #43082: `fix desktop remote cwd workspace drift`
-  - Runtime `session.info.cwd` from a remote gateway must not overwrite Desktop's local workspace cwd.
-  - Keeps local workspace selection stable while remote chat/tool runtime reports its own cwd.
+Retired/superseded:
+
+- `e830ac3e6` — `fix(desktop): skip remote session cwd in Files panel to prevent ENOENT`
+- `b6d71f248` — `fix desktop remote cwd workspace drift`
+- `8e5b55378` — `docs: clarify local files pane in remote mode`
+
+Still intentionally carried:
+
 - Upstream PR #42603: `fix(desktop): narrow hover-reveal trigger strip to avoid blocking scrollbar`
   - Prevents collapsed side-panel hover activation from stealing the scrollbar hit area.
 - Upstream PR #41189, focused manual port: `fix(desktop): raise FILE_BROWSER_MAX_WIDTH from 20rem to 40rem`
-  - The PR head is a merge commit with unrelated upstream changes; carry only the `FILE_BROWSER_MAX_WIDTH` change.
+  - The PR head was a merge commit with unrelated upstream changes; carry only the `FILE_BROWSER_MAX_WIDTH` change.
 
-## Deliberately not carried yet
-
-- Upstream PR #40090 (`remote file browser via dashboard API`) is not carried yet.
-  - It exposes remote filesystem directory listing through the dashboard API and changes the security/architecture model.
-  - Revisit only if Axiom explicitly wants Desktop to browse the remote server filesystem.
-- Upstream PR #39122 (`remote workspace + terminal over SSH`) is not carried yet.
-  - It is a broad architecture change touching Electron SSH, terminal routing, settings, and file browsing.
-  - Evaluate in a dedicated branch before considering it for `axiom`.
+Broad remote workspace / terminal-over-SSH work remains a dedicated-branch evaluation item, not something to merge casually into `axiom`.
 
 ## Axiom-Desktop operational notes
 

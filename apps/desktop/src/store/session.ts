@@ -273,6 +273,7 @@ export const workspaceCwdForNewSession = (): string => {
 
   return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 }
+
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)
