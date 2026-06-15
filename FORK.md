@@ -258,14 +258,13 @@ Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` fr
 
 ### PR #40946 — async background delegation
 
+- **Status:** SUPERCEDED — upstream merged equivalent implementation on 2026-06-15.
 - **PR:** https://github.com/NousResearch/hermes-agent/pull/40946
-- **Head:** `b47e65da7`
-- **Carry branch:** `carry/upstream-pr-40946-async-delegation`
-- **Merged into axiom:** `500dc0fbd`
-- **Upstream commit identity preserved:** yes (`git cherry-pick -x`)
-- **Axiom follow-up:** `5694d891e` — trim trailing blank lines from `tests/tools/test_async_delegation.py`
-- **Files touched:** `cli.py`, `gateway/run.py`, `hermes_cli/cli_commands_mixin.py`, `hermes_cli/config.py`, `tools/async_delegation.py`, `tools/delegate_tool.py`, `tools/process_registry.py`, `tui_gateway/server.py`, `tests/tools/test_async_delegation.py`
-- **Retirement rule:** When upstream merges/closes/replaces this PR, fetch `upstream/main` and compare the final implementation. If upstream squashed or reworked the commits, accept upstream's shape unless it breaks a documented Axiom contract (e.g., Forge per-run tool policy, gateway webhook toolset behavior). Revert the local carry merge first if that gives the cleanest adoption path.
+- **Upstream merge commit:** `c66ecf0bc` on `upstream/main`
+- **Local carry reverted:** `1e16a11b7` reverts `500dc0fbd`
+- **Files touched upstream:** `cli.py`, `gateway/run.py`, `hermes_cli/cli_commands_mixin.py`, `hermes_cli/config.py`, `tools/async_delegation.py`, `tools/delegate_tool.py`, `tools/process_registry.py`, `tui_gateway/server.py`, `tests/tools/test_async_delegation.py`
+- **Verification:** Upstream squash `c66ecf0bc` is file-diff-equivalent to the carried PR commits (1268 insertions upstream vs 1266 local; 2-line delta is trailing whitespace cleanup). No Axiom contract conflicts.
+- **Action:** Next upstream sync will naturally absorb upstream's version. No special handling needed.
 
 ## Retired fork surface
 
