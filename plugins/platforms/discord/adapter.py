@@ -33,6 +33,12 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 _DISCORD_ALLOW_BOTS_VALUES = {"none", "mentions", "all"}
+# Discord enforces a hard cap of 100 global application (slash) commands per
+# app. Registering more makes the ENTIRE sync fail with error 30032
+# ("Maximum number of application commands reached"), which silently breaks
+# every slash command — not just the overflow ones. We keep the desired set
+# at or below this limit at registration time.
+_DISCORD_MAX_APP_COMMANDS = 100
 
 try:
     import discord
@@ -3608,6 +3614,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
         already_registered: set[str] = set()
+        # Native commands above are registered first and are the highest
+        # priority, so they always survive the 100-command cap. Reserve one
+        # slot for the consolidated ``/skill`` group registered further below.
+        slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
+        dropped_over_cap = 0
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
@@ -3624,6 +3635,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Discord command names: lowercase, hyphens OK, max 32 chars.
                 discord_name = cmd_def.name.lower()[:32]
                 if discord_name in already_registered:
+                    continue
+                if len(already_registered) >= slot_cap:
+                    dropped_over_cap += 1
                     continue
                 auto_cmd = _build_auto_slash_command(
                     cmd_def.name,
@@ -3657,6 +3671,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 discord_name = plugin_name.lower()[:32]
                 if discord_name in already_registered:
                     continue
+                if len(already_registered) >= slot_cap:
+                    dropped_over_cap += 1
+                    continue
                 auto_cmd = _build_auto_slash_command(
                     plugin_name,
                     plugin_desc,
@@ -3688,6 +3705,20 @@ class DiscordAdapter(BasePlatformAdapter):
             register_lucid_commands(self._client, tree)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[%s] Failed to register Lucid slash commands: %s", self.name, e)
+
+        if dropped_over_cap:
+            # Staying under the cap keeps the whole sync succeeding; without
+            # this guard a single over-limit command makes Discord reject the
+            # entire batch (error 30032), breaking every slash command.
+            logger.warning(
+                "[%s] Reached Discord's limit of %d slash commands; skipped %d "
+                "lower-priority command(s) to keep the command sync working. "
+                "Disable slash commands you don't need or trim installed plugins "
+                "to surface them all.",
+                self.name,
+                _DISCORD_MAX_APP_COMMANDS,
+                dropped_over_cap,
+            )
 
         # Optional defense-in-depth: hide every slash command from non-admin
         # guild members in Discord's slash picker. Server-side authorization

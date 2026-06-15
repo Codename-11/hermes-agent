@@ -12,6 +12,7 @@ import {
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
+  setCurrentCwd,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
