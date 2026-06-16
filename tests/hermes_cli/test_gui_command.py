@@ -173,6 +173,7 @@ def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
 def test_gui_linux_rejects_symlink_sandbox(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -349,6 +350,23 @@ def test_desktop_build_needed_detects_missing_artifact(tmp_path, monkeypatch):
     assert cli_main._desktop_build_needed(
         root / "apps" / "desktop", root, source_mode=False
     ) is True
+
+
+def test_desktop_shortcut_exists_detects_legacy_windows_shortcut(tmp_path, monkeypatch):
+    """A Windows shortcut means Desktop is installed even if win-unpacked is gone."""
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    userprofile = tmp_path / "User"
+    appdata = tmp_path / "Roaming"
+    monkeypatch.setenv("USERPROFILE", str(userprofile))
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    assert cli_main._desktop_shortcut_exists() is False
+
+    legacy = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Hermes Desktop.lnk"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("shortcut placeholder", encoding="utf-8")
+
+    assert cli_main._desktop_shortcut_exists() is True
 
 
 def test_desktop_build_stamp_round_trip(tmp_path, monkeypatch):

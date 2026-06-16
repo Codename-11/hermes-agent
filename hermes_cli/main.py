@@ -5023,6 +5023,33 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
+def _desktop_shortcut_exists() -> bool:
+    """Return True when Windows has Hermes Desktop shortcuts installed.
+
+    Desktop shortcuts historically point directly at
+    apps/desktop/release/win-unpacked/Hermes.exe. If a failed update/build
+    cleanup removes that unpacked build directory, `_desktop_packaged_executable`
+    returns None and `hermes update` used to conclude "Desktop is not installed",
+    skipping the rebuild that would repair the shortcut target. Treat existing
+    shortcut entries as install intent so update can self-heal a missing
+    packaged exe.
+    """
+    if sys.platform != "win32":
+        return False
+
+    candidates: list[Path] = []
+    userprofile = os.environ.get("USERPROFILE")
+    appdata = os.environ.get("APPDATA")
+    if userprofile:
+        desktop = Path(userprofile) / "Desktop"
+        candidates.extend([desktop / "Hermes.lnk", desktop / "Hermes Desktop.lnk"])
+    if appdata:
+        programs = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        candidates.extend([programs / "Hermes.lnk", programs / "Hermes Desktop.lnk"])
+
+    return any(path.exists() for path in candidates)
+
+
 def _electron_download_cache_dirs() -> list[Path]:
     """Return the per-user Electron download cache directories for this OS.
 
@@ -9670,7 +9697,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # never run ``hermes desktop`` shouldn't be forced into a full
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        has_desktop_app = (
+            _desktop_packaged_executable(desktop_dir) is not None
+            or _desktop_dist_exists(desktop_dir)
+            or _desktop_shortcut_exists()
+        )
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
