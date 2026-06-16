@@ -52,6 +52,11 @@ Axiom-Desktop commonly connects to a remote Hermes gateway while the Electron sh
   - OS/Finder drops upload/stage local bytes into the remote session workspace instead of leaking local absolute paths into remote prompts.
 - Upstream PR #46658: `fix(desktop): sync $connection on profile switch so remote profiles upload image bytes`
   - Remote-aware surfaces (`image.attach_bytes`, `/api/fs/*`, `/api/media`) follow the active profile/backend after profile switches.
+- Upstream PR #47011: `fix(desktop): route global remote profile REST calls`
+  - Global remote/Docker Desktop mode appends the active profile to profile-scoped REST calls and profile-scopes OAuth status/start/completion paths.
+- Upstream PR #46895: `fix(desktop): open remote-gateway artifacts via authenticated download`
+  - Remote artifacts and generated files resolve through authenticated `/api/files/download?path=…&token=…` instead of opening gateway-host `file://` paths on the Windows client.
+  - The endpoint is auth-gated and allows the session token as a query parameter only for `/api/files/download`; it is not public.
 
 ### Retired/superseded Axiom carries
 
@@ -64,8 +69,8 @@ Do not reintroduce these older Axiom-specific remote-filesystem workarounds duri
 ### Carried on `axiom` until upstream replacement lands
 
 - Upstream PR #44538: `fix(desktop): remote-mode chat file links download via the fs bridge instead of dead file:// URLs`
-  - Remote-mode chat/media fallback links fetch bytes through the authenticated `/api/fs/read-data-url` bridge and download locally instead of opening a gateway-host `file://` path on Windows.
-  - Drop this carry once upstream merges #44538 or an equivalent/better remote chat-file download path.
+  - Axiom still carries the chat fallback/error-state wrapper from #44538 while upstream #46895 covers the shared artifact/generated-file download path.
+  - Re-evaluate and drop this carry once upstream merges #44538 or chat/media fallback UX is fully covered by the `/api/files/download` path.
 - Upstream PR #42603: `fix(desktop): narrow hover-reveal trigger strip to avoid blocking scrollbar`
   - Prevents collapsed side-panel hover activation from stealing the scrollbar hit area.
 - Upstream PR #41189, focused manual port: `fix(desktop): raise FILE_BROWSER_MAX_WIDTH from 20rem to 40rem`

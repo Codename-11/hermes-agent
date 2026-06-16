@@ -1,5 +1,26 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-16 — Import upstream remote artifact download fixes
+
+### Summary
+
+Confirmed upstream merged the remote artifact preview/download fix, then brought the relevant upstream commits onto `axiom` ahead of the next full upstream sync.
+
+### What changed
+
+- Cherry-picked upstream PR #47011 with `-x`: global remote/Docker Desktop mode now forwards profile-scoped REST calls with the active profile and scopes OAuth status/start/completion paths to that profile.
+- Cherry-picked upstream PR #46895 with `-x`: remote artifacts/generated files now open through authenticated `/api/files/download?path=…&token=…` instead of gateway-host `file://` paths on the Windows client.
+- Resolved the `hermes_cli/web_server.py` auth conflict by keeping Axiom's broader `_has_valid_token()` behavior (`X-Hermes-Session-Token`, session Bearer, and `HERMES_GATEWAY_TOKEN`) while adding upstream's narrowly-scoped query-token allowance for `/api/files/download` only.
+- Updated `docs/axiom-fork-contract.md` to mark #46895/#47011 as upstream-merged remote file/access behavior and clarify that Axiom's #44538 carry is now only the chat fallback/error-state wrapper.
+
+### Verification
+
+- `python -m py_compile hermes_cli/web_server.py hermes_cli/auth.py` → OK.
+- `python -m pytest -q -o addopts='' tests/hermes_cli/test_web_server_files.py tests/hermes_cli/test_web_server_fs.py tests/hermes_cli/test_nous_auth_status_cache.py tests/hermes_cli/test_web_oauth_dispatch.py` → 48 passed.
+- `NODE_ENV=test npm run test:ui -- src/lib/media.remote.test.ts src/lib/media.test.ts src/lib/desktop-fs.test.ts` → 18 passed.
+- `npm run typecheck` in `apps/desktop` → OK.
+- `node --test electron/connection-config.test.cjs` in `apps/desktop` → 50 passed.
+
 ## 2026-06-15 — Carry remote Desktop chat file downloads
 
 ### Summary
