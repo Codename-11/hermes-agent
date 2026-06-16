@@ -40,7 +40,6 @@ import os
 import socket as _socket
 import re
 import sqlite3
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -59,11 +58,6 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
-from hermes_cli.config import load_config, save_config
-from hermes_cli.models import curated_models_for_provider, list_available_providers
-from hermes_state import SessionDB
-from tools.memory_tool import MemoryStore
-from tools.skills_tool import skill_view, skills_list
 
 logger = logging.getLogger(__name__)
 
@@ -98,85 +92,6 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
-MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024  # Whisper/OpenAI-compatible upload cap
-MAX_TTS_TEXT_CHARS = 5000
-
-_AUDIO_UPLOAD_PATHS = {
-    "/api/audio/transcriptions",
-    "/voice/transcribe",
-}
-
-_AUDIO_EXT_BY_CONTENT_TYPE = {
-    "audio/wav": ".wav",
-    "audio/wave": ".wav",
-    "audio/x-wav": ".wav",
-    "audio/webm": ".webm",
-    "audio/ogg": ".ogg",
-    "audio/opus": ".opus",
-    "audio/mp4": ".m4a",
-    "audio/x-m4a": ".m4a",
-    "audio/mpeg": ".mp3",
-    "audio/mp3": ".mp3",
-    "audio/flac": ".flac",
-    "audio/x-flac": ".flac",
-    "audio/aac": ".aac",
-}
-
-_MD_CODE_BLOCK = re.compile(r"```[\s\S]*?```")
-_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-_MD_URL = re.compile(r"https?://\S+")
-_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
-_MD_ITALIC = re.compile(r"\*(.+?)\*")
-_MD_INLINE_CODE = re.compile(r"`(.+?)`")
-_MD_HEADER = re.compile(r"^#+\s*", flags=re.MULTILINE)
-_MD_LIST_ITEM = re.compile(r"^\s*[-*]\s+", flags=re.MULTILINE)
-_MD_HR = re.compile(r"---+")
-_MD_EXCESS_NL = re.compile(r"\n{3,}")
-_TOOL_ANNOTATION_EMOJI = (
-    "\U0001F527"  # 🔧 wrench
-    "\u2705"      # ✅ white heavy check mark
-    "\u274C"      # ❌ cross mark
-    "\U0001F4BB"  # 💻 laptop
-    "\U0001F4F1"  # 📱 mobile phone
-    "\U0001F3A4"  # 🎤 microphone
-    "\U0001F50A"  # 🔊 speaker high volume
-    "\u26A0"      # ⚠ warning sign
-)
-_TOOL_ANNOTATION = re.compile(r"`[" + _TOOL_ANNOTATION_EMOJI + r"]\uFE0F?[^`]*`")
-_STANDALONE_EMOJI = re.compile(r"[" + _TOOL_ANNOTATION_EMOJI + r"]\uFE0F?")
-
-
-def _request_body_limit(path: str) -> int:
-    """Return per-route request body cap for early Content-Length rejection."""
-    return MAX_AUDIO_UPLOAD_BYTES if path in _AUDIO_UPLOAD_PATHS else MAX_REQUEST_BYTES
-
-
-def _ext_for_audio_content_type(content_type: Optional[str]) -> str:
-    """Pick a temp-file extension for uploaded audio bytes."""
-    if not content_type:
-        return ".wav"
-    base = content_type.split(";", 1)[0].strip().lower()
-    return _AUDIO_EXT_BY_CONTENT_TYPE.get(base, ".wav")
-
-
-def _sanitize_for_tts(text: str) -> str:
-    """Strip markdown/tool noise before handing text to the TTS backend."""
-    if not text or not text.strip():
-        return ""
-
-    text = _MD_CODE_BLOCK.sub(" ", text)
-    text = _TOOL_ANNOTATION.sub("", text)
-    text = _MD_LINK.sub(r"\1", text)
-    text = _MD_URL.sub("", text)
-    text = _MD_BOLD.sub(r"\1", text)
-    text = _MD_ITALIC.sub(r"\1", text)
-    text = _MD_INLINE_CODE.sub(r"\1", text)
-    text = _MD_HEADER.sub("", text)
-    text = _MD_LIST_ITEM.sub("", text)
-    text = _MD_HR.sub("", text)
-    text = _STANDALONE_EMOJI.sub("", text)
-    text = _MD_EXCESS_NL.sub("\n\n", text)
-    return text.strip()
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -676,8 +591,7 @@ if AIOHTTP_AVAILABLE:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    limit = _request_body_limit(request.path)
-                    if int(cl) > limit:
+                    if int(cl) > MAX_REQUEST_BYTES:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -848,8 +762,6 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
-        self._session_db: Optional[SessionDB] = None
-        self._memory_store: Optional[MemoryStore] = None
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
@@ -859,6 +771,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1007,63 +920,6 @@ class APIServerAdapter(BasePlatformAdapter):
             status=401,
         )
 
-    def _get_session_db(self) -> SessionDB:
-        """Create the session DB lazily."""
-        if self._session_db is None:
-            self._session_db = SessionDB()
-        return self._session_db
-
-    def _get_memory_store(self) -> MemoryStore:
-        """Create the memory store lazily."""
-        if self._memory_store is None:
-            self._memory_store = MemoryStore()
-            self._memory_store.load_from_disk()
-        return self._memory_store
-
-    @staticmethod
-    def _normalize_session_record(session: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Parse serialized session fields into API-friendly JSON."""
-        if session is None:
-            return None
-        normalized = dict(session)
-        model_config = normalized.get("model_config")
-        if model_config:
-            try:
-                normalized["model_config"] = json.loads(model_config)
-            except (TypeError, json.JSONDecodeError):
-                pass
-        return normalized
-
-    @staticmethod
-    def _current_model_settings(config: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract model/provider/base_url/api_mode from config.yaml."""
-        model_cfg = config.get("model")
-        if isinstance(model_cfg, dict):
-            return {
-                "model": str(model_cfg.get("default") or model_cfg.get("model") or "").strip(),
-                "provider": str(model_cfg.get("provider") or "").strip(),
-                "api_mode": str(model_cfg.get("api_mode") or "").strip(),
-                "base_url": str(model_cfg.get("base_url") or "").strip(),
-            }
-        if isinstance(model_cfg, str):
-            return {
-                "model": model_cfg.strip(),
-                "provider": "",
-                "api_mode": "",
-                "base_url": "",
-            }
-        return {"model": "", "provider": "", "api_mode": "", "base_url": ""}
-
-    @staticmethod
-    def _parse_int(value: Any, default: int, minimum: int = 0) -> int:
-        """Parse an integer query parameter with bounds."""
-        if value in (None, ""):
-            return default
-        parsed = int(value)
-        if parsed < minimum:
-            raise ValueError(f"Value must be >= {minimum}")
-        return parsed
-
     # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
@@ -1150,57 +1006,6 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_user_content(
-        text: str, attachments: Optional[List[Dict[str, Any]]] = None
-    ) -> tuple:
-        """Build multimodal content from text + image attachments.
-
-        Returns (user_content, persist_text) where user_content is either
-        a plain string or a list of content parts for multimodal input.
-        """
-        if not attachments:
-            return text, text
-
-        image_parts: List[Dict[str, Any]] = []
-        for att in attachments:
-            if not isinstance(att, dict):
-                continue
-            mime = ""
-            for key in ("contentType", "mimeType", "mediaType"):
-                val = att.get(key)
-                if isinstance(val, str) and val.strip():
-                    mime = val.strip()
-                    break
-            if not mime.startswith("image/"):
-                continue
-            content = ""
-            for key in ("content", "base64", "data"):
-                val = att.get(key)
-                if isinstance(val, str) and val.strip():
-                    content = val.strip()
-                    break
-            if not content:
-                # Try dataUrl format: data:image/png;base64,...
-                data_url = att.get("dataUrl", "")
-                if isinstance(data_url, str) and data_url.startswith("data:"):
-                    content = data_url.split(",", 1)[-1] if "," in data_url else ""
-            if not content:
-                continue
-            image_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{content}"},
-            })
-
-        if not image_parts:
-            return text, text
-
-        content_parts: List[Dict[str, Any]] = []
-        if text.strip():
-            content_parts.append({"type": "text", "text": text})
-        content_parts.extend(image_parts)
-        return content_parts, text
 
     def _create_agent(
         self,
@@ -1331,482 +1136,6 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
-
-
-    async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
-        """GET /api/sessions/search — search messages across sessions."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        query = (request.query.get("q") or "").strip()
-        if not query:
-            return web.json_response({"error": "Missing query parameter: q"}, status=400)
-        try:
-            limit = self._parse_int(request.query.get("limit"), 20)
-            offset = self._parse_int(request.query.get("offset"), 0)
-        except ValueError as e:
-            return web.json_response({"error": str(e)}, status=400)
-
-        results = self._get_session_db().search_messages(query=query, limit=limit, offset=offset)
-        return web.json_response({"query": query, "count": len(results), "results": results})
-
-
-
-
-
-
-
-
-    async def _handle_get_memory(self, request: "web.Request") -> "web.Response":
-        """GET /api/memory — read current memory state."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        target = (request.query.get("target") or "all").strip().lower()
-        if target not in {"all", "memory", "user"}:
-            return web.json_response({"error": "target must be one of: all, memory, user"}, status=400)
-
-        store = self._get_memory_store()
-        store.load_from_disk()
-        targets = []
-        if target in {"all", "memory"}:
-            targets.append({
-                "target": "memory",
-                "entries": store.memory_entries,
-                "entry_count": len(store.memory_entries),
-            })
-        if target in {"all", "user"}:
-            targets.append({
-                "target": "user",
-                "entries": store.user_entries,
-                "entry_count": len(store.user_entries),
-            })
-        return web.json_response({"targets": targets})
-
-    async def _handle_add_memory(self, request: "web.Request") -> "web.Response":
-        """POST /api/memory — add a memory entry."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
-
-        target = str(body.get("target") or "").strip().lower()
-        content = str(body.get("content") or "")
-        if target not in {"memory", "user"}:
-            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
-        result = self._get_memory_store().add(target, content)
-        status = 200 if result.get("success") else 400
-        return web.json_response(result, status=status)
-
-    async def _handle_replace_memory(self, request: "web.Request") -> "web.Response":
-        """PATCH /api/memory — replace a memory entry."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
-
-        target = str(body.get("target") or "").strip().lower()
-        old_text = str(body.get("old_text") or "")
-        content = str(body.get("content") or "")
-        if target not in {"memory", "user"}:
-            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
-        result = self._get_memory_store().replace(target, old_text, content)
-        status = 200 if result.get("success") else 400
-        return web.json_response(result, status=status)
-
-    async def _handle_delete_memory(self, request: "web.Request") -> "web.Response":
-        """DELETE /api/memory — delete a memory entry."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
-
-        target = str(body.get("target") or "").strip().lower()
-        old_text = str(body.get("old_text") or "")
-        if target not in {"memory", "user"}:
-            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
-        result = self._get_memory_store().remove(target, old_text)
-        status = 200 if result.get("success") else 400
-        return web.json_response(result, status=status)
-
-    async def _handle_list_skills(self, request: "web.Request") -> "web.Response":
-        """GET /api/skills — list skills."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        category = (request.query.get("category") or "").strip() or None
-        return web.json_response(json.loads(skills_list(category=category)))
-
-    async def _handle_view_skill(self, request: "web.Request") -> "web.Response":
-        """GET /api/skills/{name} — fetch skill details."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        name = request.match_info["name"]
-        file_path = (request.query.get("file_path") or "").strip() or None
-        return web.json_response(json.loads(skill_view(name, file_path=file_path)))
-
-    async def _handle_get_config(self, request: "web.Request") -> "web.Response":
-        """GET /api/config — fetch the current config."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        config = load_config()
-        current = self._current_model_settings(config)
-        return web.json_response({
-            "model": current["model"],
-            "provider": current["provider"],
-            "api_mode": current["api_mode"],
-            "base_url": current["base_url"],
-            "config": config,
-        })
-
-    async def _handle_update_config(self, request: "web.Request") -> "web.Response":
-        """PATCH /api/config — update model/provider/base_url settings."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
-
-        config = load_config()
-        model_cfg = config.get("model")
-        if isinstance(model_cfg, dict):
-            updated_model_cfg = dict(model_cfg)
-        elif isinstance(model_cfg, str) and model_cfg.strip():
-            updated_model_cfg = {"default": model_cfg.strip()}
-        else:
-            updated_model_cfg = {}
-
-        if "model" in body:
-            updated_model_cfg["default"] = str(body.get("model") or "").strip()
-        if "provider" in body:
-            updated_model_cfg["provider"] = str(body.get("provider") or "").strip()
-        if "base_url" in body:
-            updated_model_cfg["base_url"] = str(body.get("base_url") or "").strip()
-
-        config["model"] = updated_model_cfg
-        try:
-            save_config(config)
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-        current = self._current_model_settings(config)
-        return web.json_response({
-            "ok": True,
-            "model": current["model"],
-            "provider": current["provider"],
-            "base_url": current["base_url"],
-        })
-
-    async def _handle_available_models(self, request: "web.Request") -> "web.Response":
-        """GET /api/available-models — list provider models and available providers."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        config = load_config()
-        current = self._current_model_settings(config)
-        provider = (request.query.get("provider") or current["provider"] or "openrouter").strip()
-        models = [
-            {"id": model_id, "description": description}
-            for model_id, description in curated_models_for_provider(provider)
-        ]
-        providers = list_available_providers()
-        return web.json_response({"provider": provider, "models": models, "providers": providers})
-
-
-    async def _handle_audio_transcriptions(self, request: "web.Request") -> "web.Response":
-        """POST /api/audio/transcriptions — multipart audio upload to Hermes STT."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
-        temp_path: Optional[str] = None
-        try:
-            reader = await request.multipart()
-        except Exception as exc:
-            logger.info("Audio transcription: malformed multipart: %s", exc)
-            return web.json_response(
-                {"success": False, "error": f"malformed multipart body: {exc}"},
-                status=400,
-            )
-
-        part = None
-        try:
-            async for field in reader:
-                if field.filename or field.name in ("file", "audio"):
-                    part = field
-                    break
-        except Exception as exc:
-            logger.info("Audio transcription: multipart read failed: %s", exc)
-            return web.json_response(
-                {"success": False, "error": f"multipart read failed: {exc}"},
-                status=400,
-            )
-
-        if part is None:
-            return web.json_response(
-                {"success": False, "error": "no audio file in multipart body"},
-                status=400,
-            )
-
-        ext = _ext_for_audio_content_type(part.headers.get("Content-Type"))
-        try:
-            tmp = tempfile.NamedTemporaryFile(
-                suffix=ext,
-                prefix="hermes_api_audio_",
-                delete=False,
-            )
-            temp_path = tmp.name
-            total = 0
-            try:
-                while True:
-                    chunk = await part.read_chunk(64 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > MAX_AUDIO_UPLOAD_BYTES:
-                        tmp.close()
-                        return web.json_response(
-                            {
-                                "success": False,
-                                "error": f"audio exceeds {MAX_AUDIO_UPLOAD_BYTES} bytes",
-                            },
-                            status=413,
-                        )
-                    tmp.write(chunk)
-            finally:
-                tmp.close()
-
-            if total == 0:
-                return web.json_response(
-                    {"success": False, "error": "empty audio upload"},
-                    status=400,
-                )
-
-            try:
-                from tools.transcription_tools import transcribe_audio  # type: ignore
-            except Exception as exc:
-                logger.warning("Audio transcription backend import failed: %s", exc)
-                return web.json_response(
-                    {"success": False, "error": f"transcription backend not importable: {exc}"},
-                    status=500,
-                )
-
-            result = await asyncio.to_thread(transcribe_audio, temp_path)
-            if not isinstance(result, dict):
-                return web.json_response(
-                    {
-                        "success": False,
-                        "error": "transcription backend returned unexpected shape",
-                    },
-                    status=500,
-                )
-            if not result.get("success"):
-                return web.json_response(
-                    {
-                        "success": False,
-                        "error": result.get("error", "transcription failed"),
-                        "provider": result.get("provider"),
-                    },
-                    status=500,
-                )
-
-            text = result.get("transcript") or result.get("text") or ""
-            return web.json_response(
-                {
-                    "success": True,
-                    "text": text,
-                    "provider": result.get("provider"),
-                }
-            )
-        except web.HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception("Audio transcription failed: %s", exc)
-            return web.json_response(
-                {"success": False, "error": f"transcription error: {exc}"},
-                status=500,
-            )
-        finally:
-            if temp_path:
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-
-    async def _handle_audio_speech(self, request: "web.Request") -> "web.StreamResponse":
-        """POST /api/audio/speech — synthesize text through Hermes TTS."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
-        try:
-            payload = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response(
-                {"success": False, "error": "invalid JSON body"},
-                status=400,
-            )
-
-        if not isinstance(payload, dict):
-            return web.json_response(
-                {"success": False, "error": "body must be a JSON object"},
-                status=400,
-            )
-
-        text = payload.get("text") or payload.get("input")
-        if not isinstance(text, str):
-            return web.json_response(
-                {"success": False, "error": "'text' must be a string"},
-                status=400,
-            )
-        text = text.strip()
-        if not text:
-            return web.json_response(
-                {"success": False, "error": "'text' must not be empty"},
-                status=400,
-            )
-        if len(text) > MAX_TTS_TEXT_CHARS:
-            return web.json_response(
-                {"success": False, "error": f"text exceeds {MAX_TTS_TEXT_CHARS} characters"},
-                status=400,
-            )
-
-        sanitized = _sanitize_for_tts(text)
-        if not sanitized:
-            return web.json_response(
-                {"success": False, "error": "'text' is empty after sanitization"},
-                status=400,
-            )
-
-        try:
-            from tools.tts_tool import text_to_speech_tool  # type: ignore
-            raw = await asyncio.to_thread(text_to_speech_tool, sanitized)
-        except Exception as exc:
-            logger.exception("Audio speech: TTS call failed: %s", exc)
-            return web.json_response(
-                {"success": False, "error": f"tts backend error: {exc}"},
-                status=500,
-            )
-
-        try:
-            result = json.loads(raw) if isinstance(raw, str) else raw
-        except (json.JSONDecodeError, ValueError) as exc:
-            return web.json_response(
-                {"success": False, "error": f"tts backend returned non-JSON: {exc}"},
-                status=500,
-            )
-
-        if not isinstance(result, dict) or not result.get("success"):
-            err = (
-                result.get("error", "tts failed")
-                if isinstance(result, dict)
-                else "tts returned unexpected shape"
-            )
-            return web.json_response({"success": False, "error": err}, status=500)
-
-        file_path = result.get("file_path")
-        if not isinstance(file_path, str) or not file_path:
-            return web.json_response(
-                {"success": False, "error": "tts result missing file_path"},
-                status=500,
-            )
-        if not os.path.isfile(file_path):
-            return web.json_response(
-                {"success": False, "error": f"tts file missing on disk: {file_path}"},
-                status=500,
-            )
-
-        headers = {
-            "Content-Type": "audio/mpeg",
-            "Cache-Control": "private, no-store",
-            "Content-Disposition": 'inline; filename="tts.mp3"',
-        }
-        return web.FileResponse(file_path, headers=headers)
-
-    async def _handle_audio_capabilities(self, request: "web.Request") -> "web.Response":
-        """GET /api/audio/capabilities — configured STT/TTS capability probe."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
-        try:
-            from tools.voice_mode import check_voice_requirements  # type: ignore
-            from tools.tts_tool import _load_tts_config  # type: ignore
-            from tools.transcription_tools import _load_stt_config  # type: ignore
-        except Exception as exc:
-            logger.warning("Audio capabilities imports failed: %s", exc)
-            return web.json_response(
-                {"success": False, "error": f"voice backend not importable: {exc}"},
-                status=500,
-            )
-
-        try:
-            requirements = check_voice_requirements()
-        except Exception as exc:
-            logger.warning("check_voice_requirements failed: %s", exc)
-            requirements = {"error": str(exc)}
-
-        try:
-            tts_cfg = _load_tts_config() or {}
-        except Exception as exc:
-            logger.warning("_load_tts_config failed: %s", exc)
-            tts_cfg = {"error": str(exc)}
-
-        try:
-            stt_cfg = _load_stt_config() or {}
-        except Exception as exc:
-            logger.warning("_load_stt_config failed: %s", exc)
-            stt_cfg = {"error": str(exc)}
-
-        return web.json_response(
-            {
-                "success": True,
-                "transcription": {
-                    "enabled": bool(stt_cfg.get("provider")),
-                    "provider": stt_cfg.get("provider"),
-                    "model": stt_cfg.get("model"),
-                    "endpoint": "/api/audio/transcriptions",
-                },
-                "speech": {
-                    "enabled": bool(tts_cfg.get("provider")),
-                    "provider": tts_cfg.get("provider"),
-                    "voice_id": tts_cfg.get("voice_id"),
-                    "model": tts_cfg.get("model"),
-                    "endpoint": "/api/audio/speech",
-                    "mime_type": "audio/mpeg",
-                },
-                "stt": {
-                    "enabled": bool(stt_cfg.get("provider")),
-                    "provider": stt_cfg.get("provider"),
-                    "model": stt_cfg.get("model"),
-                },
-                "tts": {
-                    "enabled": bool(tts_cfg.get("provider")),
-                    "provider": tts_cfg.get("provider"),
-                    "voice_id": tts_cfg.get("voice_id"),
-                    "model": tts_cfg.get("model"),
-                },
-                "limits": {
-                    "max_audio_bytes": MAX_AUDIO_UPLOAD_BYTES,
-                    "max_text_chars": MAX_TTS_TEXT_CHARS,
-                },
-                "requirements": requirements,
-            }
-        )
-
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -1847,9 +1176,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
-                "audio_transcriptions": True,
-                "audio_speech": True,
-                "audio_capabilities": True,
                 "approval_events": True,
                 "session_resources": True,
                 "session_chat": True,
@@ -1876,12 +1202,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
-                "audio_transcriptions": {"method": "POST", "path": "/api/audio/transcriptions"},
-                "audio_speech": {"method": "POST", "path": "/api/audio/speech"},
-                "audio_capabilities": {"method": "GET", "path": "/api/audio/capabilities"},
-                "voice_transcribe": {"method": "POST", "path": "/voice/transcribe"},
-                "voice_synthesize": {"method": "POST", "path": "/voice/synthesize"},
-                "voice_config": {"method": "GET", "path": "/voice/config"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
@@ -2474,21 +1794,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
             )
-
-        # Fast-path for non-streaming capability probes (max_tokens=1 or model='test').
-        # Keep it after request validation so malformed probe-shaped requests
-        # still receive useful 4xx errors, and never intercept stream=true.
-        max_tokens = body.get("max_tokens")
-        probe_model = body.get("model", "")
-        if not stream and (max_tokens == 1 or probe_model == "test"):
-            return web.json_response({
-                "id": f"chatcmpl-probe-{uuid.uuid4().hex[:8]}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": probe_model or "hermes-agent",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 1, "total_tokens": 1},
-            })
 
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This
@@ -4934,12 +4239,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
-            self._app.router.add_post("/api/audio/transcriptions", self._handle_audio_transcriptions)
-            self._app.router.add_post("/api/audio/speech", self._handle_audio_speech)
-            self._app.router.add_get("/api/audio/capabilities", self._handle_audio_capabilities)
-            self._app.router.add_post("/voice/transcribe", self._handle_audio_transcriptions)
-            self._app.router.add_post("/voice/synthesize", self._handle_audio_speech)
-            self._app.router.add_get("/voice/config", self._handle_audio_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
@@ -4971,26 +4270,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
-            # Axiom/Relay compatibility routes that are still outside upstream's
-            # baseline session-control surface. Register these before exposing
-            # the adapter through app["api_server_adapter"] so Hermes-Relay's
-            # bootstrap hook sees the native fork routes and no-ops instead of
-            # injecting shadow handlers.
-            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
-            self._app.router.add_get("/api/memory", self._handle_get_memory)
-            self._app.router.add_post("/api/memory", self._handle_add_memory)
-            self._app.router.add_patch("/api/memory", self._handle_replace_memory)
-            self._app.router.add_delete("/api/memory", self._handle_delete_memory)
-            self._app.router.add_get("/api/skills", self._handle_list_skills)
-            self._app.router.add_get("/api/skills/{name}", self._handle_view_skill)
-            self._app.router.add_get("/api/config", self._handle_get_config)
-            self._app.router.add_patch("/api/config", self._handle_update_config)
-            self._app.router.add_get("/api/available-models", self._handle_available_models)
-
-            # Store the adapter after all native routes are registered. Local
-            # Hermes-Relay bootstrap shims use this key as a feature-detection
-            # hook; registering native routes first lets those shims no-op
-            # instead of shadowing first-class handlers.
+            # Store the adapter after native routes are registered. Local Hermes-Relay
+            # bootstrap shims use this key as a feature-detection hook; registering
+            # native routes first lets those shims no-op instead of shadowing the
+            # upstream session-control handlers.
             self._app["api_server_adapter"] = self
 
             # Start background sweep to clean up orphaned (unconsumed) run streams
@@ -5083,10 +4366,6 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
-        if self._session_db is not None:
-            self._session_db.close()
-            self._session_db = None
-        self._memory_store = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(
