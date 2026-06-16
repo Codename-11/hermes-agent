@@ -227,7 +227,7 @@ from hermes_cli.dashboard_auth.public_paths import (
 )
 
 
-def _has_valid_token(request: Request) -> bool:
+def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a recognized credential.
 
     Three credentials are accepted:
@@ -299,9 +299,7 @@ def _require_token(request: Request) -> None:
         if getattr(request.state, "session", None) is not None:
             return
         raise HTTPException(status_code=401, detail="Unauthorized")
-    if not _has_valid_token(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+    if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -428,7 +426,7 @@ async def auth_middleware(request: Request, call_next):
     Plugin API routes (mounted at /api/plugins/<name>/) are gated by the
     same check in legacy/session-token mode — they used to be excluded,
     which let any loopback caller hit plugin endpoints unauthenticated.
-    _has_valid_token accepts the dedicated session header (preferred,
+    _has_valid_session_token accepts the dedicated session header (preferred,
     avoids reverse-proxy Authorization collisions), the legacy Bearer
     session token, or HERMES_GATEWAY_TOKEN so external consumers (Mission
     Control, scripts) keep working without scraping the SPA's injected token.
@@ -441,7 +439,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
-        if not _has_valid_token(request) and not _has_valid_query_token(request, path):
+        if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
@@ -1253,13 +1251,36 @@ def _default_hermes_root_is_opt_data() -> bool:
     raw = os.environ.get("HERMES_HOME", "").strip()
     if not raw:
         return False
+    if raw.replace("\\", "/").rstrip("/") == "/opt/data":
+        return True
     try:
-        from hermes_constants import get_default_hermes_root
-
-        root = get_default_hermes_root().expanduser().resolve(strict=False)
+        root = Path(raw).expanduser().resolve(strict=False)
     except (OSError, RuntimeError):
         root = Path(raw).expanduser().resolve(strict=False)
     return root == _HOSTED_MANAGED_FILES_ROOT
+
+
+def _dashboard_home_path() -> Path:
+    raw_home = os.environ.get("HOME", "").strip()
+    if raw_home:
+        return _canonical_path(Path(raw_home))
+    return _canonical_path(Path.home())
+
+
+def _dashboard_local_update_managed_externally() -> bool:
+    """Return true when the dashboard should not offer ``hermes update``.
+
+    Containerized dashboards are updated by the outer launcher/image, not by an
+    in-browser local update action. Keep this dashboard capability separate
+    from install-method detection: manual git/pip installs inside containers can
+    still behave like their actual install method in the CLI.
+    """
+    try:
+        from hermes_constants import is_container
+
+        return is_container()
+    except Exception:
+        return False
 
 
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
@@ -1277,7 +1298,7 @@ def _managed_files_policy(request: Request, *, create_root: bool = True) -> Mana
         root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
         return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
 
-    home = _canonical_path(Path.home())
+    home = _dashboard_home_path()
     return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
 
 
@@ -1726,6 +1747,7 @@ async def get_status():
         "release_date": __release_date__,
         "config_version": current_ver,
         "latest_config_version": latest_ver,
+        "can_update_hermes": not _dashboard_local_update_managed_externally(),
         "gateway_running": gateway_running,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
@@ -2237,6 +2259,22 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    if _dashboard_local_update_managed_externally():
+        message = (
+            "Hermes updates are managed outside this dashboard in "
+            "containerized environments. The built-in local updater is "
+            "disabled here."
+        )
+        _record_completed_action("hermes-update", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "hermes-update",
+            "error": "dashboard_update_managed_externally",
+            "message": message,
+            "update_command": "managed outside dashboard",
+        }
+
     install_method = detect_install_method(PROJECT_ROOT)
     if install_method == "docker":
         message = format_docker_update_message()
@@ -2440,6 +2478,20 @@ async def check_hermes_update(force: bool = False):
                  update overlay renders this as "what's changed". Additive:
                  existing consumers ignore it.
     """
+    if _dashboard_local_update_managed_externally():
+        return {
+            "install_method": "managed-runtime",
+            "current_version": __version__,
+            "behind": None,
+            "update_available": False,
+            "can_apply": False,
+            "update_command": "managed outside dashboard",
+            "message": (
+                "Hermes updates are managed outside this dashboard in "
+                "containerized environments."
+            ),
+        }
+
     install_method = detect_install_method(PROJECT_ROOT)
     update_command = recommended_update_command_for_method(install_method)
 

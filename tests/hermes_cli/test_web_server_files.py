@@ -329,5 +329,5 @@ def test_hosted_policy_locks_to_opt_data(monkeypatch):
         _restore_app_state(prev_auth_required, prev_bound_host)
         client.close()
 
-    assert str(policy.locked_root) == "/opt/data"
+    assert str(policy.locked_root).replace("\\", "/") == "/opt/data"
     assert policy.can_change_path is False
