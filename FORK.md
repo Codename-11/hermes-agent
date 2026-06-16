@@ -55,6 +55,8 @@ paused_at: 2026-06-08T12:04:38.045286-04:00
 
 These routes and semantics are part of the Axiom/Hermes-Relay compatibility surface until explicitly retired:
 
+> **RETIRED 2026-06-16 — see "Retired fork surface" below.** The relay-specific api_server patches that provided these routes were stripped from `axiom` (commit `6924d6356`); Hermes-Relay now relies on native upstream + the plugin-owned bootstrap, never fork patches. The list below is retained as the historical compatibility surface and verification baseline, not still-protected fork code.
+
 ```text
 /api/sessions
 /api/sessions/{id}
@@ -278,6 +280,19 @@ Desktop remote-filesystem workaround patches were reverted on 2026-06-12 after u
 Kept without change:
 - `992cfbdfd` — "widen file browser max width" (harmless UI preference)
 - `7c3f8d2d0` — "narrow hover-reveal trigger strip" (scrollbar UX fix)
+
+### Relay-specific api_server patches — retired 2026-06-16
+
+Per operator direction, Hermes-Relay must rely on native upstream OR the hermes-relay plugin, never fork patches. `gateway/platforms/api_server.py` was reset to `upstream/main` (keeping only the non-relay Forge run-tool-policy hunk `d95b9381e`) and the retired `webapi/*` Workspace bridge was deleted. Strip commit on `axiom`: `6924d6356` (api_server.py diff vs `upstream/main` = +68 lines, Forge-only). The `api-relay` commits below are superseded:
+
+- Session/skills/config adders (`f3121f6eb`, `8b4882542`, `9d16e123b`, `8208ea113`, `051b8e96f`, `b78288ed0`, `9ad4dc91f`, `d4e642904`): native upstream now serves `/api/sessions/*`, `/api/sessions/{id}/chat/stream`, `/v1/skills`, `/v1/toolsets`, `/v1/capabilities`.
+- SSE-fallback enrichments (`d58b797bd` live tool events, `790df544b` session_id/run_id, `f3f382e5f` keepalive, `832014466` multimodal attach): the gateway `/api/ws` (tui_gateway) transport carries live tool + thinking + multimodal natively; the api_server SSE path is only a fallback.
+- `73babf72a` Relay-style api_server `/api/audio/*`: standard voice rides the native dashboard `/api/audio/transcribe` + `/api/audio/speak` (:9119) instead.
+- `aea9f5f48` (cron `self.` fix): folded away with the reset; upstream cron code is already correct.
+
+Kept (not relay-specific): `629e1ec70` (bearer auth on the native dashboard `/api/plugins/*` mount — general security hardening) and `73fa63742`'s `run_agent.py` multimodal hunk (core multimodal). The remaining non-native compat routes (`/api/memory`, `/api/config`, `/api/available-models`, legacy `/api/skills` detail, `/api/sessions/search`) now come from the plugin-owned bootstrap (`hermes_relay_bootstrap.pth`, feature-detected, native wins), not fork patches.
+
+**Verification (live deploy, 2026-06-16):** api_server.py vs `upstream/main` = +68 (Forge-only), `grep api/audio` = 0, `webapi/` removed. Gateway `/health` 200; `/v1/capabilities` `audio_api:false`; native `GET /api/sessions` 200, `/v1/skills` 200, `/v1/toolsets` 200; gateway `POST /api/audio/transcribe` 404; dashboard `POST /api/audio/transcribe` (:9119) native (`hermes_cli/web_server.py` L2411 / L2546). Relay reinstalled (`dev` 1.1.0) healthy against the stripped gateway. Pre-strip rollback commit `c25408081`.
 
 ## Fork-only commit inventory
 
