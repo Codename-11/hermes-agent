@@ -66,8 +66,12 @@ export function ModelPickerDialog({
   })
 
   const providers = modelOptions.data?.providers ?? []
-  const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
-  const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
+  // The picker selection is owned by the composer/session stores. The query
+  // response primarily supplies the provider/model catalog and can lag behind an
+  // explicit selection, so prefer the live props for the active check/current
+  // label to prevent stale query data from flickering the row back.
+  const optionsModel = String(currentModel || modelOptions.data?.model || '')
+  const optionsProvider = String(currentProvider || modelOptions.data?.provider || '')
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error

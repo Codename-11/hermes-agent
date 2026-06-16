@@ -142,6 +142,37 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
+  it('uses the live active-session atom when the hook prop is briefly stale', async () => {
+    $activeSessionId.set('runtime-live')
+    const queryClient = new QueryClient()
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'openai/gpt-5.5' }) as never)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient,
+        requestGateway
+      })
+    )
+
+    await expect(
+      result.current.selectModel({
+        model: 'openai/gpt-5.5',
+        provider: 'openai-codex'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'runtime-live',
+      key: 'model',
+      value: 'openai/gpt-5.5 --provider openai-codex'
+    })
+    expect(queryClient.getQueryData(['model-options', 'runtime-live'])).toMatchObject({
+      model: 'openai/gpt-5.5',
+      provider: 'openai-codex'
+    })
+  })
+
   it('stores a no-session pick as UI state with no gateway or global write', async () => {
     const requestGateway = vi.fn()
     let controls!: Controls

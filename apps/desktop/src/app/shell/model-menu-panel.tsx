@@ -84,8 +84,13 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     }
   })
 
-  const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
-  const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
+  // The selected model/provider stores are authoritative for the composer and
+  // active-session footer. `model.options` is also the catalog payload, so it can
+  // briefly carry stale model metadata while a picker change is being applied;
+  // prefer the store to avoid rendering a visible snap-back to the previous
+  // model while the query refetch settles.
+  const optionsModel = String(currentModel || modelOptions.data?.model || '')
+  const optionsProvider = String(currentProvider || modelOptions.data?.provider || '')
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error

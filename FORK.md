@@ -258,6 +258,15 @@ tests/plugins/memory/test_mempalace_provider.py
 
 Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` from a dedicated `carry/upstream-pr-<number>-<topic>` branch so the carry can be reverted as a unit when upstream merges or replaces the feature.
 
+### Desktop model picker snap-back — local carry pending upstream equivalent
+
+- **Status:** LOCAL TEMPORARY CARRY — no upstream PR opened at operator direction.
+- **Local subject:** `fix(desktop): keep model picker selection authoritative`
+- **Why carried:** Desktop can briefly render stale `model.options` query metadata over the live composer/session stores after an explicit picker selection, making the UI snap back to the prior model/provider and allowing test chats to launch against the wrong runtime.
+- **Files touched:** `apps/desktop/src/app/session/hooks/use-model-controls.ts`, `apps/desktop/src/app/session/hooks/use-model-controls.test.tsx`, `apps/desktop/src/app/shell/model-menu-panel.tsx`, `apps/desktop/src/components/model-picker.tsx`.
+- **Drop condition:** If upstream changes Desktop model controls so explicit picker selections are store-authoritative, route through the live active session, and include equivalent regression coverage, drop this local carry instead of preserving duplicate fork behavior.
+- **Verification:** `NODE_ENV=test npm run test:ui -- src/app/session/hooks/use-model-controls.test.tsx` → 6 passed; `NODE_ENV=test npm run typecheck` → OK; touched-file eslint → OK.
+
 ### PR #40946 — async background delegation
 
 - **Status:** SUPERCEDED — upstream merged equivalent implementation on 2026-06-15.

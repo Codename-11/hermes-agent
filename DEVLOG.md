@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-16 — Fix Desktop model picker snap-back
+
+### Summary
+
+Fixed a Desktop composer/model-picker state race where an explicit model selection could visually flicker back to stale `model.options` metadata or route through a stale active-session prop, causing new test chats to keep launching on the wrong provider/model.
+
+### What changed
+
+- Made Desktop model picker/menu rendering prefer the live composer/session model stores over lagging `model.options` query metadata.
+- Made `useModelControls` resolve the live runtime session from `$activeSessionId` with the hook prop as fallback, so picker changes route through the actual active session even during a brief render/state mismatch.
+- Added a regression for stale hook prop vs live active-session atom behavior.
+
+### Verification
+
+- `NODE_ENV=test npm run test:ui -- src/app/session/hooks/use-model-controls.test.tsx` in `apps/desktop` → 6 passed.
+- `NODE_ENV=test npm run typecheck` in `apps/desktop` → OK.
+- `NODE_ENV=test npx eslint src/app/session/hooks/use-model-controls.ts src/app/session/hooks/use-model-controls.test.tsx src/app/shell/model-menu-panel.tsx src/components/model-picker.tsx` in `apps/desktop` → OK.
+- Full `npm run lint` still fails on pre-existing unrelated Desktop lint errors outside this patch.
+
 ## 2026-06-16 — Import upstream remote artifact download fixes
 
 ### Summary
