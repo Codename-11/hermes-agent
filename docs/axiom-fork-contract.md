@@ -40,51 +40,45 @@ Run React/Vitest slices with `NODE_ENV=test`. A production ambient env can make 
 
 ## Current Desktop remote-file/access layer
 
-Axiom-Desktop commonly connects to a remote Hermes gateway while the Electron shell runs on Windows. Keep this layer small, documented, and easy to drop when upstream lands equivalent behavior.
+Axiom-Desktop often runs the Electron shell on Windows while the active Hermes gateway/profile is remote. That means a path like `/home/.../artifact.png` usually exists on the gateway, **not** on the Windows client.
 
-### Upstream behavior already merged into `main`
+Keep this section as the tracking source for remote file/sidebar/artifact behavior. The rule is: prefer upstream-merged fixes, carry only narrow/drop-ready patches on `axiom`, and do not revive older workaround commits unless Bailey explicitly asks for a new local behavior.
 
-- Upstream PR #44326: `feat(desktop): browse remote backend files (salvage #43434)`
-  - Remote Desktop sessions use authenticated read-only `/api/fs/*` backend REST for directory listing, capped text previews, capped data URLs, git-root detection, and backend default cwd.
-  - Local Desktop sessions keep Electron filesystem IPC.
-  - This supersedes the older local-only ENOENT workaround direction from #42497/#43082 for the main Files/sidebar remote-browsing path.
-- Upstream PR #43109: `fix(desktop): stage dropped files into the remote session workspace`
-  - OS/Finder drops upload/stage local bytes into the remote session workspace instead of leaking local absolute paths into remote prompts.
-- Upstream PR #46658: `fix(desktop): sync $connection on profile switch so remote profiles upload image bytes`
-  - Remote-aware surfaces (`image.attach_bytes`, `/api/fs/*`, `/api/media`) follow the active profile/backend after profile switches.
-- Upstream PR #47011: `fix(desktop): route global remote profile REST calls`
-  - Global remote/Docker Desktop mode appends the active profile to profile-scoped REST calls and profile-scopes OAuth status/start/completion paths.
-- Upstream PR #46895: `fix(desktop): open remote-gateway artifacts via authenticated download`
-  - Remote artifacts and generated files resolve through authenticated `/api/files/download?path=…&token=…` instead of opening gateway-host `file://` paths on the Windows client.
-  - The endpoint is auth-gated and allows the session token as a query parameter only for `/api/files/download`; it is not public.
+### Current state at a glance
 
-### Retired/superseded Axiom carries
+| Surface | Current behavior | Source | Notes |
+| --- | --- | --- | --- |
+| Files/sidebar browse + preview | Remote Desktop sessions use authenticated read-only `/api/fs/*` backend REST for listing, capped text preview, capped data URLs, git-root detection, and backend default cwd. Local Desktop sessions keep Electron filesystem IPC. | Upstream #44326 | Supersedes the older local-only ENOENT workaround path from #42497/#43082. |
+| OS/Finder drops into remote sessions | Local dropped files upload/stage into the remote session workspace instead of leaking Windows/macOS absolute paths into prompts. | Upstream #43109 | Keeps drag/drop usable when chat runs on a remote gateway. |
+| Remote profile switches | Remote-aware surfaces follow the active profile/backend after profile switches. | Upstream #46658 | Covers `image.attach_bytes`, `/api/fs/*`, and `/api/media`. |
+| Global remote/Docker profile REST | Desktop appends the active profile to global-remote profile-scoped REST calls and profile-scopes OAuth status/start/completion. | Upstream #47011 | Needed when many profiles share one remote backend. |
+| Artifacts/generated files | Remote artifacts and generated files open through authenticated `/api/files/download?path=…&token=…`, not gateway-host `file://` paths on Windows. | Upstream #46895 | Endpoint stays auth-gated; query token is allowed only for `/api/files/download`, not public files access. |
+| Chat/media fallback link UX | Axiom keeps the #44538 wrapper/error-state behavior for chat/media fallback links. | Axiom carry of upstream PR #44538 | Re-evaluate once upstream merges #44538 or fully covers chat/media fallback UX through `/api/files/download`. |
 
-Do not reintroduce these older Axiom-specific remote-filesystem workarounds during upstream sync unless Bailey explicitly asks for a new Axiom-specific behavior:
+### Still carried on `axiom`
 
-- `e830ac3e6` — `fix(desktop): skip remote session cwd in Files panel to prevent ENOENT`
-- `b6d71f248` — `fix desktop remote cwd workspace drift`
-- `8e5b55378` — `docs: clarify local files pane in remote mode`
+| Carry | Why it remains | Drop/review condition |
+| --- | --- | --- |
+| Upstream PR #44538 — `fix(desktop): remote-mode chat file links download via the fs bridge instead of dead file:// URLs` | Provides chat/media fallback download handling and visible error state beyond the shared artifact download path. | Drop once upstream merges #44538 or equivalent chat/media fallback UX is present on `main`. |
+| Upstream PR #42603 — `fix(desktop): narrow hover-reveal trigger strip to avoid blocking scrollbar` | Small Desktop UX fix; prevents collapsed side-panel hover activation from stealing the scrollbar hit area. | Drop once equivalent behavior is verified on `main`. |
+| Upstream PR #41189, focused manual port — `fix(desktop): raise FILE_BROWSER_MAX_WIDTH from 20rem to 40rem` | One-line width improvement; original PR head had unrelated merge noise. | Drop once equivalent width is verified on `main`. |
 
-### Carried on `axiom` until upstream replacement lands
+### Retired or superseded — do not reintroduce by default
 
-- Upstream PR #44538: `fix(desktop): remote-mode chat file links download via the fs bridge instead of dead file:// URLs`
-  - Axiom still carries the chat fallback/error-state wrapper from #44538 while upstream #46895 covers the shared artifact/generated-file download path.
-  - Re-evaluate and drop this carry once upstream merges #44538 or chat/media fallback UX is fully covered by the `/api/files/download` path.
-- Upstream PR #42603: `fix(desktop): narrow hover-reveal trigger strip to avoid blocking scrollbar`
-  - Prevents collapsed side-panel hover activation from stealing the scrollbar hit area.
-- Upstream PR #41189, focused manual port: `fix(desktop): raise FILE_BROWSER_MAX_WIDTH from 20rem to 40rem`
-  - The PR head was a merge commit with unrelated upstream changes; carry only the `FILE_BROWSER_MAX_WIDTH` change.
+| Item | Why not |
+| --- | --- |
+| `e830ac3e6` — `fix(desktop): skip remote session cwd in Files panel to prevent ENOENT` | Superseded by upstream #44326's actual remote Files/sidebar browsing. |
+| `b6d71f248` — `fix desktop remote cwd workspace drift` | Superseded by upstream remote filesystem/default-cwd routing. |
+| `8e5b55378` — `docs: clarify local files pane in remote mode` | The Files pane is no longer documented as local-only in remote mode. |
+| Upstream PR #40090 — `remote file browser via dashboard API` | Superseded by upstream #44326. |
+| Upstream PR #46663 — `convert file:// URLs to HTTP download for remote gateways` | Superseded by upstream #46895, which salvaged the behavior without CRLF noise and without making the endpoint public. |
 
-### Deliberately not carried yet
+### Deferred larger scope
 
-- Upstream PR #39122 (`remote workspace + terminal over SSH`) is not carried yet.
-  - It is a broad architecture change touching Electron SSH, terminal routing, settings, and file browsing.
-  - Evaluate in a dedicated branch before considering it for `axiom`.
-- Upstream PR #39183 (`edit files in place from the preview pane`) is not carried yet.
-  - It is stacked on #39122 and introduces remote write-back/editing. Do not mix it into the read-only remote browse/preview lane.
-- Upstream PR #46663 (`convert file:// URLs to HTTP download for remote gateways`) is not carried.
-  - It overlaps #44538 but currently conflicts with `main`/`axiom`; prefer the cleaner fs-bridge chat-file fix unless upstream lands a consolidated replacement.
+| PR | Status | Reason |
+| --- | --- | --- |
+| Upstream PR #39122 — `remote workspace + terminal over SSH` | Not carried | Broad Electron SSH/terminal/settings/file-browser architecture change. Evaluate in a dedicated branch. |
+| Upstream PR #39183 — `edit files in place from the preview pane` | Not carried | Stacked on #39122 and introduces remote write-back/editing. Do not mix it into the read-only browse/preview lane. |
 
 ## Axiom-Desktop operational notes
 
