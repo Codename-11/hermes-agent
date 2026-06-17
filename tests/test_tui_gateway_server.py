@@ -5099,8 +5099,9 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     # entries mid-run, which would flip this build thread's ``replaced`` check
     # to True and trigger a spurious unregister. Snapshot, clear, and restore
     # so this test sees only its own session regardless of shard composition.
-    _saved_sessions = dict(server._sessions)
-    server._sessions.clear()
+    with server._sessions_lock:
+        _saved_sessions = dict(server._sessions)
+        server._sessions.clear()
 
     try:
         resp = server.handle_request(
@@ -5130,8 +5131,9 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         assert session.get("slash_worker") is not None
     finally:
         # Cleanup + restore sibling sessions we snapshotted.
-        server._sessions.clear()
-        server._sessions.update(_saved_sessions)
+        with server._sessions_lock:
+            server._sessions.clear()
+            server._sessions.update(_saved_sessions)
 
 
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
