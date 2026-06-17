@@ -344,6 +344,36 @@ venv/bin/python -m pytest -o 'addopts=' -q \
 
 ## Current known update/build pitfalls
 
+### 7. Anthropic Claude OAuth billing-lane fixes
+
+**Outcome:** Anthropic OAuth requests via Claude subscription use the correct wire format so tool calls, tool_choice enforcement, and system prompt caching work on the Claude Code billing lane.
+
+**Upstream status:** Not yet merged. PRs #23361 and #47738 are open upstream; the Axiom fork carries them on `origin/axiom` and TGI mirrors the same stack on `origin/tgi`.
+
+**What changed:**
+
+- `tool_choice` name encoding: concrete tool_choice names use the same `mcp__` wire-name encoding as the tools array (from #23361).
+- System prompt relocation: large Hermes system prompts are relocated out of Anthropic `system[]` into a cache-marked first-user `<system_context>` preamble on the OAuth path (from #47738).
+- Conflict resolution: double-underscore response-strip prefix preserved after stack application.
+
+**Primary files:**
+
+```text
+agent/anthropic_adapter.py
+agent/transports/anthropic.py
+tests/agent/test_anthropic_adapter.py
+tests/agent/test_anthropic_oauth_system_relocation.py
+```
+
+**Verification:**
+
+```bash
+python3 -m py_compile agent/anthropic_adapter.py agent/transports/anthropic.py
+venv/bin/python -m pytest tests/agent/test_anthropic_adapter.py tests/agent/test_anthropic_oauth_system_relocation.py -q -o 'addopts='
+```
+
+**Remove when:** upstream merges #23361 and #47738 into `main` and a subsequent `hermes update` brings them into the TGI checkout.
+
 ### Web build under `NODE_ENV=production`
 
 The TGI service environment can carry `NODE_ENV=production`. If `npm install --workspace web` omits dev dependencies, `hermes update` may fast-forward successfully but print `tsc: not found` and serve stale web dist.
