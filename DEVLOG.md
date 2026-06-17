@@ -1,5 +1,26 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-17 — Carry Claude OAuth billing-lane candidate stack
+
+### Summary
+
+Built and validated an isolated Axiom merge-candidate stack for Anthropic/Claude Code OAuth subscription billing-lane safety, then prepared it for promotion without touching the dirty live `axiom` checkout.
+
+### What changed
+
+- Cherry-picked upstream #47723 onto the Axiom candidate branch: OAuth wire tool names are encoded as `mcp__*` instead of single-underscore `mcp_*`, and response names dispatch back to registered tool names.
+- Cherry-picked upstream #23361: concrete `tool_choice` names use the same OAuth wire-name encoding as the `tools` array.
+- Cherry-picked upstream #47738: large Hermes system prompts are relocated out of Anthropic `system[]` into a cache-marked first-user `<system_context>` preamble on the OAuth path.
+- Added an Axiom conflict-resolution fix preserving the double-underscore response-strip prefix in `agent/transports/anthropic.py` after the #47723/#47738 stack was applied.
+- Kept the existing `claudetest` profile isolated and fallback-free for billing-lane smoke tests.
+
+### Verification
+
+- `python -m py_compile agent/anthropic_adapter.py agent/transports/anthropic.py` → OK.
+- `python -m pytest tests/agent/test_anthropic_mcp_prefix_strip.py tests/agent/test_anthropic_adapter.py tests/agent/test_anthropic_oauth_system_relocation.py -q -o 'addopts='` → 186 passed.
+- Live `claudetest` Anthropic OAuth smoke with `fallback_providers: []` and the candidate worktree returned exactly `CLAUDE_OAUTH_CANDIDATE_OK` in session `20260617_082107_a154c8` after a real `read_file` tool call.
+- Broader `python -m pytest tests/agent -q -o 'addopts='` did not complete: first failure was pre-existing/unrelated auxiliary routing behavior (`tests/agent/test_auxiliary_client.py::TestExpiredCodexFallback::test_expired_codex_openrouter_key_is_ignored_for_aux_auto`), then the run timed out at 600s. Targeted Anthropic OAuth coverage passed.
+
 ## 2026-06-16 — Fix Desktop model picker snap-back
 
 ### Summary
