@@ -9850,6 +9850,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
+
+            # Guard: back up the existing packaged binary before the rebuild.
+            # electron-builder's before-pack hook wipes win-unpacked/ at the
+            # START of the build.  If the build then fails, the exe is gone
+            # and shortcuts are left dangling.  We restore from the backup
+            # when the build doesn't succeed.
+            _release_dir = desktop_dir / "release"
+            _release_backup: str | None = None
+            if _release_dir.is_dir():
+                import tempfile as _tmpmod
+                _release_backup = _tmpmod.mkdtemp(prefix="hermes-desktop-release-bak-")
+                shutil.copytree(str(_release_dir), os.path.join(_release_backup, "release"))
+
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
@@ -9860,6 +9873,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                # Restore the pre-build binary so shortcuts keep working.
+                if _release_backup:
+                    _backed_up_release = os.path.join(_release_backup, "release")
+                    if os.path.isdir(_backed_up_release):
+                        if _release_dir.is_dir():
+                            shutil.rmtree(_release_dir, ignore_errors=True)
+                        shutil.copytree(_backed_up_release, str(_release_dir))
+                        print("  ✓ Restored previous Desktop build so shortcuts keep working")
+
+            # Clean up the backup regardless of outcome.
+            if _release_backup and os.path.isdir(_release_backup):
+                shutil.rmtree(_release_backup, ignore_errors=True)
 
         print()
         print("✓ Code updated!")
