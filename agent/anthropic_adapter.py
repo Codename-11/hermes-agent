@@ -375,6 +375,25 @@ _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for 
 _MCP_TOOL_PREFIX = "mcp__"
 
 
+def _to_oauth_wire_name(name: str) -> str:
+    """Encode a tool name for the Claude-Code OAuth wire.
+
+    Anthropic's OAuth billing classifier treats a single-underscore ``mcp_``
+    tool name as a third-party-app fingerprint and rejects the request with
+    HTTP 400 "Third-party apps now draw from extra usage, not plan limits".
+    Promote every leading ``mcp_`` to ``mcp__`` and prefix bare native tool
+    names so NOTHING on the wire carries a single-underscore ``mcp_``.
+
+    Idempotent on already-encoded names. See PR #47723.
+    """
+    if name.startswith("mcp__"):
+        return name  # already correct, don't double-prefix
+    if name.startswith("mcp_"):
+        # single-underscore native MCP tool -> promote to double
+        return "mcp__" + name[len("mcp_"):]
+    return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+
+
 def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
     global _claude_code_version_cache
@@ -2428,14 +2447,6 @@ def build_anthropic_kwargs(
         #    so any session with an MCP server configured still tripped the
         #    classifier. normalize_response reverses both forms via registry
         #    lookup so the dispatcher still sees the original name. GH-25255.
-        def _to_oauth_wire_name(name: str) -> str:
-            if name.startswith("mcp__"):
-                return name  # already correct, don't double-prefix
-            if name.startswith("mcp_"):
-                # single-underscore native MCP tool -> promote to double
-                return "mcp__" + name[len("mcp_"):]
-            return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
-
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:
@@ -2473,8 +2484,13 @@ def build_anthropic_kwargs(
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+            # Specific tool name. On the OAuth wire the named tool must match
+            # the encoded name in ``tools`` (the _to_oauth_wire_name pass
+            # above), otherwise Anthropic rejects the call with 400
+            # "tool_choice not in tools". Idempotent on already-encoded names;
+            # non-OAuth callers get the raw name unchanged.
+            name = _to_oauth_wire_name(tool_choice) if is_oauth else tool_choice
+            kwargs["tool_choice"] = {"type": "tool", "name": name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.
