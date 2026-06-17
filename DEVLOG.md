@@ -13,12 +13,14 @@ Built and validated an isolated Axiom merge-candidate stack for Anthropic/Claude
 - Cherry-picked upstream #47738: large Hermes system prompts are relocated out of Anthropic `system[]` into a cache-marked first-user `<system_context>` preamble on the OAuth path.
 - Added an Axiom conflict-resolution fix preserving the double-underscore response-strip prefix in `agent/transports/anthropic.py` after the #47723/#47738 stack was applied.
 - Kept the existing `claudetest` profile isolated and fallback-free for billing-lane smoke tests.
+- Updated fork refs and provider docs (`FORK.md`, English provider docs, zh-Hans provider docs) so Anthropic OAuth guidance no longer says Claude Max extra-usage credits are required for the Claude Code subscription lane.
 
 ### Verification
 
 - `python -m py_compile agent/anthropic_adapter.py agent/transports/anthropic.py` → OK.
 - `python -m pytest tests/agent/test_anthropic_mcp_prefix_strip.py tests/agent/test_anthropic_adapter.py tests/agent/test_anthropic_oauth_system_relocation.py -q -o 'addopts='` → 186 passed.
 - Live `claudetest` Anthropic OAuth smoke with `fallback_providers: []` and the candidate worktree returned exactly `CLAUDE_OAUTH_CANDIDATE_OK` in session `20260617_082107_a154c8` after a real `read_file` tool call.
+- After updating the live checkout and popping local WIP, the same targeted tests passed from `~/.hermes/hermes-agent` (`186 passed in 11.41s`), and live `claudetest` OAuth smoke returned exactly `CLAUDE_OAUTH_LIVE_UPDATED_OK` in session `20260617_104145_01d5d6`.
 - Broader `python -m pytest tests/agent -q -o 'addopts='` did not complete: first failure was pre-existing/unrelated auxiliary routing behavior (`tests/agent/test_auxiliary_client.py::TestExpiredCodexFallback::test_expired_codex_openrouter_key_is_ignored_for_aux_auto`), then the run timed out at 600s. Targeted Anthropic OAuth coverage passed.
 
 ## 2026-06-16 — Fix Desktop model picker snap-back
