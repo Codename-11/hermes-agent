@@ -70,7 +70,13 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
-    mock_install.assert_called_once_with("/usr/bin/npm", root, capture_output=False, env=None)
+    mock_install.assert_called_once_with(
+        "/usr/bin/npm",
+        root,
+        extra_args=("--workspace", "apps/desktop", "--include-workspace-root=false", "--include=dev"),
+        capture_output=False,
+        env=None,
+    )
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
@@ -365,6 +371,47 @@ def test_desktop_build_stamp_round_trip(tmp_path, monkeypatch):
     assert cli_main._desktop_build_needed(
         root / "apps" / "desktop", root, source_mode=False
     ) is False
+
+
+def test_desktop_stamp_indicates_packaged_build_survives_missing_artifact(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    cli_main._write_desktop_build_stamp(root, source_mode=False)
+
+    assert cli_main._desktop_stamp_indicates_packaged_build() is True
+
+
+def test_desktop_stamp_indicator_ignores_source_build(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    cli_main._write_desktop_build_stamp(root, source_mode=True)
+
+    assert cli_main._desktop_stamp_indicates_packaged_build() is False
+
+
+def test_windows_shortcut_repair_invokes_powershell(tmp_path, monkeypatch):
+    exe = tmp_path / "release" / "win-unpacked" / "Hermes.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    desktop_lnk = tmp_path / "Desktop" / "Hermes.lnk"
+    start_lnk = tmp_path / "Programs" / "Hermes.lnk"
+    completed = subprocess.CompletedProcess(
+        ["powershell.exe"],
+        0,
+        stdout=f"{start_lnk}\n{desktop_lnk}\n",
+        stderr="",
+    )
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    with patch("hermes_cli.main.shutil.which", return_value="powershell.exe"), \
+         patch("hermes_cli.main.subprocess.run", return_value=completed) as mock_run:
+        created = cli_main._create_windows_desktop_shortcuts(exe)
+
+    assert created == [start_lnk, desktop_lnk]
+    argv = mock_run.call_args.args[0]
+    assert argv[:5] == ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+    assert len(argv) == 6
+    assert mock_run.call_args.kwargs["env"]["HERMES_SHORTCUT_TARGET_EXE"] == str(exe)
 
 
 def test_compute_desktop_content_hash_works_without_gitignore(tmp_path, monkeypatch):

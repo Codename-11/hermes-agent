@@ -5015,6 +5015,110 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
+def _desktop_stamp_indicates_packaged_build() -> bool:
+    """Return True if the user previously had a packaged desktop build.
+
+    ``hermes update`` normally decides whether to spend time rebuilding Desktop
+    by checking for the current packaged executable. That misses the exact
+    broken-update case we care about on Windows: the ZIP fallback can replace
+    ``apps/`` and remove the gitignored ``apps/desktop/release`` tree before a
+    later failure aborts the update. The build stamp lives outside the repo under
+    ``HERMES_HOME`` and survives that damage, so use it as a repair signal.
+    """
+    stamp_file = _desktop_stamp_path()
+    if not stamp_file.is_file():
+        return False
+    try:
+        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return stamp_data.get("sourceMode") is False
+
+
+def _create_windows_desktop_shortcuts(target_exe: Path) -> list[Path]:
+    """Create/repair Start Menu + Desktop shortcuts for a Windows desktop build.
+
+    The GUI installer's ``install.ps1`` creates these after Stage-Desktop, but
+    both ``hermes update`` and ``hermes desktop --build-only`` rebuild the
+    unpacked Electron app through the Python path. Rebuilding wipes and recreates
+    ``apps/desktop/release/win-unpacked``; if the shortcut or cached icon was
+    missing/stale, that path never repaired it. Keep this best-effort so a COM or
+    shell-cache failure never makes the actual desktop build fail.
+    """
+    if sys.platform != "win32":
+        return []
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        return []
+
+    script = r'''
+$ErrorActionPreference = 'Stop'
+$targetExe = $env:HERMES_SHORTCUT_TARGET_EXE
+if (-not $targetExe) { throw 'HERMES_SHORTCUT_TARGET_EXE is not set' }
+$shell = New-Object -ComObject WScript.Shell
+$workDir = Split-Path -Parent $targetExe
+$iconIco = Join-Path $workDir 'resources\icon.ico'
+if (Test-Path -LiteralPath $iconIco) {
+    $iconLocation = "$iconIco,0"
+} else {
+    $iconLocation = "$targetExe,0"
+}
+$targets = @(
+    (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes.lnk'),
+    (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk')
+)
+foreach ($lnkPath in $targets) {
+    $parent = Split-Path -Parent $lnkPath
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $sc = $shell.CreateShortcut($lnkPath)
+    $sc.TargetPath = $targetExe
+    $sc.WorkingDirectory = $workDir
+    $sc.IconLocation = $iconLocation
+    $sc.Description = 'Hermes Agent'
+    $sc.Save()
+    Write-Output $lnkPath
+}
+try { & ie4uinit.exe -show 2>$null } catch {}
+'''
+    try:
+        run_env = {**os.environ, "HERMES_SHORTCUT_TARGET_EXE": str(target_exe)}
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            env=run_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        logger.debug("Windows desktop shortcut repair skipped: %s", exc)
+        return []
+
+    if result.returncode != 0:
+        logger.debug(
+            "Windows desktop shortcut repair failed: %s",
+            (result.stderr or result.stdout or "").strip(),
+        )
+        return []
+
+    created: list[Path] = []
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if line:
+            created.append(Path(line))
+    for lnk in created:
+        print(f"✓ Desktop shortcut ready: {lnk}")
+    return created
+
+
 def _electron_download_cache_dirs() -> list[Path]:
     """Return the per-user Electron download cache directories for this OS.
 
@@ -5415,7 +5519,13 @@ def cmd_gui(args: argparse.Namespace):
         else:
             print("→ Installing desktop workspace dependencies...")
             nixos_env = _nixos_build_env()
-            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            install_result = _run_npm_install_deterministic(
+                npm,
+                PROJECT_ROOT,
+                extra_args=("--workspace", "apps/desktop", "--include-workspace-root=false", "--include=dev"),
+                capture_output=False,
+                env=nixos_env,
+            )
             if install_result.returncode != 0:
                 print("✗ Desktop dependency install failed")
                 print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
@@ -5533,6 +5643,7 @@ def cmd_gui(args: argparse.Namespace):
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
         else:
+            _create_windows_desktop_shortcuts(packaged_executable)
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
         return
 
@@ -5548,6 +5659,8 @@ def cmd_gui(args: argparse.Namespace):
 
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         sys.exit(1)
+
+    _create_windows_desktop_shortcuts(packaged_executable)
 
     print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
     launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
@@ -9752,7 +9865,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # never run ``hermes desktop`` shouldn't be forced into a full
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        has_desktop_app = (
+            _desktop_packaged_executable(desktop_dir) is not None
+            or _desktop_dist_exists(desktop_dir)
+            or _desktop_stamp_indicates_packaged_build()
+        )
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
