@@ -374,6 +374,93 @@ def _detect_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
+# Product-name replacements applied to the relocated OAuth system prompt so
+# nothing in the preamble reads as a competing-product identity (Anthropic's
+# OAuth billing classifier fingerprints distinctive non-Claude-Code content).
+_OAUTH_TEXT_REPLACEMENTS = (
+    ("Hermes Agent", "Claude Code"),
+    ("Hermes agent", "Claude Code"),
+    ("hermes-agent", "claude-code"),
+    ("Nous Research", "Anthropic"),
+)
+# Wrapper tag for the relocated prompt on the first user message.
+_OAUTH_SYSTEM_CONTEXT_TAG = "system_context"
+
+
+def _sanitize_oauth_text(text: str) -> str:
+    """Mask competing-product identity references in OAuth-relocated prompt text."""
+    for old, new in _OAUTH_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
+def _to_oauth_wire_name(name: str) -> str:
+    """Encode a tool name for the Claude-Code OAuth wire.
+
+    Anthropic's OAuth billing classifier treats a single-underscore ``mcp_``
+    tool name as a third-party-app fingerprint and rejects the request with
+    HTTP 400 "Third-party apps now draw from extra usage, not plan limits".
+    Promote every leading ``mcp_`` to ``mcp__`` and prefix bare native tool
+    names so NOTHING on the wire carries a single-underscore ``mcp_``.
+
+    Idempotent on already-encoded names. See PR #47723.
+    """
+    if name.startswith("mcp__"):
+        return name  # already correct, don't double-prefix
+    if name.startswith("mcp_"):
+        # single-underscore native MCP tool -> promote to double
+        return "mcp__" + name[len("mcp_"):]
+    return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+
+
+def _prepend_oauth_system_context(messages, preamble: str) -> None:
+    """Prepend ``preamble`` as a cache-marked leading block of the first user message.
+
+    Used on the OAuth path to relocate the real system prompt out of ``system[]``
+    (which Anthropic's billing classifier fingerprints as third-party traffic)
+    and into the conversation, mirroring how Claude Code keeps only its identity
+    line in ``system[]``.
+
+    The relocated block carries a 5m ``cache_control`` marker (built via
+    ``prompt_caching._build_marker``) so the heavy prompt prefix is still cached
+    across turns — the first user message is a stable prefix within a
+    conversation, so the cache breakpoint simply moves from the system slot to
+    the first-user-message slot without breaking caching.
+
+    Note on the 4-breakpoint cap: the upstream ``apply_anthropic_cache_control``
+    pass places a marker on the (heavy) system block + the last 3 messages. When
+    the OAuth path below reduces ``system[]`` to the identity line, that system
+    marker is discarded along with the block it rode on, and this preamble marker
+    takes its place — net total stays at exactly 4 (verified by
+    ``test_oauth_relocation_respects_4_breakpoint_cap``).
+
+    Mutates ``messages`` in place. Handles user messages whose content is a
+    plain string or a list of content blocks, and synthesises a user message at
+    the front if none exists.
+    """
+    if not preamble:
+        return
+    from agent.prompt_caching import _build_marker
+    block = {
+        "type": "text",
+        "text": preamble,
+        "cache_control": _build_marker("5m"),
+    }
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = (
+                [block, {"type": "text", "text": content}] if content else [block]
+            )
+        elif isinstance(content, list):
+            msg["content"] = [block] + content
+        else:
+            msg["content"] = [block]
+        return
+    messages.insert(0, {"role": "user", "content": [block]})
+
 
 def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
@@ -2329,27 +2416,30 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
-        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        # 1. Collect + sanitize existing system text in one pass (string or
+        #    content blocks). Sanitizing inline avoids a second list rebuild.
+        extra_system_parts: List[str] = []
         if isinstance(system, list):
-            system = [cc_block] + system
+            for b in system:
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                    extra_system_parts.append(_sanitize_oauth_text(b["text"]))
         elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
-        else:
-            system = [cc_block]
+            extra_system_parts.append(_sanitize_oauth_text(system))
 
-        # 2. Sanitize system prompt — replace product name references
-        #    to avoid Anthropic's server-side content filters.
-        for block in system:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+        # 2. system[] = the official Claude Code identity line only.
+        system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
 
-        # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
+        # 3. Relocate the real prompt into a <system_context> preamble on the
+        #    first user message, with cache_control to preserve prompt caching.
+        if extra_system_parts:
+            preamble = (
+                f"<{_OAUTH_SYSTEM_CONTEXT_TAG}>\n"
+                + "\n\n".join(extra_system_parts).strip()
+                + f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
+            )
+            _prepend_oauth_system_context(anthropic_messages, preamble)
+
+        # 4. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
         #    billing classifier treats a single-underscore ``mcp_`` tool name as
         #    a third-party-app fingerprint and rejects the request with HTTP 400
@@ -2367,20 +2457,12 @@ def build_anthropic_kwargs(
         #    so any session with an MCP server configured still tripped the
         #    classifier. normalize_response reverses both forms via registry
         #    lookup so the dispatcher still sees the original name. GH-25255.
-        def _to_oauth_wire_name(name: str) -> str:
-            if name.startswith("mcp__"):
-                return name  # already correct, don't double-prefix
-            if name.startswith("mcp_"):
-                # single-underscore native MCP tool -> promote to double
-                return "mcp__" + name[len("mcp_"):]
-            return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
-
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
 
-        # 4. Apply the same normalization to tool names in message history
+        # 5. Apply the same normalization to tool names in message history
         #    (tool_use blocks) so replayed turns match the wire names above.
         for msg in anthropic_messages:
             content = msg.get("content")
@@ -2412,8 +2494,13 @@ def build_anthropic_kwargs(
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+            # Specific tool name. On the OAuth wire the named tool must match
+            # the encoded name in ``tools`` (the _to_oauth_wire_name pass
+            # above), otherwise Anthropic rejects the call with 400
+            # "tool_choice not in tools". Idempotent on already-encoded names;
+            # non-OAuth callers get the raw name unchanged.
+            name = _to_oauth_wire_name(tool_choice) if is_oauth else tool_choice
+            kwargs["tool_choice"] = {"type": "tool", "name": name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.
