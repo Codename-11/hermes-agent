@@ -13,6 +13,26 @@ This repository is Bailey/Axiom's deploy fork of `NousResearch/hermes-agent`.
 - If upstream has new commits but `origin/axiom` has not moved, Desktop's **client** update UI may show upstream disparity, but it should not present that as an installable Desktop-client update.
 - Desktop's **backend** update UI is different: it should prompt when `hermes update` would do useful work, including upstream commits not yet merged into `origin/axiom`. Show the count breakdown (`HEAD..origin/axiom` plus `origin/axiom..upstream/main`) so the operator sees why the backend update is actionable.
 
+## Status and source-of-truth contract
+
+Use these surfaces deliberately; do not duplicate live branch counts by hand:
+
+| Surface | Purpose |
+| --- | --- |
+| `docs/axiom-fork-contract.md` | Canonical concise branch/Desktop/update contract. |
+| `FORK.md` | Protected behavior inventory, retired fork surface, historical fork-only commit classification, and validation expectations. |
+| `scripts/fork-status.py` | Read-only live status report for branch divergence, dirty files, Sentinel sync state, and optional Axiom-Desktop SSH branch check. |
+| Obsidian `3. System/Operations/Hermes Axiom Sync Runbook.md` | Operational procedure for upstream integration and live deployment separation. |
+| `~/SYSTEM.md` / Hermes Overview | Quick-start pointers only; keep them short and point back here/runbook. |
+
+Before updating, resolving conflicts, or checking whether Docker-Server and Axiom-Desktop are aligned, run:
+
+```bash
+cd ~/.hermes/hermes-agent
+scripts/fork-status.py
+scripts/fork-status.py --desktop   # optional; read-only, requires reachable Windows SSH
+```
+
 ## Update contract
 
 The `axiom` branch is expected to:

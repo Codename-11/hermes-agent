@@ -1,44 +1,33 @@
 # Axiom Hermes Fork Contract
 
-Generated: 2026-06-08T12:05:55-04:00  
 Repo: `/home/bailey/.hermes/hermes-agent`  
-Deploy branch: `origin/axiom`  
-Upstream: `upstream/main`
+Canonical upstream: `upstream/main`  
+Deploy artifact: `origin/axiom`  
+Live branch: `axiom`
 
-This file is the contract for the Axiom-maintained Hermes fork. Its purpose is to prevent upstream merges from silently dropping Hermes-Relay, Forge, Discord, proxy, update/deploy, or local Axiom operations behavior.
+This file records the protected behavior and historical inventory for the Axiom-maintained Hermes fork. The concise operator-facing contract for Docker-Server + Axiom-Desktop lives in `docs/axiom-fork-contract.md`.
+
+Do **not** treat generated counts or old commit inventories in this file as live status. For current state, run:
+
+```bash
+cd /home/bailey/.hermes/hermes-agent
+scripts/fork-status.py          # read-only local status
+scripts/fork-status.py --fetch  # optional read-only fetch before reporting
+scripts/fork-status.py --desktop # optional read-only Axiom-Desktop SSH probe
+```
 
 ## Current fork state
 
-As of the generation timestamp above, after fetching `origin` and `upstream`:
+Live state is intentionally generated on demand by `scripts/fork-status.py` so branch counts do not rot in docs. The status helper reports:
 
-```text
-origin/axiom...upstream/main = 179 / 178
-axiom...origin/axiom          = 0 / 58
-fork-only non-merge commits   = 95
-fork-only total commits       = 179
-upstream missing non-merge    = 172
-upstream missing total        = 178
-origin/axiom head             = 0d7f6b4d
-upstream/main head            = 74239b494
-```
+- current local branch and dirty files;
+- `HEAD`, `origin/axiom`, `upstream/main`, and local `main` heads;
+- `axiom...origin/axiom`, `origin/axiom...upstream/main`, and `main...upstream/main` counts;
+- whether `origin/axiom` / `HEAD` contain `upstream/main`;
+- Sentinel `Hermes Axiom Sync` cron enabled/paused state;
+- optional Axiom-Desktop branch state through read-only SSH when reachable.
 
-Interpretation:
-
-- `origin/axiom` contains a substantial fork-only patch surface.
-- `upstream/main` has a substantial backlog not yet integrated into `origin/axiom`.
-- The live local checkout branch `axiom` is behind `origin/axiom`; do not assume local `HEAD` represents the deploy branch.
-- The automated daily sync job is paused until this contract is hardened and the fork-only surface is reviewed.
-
-Paused cron job:
-
-```text
-job_id: 44f7334c4efc
-name: Hermes Axiom Sync
-script: sentinel-hermes-axiom-sync.py
-schedule: 0 5 * * *
-state: paused
-paused_at: 2026-06-08T12:04:38.045286-04:00
-```
+Operational note: as of 2026-06-17, Sentinel `Hermes Axiom Sync` remains paused (`job_id: 44f7334c4efc`) and a dry run still conflicts in `agent/anthropic_adapter.py` / `agent/system_prompt.py`; do not resume it until those conflicts are resolved and validation coverage is widened.
 
 ## Rules for upstream merge resolution
 

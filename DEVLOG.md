@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-17 — Consolidate fork maintenance status references
+
+### Summary
+
+Added a read-only fork status helper and tightened repo/Obsidian references so live branch divergence, paused Sentinel sync state, and Docker-Server/Axiom-Desktop branch expectations are generated on demand instead of copied as stale numbers.
+
+### What changed
+
+- Added `scripts/fork-status.py`, a read-only report for local branch state, dirty files, `origin/axiom` vs `upstream/main` divergence, Sentinel `Hermes Axiom Sync` cron state, and optional read-only Axiom-Desktop SSH branch probing.
+- Updated `FORK.md` to point at `docs/axiom-fork-contract.md` for the concise branch/Desktop contract and to treat old generated counts as historical, not live status.
+- Updated `docs/axiom-fork-contract.md` with a source-of-truth table and status-helper workflow.
+- Updated Obsidian runbook/overview/cron roster plus `~/SYSTEM.md` to reflect that Sentinel `Hermes Axiom Sync` remains paused while Anthropic/system-prompt conflicts and validation coverage are hardened.
+
+### Verification
+
+- `python -m py_compile scripts/fork-status.py` → OK.
+- `scripts/fork-status.py` → produced local read-only report.
+- `scripts/fork-status.py --desktop` → failed safely with `ssh: connect to host axiom-desktop port 22: Connection timed out`.
+
 ## 2026-06-17 — Carry Claude OAuth billing-lane candidate stack
 
 ### Summary
