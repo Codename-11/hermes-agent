@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { currentPickerSelection } from '@/lib/model-status-label'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -66,12 +67,12 @@ export function ModelPickerDialog({
   })
 
   const providers = modelOptions.data?.providers ?? []
-  // The picker selection is owned by the composer/session stores. The query
-  // response primarily supplies the provider/model catalog and can lag behind an
-  // explicit selection, so prefer the live props for the active check/current
-  // label to prevent stale query data from flickering the row back.
-  const optionsModel = String(currentModel || modelOptions.data?.model || '')
-  const optionsProvider = String(currentProvider || modelOptions.data?.provider || '')
+
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    !!sessionId,
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
+  )
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error

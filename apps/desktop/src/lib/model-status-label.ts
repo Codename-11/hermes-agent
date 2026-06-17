@@ -17,6 +17,24 @@ export function reasoningEffortLabel(effort: string): string {
   return REASONING_LABELS[key] ?? effort
 }
 
+/** Which model/provider a picker should mark "current". The live store is the
+ *  user's current composer/session selection; `model.options` primarily supplies
+ *  the catalog and can briefly lag during optimistic model switches. Prefer the
+ *  store when it has a value so rows/labels don't snap back while a query
+ *  refetch settles; fall back to options while the store is empty/loading. */
+export function currentPickerSelection(
+  hasSession: boolean,
+  store: { model: string; provider: string },
+  options?: { model?: string; provider?: string }
+): { model: string; provider: string } {
+  void hasSession
+
+  return {
+    model: String(store.model || options?.model || ''),
+    provider: String(store.provider || options?.provider || '')
+  }
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()

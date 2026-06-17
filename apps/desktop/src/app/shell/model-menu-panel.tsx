@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -84,13 +84,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     }
   })
 
-  // The selected model/provider stores are authoritative for the composer and
-  // active-session footer. `model.options` is also the catalog payload, so it can
-  // briefly carry stale model metadata while a picker change is being applied;
-  // prefer the store to avoid rendering a visible snap-back to the previous
-  // model while the query refetch settles.
-  const optionsModel = String(currentModel || modelOptions.data?.model || '')
-  const optionsProvider = String(currentProvider || modelOptions.data?.provider || '')
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    !!activeSessionId,
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
+  )
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error
