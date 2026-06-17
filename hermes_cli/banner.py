@@ -263,30 +263,43 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
                 behind = count
     return behind
 
-def get_update_preview_range(repo_dir: Optional[Path] = None) -> Optional[tuple[str, str, str]]:
-    """Return the git range that ``hermes version`` should preview.
+def get_update_preview_ranges(repo_dir: Optional[Path] = None) -> list[tuple[str, str, str]]:
+    """Return the git ranges that ``hermes version`` should preview.
 
-    Deploy branches are checked against their remote deploy artifact first, and
-    then against upstream commits not yet merged into that artifact.
+    Deploy branches can have two independently actionable gaps: local checkout
+    → remote deploy branch, and remote deploy branch → upstream/main.  Return
+    both so ``hermes version`` can explain the full behind count instead of
+    showing only the first hop.
     """
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
-        return None
+        return []
 
     current_branch = _current_git_branch(repo_dir)
     if current_branch in _DEPLOY_BRANCHES:
+        ranges: list[tuple[str, str, str]] = []
         remote_ref = f"origin/{current_branch}"
         origin_ahead = _count_git_range(repo_dir, "HEAD", remote_ref)
         if origin_ahead and origin_ahead > 0:
-            return "HEAD", remote_ref, "Pending deploy branch changes"
+            ranges.append(("HEAD", remote_ref, "Pending deploy branch changes"))
 
         if _has_git_remote(repo_dir, "upstream"):
             upstream_ahead = _count_git_range(repo_dir, remote_ref, "upstream/main")
             if upstream_ahead and upstream_ahead > 0:
-                return remote_ref, "upstream/main", "Pending upstream changes"
-        return None
+                ranges.append((remote_ref, "upstream/main", "Pending upstream changes"))
+        return ranges
 
-    return "HEAD", "origin/main", "Pending upstream changes"
+    return [("HEAD", "origin/main", "Pending upstream changes")]
+
+
+def get_update_preview_range(repo_dir: Optional[Path] = None) -> Optional[tuple[str, str, str]]:
+    """Return the first git range that ``hermes version`` should preview.
+
+    Kept for callers that only know about the original single-range preview;
+    new code should use :func:`get_update_preview_ranges`.
+    """
+    ranges = get_update_preview_ranges(repo_dir)
+    return ranges[0] if ranges else None
 
 def _version_tuple(v: str) -> tuple[int, ...]:
     """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
