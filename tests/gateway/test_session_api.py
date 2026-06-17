@@ -170,6 +170,30 @@ async def test_session_crud_and_message_history(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_create_session_defaults_to_runtime_model_not_api_alias(adapter, session_db, monkeypatch):
+    """Empty session creates should persist the real LLM, not the API alias."""
+    adapter._model_name = "hermes-agent"
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        default_resp = await cli.post("/api/sessions", json={})
+        assert default_resp.status == 201
+        default_payload = await default_resp.json()
+        default_session_id = default_payload["session"]["id"]
+
+        explicit_resp = await cli.post("/api/sessions", json={"model": "explicit-model"})
+        assert explicit_resp.status == 201
+        explicit_payload = await explicit_resp.json()
+        explicit_session_id = explicit_payload["session"]["id"]
+
+    assert default_payload["session"]["model"] == "gpt-5.5"
+    assert session_db.get_session(default_session_id)["model"] == "gpt-5.5"
+    assert explicit_payload["session"]["model"] == "explicit-model"
+    assert session_db.get_session(explicit_session_id)["model"] == "explicit-model"
+
+
+@pytest.mark.asyncio
 async def test_session_messages_follow_compression_tip(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server")
     session_db.append_message(source_id, "user", "before compression")

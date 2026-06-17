@@ -808,6 +808,25 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
+    def _resolve_session_model(self) -> str:
+        """Return the runtime model to stamp onto newly created sessions.
+
+        ``self._model_name`` is the API-server's advertised service alias for
+        ``/v1/models``. For the default profile that alias is usually
+        ``hermes-agent``. Session metadata should instead record the actual
+        gateway runtime model (for example ``gpt-5.5``), so clients do not feed
+        the service alias back into provider routing as if it were an LLM id.
+        """
+        try:
+            from gateway.run import _resolve_gateway_model
+
+            model = str(_resolve_gateway_model() or "").strip()
+            if model:
+                return model
+        except Exception as exc:
+            logger.debug("Failed to resolve API-server session model: %s", exc)
+        return self._model_name
+
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
         if not origin or not self._cors_origins:
@@ -1423,7 +1442,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if db.get_session(session_id):
             return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
 
-        model = body.get("model") or self._model_name
+        requested_model = body.get("model")
+        model = requested_model if requested_model not in (None, "") else self._resolve_session_model()
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
