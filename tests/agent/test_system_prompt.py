@@ -67,6 +67,21 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+class TestIdentityPrecedence:
+    def test_ephemeral_personality_overrides_soul_identity(self):
+        agent = _make_agent(ephemeral_system_prompt="Overlay Identity")
+        with (
+            patch("run_agent.load_soul_md", return_value="SOUL Identity"),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            stable = build_system_prompt_parts(agent)["stable"]
+
+        assert "Overlay Identity" in stable
+        assert "SOUL Identity" not in stable
+
+
 class TestCodingContextBlock:
     def test_injected_when_active(self, monkeypatch, tmp_path):
         import subprocess

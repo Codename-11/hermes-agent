@@ -97,11 +97,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
-    # Try SOUL.md as primary identity unless the caller explicitly skipped it.
-    # Some execution modes (cron) still want HERMES_HOME persona while keeping
-    # cwd project instructions disabled.
+    # Priority: ephemeral_system_prompt (from /personality) takes precedence
+    # as the identity so selectable personalities actually override SOUL.md.
+    # Falls back to SOUL.md when no personality overlay is active.
     _soul_loaded = False
-    if agent.load_soul_identity or not agent.skip_context_files:
+    _ephemeral_identity = getattr(agent, "ephemeral_system_prompt", "")
+    if _ephemeral_identity:
+        stable_parts.append(_ephemeral_identity.strip())
+        _soul_loaded = True
+    elif agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
             stable_parts.append(_soul_content)
