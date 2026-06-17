@@ -9402,6 +9402,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         return
 
     # Fetch and pull
+    _git_phase_completed = False
     try:
 
         # Resolve the target branch up front so the fetch can be scoped to it.
@@ -9740,6 +9741,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         _invalidate_update_cache()
+
+        # ── Git phase complete ──────────────────────────────────────────
+        # Everything below is post-git: pip install, node deps, web UI,
+        # desktop rebuild, gateway restart.  If any of these fail with
+        # CalledProcessError the outer except handler must NOT fall back to
+        # the ZIP download path — the checkout is already up-to-date and a
+        # ZIP extraction would *destroy* build artifacts (apps/desktop/
+        # release/win-unpacked) that don't exist in the source archive.
+        _git_phase_completed = True
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
@@ -10930,11 +10940,32 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("  hermes model              # Select provider and model")
 
     except subprocess.CalledProcessError as e:
-        if sys.platform == "win32":
+        if sys.platform == "win32" and not _git_phase_completed:
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
             _update_via_zip(args)
+        elif sys.platform == "win32":
+            # Git succeeded but the post-git install phase failed — almost
+            # certainly a locked hermes.exe preventing pip from writing the
+            # console-script shim.  Do NOT fall back to the ZIP path: the
+            # checkout is already current, and the ZIP extraction would
+            # obliterate build artifacts (Desktop launcher, etc.) that the
+            # source archive doesn't contain.
+            print()
+            print(f"⚠ Post-update install failed: {e}")
+            print()
+            print("  The code update completed successfully — your checkout is current.")
+            print("  The dependency install could not finish because another process is")
+            print("  holding hermes.exe open (Desktop app, TUI, or gateway).")
+            print()
+            print("  To finish the update:")
+            print("    1. Close Hermes Desktop / exit the TUI / stop the gateway")
+            print("    2. Run:  hermes update")
+            print()
+            print("  The next run will detect the current checkout and only")
+            print("  reinstall dependencies — no re-download needed.")
+            sys.exit(1)
         else:
             print(f"✗ Update failed: {e}")
             sys.exit(1)
