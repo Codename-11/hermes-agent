@@ -194,6 +194,49 @@ async def test_create_session_defaults_to_runtime_model_not_api_alias(adapter, s
 
 
 @pytest.mark.asyncio
+async def test_session_chat_forwards_request_model_to_agent(adapter, session_db, monkeypatch):
+    """Session chat endpoints should pass body.model through to _create_agent."""
+    session_id = session_db.create_session("model-override-session", "api_server", model="gpt-5.5")
+
+    captured = {}
+
+    original_create = adapter._create_agent.__func__
+
+    def _spy_create(self, **kwargs):
+        captured["requested_model"] = kwargs.get("requested_model")
+        return original_create(self, **kwargs)
+
+    monkeypatch.setattr(type(adapter), "_create_agent", _spy_create)
+
+    # Stub _run_agent to avoid needing a real AIAgent — we only care about
+    # whether requested_model reaches _create_agent.
+    async def _fake_run_agent(self, *, user_message, conversation_history, **kw):
+        captured["requested_model_in_run"] = kw.get("requested_model")
+        return {"final_response": "ok", "session_id": session_id}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    monkeypatch.setattr(type(adapter), "_run_agent", _fake_run_agent)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        # With explicit model
+        resp = await cli.post(
+            f"/api/sessions/{session_id}/chat",
+            json={"message": "hello", "model": "claude-opus-4"},
+        )
+        assert resp.status == 200
+        assert captured.get("requested_model_in_run") == "claude-opus-4"
+
+        # Without model — should be None
+        captured.clear()
+        resp2 = await cli.post(
+            f"/api/sessions/{session_id}/chat",
+            json={"message": "hello"},
+        )
+        assert resp2.status == 200
+        assert captured.get("requested_model_in_run") is None
+
+
+@pytest.mark.asyncio
 async def test_session_messages_follow_compression_tip(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server")
     session_db.append_message(source_id, "user", "before compression")
