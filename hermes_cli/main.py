@@ -6080,8 +6080,24 @@ def _update_via_zip(args):
                     extracted = candidate
                     break
 
-        # Copy updated files over existing installation, preserving venv/node_modules/.git
+        # Copy updated files over existing installation, preserving
+        # venv/node_modules/.git and Desktop build artifacts that aren't
+        # in the source ZIP (they're local-only electron-builder output).
         preserve = {"venv", "node_modules", ".git", ".env"}
+        # Build artifacts that live inside otherwise-replaceable trees.
+        # Back them up before the rmtree and restore after copytree so a
+        # partial ZIP extraction can't leave the Desktop launcher dead.
+        _build_artifact_subdirs = [
+            os.path.join("apps", "desktop", "release"),
+        ]
+        saved_artifacts: dict[str, str] = {}  # dst-subpath → tmp backup dir
+        for rel in _build_artifact_subdirs:
+            full = os.path.join(str(PROJECT_ROOT), rel)
+            if os.path.isdir(full):
+                bak = os.path.join(tmp_dir, f"_artifact_{rel.replace(os.sep, '_')}")
+                shutil.copytree(full, bak)
+                saved_artifacts[rel] = bak
+
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -6095,6 +6111,21 @@ def _update_via_zip(args):
             else:
                 shutil.copy2(src, dst)
             update_count += 1
+
+        # Restore preserved build artifacts into the freshly-extracted tree.
+        for rel, bak in saved_artifacts.items():
+            target = os.path.join(str(PROJECT_ROOT), rel)
+            if not os.path.isdir(target):
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copytree(bak, target)
+            # If the target already exists (ZIP had a matching dir), merge
+            # only the build-specific subdirectories (e.g. win-unpacked).
+            else:
+                for child in os.listdir(bak):
+                    child_src = os.path.join(bak, child)
+                    child_dst = os.path.join(target, child)
+                    if os.path.isdir(child_src) and not os.path.exists(child_dst):
+                        shutil.copytree(child_src, child_dst)
 
         print(f"✓ Updated {update_count} items from ZIP")
 
