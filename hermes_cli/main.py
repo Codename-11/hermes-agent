@@ -4245,12 +4245,10 @@ def _print_version_info(*, check_updates: bool = True) -> None:
             # whether to update right now.  Opt out with HERMES_VERSION_NO_PREVIEW=1.
             if os.environ.get("HERMES_VERSION_NO_PREVIEW") != "1":
                 try:
-                    from hermes_cli.banner import get_update_preview_range
+                    from hermes_cli.banner import get_update_preview_ranges
                     from hermes_cli.update_ui import compute_pending_digest
 
-                    preview = get_update_preview_range(PROJECT_ROOT)
-                    if preview:
-                        base, target, title = preview
+                    for base, target, title in get_update_preview_ranges(PROJECT_ROOT):
                         digest = compute_pending_digest(
                             PROJECT_ROOT, base, target,
                             title=title,
