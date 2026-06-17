@@ -1,12 +1,19 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+
+
+def _expected_git_cmd():
+    if sys.platform == "win32":
+        return ["git", "-c", "windows.appendAtomically=false"]
+    return ["git"]
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -199,7 +206,7 @@ class TestCmdUpdateBranchFallback:
         ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
             cmd_update(mock_args)
 
-        sync_mock.assert_called_once_with(["git"], PROJECT_ROOT)
+        sync_mock.assert_called_once_with(_expected_git_cmd(), PROJECT_ROOT)
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 

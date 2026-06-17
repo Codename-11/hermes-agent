@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
@@ -7,6 +8,12 @@ import pytest
 
 from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
+
+
+def _plain_git_cmd(cmd):
+    if cmd[:3] == ["git", "-c", "windows.appendAtomically=false"]:
+        return ["git", *cmd[3:]]
+    return cmd
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +550,7 @@ def _make_update_side_effect(
     recorded = []
 
     def side_effect(cmd, **kwargs):
+        cmd = _plain_git_cmd(cmd)
         recorded.append(cmd)
         joined = " ".join(str(c) for c in cmd)
         if "fetch" in joined and "origin" in joined:
@@ -922,7 +930,7 @@ def test_deploy_handoff_marker_completes_when_live_origin_and_upstream_match(
 ):
     marker = tmp_path / ".update_handoff.json"
     marker.write_text(
-        '{"repo":"%s","branch":"axiom","pre_update_head":"oldhead"}' % tmp_path,
+        json.dumps({"repo": str(tmp_path), "branch": "axiom", "pre_update_head": "oldhead"}),
         encoding="utf-8",
     )
     calls = []
@@ -1083,8 +1091,9 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     recorded = []
 
     def fake_run(cmd, **kwargs):
+        cmd = _plain_git_cmd(cmd)
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
@@ -1132,8 +1141,9 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     recorded = []
 
     def fake_run(cmd, **kwargs):
+        cmd = _plain_git_cmd(cmd)
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
@@ -1216,6 +1226,7 @@ def _make_update_side_effect(
     recorded = []
 
     def side_effect(cmd, **kwargs):
+        cmd = _plain_git_cmd(cmd)
         recorded.append(cmd)
         joined = " ".join(str(c) for c in cmd)
         if "fetch" in joined and "origin" in joined:
