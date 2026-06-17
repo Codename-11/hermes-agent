@@ -159,6 +159,7 @@ tests/gateway/test_reasoning_command.py
 Protected behavior:
 
 - Routed OAuth proxy adapters remain available for authenticated subscriptions where configured.
+- Anthropic OAuth must preserve the Claude Code subscription billing lane: OAuth tool names use `mcp__*` on the wire, concrete `tool_choice` names are encoded the same way, and the large Hermes system prompt is relocated out of Anthropic `system[]` for OAuth requests.
 - OpenAI Codex, xAI OAuth, and Nous routed model discovery remains compatible with Axiom's local model-router/proxy expectations.
 - Codex chat completion translation remains intact.
 - Synthetic/fallback model inventory must not advertise stale or non-chat model IDs to downstream routers.
@@ -168,6 +169,7 @@ Known references:
 
 - `DEVLOG.md` 2026-05-19: routed proxy model inventory and `gpt-5.5` advertisement.
 - `DEVLOG.md` 2026-04-23: Anthropic OAuth shim cleanup while preserving Model Router/plugin-command seams.
+- `DEVLOG.md` 2026-06-17: Claude OAuth billing-lane candidate stack (#47723 + #23361 + #47738) and live `claudetest` smoke.
 
 Primary files:
 

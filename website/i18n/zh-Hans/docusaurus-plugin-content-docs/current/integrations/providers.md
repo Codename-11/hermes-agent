@@ -96,10 +96,10 @@ Hermes 有**两个**模型命令，用途不同：
 
 通过 Anthropic API 直接使用 Claude 模型——无需 OpenRouter 代理。支持三种认证方式：
 
-:::caution 需要 Claude Max"额外用量"积分
-通过 `hermes model` → Anthropic OAuth（或 `hermes auth add anthropic --type oauth`）认证时，Hermes 以 Claude Code 身份路由到你的 Anthropic 账户。**仅当你订阅了 Claude Max 计划且购买了额外用量积分时才有效。** Claude Max 基础计划的配额（Claude Code 默认包含的用量）不会被 Hermes 消耗——只有你额外购买的超额积分才会被使用。Claude Pro 订阅者无法使用此路径。
+:::tip Claude 订阅计费
+通过 `hermes model` → Anthropic OAuth（或 `hermes auth add anthropic --type oauth`）认证时，Hermes 会使用你 Anthropic 账户的 Claude Code OAuth 凭据通道。`claude -p` 等 Claude Code 用量由标准 Claude 订阅额度覆盖，不再需要单独的“额外用量”积分；Hermes 的原生 Anthropic OAuth 请求会镜像这条通道。
 
-如果你没有 Max + 额外积分，请改用 `ANTHROPIC_API_KEY`——请求将按 token 计费，从该 key 所属组织扣费（标准 API 定价，与任何 Claude 订阅无关）。
+如果你更希望使用 API 计费，或者你的订阅/账户不符合 Claude Code OAuth 用量条件，请改用 `ANTHROPIC_API_KEY`——请求将按 token 计费，从该 key 所属组织扣费（标准 API 定价，与任何 Claude 订阅无关）。
 :::
 
 ```bash
