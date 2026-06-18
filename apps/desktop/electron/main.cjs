@@ -4570,6 +4570,80 @@ async function testDesktopConnectionConfig(input = {}) {
   }
 }
 
+function remoteBlockForConnectionInput(input = {}, existing = readDesktopConnectionConfig()) {
+  const config = coerceDesktopConnectionConfig(input, existing, { persistToken: false })
+  const key = connectionScopeKey(input.profile)
+  const block = key ? config.profiles?.[key] || null : config.remote
+  const wantRemote =
+    block?.mode === 'remote' || (!key && config.mode === 'remote') || (input.mode === 'remote' && block)
+
+  if (!wantRemote || !block?.url) {
+    throw new Error('Select a remote gateway before loading remote profiles.')
+  }
+
+  const authMode = normAuthMode(block.authMode)
+  const token = authMode === 'oauth' ? null : decryptDesktopSecret(block.token)
+
+  if (authMode !== 'oauth' && !token) {
+    throw new Error('Remote gateway session token is required before loading remote profiles.')
+  }
+
+  return { authMode, baseUrl: normalizeRemoteBaseUrl(block.url), token }
+}
+
+async function listDesktopRemoteProfiles(input = {}) {
+  const { authMode, baseUrl, token } = remoteBlockForConnectionInput(input)
+  const url = `${baseUrl}/api/profiles`
+  const body =
+    authMode === 'oauth'
+      ? await fetchJsonViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+      : await fetchJson(url, token, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+  const profiles = Array.isArray(body?.profiles) ? body.profiles : []
+
+  return {
+    ok: true,
+    baseUrl,
+    profiles: profiles
+      .filter(profile => profile && typeof profile === 'object' && typeof profile.name === 'string')
+      .map(profile => ({
+        has_env: Boolean(profile.has_env),
+        is_default: Boolean(profile.is_default),
+        model: profile.model == null ? null : String(profile.model),
+        name: String(profile.name),
+        path: profile.path == null ? '' : String(profile.path),
+        provider: profile.provider == null ? null : String(profile.provider),
+        skill_count: Number.isFinite(Number(profile.skill_count)) ? Number(profile.skill_count) : 0
+      }))
+  }
+}
+
+function pinRemoteProfileConnection(input = {}) {
+  const target = connectionScopeKey(input.targetProfile)
+  if (!target || target === 'default' || !PROFILE_NAME_RE.test(target)) {
+    throw new Error('Choose a named local profile to pin to this remote gateway.')
+  }
+
+  const existing = readDesktopConnectionConfig()
+  const source = connectionScopeKey(input.sourceProfile)
+  const sourceBlock = source ? existing.profiles?.[source] || {} : existing.remote || {}
+  const remoteUrl = String(input.remoteUrl ?? sourceBlock.url ?? '').trim()
+  const authMode = resolveAuthMode(input.remoteAuthMode, sourceBlock.authMode)
+  const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
+  const token = incomingToken ? encryptDesktopSecret(incomingToken) : sourceBlock.token
+
+  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
+    throw new Error('Remote gateway session token is required before pinning a profile.')
+  }
+
+  const profiles = { ...(existing.profiles || {}) }
+  profiles[target] = { mode: 'remote', url: normalizeRemoteBaseUrl(remoteUrl), authMode, token }
+  const next = { mode: existing.mode === 'remote' ? 'remote' : 'local', remote: existing.remote || {}, profiles }
+  writeDesktopConnectionConfig(next)
+  stopPoolBackend(target)
+
+  return sanitizeDesktopConnectionConfig(next, target)
+}
+
 function resetBootProgressForReconnect() {
   updateBootProgress(
     {
@@ -5424,6 +5498,12 @@ ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
 )
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
+ipcMain.handle('hermes:connection-config:list-remote-profiles', async (_event, payload) =>
+  listDesktopRemoteProfiles(payload)
+)
+ipcMain.handle('hermes:connection-config:pin-remote-profile', async (_event, payload) =>
+  pinRemoteProfileConnection(payload)
+)
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
   // Open the gateway's OAuth login window and wait for the session cookie to
   // land in the OAuth partition. The caller (settings UI) typically saves the
