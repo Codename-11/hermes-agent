@@ -16,15 +16,12 @@ import asyncio
 import json
 import os
 import stat
-import sys
-import tempfile
 import time
-import types
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import FormData, web
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -56,20 +53,6 @@ class TestCheckRequirements:
 # ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
-
-
-RELAY_COMPATIBILITY_ROUTES = {
-    ("GET", "/api/sessions/search"),
-    ("GET", "/api/memory"),
-    ("POST", "/api/memory"),
-    ("PATCH", "/api/memory"),
-    ("DELETE", "/api/memory"),
-    ("GET", "/api/skills"),
-    ("GET", "/api/skills/{name}"),
-    ("GET", "/api/config"),
-    ("PATCH", "/api/config"),
-    ("GET", "/api/available-models"),
-}
 
 
 def _connect_route_registrations():
@@ -104,7 +87,26 @@ def test_connect_registers_each_route_once():
     }
 
     assert duplicate_routes == {}
-    assert RELAY_COMPATIBILITY_ROUTES.issubset(set(registrations))
+
+    retired_routes = {
+        ("GET", "/api/sessions/search"),
+        ("GET", "/api/memory"),
+        ("POST", "/api/memory"),
+        ("PATCH", "/api/memory"),
+        ("DELETE", "/api/memory"),
+        ("GET", "/api/skills"),
+        ("GET", "/api/skills/{name}"),
+        ("GET", "/api/config"),
+        ("PATCH", "/api/config"),
+        ("GET", "/api/available-models"),
+        ("GET", "/api/audio/capabilities"),
+        ("POST", "/api/audio/transcriptions"),
+        ("POST", "/api/audio/speech"),
+        ("GET", "/voice/config"),
+        ("POST", "/voice/transcribe"),
+        ("POST", "/voice/synthesize"),
+    }
+    assert retired_routes.isdisjoint(set(registrations))
 
 
 def test_api_server_adapter_has_no_duplicate_handler_methods():
@@ -486,12 +488,6 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
-    app.router.add_post("/api/audio/transcriptions", adapter._handle_audio_transcriptions)
-    app.router.add_post("/api/audio/speech", adapter._handle_audio_speech)
-    app.router.add_get("/api/audio/capabilities", adapter._handle_audio_capabilities)
-    app.router.add_post("/voice/transcribe", adapter._handle_audio_transcriptions)
-    app.router.add_post("/voice/synthesize", adapter._handle_audio_speech)
-    app.router.add_get("/voice/config", adapter._handle_audio_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -500,23 +496,6 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
     return app
 
-
-def _create_relay_compat_app(adapter: APIServerAdapter) -> web.Application:
-    """Create only the Relay compatibility API surface for focused tests."""
-    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
-    app = web.Application(middlewares=mws)
-    app["api_server_adapter"] = adapter
-    app.router.add_get("/api/sessions/search", adapter._handle_search_sessions)
-    app.router.add_get("/api/memory", adapter._handle_get_memory)
-    app.router.add_post("/api/memory", adapter._handle_add_memory)
-    app.router.add_patch("/api/memory", adapter._handle_replace_memory)
-    app.router.add_delete("/api/memory", adapter._handle_delete_memory)
-    app.router.add_get("/api/skills", adapter._handle_list_skills)
-    app.router.add_get("/api/skills/{name}", adapter._handle_view_skill)
-    app.router.add_get("/api/config", adapter._handle_get_config)
-    app.router.add_patch("/api/config", adapter._handle_update_config)
-    app.router.add_get("/api/available-models", adapter._handle_available_models)
-    return app
 
 
 @pytest.fixture
@@ -791,183 +770,7 @@ class TestCapabilitiesEndpoint:
 
 
 
-def _install_fake_voice_modules(monkeypatch, *, transcript="hello from audio", tts_file=None):
-    """Install lightweight fake voice modules for API audio endpoint tests."""
-    tools_pkg = sys.modules.get("tools") or types.ModuleType("tools")
-    monkeypatch.setitem(sys.modules, "tools", tools_pkg)
 
-    transcription_mod = types.ModuleType("tools.transcription_tools")
-    transcription_calls = []
-
-    def transcribe_audio(path):
-        transcription_calls.append(path)
-        assert os.path.exists(path)
-        return {"success": True, "transcript": transcript, "provider": "fake-stt"}
-
-    transcription_mod.transcribe_audio = transcribe_audio
-    transcription_mod._load_stt_config = lambda: {"provider": "fake-stt", "model": "fake-whisper"}
-    monkeypatch.setitem(sys.modules, "tools.transcription_tools", transcription_mod)
-
-    tts_mod = types.ModuleType("tools.tts_tool")
-    tts_calls = []
-
-    def text_to_speech_tool(text):
-        tts_calls.append(text)
-        return json.dumps({"success": True, "file_path": tts_file})
-
-    tts_mod.text_to_speech_tool = text_to_speech_tool
-    tts_mod._load_tts_config = lambda: {"provider": "fake-tts", "model": "fake-voice", "voice_id": "voice-1"}
-    monkeypatch.setitem(sys.modules, "tools.tts_tool", tts_mod)
-
-    voice_mode_mod = types.ModuleType("tools.voice_mode")
-    voice_mode_mod.check_voice_requirements = lambda: {"available": True}
-    monkeypatch.setitem(sys.modules, "tools.voice_mode", voice_mode_mod)
-
-    return transcription_calls, tts_calls
-
-
-# ---------------------------------------------------------------------------
-# /api/audio/* and /voice/* endpoints
-# ---------------------------------------------------------------------------
-
-
-class TestAudioEndpoints:
-    @pytest.mark.asyncio
-    async def test_audio_capabilities_reports_voice_contract(self, adapter, monkeypatch):
-        _install_fake_voice_modules(monkeypatch)
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/api/audio/capabilities")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["success"] is True
-            assert data["transcription"]["endpoint"] == "/api/audio/transcriptions"
-            assert data["transcription"]["provider"] == "fake-stt"
-            assert data["speech"]["endpoint"] == "/api/audio/speech"
-            assert data["speech"]["mime_type"] == "audio/mpeg"
-            assert data["stt"]["provider"] == "fake-stt"
-            assert data["tts"]["provider"] == "fake-tts"
-            assert data["limits"]["max_audio_bytes"] > 1_000_000
-
-    @pytest.mark.asyncio
-    async def test_voice_config_alias_uses_audio_capabilities(self, adapter, monkeypatch):
-        _install_fake_voice_modules(monkeypatch)
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/voice/config")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["speech"]["provider"] == "fake-tts"
-
-    @pytest.mark.asyncio
-    async def test_audio_capabilities_requires_auth_when_key_configured(self, auth_adapter, monkeypatch):
-        _install_fake_voice_modules(monkeypatch)
-        app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/api/audio/capabilities")
-            assert resp.status == 401
-            authed = await cli.get(
-                "/api/audio/capabilities",
-                headers={"Authorization": "Bearer sk-secret"},
-            )
-            assert authed.status == 200
-
-    @pytest.mark.asyncio
-    async def test_audio_transcriptions_uploads_audio_to_hermes_stt(self, adapter, monkeypatch):
-        transcription_calls, _ = _install_fake_voice_modules(monkeypatch)
-        app = _create_app(adapter)
-        form = FormData()
-        form.add_field(
-            "file",
-            b"not-real-audio-but-good-enough-for-a-mocked-backend",
-            filename="clip.webm",
-            content_type="audio/webm;codecs=opus",
-        )
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/api/audio/transcriptions", data=form)
-            assert resp.status == 200
-            data = await resp.json()
-            assert data == {"success": True, "text": "hello from audio", "provider": "fake-stt"}
-
-        assert len(transcription_calls) == 1
-        assert transcription_calls[0].endswith(".webm")
-        assert not os.path.exists(transcription_calls[0])
-
-    @pytest.mark.asyncio
-    async def test_voice_transcribe_alias_uploads_audio(self, adapter, monkeypatch):
-        transcription_calls, _ = _install_fake_voice_modules(monkeypatch, transcript="alias ok")
-        app = _create_app(adapter)
-        form = FormData()
-        form.add_field("audio", b"abc", filename="clip.m4a", content_type="audio/mp4")
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/voice/transcribe", data=form)
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["text"] == "alias ok"
-
-        assert len(transcription_calls) == 1
-        assert transcription_calls[0].endswith(".m4a")
-
-    @pytest.mark.asyncio
-    async def test_audio_speech_returns_mpeg_and_sanitizes_text(self, adapter, monkeypatch):
-        fd, audio_path = tempfile.mkstemp(suffix=".mp3")
-        try:
-            os.write(fd, b"fake mp3 bytes")
-            os.close(fd)
-            _, tts_calls = _install_fake_voice_modules(monkeypatch, tts_file=audio_path)
-            app = _create_app(adapter)
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.post(
-                    "/api/audio/speech",
-                    json={"text": "**Hello** [docs](https://example.com) `💻 terminal`"},
-                )
-                assert resp.status == 200
-                assert resp.headers["Content-Type"].startswith("audio/mpeg")
-                body = await resp.read()
-                assert body == b"fake mp3 bytes"
-
-            assert tts_calls == ["Hello docs"]
-        finally:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(audio_path)
-            except OSError:
-                pass
-
-    @pytest.mark.asyncio
-    async def test_voice_synthesize_alias_returns_mpeg(self, adapter, monkeypatch):
-        fd, audio_path = tempfile.mkstemp(suffix=".mp3")
-        try:
-            os.write(fd, b"alias mp3")
-            os.close(fd)
-            _install_fake_voice_modules(monkeypatch, tts_file=audio_path)
-            app = _create_app(adapter)
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.post("/voice/synthesize", json={"text": "Alias works."})
-                assert resp.status == 200
-                assert (await resp.read()) == b"alias mp3"
-        finally:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(audio_path)
-            except OSError:
-                pass
-
-    @pytest.mark.asyncio
-    async def test_audio_speech_rejects_empty_text(self, adapter, monkeypatch):
-        _install_fake_voice_modules(monkeypatch)
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/api/audio/speech", json={"text": "   "})
-            assert resp.status == 400
-            data = await resp.json()
-            assert "must not be empty" in data["error"]
 
 # ---------------------------------------------------------------------------
 # /v1/skills and /v1/toolsets endpoints
@@ -2696,121 +2499,6 @@ class TestEndpointAuth:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
             assert resp.status == 200
-
-
-# ---------------------------------------------------------------------------
-# Hermes-Relay compatibility routes
-# ---------------------------------------------------------------------------
-
-
-class TestRelayCompatibilityAPI:
-    @pytest.mark.asyncio
-    async def test_compatibility_routes_require_auth_when_key_configured(self, auth_adapter):
-        app = _create_relay_compat_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            requests = [
-                ("GET", "/api/sessions/search?q=hello", None),
-                ("GET", "/api/memory", None),
-                ("POST", "/api/memory", {"target": "memory", "content": "x"}),
-                ("PATCH", "/api/memory", {"target": "memory", "old_text": "x", "content": "y"}),
-                ("DELETE", "/api/memory", {"target": "memory", "old_text": "x"}),
-                ("GET", "/api/skills", None),
-                ("GET", "/api/skills/test-skill", None),
-                ("GET", "/api/config", None),
-                ("PATCH", "/api/config", {"model": "test"}),
-                ("GET", "/api/available-models", None),
-            ]
-            for method, path, payload in requests:
-                if method == "GET":
-                    resp = await cli.get(path)
-                elif method == "POST":
-                    resp = await cli.post(path, json=payload)
-                elif method == "PATCH":
-                    resp = await cli.patch(path, json=payload)
-                elif method == "DELETE":
-                    resp = await cli.delete(path, json=payload)
-                else:  # pragma: no cover
-                    raise AssertionError(method)
-                assert resp.status == 401, f"{method} {path} returned {resp.status}"
-
-    @pytest.mark.asyncio
-    async def test_session_search_contract(self, adapter, monkeypatch):
-        fake_results = [
-            {"session_id": "sess_1", "role": "user", "content": "hello relay"},
-        ]
-        fake_db = MagicMock()
-        fake_db.search_messages.return_value = list(fake_results)
-        monkeypatch.setattr(adapter, "_get_session_db", lambda: fake_db)
-
-        app = _create_relay_compat_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            missing = await cli.get("/api/sessions/search")
-            assert missing.status == 400
-
-            resp = await cli.get("/api/sessions/search?q=relay&limit=7&offset=2")
-            assert resp.status == 200
-            data = await resp.json()
-
-        fake_db.search_messages.assert_called_once_with(query="relay", limit=7, offset=2)
-        assert data == {"query": "relay", "count": 1, "results": fake_results}
-
-
-# ---------------------------------------------------------------------------
-# Config integration
-# ---------------------------------------------------------------------------
-
-
-class TestConfigIntegration:
-    def test_platform_enum_has_api_server(self):
-        assert Platform.API_SERVER.value == "api_server"
-
-    def test_env_override_enables_api_server(self, monkeypatch):
-        monkeypatch.setenv("API_SERVER_ENABLED", "true")
-        from gateway.config import load_gateway_config
-        config = load_gateway_config()
-        assert Platform.API_SERVER in config.platforms
-        assert config.platforms[Platform.API_SERVER].enabled is True
-
-    def test_env_override_with_key(self, monkeypatch):
-        monkeypatch.setenv("API_SERVER_KEY", "sk-mykey")
-        from gateway.config import load_gateway_config
-        config = load_gateway_config()
-        assert Platform.API_SERVER in config.platforms
-        assert config.platforms[Platform.API_SERVER].extra.get("key") == "sk-mykey"
-
-    def test_env_override_port_and_host(self, monkeypatch):
-        monkeypatch.setenv("API_SERVER_ENABLED", "true")
-        monkeypatch.setenv("API_SERVER_PORT", "9999")
-        monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
-        from gateway.config import load_gateway_config
-        config = load_gateway_config()
-        assert config.platforms[Platform.API_SERVER].extra.get("port") == 9999
-        assert config.platforms[Platform.API_SERVER].extra.get("host") == "0.0.0.0"
-
-    def test_env_override_cors_origins(self, monkeypatch):
-        monkeypatch.setenv("API_SERVER_ENABLED", "true")
-        monkeypatch.setenv(
-            "API_SERVER_CORS_ORIGINS",
-            "http://localhost:3000, http://127.0.0.1:3000",
-        )
-        from gateway.config import load_gateway_config
-        config = load_gateway_config()
-        assert config.platforms[Platform.API_SERVER].extra.get("cors_origins") == [
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-        ]
-
-    def test_api_server_in_connected_platforms(self):
-        config = GatewayConfig()
-        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True)
-        connected = config.get_connected_platforms()
-        assert Platform.API_SERVER in connected
-
-    def test_api_server_not_in_connected_when_disabled(self):
-        config = GatewayConfig()
-        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=False)
-        connected = config.get_connected_platforms()
-        assert Platform.API_SERVER not in connected
 
 
 # ---------------------------------------------------------------------------
