@@ -49,7 +49,7 @@ describe('buildCommitChangelog', () => {
       { summary: 'refactor: extract sidebar row component' }
     ])
 
-    expect(groups.map(g => g.id)).toEqual(['new', 'fixed', 'faster'])
+    expect(groups.map(g => g.id)).toEqual(['new', 'fixed', 'faster', 'improved'])
     expect(groups[0]).toMatchObject({ label: "What's new" })
     expect(groups[0].items[0]).toBe('Add NSIS prereq detection page')
     expect(groups[1].items[0]).toBe('Jitter when dragging')
@@ -94,6 +94,21 @@ describe('buildCommitChangelog', () => {
     )
 
     expect(groups[0].items).toEqual(['Thing A', 'Thing B', 'Thing C'])
+  })
+
+  it('keeps a fuller default changelog instead of truncating to a tiny teaser', () => {
+    const groups = buildCommitChangelog([
+      { summary: 'feat: command center polish' },
+      { summary: 'feat: richer update modal' },
+      { summary: 'fix: backend version badge' },
+      { summary: 'fix: client disparity badge' },
+      { summary: 'perf: faster startup' },
+      { summary: 'refactor: simplify update copy' },
+      { summary: 'ux: improve scrolling' }
+    ])
+
+    expect(groups.map(g => g.id)).toEqual(['new', 'fixed', 'faster', 'improved'])
+    expect(groups.reduce((sum, g) => sum + g.items.length, 0)).toBe(7)
   })
 
   it('caps total entries across buckets', () => {

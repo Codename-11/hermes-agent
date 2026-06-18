@@ -46,6 +46,7 @@ function StatusbarProbe({ remote = false }: { remote?: boolean }) {
   return (
     <div>
       <span data-testid="client-label">{client?.label}</span>
+      <span data-testid="client-detail">{client?.detail}</span>
       <span data-testid="client-title">{String(client?.title ?? '')}</span>
       <span data-testid="backend-label">{backend?.label}</span>
       <span data-testid="backend-title">{String(backend?.title ?? '')}</span>
@@ -89,6 +90,7 @@ describe('useStatusbarItems version update badges', () => {
     renderProbe()
 
     expect(screen.getByTestId('client-label').textContent).toBe('v0.16.0 (+18)')
+    expect(screen.getByTestId('client-detail').textContent).toBe('+259 carried / 18 behind')
     expect(screen.getByTestId('client-title').textContent).toContain('18 commits behind axiom')
     expect(screen.getByTestId('client-title').textContent).toContain('upstream/main: +259 carried, 18 behind')
   })

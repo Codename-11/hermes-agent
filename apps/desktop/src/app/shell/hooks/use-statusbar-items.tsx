@@ -59,14 +59,20 @@ function backendUpdateLabel(status: DesktopUpdateStatus | null | undefined): str
   const deployBehind = status.deployBehind ?? 0
   const upstreamBehind = status.upstreamBehind ?? 0
 
-  if (deployBehind > 0) parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
-  if (upstreamBehind > 0) parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+  if (deployBehind > 0) {
+    parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
+  }
+
+  if (upstreamBehind > 0) {
+    parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+  }
 
   if (parts.length > 0) {
     return `Pending backend update: ${parts.join(', ')}`
   }
 
   const behind = status.behind ?? 0
+
   return behind > 0 ? `${behind} pending backend update commit${behind === 1 ? '' : 's'}` : null
 }
 
@@ -79,11 +85,42 @@ function upstreamDisparityLabel(status: DesktopUpdateStatus | null | undefined):
   const behind = status.upstreamBehind ?? 0
   const parts = []
 
-  if (ahead > 0) parts.push(`+${ahead} carried`)
-  if (behind > 0) parts.push(`${behind} behind`)
-  if (parts.length === 0) parts.push('aligned')
+  if (ahead > 0) {
+    parts.push(`+${ahead} carried`)
+  }
+
+  if (behind > 0) {
+    parts.push(`${behind} behind`)
+  }
+
+  if (parts.length === 0) {
+    parts.push('aligned')
+  }
 
   return `${status.upstreamBranch}: ${parts.join(', ')}`
+}
+
+function compactUpstreamDisparity(status: DesktopUpdateStatus | null | undefined): string | null {
+  if (!status?.upstreamBranch) {
+    return null
+  }
+
+  const ahead = status.upstreamAhead ?? 0
+  const behind = status.upstreamBehind ?? 0
+
+  if (ahead > 0 && behind > 0) {
+    return `+${ahead} carried / ${behind} behind`
+  }
+
+  if (ahead > 0) {
+    return `+${ahead} carried`
+  }
+
+  if (behind > 0) {
+    return `${behind} upstream behind`
+  }
+
+  return null
 }
 
 interface StatusbarItemsOptions {
@@ -245,6 +282,7 @@ export function useStatusbarItems({
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
     const upstreamDisparity = upstreamDisparityLabel(updateStatus)
+    const upstreamDetail = !applying ? compactUpstreamDisparity(updateStatus) : null
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
@@ -263,7 +301,7 @@ export function useStatusbarItems({
 
     return {
       className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying && !remote ? sha : undefined,
+      detail: !applying ? (upstreamDetail ?? (appVersion && sha && !remote ? sha : undefined)) : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
@@ -279,12 +317,7 @@ export function useStatusbarItems({
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
-    updateStatus?.behind,
-    updateStatus?.branch,
-    updateStatus?.currentSha,
-    updateStatus?.upstreamAhead,
-    updateStatus?.upstreamBehind,
-    updateStatus?.upstreamBranch
+    updateStatus
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -326,12 +359,7 @@ export function useStatusbarItems({
   }, [
     connection?.mode,
     statusSnapshot?.version,
-    backendUpdateStatus?.backendMessage,
-    backendUpdateStatus?.behind,
-    backendUpdateStatus?.deployBehind,
-    backendUpdateStatus?.deployBranch,
-    backendUpdateStatus?.upstreamBehind,
-    backendUpdateStatus?.upstreamBranch,
+    backendUpdateStatus,
     backendUpdateApply.applying,
     backendUpdateApply.message,
     backendUpdateApply.stage,

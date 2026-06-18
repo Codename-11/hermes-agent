@@ -11,6 +11,7 @@
  */
 
 export type CommitGroupId = 'new' | 'fixed' | 'faster' | 'improved' | 'other'
+export const COMMIT_CHANGELOG_DEFAULT_MAX_TOTAL = 40
 
 export interface CommitGroup {
   id: CommitGroupId
@@ -122,7 +123,12 @@ export function buildCommitChangelog(
   commits: readonly CommitChangelogInput[] | undefined,
   options: BuildOptions = {}
 ): CommitGroup[] {
-  const { maxGroups = 3, maxPerGroup = 4, maxTotal = 6 } = options
+  const {
+    maxGroups = Object.keys(GROUP_META).length,
+    maxPerGroup = 10,
+    maxTotal = COMMIT_CHANGELOG_DEFAULT_MAX_TOTAL
+  } = options
+
   const groups = new Map<CommitGroupId, string[]>()
   const seen = new Set<string>()
   let total = 0

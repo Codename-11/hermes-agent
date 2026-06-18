@@ -11,8 +11,8 @@ import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } fro
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -44,8 +44,13 @@ function backendBreakdown(status: DesktopUpdateStatus | null, target: UpdateTarg
   const deployBehind = status.deployBehind ?? 0
   const upstreamBehind = status.upstreamBehind ?? 0
 
-  if (deployBehind > 0) parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
-  if (upstreamBehind > 0) parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+  if (deployBehind > 0) {
+    parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
+  }
+
+  if (upstreamBehind > 0) {
+    parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+  }
 
   if (parts.length > 0) {
     return `Pending backend update: ${parts.join(', ')}. Hermes update will reconcile upstream into the deploy branch and refresh the running backend.`
@@ -108,7 +113,7 @@ export function UpdatesOverlay() {
   return (
     <Dialog onOpenChange={handleClose} open={open}>
       <DialogContent
-        className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
+        className="max-h-[min(44rem,calc(100vh-2rem))] w-[min(44rem,calc(100vw-2rem))] max-w-2xl overflow-hidden border-border/70 p-0 gap-0"
         showCloseButton={phase !== 'applying'}
       >
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
@@ -227,52 +232,58 @@ function IdleView({
   const breakdown = backendBreakdown(status, target)
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <BrandMark className="size-16" />
+    <div className="flex max-h-[min(44rem,calc(100vh-2rem))] min-h-0 flex-col">
+      <div className="shrink-0 px-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <BrandMark className="size-16" />
 
-        <DialogTitle className="text-center text-xl">{title}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
-      </div>
-
-      {breakdown && (
-        <div className="rounded-xl border border-border/70 bg-muted/20 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-          {breakdown}
+          <DialogTitle className="text-center text-xl">{title}</DialogTitle>
+          <DialogDescription className="text-center text-sm">
+            {body}
+          </DialogDescription>
         </div>
-      )}
 
-      <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
-        {groups.map(group => (
-          <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
-            <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
-              {group.items.map(item => (
-                <li className="flex items-start gap-2" key={item}>
-                  <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
-                  <span className="leading-snug">{item}</span>
-                </li>
-              ))}
-            </ul>
+        {breakdown && (
+          <div className="mt-5 rounded-xl border border-border/70 bg-muted/20 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+            {breakdown}
           </div>
-        ))}
+        )}
       </div>
 
-      <div className="grid gap-2">
-        <Button className="font-semibold" onClick={onInstall} size="lg">
-          {u.updateNow}
-        </Button>
-        <Button className="font-medium" onClick={onLater} type="button" variant="text">
-          {u.maybeLater}
-        </Button>
+      <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-6 pr-8">
+        <div className="grid gap-4 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
+          {groups.map(group => (
+            <section className="min-w-0" key={group.id}>
+              <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+              <ul className="mt-2 grid gap-2 text-xs text-foreground sm:grid-cols-2">
+                {group.items.map(item => (
+                  <li className="flex min-w-0 items-start gap-2" key={item}>
+                    <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
+                    <span className="min-w-0 leading-snug">{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
       </div>
 
-      {remaining > 0 && (
-        <p className="text-center text-xs text-muted-foreground">
-          {u.moreChanges(remaining)}
-        </p>
-      )}
+      <div className="shrink-0 px-6 pb-6 pt-5 pr-8">
+        {remaining > 0 && (
+          <p className="mb-3 text-center text-xs text-muted-foreground">
+            {u.moreChanges(remaining)}
+          </p>
+        )}
+
+        <div className="grid gap-2">
+          <Button className="font-semibold" onClick={onInstall} size="lg">
+            {u.updateNow}
+          </Button>
+          <Button className="font-medium" onClick={onLater} type="button" variant="text">
+            {u.maybeLater}
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
