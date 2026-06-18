@@ -1,5 +1,22 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-18 — Stage A2A PR #41711 candidate tracking
+
+### Summary
+
+Prepared the upstream A2A protocol PR as an isolated local carry candidate and wired a quiet watcher so movement on the upstream PR is visible without polling manually.
+
+### What changed
+
+- Recorded upstream A2A PR #41711 as an isolated temporary carry candidate in `FORK.md` with worktree, verification, watcher, known exposure notes, and drop condition.
+- Created root Hermes script-only PR watcher outside the repo at `~/.hermes/scripts/github-pr-watch.py`; live cron job `ddd8f2eaf2d6` watches PR #41711 and alerts only on movement.
+
+### Verification
+
+- Candidate worktree `~/.hermes/worktrees/hermes-a2a-41711-candidate/` merged PR #41711 cleanly over current `origin/axiom`.
+- `python3 -m pytest tests/plugins/test_a2a_plugin.py -q -o 'addopts='` → 39 passed.
+- `python3 -m py_compile plugins/platforms/a2a/*.py` → OK.
+
 ## 2026-06-17 — Consolidate fork maintenance status references
 
 ### Summary
