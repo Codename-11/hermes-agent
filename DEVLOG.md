@@ -1,5 +1,26 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-18 — Activate A2A on Axiom-Desktop
+
+### Summary
+
+Used the active Hermes-Relay Desktop bridge as the remote hands path to update Axiom-Desktop's Hermes checkout, configure A2A over Tailscale, start the Windows gateway listener, and register a user-level login task for durability.
+
+### What changed
+
+- Fast-forwarded Axiom-Desktop's `C:\Users\Bailey\AppData\Local\hermes\hermes-agent` checkout from `d5e8b05e1` to `e7ea3213b` on `axiom`; A2A plugin files are now present and compile on Windows.
+- Configured Desktop A2A endpoint `http://100.105.160.1:9900` as `victor-desktop` with bearer auth and reciprocal peers for Docker-Server and TGI Docker.
+- Added `victor_desktop` peer entries to Docker-Server and TGI Docker configs. Tokens remain host-local and redacted from docs.
+- Started the Desktop Hermes gateway as a hidden user process through Hermes-Relay Desktop and registered user-level Windows Scheduled Task `Hermes Gateway A2A` for login auto-start.
+
+### Verification
+
+- Desktop Agent Card on `100.105.160.1:9900` returned `victor-desktop`; unauthenticated JSON-RPC returned HTTP 401.
+- Docker → Desktop `a2a_call` returned `DESKTOP_A2A_SMOKE_OK`.
+- Desktop → Docker `a2a_call` returned `DESKTOP_TO_DOCKER_A2A_OK`.
+- TGI → Desktop `a2a_call` returned `TGI_TO_DESKTOP_A2A_OK`.
+- Desktop → TGI `a2a_call` returned `DESKTOP_TO_TGI_A2A_OK`.
+
 ## 2026-06-18 — Deploy A2A over Tailscale for Docker-Server and TGI
 
 ### Summary
