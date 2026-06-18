@@ -27,7 +27,7 @@ Live state is intentionally generated on demand by `scripts/fork-status.py` so b
 - Sentinel `Hermes Axiom Sync` cron enabled/paused state;
 - optional Axiom-Desktop branch state through read-only SSH when reachable.
 
-Operational note: as of 2026-06-17, Sentinel `Hermes Axiom Sync` remains paused (`job_id: 44f7334c4efc`) and a dry run still conflicts in `agent/anthropic_adapter.py` / `agent/system_prompt.py`; do not resume it until those conflicts are resolved and validation coverage is widened.
+Operational note: as of 2026-06-17, the `agent/anthropic_adapter.py` / `agent/system_prompt.py` upstream merge conflict was resolved on `axiom`. The old Axiom `/personality` hunk in `agent/system_prompt.py` was fully dropped in favor of upstream's dynamic `ephemeral_system_prompt` injection in `agent/conversation_loop.py` and `agent/chat_completion_helpers.py`; do not reintroduce the stable-prompt override unless a focused repro shows upstream has regressed.
 
 ## Rules for upstream merge resolution
 
@@ -441,7 +441,7 @@ b0cdacd78 feat(gateway): multi-profile restart + pipeline UX
 fd105066e feat: add claude-design skill
 972146bb8 chore(clipboard): inbox sweep stale files during scan
 91270857a chore: remove retired MemPalace memory plugin
-11b81f69a fix: /personality now overrides SOUL.md identity via ephemeral_system_prompt priority (axiom fork)
+RETIRED 2026-06-17: 11b81f69a fix: /personality now overrides SOUL.md identity via ephemeral_system_prompt priority (old axiom fork hunk; superseded by upstream dynamic ephemeral injection)
 54b6087c8 fix(gateway): tolerate corrupt status files
 da6e0cab6 tooling: add merge-drop auditor for upstream syncs
 ```
