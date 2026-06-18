@@ -387,6 +387,59 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
+    def test_gateway_notices_do_not_steal_a2a_reply(self, monkeypatch):
+        """Gateway onboarding/runtime notices can be emitted before the model reply.
+
+        They must not resolve the pending A2A response future; otherwise peers
+        receive a completed task whose artifact is a local Hermes notice instead
+        of the agent's answer.
+        """
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_PORT", "0")
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        monkeypatch.setenv("A2A_PORT", str(port))
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+
+        async def fake_handle_message(event):
+            await adapter.send(event.source.chat_id, "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised")
+            await adapter.send(event.source.chat_id, "REAL_REPLY")
+
+        adapter.handle_message = fake_handle_message  # type: ignore
+        adapter._message_handler = object()
+
+        async def run():
+            assert await adapter.connect() is True
+            base = f"http://127.0.0.1:{port}"
+            body = {
+                "jsonrpc": "2.0", "id": "notice", "method": "message/send",
+                "params": {"message": protocol.text_message("user", "hello")},
+            }
+
+            def _post():
+                req = urllib.request.Request(
+                    base + "/", data=json.dumps(body).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return json.loads(r.read().decode())
+
+            resp = await asyncio.to_thread(_post)
+            task = resp["result"]
+            reply = protocol.extract_text(task["artifacts"][0])
+            assert reply == "REAL_REPLY"
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
     def test_auth_required_when_token_set(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
 

@@ -269,6 +269,25 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Sending (the agent's reply path) ──────────────────────────────────
 
+    @staticmethod
+    def _is_gateway_notice(content: str) -> bool:
+        """Return True for gateway/runtime notices that are not agent replies.
+
+        The A2A adapter turns the gateway's async send path into a synchronous
+        JSON-RPC response by resolving the pending Future on ``send()``. Generic
+        gateway notices (home-channel onboarding, runtime advisories, etc.) can
+        be emitted before the model's actual answer; returning those to the peer
+        makes a valid A2A task look completed with the wrong content.
+        """
+        text = (content or "").strip()
+        if not text:
+            return False
+        notice_prefixes = (
+            "📬 No home channel is set for ",
+            "ℹ Codex gpt-5.5 caps context ",
+        )
+        return any(text.startswith(prefix) for prefix in notice_prefixes)
+
     async def send(
         self,
         chat_id: str,
@@ -279,11 +298,16 @@ class A2AAdapter(BasePlatformAdapter):
         """Fulfil the pending reply Future for this context.
 
         ``chat_id`` is the A2A context id we set as the source chat_id, so it
-        keys straight back to the blocked HTTP request.
+        keys straight back to the blocked HTTP request. Gateway/runtime notices
+        are acknowledged but ignored so the Future resolves on the agent's real
+        response.
         """
         with self._pending_lock:
             fut = self._pending_replies.get(chat_id)
         if fut is not None and not fut.done():
+            if self._is_gateway_notice(content or ""):
+                logger.debug("A2A: ignored gateway notice for context %s", chat_id)
+                return SendResult(success=True, message_id=str(int(time.time() * 1000)))
             fut.set_result(content or "")
             return SendResult(success=True, message_id=str(int(time.time() * 1000)))
         # No waiter (e.g. a late streamed chunk or out-of-band send) — drop it.
