@@ -45,7 +45,11 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "59806492+sitkarev@users.noreply.github.com": "sitkarev",
+    "zheng@omegasys.eu": "omegazheng",
+    "220877172+james47kjv@users.noreply.github.com": "james47kjv",
     "yuhanglin@YuhangdeMac-mini.local": "1960697431",
+    "admin@fent.quest": "XVVH",
     "despitemeguru@gmail.com": "definitelynotguru",
     "chaslui@outlook.com": "ChasLui",
     "rio.jeong@thebytesize.ai": "rio-jeong",
@@ -1565,6 +1569,7 @@ AUTHOR_MAP = {
     "bsmith@bramarstrategicservices.com": "bcsmith528",  # PR #20589 salvage (register_slack_action_handler plugin API)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #45494 salvage (claim session slot before auto-resume task; #45456)
     "andrewdmwalker@gmail.com": "capt-marbles",  # PR #38440 salvage (resolve xAI OAuth credentials across profiles; #43589)
+    "infinitycrew39@gmail.com": "infinitycrew39",  # PR #47945 salvage (scope langfuse trace state by turn/request ids; #48292)
 }
 
 
