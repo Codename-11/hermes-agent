@@ -513,12 +513,6 @@ def plan_install(
     target_name = override_name or manifest.name
     canon = normalize_profile_name(target_name)
     validate_profile_name(canon)
-    if canon == "default":
-        raise DistributionError(
-            "Cannot install a distribution as 'default' — that is the built-in "
-            "root profile (~/.hermes).  Pass --name <name> to install under a "
-            "new profile."
-        )
     manifest.name = canon
     manifest.source = provenance
     # Stamped once here so plan_install() callers (both fresh install and
@@ -556,6 +550,11 @@ def _copy_dist_payload(
     shadowing a real ``.env``.
     """
     target.mkdir(parents=True, exist_ok=True)
+    owned_roots = (
+        {p.strip().strip("/").split("/")[0] for p in manifest.owned_paths()}
+        if manifest.distribution_owned
+        else None
+    )
 
     for entry in staged.iterdir():
         name = entry.name
@@ -564,6 +563,11 @@ def _copy_dist_payload(
             continue
         if name == ENV_TEMPLATE_FILENAME:
             shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)
+            continue
+        if name == ENV_EXAMPLE_FILENAME:
+            shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)
+            continue
+        if owned_roots is not None and name not in owned_roots:
             continue
         if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
             # Leave user's config.yaml alone on update
@@ -629,13 +633,16 @@ def install_distribution(
                 "or pass --force to overwrite."
             )
 
-        # Fresh install: config.yaml comes from the distribution.
+        # Fresh installs get config.yaml from the distribution. Existing
+        # profiles (including the built-in default/root profile) keep their
+        # host-local config unless the operator later opts into
+        # `profile update --force-config`.
         _bootstrap_user_dirs(plan.target_dir)
         _copy_dist_payload(
             plan.staged_dir,
             plan.target_dir,
             plan.manifest,
-            preserve_config=False,
+            preserve_config=plan.existing,
         )
 
         if create_alias:
