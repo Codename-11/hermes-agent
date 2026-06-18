@@ -421,8 +421,8 @@ function CenteredStatus({
   title: string
 }) {
   return (
-    <div className="grid gap-4 px-6 pb-6 pt-8 pr-8">
-      <div className="flex flex-col items-center gap-3 text-center">
+    <div className="flex min-h-64 flex-col justify-center gap-4 px-6 pb-6 pt-8 pr-8 sm:min-h-72">
+      <div className="mx-auto flex max-w-md flex-col items-center gap-3 text-center">
         {icon}
 
         <DialogTitle className="text-center text-lg">{title}</DialogTitle>
