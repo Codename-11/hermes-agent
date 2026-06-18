@@ -251,15 +251,17 @@ Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` fr
 
 ### PR #41711 — A2A Agent-to-Agent protocol plugin
 
-- **Status:** ISOLATED CANDIDATE — not yet promoted to `origin/axiom` or live services.
+- **Status:** LIVE AXIOM/TGI CARRY — promoted to `origin/axiom` and overlaid onto `origin/tgi` on 2026-06-18; still tracked as an upstream PR carry until #41711 or a superseding implementation lands upstream.
 - **PR:** https://github.com/NousResearch/hermes-agent/pull/41711
 - **Issue:** https://github.com/NousResearch/hermes-agent/issues/514
-- **Local candidate branch/worktree:** `carry/upstream-pr-41711-a2a` at `~/.hermes/worktrees/hermes-a2a-41711-candidate/`.
-- **Why evaluate/carry:** A2A is the likely official upstream lane for Hermes agent-to-agent communication. Axiom use cases are internal same-host profile calls plus trusted LAN/Tailscale peers: Docker-Server Victor ↔ Axiom-Desktop Victor snapshot, Docker-Server ↔ TGI Hermes, and future focused specialist profiles without exposing every MCP/tool to the caller's model context.
-- **Files touched by candidate:** `plugins/platforms/a2a/*`, `tests/plugins/test_a2a_plugin.py`, `hermes_cli/tools_config.py` (`a2a` default-off toolset).
-- **Verification so far:** candidate merged cleanly over current `origin/axiom`; `python3 -m pytest tests/plugins/test_a2a_plugin.py -q -o 'addopts='` → 39 passed; `python3 -m py_compile plugins/platforms/a2a/*.py` → OK.
+- **Local carry branch/worktree:** `carry/upstream-pr-41711-a2a` at `~/.hermes/worktrees/hermes-a2a-41711-candidate/`; merged into `axiom` with `--no-ff` as `8d44880b5`.
+- **TGI overlay:** `origin/tgi` commit `94b54a08b` overlays the A2A plugin/tests/toolset metadata onto the TGI deployment branch without dragging unrelated `axiom` history.
+- **Why carry:** A2A is the likely official upstream lane for Hermes agent-to-agent communication. Axiom use cases are trusted Tailscale peer calls between Docker-Server Victor, TGI Hermes, Axiom-Desktop when its gateway is running, and future focused specialist profiles without exposing every MCP/tool to the caller's model context.
+- **Files touched by carry:** `plugins/platforms/a2a/*`, `tests/plugins/test_a2a_plugin.py`, `hermes_cli/tools_config.py` (`a2a` default-off toolset). Local Axiom fix `81d76a264` also teaches the A2A adapter to ignore gateway/runtime notices when resolving peer replies.
+- **Live endpoints:** Docker-Server Victor listens on `http://100.71.8.56:9900` as `victor-docker`; TGI Docker listens on `http://100.84.156.70:9900` as `tgi-docker`. Both require bearer auth via host-local `A2A_BEARER_TOKEN`; do not commit tokens.
+- **Verification:** Docker targeted tests/compile passed (`40 passed`); TGI targeted tests/compile passed (`40 passed`); Docker Agent Card + unauthorized 401 + authenticated JSON-RPC smoke returned `A2A_SMOKE_OK`; Docker direct `a2a_call(victor_docker)` returned `A2A_TOOL_HANDLER_OK`; Docker→TGI returned `TGI_A2A_SMOKE_OK`; TGI→Docker returned `DOCKER_A2A_SMOKE_OK`.
 - **Watcher:** root Hermes cron `Hermes A2A PR 41711 Watcher` (`ddd8f2eaf2d6`) watches PR head/state/draft/latest-comment movement every 30 minutes via `~/.hermes/scripts/github-pr-watch.py` and alerts `#notifications` only on changes.
-- **Known review notes before exposure:** patch or accept a fix for public Agent Card URL generation when binding `0.0.0.0` (`A2A_PUBLIC_URL` / forwarded-host behavior) before LAN/Tailscale exposure. Also ensure A2A request/response peers are pre-authorized so gateway first-contact/onboarding notices do not become task answers.
+- **Known review notes:** Binding directly to Tailscale IPs avoids the current public Agent Card `0.0.0.0` URL wart. If wider binds are needed later, prefer `A2A_PUBLIC_URL` / forwarded-host behavior. Desktop is not callable until a Hermes gateway/A2A listener is running there; a minimal A2A-only gateway is sufficient.
 - **Drop condition:** When upstream merges #41711 or a superseding A2A implementation, compare file behavior/tests, then either absorb upstream naturally or revert this carry as a unit before syncing.
 
 ### Desktop model picker snap-back — local carry pending upstream equivalent

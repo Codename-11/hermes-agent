@@ -1,5 +1,28 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-18 — Deploy A2A over Tailscale for Docker-Server and TGI
+
+### Summary
+
+Promoted the upstream A2A protocol carry into the live Axiom branch, fixed an integration bug where gateway/runtime notices could steal A2A replies, and deployed mutually-authenticated A2A peers between Docker-Server Victor and TGI Docker over Tailscale.
+
+### What changed
+
+- Merged `carry/upstream-pr-41711-a2a` into `axiom` with `--no-ff`, preserving the upstream PR carry topology.
+- Added `fix(a2a): ignore gateway notices when resolving peer replies` so A2A JSON-RPC responses wait for the agent's actual answer instead of returning Hermes onboarding/advisory notices.
+- Configured Docker-Server Victor A2A inbound on `http://100.71.8.56:9900` as `victor-docker` with bearer auth and `a2a_agents` entries for `victor_docker` and `tgi_docker`.
+- Overlaid the A2A plugin/tests/toolset metadata onto the `tgi` branch without dragging unrelated `axiom` history, then fast-forwarded TGI Docker and configured its reciprocal A2A peer entries.
+- Updated `FORK.md`, `~/SYSTEM.md`, and the Obsidian Hermes project note with live endpoint/status/verification details. Tokens remain host-local and redacted from docs.
+
+### Verification
+
+- Docker-Server: `python3 -m pytest tests/plugins/test_a2a_plugin.py -q -o 'addopts='` → 40 passed; `python3 -m py_compile plugins/platforms/a2a/*.py tests/plugins/test_a2a_plugin.py` → OK.
+- Docker-Server A2A Agent Card on `100.71.8.56:9900` returned `victor-docker`; unauthenticated JSON-RPC returned HTTP 401; authenticated `message/send` returned `A2A_SMOKE_OK`.
+- Docker-Server direct tool handler `a2a_call({'agent': 'victor_docker', ...})` returned `A2A_TOOL_HANDLER_OK`.
+- TGI Docker: `./venv/bin/python -m pytest tests/plugins/test_a2a_plugin.py -q -o 'addopts='` → 40 passed; `./venv/bin/python -m py_compile plugins/platforms/a2a/*.py tests/plugins/test_a2a_plugin.py` → OK.
+- Docker → TGI `a2a_call` returned `TGI_A2A_SMOKE_OK`.
+- TGI → Docker `a2a_call` returned `DOCKER_A2A_SMOKE_OK`.
+
 ## 2026-06-18 — Stage A2A PR #41711 candidate tracking
 
 ### Summary
