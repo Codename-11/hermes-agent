@@ -249,6 +249,19 @@ tests/plugins/memory/test_mempalace_provider.py
 
 Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` from a dedicated `carry/upstream-pr-<number>-<topic>` branch so the carry can be reverted as a unit when upstream merges or replaces the feature.
 
+### PR #41711 — A2A Agent-to-Agent protocol plugin
+
+- **Status:** ISOLATED CANDIDATE — not yet promoted to `origin/axiom` or live services.
+- **PR:** https://github.com/NousResearch/hermes-agent/pull/41711
+- **Issue:** https://github.com/NousResearch/hermes-agent/issues/514
+- **Local candidate branch/worktree:** `carry/upstream-pr-41711-a2a` at `~/.hermes/worktrees/hermes-a2a-41711-candidate/`.
+- **Why evaluate/carry:** A2A is the likely official upstream lane for Hermes agent-to-agent communication. Axiom use cases are internal same-host profile calls plus trusted LAN/Tailscale peers: Docker-Server Victor ↔ Axiom-Desktop Victor snapshot, Docker-Server ↔ TGI Hermes, and future focused specialist profiles without exposing every MCP/tool to the caller's model context.
+- **Files touched by candidate:** `plugins/platforms/a2a/*`, `tests/plugins/test_a2a_plugin.py`, `hermes_cli/tools_config.py` (`a2a` default-off toolset).
+- **Verification so far:** candidate merged cleanly over current `origin/axiom`; `python3 -m pytest tests/plugins/test_a2a_plugin.py -q -o 'addopts='` → 39 passed; `python3 -m py_compile plugins/platforms/a2a/*.py` → OK.
+- **Watcher:** root Hermes cron `Hermes A2A PR 41711 Watcher` (`ddd8f2eaf2d6`) watches PR head/state/draft/latest-comment movement every 30 minutes via `~/.hermes/scripts/github-pr-watch.py` and alerts `#notifications` only on changes.
+- **Known review notes before exposure:** patch or accept a fix for public Agent Card URL generation when binding `0.0.0.0` (`A2A_PUBLIC_URL` / forwarded-host behavior) before LAN/Tailscale exposure. Also ensure A2A request/response peers are pre-authorized so gateway first-contact/onboarding notices do not become task answers.
+- **Drop condition:** When upstream merges #41711 or a superseding A2A implementation, compare file behavior/tests, then either absorb upstream naturally or revert this carry as a unit before syncing.
+
 ### Desktop model picker snap-back — local carry pending upstream equivalent
 
 - **Status:** LOCAL TEMPORARY CARRY — no upstream PR opened at operator direction.
