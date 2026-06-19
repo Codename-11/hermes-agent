@@ -374,7 +374,33 @@ def test_detect_gateway_launcher_instances_finds_gateway_run_shim(_winp, tmp_pat
     with patch.dict(sys.modules, {"psutil": fake_psutil}):
         result = cli_main._detect_windows_gateway_launcher_instances(scripts_dir)
 
-    assert result == [(gateway_pid, "hermes.exe")]
+    assert result == [(gateway_pid, "hermes.exe", "default")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_gateway_launcher_instances_infers_profile_flag(_winp, tmp_path):
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    gateway_pid = os.getpid() + 303
+    rows = [
+        _make_proc(
+            gateway_pid,
+            str(shim),
+            "hermes.exe",
+            [str(shim), "--profile", "work", "gateway", "run"],
+        )
+    ]
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[],
+        proc_iter_rows=rows,
+        ancestor_exe=str(shim),
+    )
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_windows_gateway_launcher_instances(scripts_dir)
+
+    assert result == [(gateway_pid, "hermes.exe", "work")]
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -540,7 +566,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     monkeypatch.setattr(
         cli_main,
         "_detect_windows_gateway_launcher_instances",
-        lambda _scripts_dir: [(303, "hermes.exe")],
+        lambda _scripts_dir: [(303, "hermes.exe", "default")],
     )
     waited_for = []
 
@@ -561,7 +587,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
 
     assert token == {
         "resume_needed": True,
-        "profiles": {"work": 101},
+        "profiles": {"default": 303, "work": 101},
         "unmapped_pids": [202],
     }
     assert waited_for == [101]
@@ -572,7 +598,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     assert marker["stopper_pid"] == os.getpid()
 
     captured = capsys.readouterr().out
-    assert "Paused gateway profile(s): work" in captured
+    assert "Paused gateway profile(s): default, work" in captured
     assert "without profile mapping" in captured
 
 

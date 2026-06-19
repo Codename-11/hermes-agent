@@ -7693,7 +7693,7 @@ def _detect_concurrent_hermes_instances(
 
 def _detect_windows_gateway_launcher_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None
-) -> list[tuple[int, str]]:
+) -> list[tuple[int, str, str]]:
     """Find venv shim launchers that are specifically running gateways.
 
     ``find_gateway_pids()`` reports the Python process that owns the gateway
@@ -7752,7 +7752,21 @@ def _detect_windows_gateway_launcher_instances(
     except Exception:
         return []
 
-    matches: list[tuple[int, str]] = []
+    def _profile_from_cmdline(cmdline: list[str] | str) -> str:
+        if isinstance(cmdline, str):
+            parts = cmdline.split()
+        else:
+            parts = [str(part) for part in cmdline]
+        for index, part in enumerate(parts):
+            if part in {"--profile", "-p"} and index + 1 < len(parts):
+                value = parts[index + 1].strip()
+                return value or "default"
+            if part.startswith("--profile="):
+                value = part.split("=", 1)[1].strip()
+                return value or "default"
+        return "default"
+
+    matches: list[tuple[int, str, str]] = []
     for proc in proc_iter:
         try:
             info = proc.info
@@ -7777,7 +7791,7 @@ def _detect_windows_gateway_launcher_instances(
         if "gateway" not in cmd_text or "run" not in cmd_text:
             continue
         name = info.get("name") or Path(exe).name
-        matches.append((int(pid), str(name)))
+        matches.append((int(pid), str(name), _profile_from_cmdline(cmdline)))
 
     return matches
 
@@ -9117,12 +9131,10 @@ def _pause_windows_gateways_for_update() -> dict | None:
         running_pids = []
 
     scripts_dir = _venv_scripts_dir()
-    launcher_pids = []
+    launcher_instances = []
     if scripts_dir is not None:
-        launcher_pids = [
-            pid
-            for pid, _name in _detect_windows_gateway_launcher_instances(scripts_dir)
-        ]
+        launcher_instances = _detect_windows_gateway_launcher_instances(scripts_dir)
+    launcher_pids = [pid for pid, _name, _profile in launcher_instances]
     if not running_pids and not launcher_pids:
         return None
 
@@ -9143,6 +9155,9 @@ def _pause_windows_gateways_for_update() -> dict | None:
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
         _write_update_planned_stop_marker(Path(proc.path), int(pid))
+
+    for pid, _name, profile in launcher_instances:
+        profiles.setdefault(str(profile or "default"), int(pid))
 
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     try:
