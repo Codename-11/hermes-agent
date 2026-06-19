@@ -544,8 +544,68 @@ def test_resume_windows_gateways_after_update_relaunches_paused_profiles(
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
+def test_cmd_update_pauses_windows_gateways_before_concurrent_guard(
+    _winp, tmp_path
+):
+    """Gateway pause/resume must run before the generic hermes.exe guard.
+
+    A Windows A2A/API gateway can be launched as ``hermes.exe gateway run``.
+    If the concurrent-shim guard runs first, ``hermes update`` aborts before
+    reaching the gateway pause path that would release the venv shim lock.
+    """
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    token = {"resume_needed": True, "profiles": {"default": 101}, "unmapped_pids": []}
+    order = []
+
+    args = SimpleNamespace(
+        check=False,
+        gateway=False,
+        yes=False,
+        force=False,
+        backup=False,
+        no_backup=True,
+    )
+
+    def fake_pause():
+        order.append("pause")
+        return token
+
+    def fake_register(func, arg):
+        order.append(("register", func, arg))
+
+    def fake_detect(_scripts_dir):
+        order.append("detect")
+        return []
+
+    def fake_backup(_args):
+        order.append("backup")
+        raise RuntimeError("reached post-gate body")
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=scripts_dir
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", side_effect=fake_pause
+    ), patch("atexit.register", side_effect=fake_register), patch.object(
+        cli_main, "_detect_concurrent_hermes_instances", side_effect=fake_detect
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", side_effect=fake_backup
+    ), patch.object(
+        cli_main, "_install_hangup_protection", return_value={}
+    ), patch.object(
+        cli_main, "_finalize_update_output"
+    ):
+        with pytest.raises(RuntimeError, match="reached post-gate body"):
+            cli_main.cmd_update(args)
+
+    assert order[0] == "pause"
+    assert order[1] == ("register", cli_main._resume_windows_gateways_after_update, token)
+    assert order[2:] == ["detect", "backup"]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
 def test_cmd_update_aborts_on_concurrent_instance(_winp, tmp_path, capsys):
-    """If another hermes.exe is running, the update bails out before
+    """If another non-gateway hermes.exe remains, the update bails out before
     touching the working tree (exit code 2)."""
     scripts_dir = tmp_path / "Scripts"
     scripts_dir.mkdir()
@@ -561,6 +621,8 @@ def test_cmd_update_aborts_on_concurrent_instance(_winp, tmp_path, capsys):
 
     with patch.object(
         cli_main, "_venv_scripts_dir", return_value=scripts_dir
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=None
     ), patch.object(
         cli_main,
         "_detect_concurrent_hermes_instances",
@@ -608,6 +670,8 @@ def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
     sentinel = RuntimeError("reached post-gate body")
     with patch.object(
         cli_main, "_venv_scripts_dir", return_value=scripts_dir
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=None
     ), patch.object(
         cli_main, "_detect_concurrent_hermes_instances", detect
     ), patch.object(

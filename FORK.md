@@ -180,12 +180,14 @@ Protected behavior:
 - Deploy branch updates are transactional and preserve rescue prompts for stash/merge conflicts.
 - Update path can restart named profile gateway services without leaking profile env between processes.
 - Update path excludes systemd-managed dashboard/Desktop child processes from unsafe kill sweeps.
+- Windows update path pauses mapped gateway processes before the concurrent `hermes.exe` shim guard, so Scheduled-Task/manual gateways can release `venv\\Scripts\\hermes.exe` before dependency reinstall; unrelated REPL/Desktop backend processes still block unless `--force` is explicit.
 - Windows quarantine safeguards remain intact.
 - Pipeline TUI / update handoff context remains agent-readable.
 
 Known references:
 
 - `DEVLOG.md` 2026-06-03: upstream sync and service refresh.
+- `DEVLOG.md` 2026-06-18: Windows gateway pause before concurrent `hermes.exe` update guard.
 - fork-only commits tagged `fix(update)`, `feat(update)`, `fix(banner)`, `fix(version)`, `fix(cli)`.
 
 Primary files:
@@ -200,6 +202,7 @@ scripts/check-merge-drops.py
 tests/hermes_cli/test_update_check.py
 tests/hermes_cli/test_update_autostash.py
 tests/hermes_cli/test_update_stale_dashboard.py
+tests/hermes_cli/test_update_concurrent_quarantine.py
 tests/hermes_cli/test_cmd_update.py
 ```
 

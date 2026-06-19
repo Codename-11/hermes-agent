@@ -9315,10 +9315,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print("⚕ Updating Hermes Agent...")
     print()
 
-    # On Windows, abort early if another hermes.exe is holding the venv shim
-    # open. Continuing would result in a string of WinError 32 warnings and
-    # then either a deferred-rename leftover or a failed git-pull fast path
-    # that silently falls back to the slower ZIP route. See issue #26670.
+    # On Windows, pause known gateway processes before the generic concurrent
+    # hermes.exe guard. Manual/Scheduled-Task gateways commonly run through the
+    # venv's hermes.exe shim, so checking for locked shims first would abort
+    # before the updater reaches the gateway pause/resume path.
+    _windows_gateway_resume = _pause_windows_gateways_for_update()
+    if _windows_gateway_resume:
+        import atexit as _atexit
+
+        _atexit.register(
+            _resume_windows_gateways_after_update,
+            _windows_gateway_resume,
+        )
+
+    # After pausing gateways, abort if any *remaining* hermes.exe is holding
+    # the venv shim open. Continuing would result in a string of WinError 32
+    # warnings and then either a deferred-rename leftover or a failed git-pull
+    # fast path that silently falls back to the slower ZIP route. See issue
+    # #26670.
     if _is_windows() and not getattr(args, "force", False):
         scripts_dir = _venv_scripts_dir()
         if scripts_dir is not None:
@@ -9330,15 +9344,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
-
-    _windows_gateway_resume = _pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-
-        _atexit.register(
-            _resume_windows_gateways_after_update,
-            _windows_gateway_resume,
-        )
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)

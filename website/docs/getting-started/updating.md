@@ -114,7 +114,7 @@ updates:
 
 ### Windows: another `hermes.exe` is running
 
-On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `hermes` REPL in another terminal, or a running gateway:
+On Windows, `hermes update` first pauses running Hermes gateway processes it can identify, then checks for any remaining `hermes.exe` process holding the venv's entry-point executable open. If a non-gateway process still has the shim loaded — most commonly the Hermes Desktop app's spawned backend or an open `hermes` REPL in another terminal — the update refuses to continue:
 
 ```
 $ hermes update
@@ -130,7 +130,7 @@ $ hermes update
   confirmed those processes will not write to the venv.
 ```
 
-Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
+Close the listed processes and re-run. A listed gateway usually means Hermes could not map or stop it; try `hermes gateway stop` once before killing the PID manually. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
 Expected output looks like:
 

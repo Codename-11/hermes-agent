@@ -1,5 +1,25 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-18 — Fix Windows gateway update lock ordering
+
+### Summary
+
+Fixed the Windows update path so Hermes pauses known gateway processes before running the generic concurrent `hermes.exe` shim guard. This lets A2A/API gateways launched as `hermes.exe gateway run` release `venv\\Scripts\\hermes.exe` before dependency reinstall, while still blocking unrelated Desktop backend/REPL processes that would keep the executable locked.
+
+### What changed
+
+- Moved `_pause_windows_gateways_for_update()` ahead of `_detect_concurrent_hermes_instances()` in `hermes_cli/main.py` and registered gateway resume immediately after a successful pause.
+- Kept the concurrent shim guard after gateway pause so non-gateway Hermes processes still fail safely instead of forcing WinError 32 / reboot-deferred replacements.
+- Added regression coverage proving the updater pauses/registers Windows gateways before checking remaining concurrent `hermes.exe` processes.
+- Updated English and zh-Hans update docs to distinguish auto-paused gateways from remaining non-gateway blockers.
+
+### Verification
+
+- `python -m py_compile hermes_cli/main.py` → OK.
+- `python -m pytest -q -o addopts='' tests/hermes_cli/test_update_concurrent_quarantine.py` → 21 passed.
+- `python -m pytest -q -o addopts='' tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_update_check.py tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_update_stale_dashboard.py tests/hermes_cli/test_update_concurrent_quarantine.py` → 121 passed.
+- `python -m pytest -q -o addopts='' tests/gateway/test_planned_stop_watcher.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_shutdown_forensics.py` → 58 passed, 1 existing Hermes-Relay bootstrap deprecation warning.
+
 ## 2026-06-18 — Activate A2A on Axiom-Desktop
 
 ### Summary
