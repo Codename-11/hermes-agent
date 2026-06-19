@@ -32,10 +32,17 @@ pytestmark = pytest.mark.real_concurrent_gate
 # ---------------------------------------------------------------------------
 
 
-def _make_proc(pid: int, exe: str, name: str = "hermes.exe"):
+def _make_proc(
+    pid: int,
+    exe: str,
+    name: str = "hermes.exe",
+    cmdline: list[str] | str | None = None,
+):
     """Build a duck-typed psutil Process stand-in with the .info dict."""
     proc = MagicMock()
     proc.info = {"pid": pid, "exe": exe, "name": name}
+    if cmdline is not None:
+        proc.info["cmdline"] = cmdline
     return proc
 
 
@@ -341,6 +348,62 @@ def test_format_message_mentions_pids_and_remediation(tmp_path):
     assert "/F" in msg
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_gateway_launcher_instances_finds_gateway_run_shim(_winp, tmp_path):
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+
+    gateway_pid = os.getpid() + 300
+    repl_pid = os.getpid() + 301
+    rows = [
+        _make_proc(
+            gateway_pid,
+            str(shim),
+            "hermes.exe",
+            [str(shim), "gateway", "run"],
+        ),
+        _make_proc(repl_pid, str(shim), "hermes.exe", [str(shim)]),
+    ]
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[],
+        proc_iter_rows=rows,
+        ancestor_exe=str(shim),
+    )
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_windows_gateway_launcher_instances(scripts_dir)
+
+    assert result == [(gateway_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_gateway_launcher_instances_excludes_current_launcher(_winp, tmp_path):
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    launcher_pid = os.getpid() + 302
+
+    rows = [
+        _make_proc(
+            launcher_pid,
+            str(shim),
+            "hermes.exe",
+            [str(shim), "gateway", "run"],
+        )
+    ]
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[launcher_pid],
+        proc_iter_rows=rows,
+        ancestor_exe=str(shim),
+    )
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_windows_gateway_launcher_instances(scripts_dir)
+
+    assert result == []
+
+
 # ---------------------------------------------------------------------------
 # _quarantine_running_hermes_exe — retry + reboot-deferred fallback
 # ---------------------------------------------------------------------------
@@ -473,6 +536,12 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         lambda **_k: [profile_proc],
     )
     monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: tmp_path / "Scripts")
+    monkeypatch.setattr(
+        cli_main,
+        "_detect_windows_gateway_launcher_instances",
+        lambda _scripts_dir: [(303, "hermes.exe")],
+    )
     waited_for = []
 
     def fake_wait(pids, *, timeout):
@@ -496,7 +565,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         "unmapped_pids": [202],
     }
     assert waited_for == [101]
-    assert terminated == [(202, True)]
+    assert terminated == [(202, True), (303, True)]
 
     marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
     assert marker["target_pid"] == 101

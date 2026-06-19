@@ -7691,6 +7691,97 @@ def _detect_concurrent_hermes_instances(
     return matches
 
 
+def _detect_windows_gateway_launcher_instances(
+    scripts_dir: Path, *, exclude_pid: int | None = None
+) -> list[tuple[int, str]]:
+    """Find venv shim launchers that are specifically running gateways.
+
+    ``find_gateway_pids()`` reports the Python process that owns the gateway
+    socket. On Windows, a manual gateway started as ``hermes.exe gateway run``
+    also leaves a parent setuptools launcher process mapped against
+    ``venv\\Scripts\\hermes.exe``. Stopping only the socket-owning Python PID
+    is not enough: the launcher can still make the updater's generic shim guard
+    abort. This helper finds only those gateway launcher shims so the pause path
+    can stop them without ignoring unrelated REPL/Desktop backend shims.
+    """
+    if not _is_windows():
+        return []
+
+    try:
+        import psutil
+    except Exception:
+        return []
+
+    shim_paths: set[str] = set()
+    for shim in _hermes_exe_shims(scripts_dir):
+        try:
+            shim_paths.add(str(shim.resolve()).lower())
+        except OSError:
+            shim_paths.add(str(shim).lower())
+    if not shim_paths:
+        return []
+
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {int(exclude_pid)}
+    else:
+        exclude_pids = {os.getpid()}
+    try:
+        seed = next(iter(exclude_pids))
+        try:
+            ancestors = psutil.Process(seed).parents()
+        except Exception:
+            ancestors = []
+        for ancestor in ancestors:
+            try:
+                anc_exe = ancestor.exe()
+            except Exception:
+                continue
+            if not anc_exe:
+                continue
+            try:
+                anc_norm = str(Path(anc_exe).resolve()).lower()
+            except (OSError, ValueError):
+                anc_norm = str(anc_exe).lower()
+            if anc_norm in shim_paths:
+                exclude_pids.add(int(ancestor.pid))
+    except Exception:
+        pass
+
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline"])
+    except Exception:
+        return []
+
+    matches: list[tuple[int, str]] = []
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid = info.get("pid")
+        exe = info.get("exe")
+        if not exe or pid is None or pid in exclude_pids:
+            continue
+        try:
+            exe_norm = str(Path(exe).resolve()).lower()
+        except (OSError, ValueError):
+            exe_norm = str(exe).lower()
+        if exe_norm not in shim_paths:
+            continue
+
+        cmdline = info.get("cmdline") or []
+        if isinstance(cmdline, str):
+            cmd_text = cmdline.lower()
+        else:
+            cmd_text = " ".join(str(part) for part in cmdline).lower()
+        if "gateway" not in cmd_text or "run" not in cmd_text:
+            continue
+        name = info.get("name") or Path(exe).name
+        matches.append((int(pid), str(name)))
+
+    return matches
+
+
 def _format_concurrent_instances_message(
     matches: list[tuple[int, str]], scripts_dir: Path
 ) -> str:
@@ -9023,8 +9114,16 @@ def _pause_windows_gateways_for_update() -> dict | None:
         running_pids = list(dict.fromkeys(find_gateway_pids(all_profiles=True)))
     except Exception as exc:
         logger.debug("Could not discover Windows gateway PIDs before update: %s", exc)
-        return None
-    if not running_pids:
+        running_pids = []
+
+    scripts_dir = _venv_scripts_dir()
+    launcher_pids = []
+    if scripts_dir is not None:
+        launcher_pids = [
+            pid
+            for pid, _name in _detect_windows_gateway_launcher_instances(scripts_dir)
+        ]
+    if not running_pids and not launcher_pids:
         return None
 
     profile_processes = {}
@@ -9057,7 +9156,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
 
     force_killed = []
-    for pid in sorted(set(survivors).union(unmapped_pids)):
+    for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
         try:
             terminate_pid(int(pid), force=True)
             force_killed.append(int(pid))
