@@ -38,6 +38,70 @@ Operational note: as of 2026-06-17, the `agent/anthropic_adapter.py` / `agent/sy
 5. **If a feature is obsolete because upstream now provides equivalent behavior, mark it retired in this file and add verification evidence.**
 6. **Do not resume the daily sync cron until conflict alerts are deduped and the contract tests cover the protected Axiom behavior.**
 
+## Fork footprint reduction — extracted modules
+
+To honor rule #4 ("port Axiom behavior into upstream's new split/module rather
+than re-expanding the old god file"), fork-only code that previously lived
+inline in upstream's most-refactored files is being moved into **fork-owned
+modules** with a thin seam back into the host file. Upstream never edits a
+filename it doesn't ship, so a fork-owned module has ~zero merge surface.
+
+### `hermes_cli/axiom_update.py` — deploy-branch update helpers (2026-06-21)
+
+**Why:** `hermes_cli/main.py` is upstream's #1 conflict hotspot — it is under an
+active "god-file Phase 2" campaign (commits like *"extract 25 more subcommand
+parsers into hermes_cli/subcommands/"*, *"extract 18 model-flow wizard
+functions"*). The fork carried **+1623/−537** lines there, so nearly every
+upstream merge collided. Measured fork divergence at extraction time: 309
+fork-only commits; `main.py` touched by 31 of them.
+
+**What moved:** 15 genuinely fork-only functions (≈692 lines), all in the
+deploy-branch update domain — none exist upstream, so they carry with zero
+`main.py` merge surface:
+
+```text
+_run_deploy_branch_update            _sync_deploy_main_to_upstream
+_validate_update_after_pull          _completed_deploy_handoff_requires_post_update
+_record_deploy_handoff               _deploy_handoff_marker_path
+_count_changed_from_pre_update       _print_deploy_branch_handoff
+_preserve_deploy_branch_stash        _remove_update_worktree
+_clean_managed_worktree              _short_git_ref
+_get_dashboard_service_pids          _desktop_shortcut_exists
+_detect_windows_gateway_launcher_instances
+```
+
+Plus the fork-only `DEPLOY_HANDOFF_FILE` constant.
+
+**Seam contract:**
+- `main.py` imports all 15 names from `hermes_cli.axiom_update` at module load
+  (one import block, just after the `subcommands.*` imports) and calls them at
+  the original call sites unchanged (8 external seam sites; the rest are
+  internal cross-calls that travel together).
+- `axiom_update.py` imports four still-in-`main.py` helpers
+  (`_count_commits_between`, `_hermes_exe_shims`, `_is_windows`,
+  `_validate_critical_files_syntax`) **lazily, inside the functions that use
+  them**, to avoid a circular import at load time. These are stable upstream
+  utilities — import them, do not move them, so the new module stays free of
+  upstream-churning code.
+- Tests that exercise a moved function must patch its dependencies on
+  `hermes_cli.axiom_update` (where the function resolves them), not on
+  `hermes_cli.main`. See
+  `tests/hermes_cli/test_update_autostash.py::test_deploy_handoff_marker_completes_when_live_origin_and_upstream_match`.
+
+**Still inline in `main.py` (deliberately not extracted):** the *modifications*
+to upstream functions (`_cmd_update_impl`, `_cmd_update_check`,
+`_print_version_info`, etc.). Those rewrite upstream code paths by design;
+their merge conflicts are the intended signal that upstream touched the update
+flow and the carry needs review. Do not hide them by extraction.
+
+**Drop/review condition:** when upstream lands an equivalent deploy-branch
+update mechanism, retire `axiom_update.py` per the drop-review process rather
+than letting it rot.
+
+**Validation:** `python -m py_compile hermes_cli/axiom_update.py
+hermes_cli/main.py`; the update suites in the FORK.md validation block;
+`hermes --version` and `hermes update --check` smoke through the live CLI.
+
 ## Protected behavior contract
 
 ### 1. Hermes-Relay / external API compatibility
