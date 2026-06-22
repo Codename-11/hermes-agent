@@ -1,3 +1,5 @@
+import type { ProfileInfo } from '@/types/hermes'
+
 export {}
 
 declare global {
@@ -32,6 +34,10 @@ declare global {
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
+      listRemoteProfilesForConnection: (
+        payload: DesktopConnectionConfigInput
+      ) => Promise<DesktopRemoteProfilesResult>
+      pinRemoteProfileConnection: (payload: DesktopPinRemoteProfileInput) => Promise<DesktopConnectionConfig>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
       profile: {
@@ -290,7 +296,7 @@ export interface HermesConnection {
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
   nativeOverlayWidth: number
-  source?: 'env' | 'local' | 'settings'
+  source?: 'env' | 'local' | 'profile' | 'settings'
   token: string
   wsUrl: string
   logs: string[]
@@ -338,6 +344,17 @@ export interface DesktopConnectionConfigInput {
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string
+}
+
+export interface DesktopPinRemoteProfileInput extends DesktopConnectionConfigInput {
+  sourceProfile?: null | string
+  targetProfile: string
+}
+
+export interface DesktopRemoteProfilesResult {
+  baseUrl: string
+  ok: boolean
+  profiles: ProfileInfo[]
 }
 
 export interface DesktopConnectionTestResult {

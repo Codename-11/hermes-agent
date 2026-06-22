@@ -388,6 +388,24 @@ export interface Translations {
       savedMessage: string
       connectedTo: (baseUrl: string, version?: string) => string
       reachableTitle: string
+      remoteProfilesTitle: string
+      remoteProfilesDesc: string
+      loadRemoteProfiles: string
+      remoteProfilesFrom: (baseUrl: string) => string
+      remoteProfilesEmpty: string
+      remoteProfilesLoadedTitle: string
+      remoteProfilesLoaded: (count: number, baseUrl: string) => string
+      remoteProfilesFailed: string
+      remoteProfileDefault: string
+      remoteProfileNoModel: string
+      remoteProfileLocal: string
+      remoteProfileDefaultTitle: string
+      remoteProfileDefaultDesc: string
+      pinRemoteProfileNew: string
+      pinRemoteProfileExisting: string
+      remoteProfilePinnedTitle: string
+      remoteProfilePinned: (name: string) => string
+      remoteProfilePinFailed: (name: string) => string
       signedOutTitle: string
       signedOutMessage: string
       failedLoad: string
