@@ -38,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -236,7 +236,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, job_hermes_home
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -316,14 +316,12 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored.
+    """Resolve the shared cron lock paths at call time.
 
-    Anchored on the DEFAULT ROOT home (not the active profile), matching the
-    jobs store in cron.jobs (which uses get_default_hermes_root). The tick lock
-    is storage-coordination — it must live next to the single jobs.json so that
-    tickers running under different profiles share one lock and can't
-    double-fire the relocated store (#32091). Execution context (.env,
-    config.yaml, scripts) stays profile-aware via _get_hermes_home().
+    Jobs live in the shared root cron store. Individual gateways filter by
+    ``owner_profile`` before execution, but storage coordination must use one
+    lock next to the shared jobs.json so CLI/gateway/external-provider writes do
+    not race.
     """
     from hermes_constants import get_default_hermes_root
     lock_dir = (_hermes_home or get_default_hermes_root()) / "cron"
@@ -1267,13 +1265,15 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        env = _sanitize_subprocess_env(os.environ.copy())
+        env["HERMES_HOME"] = str(_get_hermes_home())
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            env=env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -1603,9 +1603,25 @@ def _scan_assembled_cron_prompt(
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a single cron job under its owner profile's Hermes home."""
+    owner_home = job_hermes_home(job)
+    previous_home = os.environ.get("HERMES_HOME")
+    token = set_hermes_home_override(owner_home)
+    os.environ["HERMES_HOME"] = str(owner_home)
+    try:
+        return _run_job_inner(job)
+    finally:
+        reset_hermes_home_override(token)
+        if previous_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous_home
+
+
+def _run_job_inner(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
