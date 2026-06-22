@@ -47,7 +47,7 @@ cd <handoff-worktree>
 git status --short --branch
 # Resolve conflicts with upstream-first policy.
 # Preserve outcomes through tests, not stale hunks.
-/home/tgi/.hermes/hermes-agent/venv/bin/python -m py_compile gateway/run.py gateway/platforms/slack.py gateway/session.py hermes_cli/main.py
+/home/tgi/.hermes/hermes-agent/venv/bin/python -m py_compile gateway/run.py gateway/platforms/slack.py gateway/session.py hermes_cli/main.py hermes_cli/fork_update.py
 /home/tgi/.hermes/hermes-agent/venv/bin/python -m pytest -o 'addopts=' -q <focused-tests>
 git commit --no-edit
 HOME=/home/tgi git push origin HEAD:tgi
@@ -89,7 +89,8 @@ Commits:
 
 Primary files:
 
-- `hermes_cli/main.py`
+- `hermes_cli/fork_update.py` — fork-owned deploy update helper implementation
+- `hermes_cli/main.py` — thin import/call-site seam only
 - `tests/hermes_cli/test_update_autostash.py`
 - `tests/hermes_cli/test_cmd_update.py`
 - `AGENTS.md`
@@ -101,6 +102,8 @@ Why TGI needs it:
 - The live runtime runs from `tgi`, not a clean upstream `main` checkout.
 - A normal update that switches or resets to `main` would drop TGI Slack/runtime patches.
 - Update conflicts must leave the live checkout untouched and hand off a retained temp worktree for manual resolution.
+- The helper implementation lives in `hermes_cli/fork_update.py` so upstream churn in `hermes_cli/main.py` only sees a small import seam.
+- Dashboard web builds must install devDependencies even when the runtime environment exports `NODE_ENV=production`, otherwise `typescript`/`vite` can be omitted and stale dashboard assets may survive an update.
 
 Required behavior:
 

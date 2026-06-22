@@ -272,6 +272,29 @@ class TestBuildWebUISkipsWhenFresh:
         assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
         assert kwargs["cwd"] == tmp_path
 
+    def test_web_install_forces_dev_deps_under_node_env_production(
+        self, tmp_path, monkeypatch
+    ):
+        """Build-time install needs devDependencies even under NODE_ENV=production."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+        monkeypatch.setenv("NODE_ENV", "production")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_idle:
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        _, install_kwargs = mock_run.call_args
+        assert install_kwargs["env"].get("npm_config_include") == "dev"
+        _, build_kwargs = mock_idle.call_args
+        assert "npm_config_include" not in (build_kwargs.get("env") or {})
+
 
 class TestBuildWebUIRetryAndStaleFallback:
     """Coverage for the retry + stale-dist fallback added in #23824 / issue #23817."""

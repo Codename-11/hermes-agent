@@ -301,6 +301,23 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+# ── Fork-only update/deploy helpers ──────────────────────────────────────
+# Extracted from this file into hermes_cli/fork_update.py to keep fork-owned
+# deploy-branch reconciliation code out of main.py (an upstream hotspot).
+# These names are re-imported here so existing update-flow call sites and
+# tests keep working unchanged.
+from hermes_cli.fork_update import (  # noqa: E402  (fork seam)
+    _completed_deploy_handoff_requires_post_update,
+    _count_changed_from_pre_update,
+    _deploy_handoff_marker_path,
+    _preserve_deploy_branch_stash,
+    _print_deploy_branch_handoff,
+    _record_deploy_handoff,
+    _remove_update_worktree,
+    _run_deploy_branch_update,
+    _short_git_ref,
+    _sync_deploy_main_to_upstream,
+)
 
 
 def _require_tty(command_name: str) -> None:
@@ -4858,11 +4875,15 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
+    # Build-time installs need devDependencies (typescript/vite). Some service
+    # environments export NODE_ENV=production; npm then omits dev deps unless
+    # explicitly told otherwise, producing a stale dashboard after update.
+    install_env = {**build_env, "npm_config_include": "dev"}
     r1 = _run_npm_install_deterministic(
         npm,
         npm_cwd,
         extra_args=(*npm_workspace_args, "--silent"),
-        env=build_env,
+        env=install_env,
     )
     if r1.returncode != 0:
         _say(
@@ -6738,7 +6759,6 @@ OFFICIAL_REPO_URLS = {
 }
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
-DEPLOY_HANDOFF_FILE = ".update_handoff.json"
 DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
@@ -6818,482 +6838,6 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
         pass
     return -1
 
-
-def _short_git_ref(git_cmd: list[str], cwd: Path, ref: str) -> str:
-    try:
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--short", ref],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return "unknown"
-
-
-def _count_changed_from_pre_update(
-    git_cmd: list[str],
-    cwd: Path,
-    pre_update_head: str,
-    fallback: int,
-) -> int:
-    if pre_update_head:
-        changed = _count_commits_between(git_cmd, cwd, pre_update_head, "HEAD")
-        if changed >= 0:
-            return changed
-    return max(fallback, 1) if fallback > 0 else 0
-
-
-def _deploy_handoff_marker_path() -> Path:
-    from hermes_constants import get_hermes_home
-
-    return get_hermes_home() / DEPLOY_HANDOFF_FILE
-
-
-def _record_deploy_handoff(
-    *,
-    repo: Path,
-    branch: str,
-    reason: str,
-    worktree_path: Optional[Path] = None,
-) -> None:
-    try:
-        marker = _deploy_handoff_marker_path()
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "repo": str(repo),
-            "branch": branch,
-            "reason": reason,
-            "worktree": str(worktree_path) if worktree_path is not None else "",
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        marker.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    except Exception:
-        logger.debug("Failed to write deploy handoff marker", exc_info=True)
-
-
-def _completed_deploy_handoff_requires_post_update(
-    git_cmd: list[str],
-    repo: Path,
-    branch: str,
-) -> bool:
-    marker = _deploy_handoff_marker_path()
-    if not marker.exists():
-        return False
-
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
-
-    if payload.get("branch") != branch:
-        return False
-
-    recorded_repo = str(payload.get("repo") or "")
-    if recorded_repo and Path(recorded_repo).resolve() != repo.resolve():
-        return False
-
-    remote_ref = f"origin/{branch}"
-    origin_ahead = _count_commits_between(git_cmd, repo, "HEAD", remote_ref)
-    local_ahead = _count_commits_between(git_cmd, repo, remote_ref, "HEAD")
-    if origin_ahead != 0 or local_ahead != 0:
-        return False
-
-    upstream_merged = subprocess.run(
-        git_cmd + ["merge-base", "--is-ancestor", "upstream/main", remote_ref],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if upstream_merged.returncode != 0:
-        return False
-
-    try:
-        marker.unlink()
-    except OSError:
-        logger.debug("Failed to clear deploy handoff marker", exc_info=True)
-
-    print("→ Completed deploy handoff detected; refreshing install and services.")
-    return True
-
-
-def _sync_deploy_main_to_upstream(git_cmd: list[str], repo: Path) -> bool:
-    main_local = _count_commits_between(git_cmd, repo, "upstream/main", "main")
-    main_behind = _count_commits_between(git_cmd, repo, "main", "upstream/main")
-    if main_local < 0 or main_behind < 0:
-        print("  ✗ Could not compare local main with upstream/main.")
-        return False
-
-    if main_local > 0:
-        print("  ✗ local main has commits that are not on upstream/main.")
-        print("    Refusing to rewrite main during deploy update; resolve main first.")
-        return False
-
-    if main_behind == 0:
-        return True
-
-    result = subprocess.run(
-        git_cmd + ["branch", "-f", "main", "upstream/main"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print("  ✗ Could not fast-forward local main to upstream/main.")
-        if result.stderr.strip():
-            print(f"    {result.stderr.strip().splitlines()[0]}")
-        return False
-
-    print(f"  ✓ Synced local main to upstream/main ({main_behind} commit(s))")
-    return True
-
-
-def _print_deploy_branch_handoff(
-    *,
-    reason: str,
-    repo: Path,
-    branch: str,
-    upstream_ahead: int = -1,
-    origin_ahead: int = -1,
-    worktree_path: Optional[Path] = None,
-    conflict_files: str = "",
-    error: str = "",
-    git_cmd: Optional[list[str]] = None,
-) -> None:
-    git_cmd = git_cmd or ["git"]
-    print()
-    print("  ── Pass this to your Hermes agent ─────────────")
-    print()
-    print("  ┌─ Copy below ─────────────────────────────────")
-    print(f"  │ hermes update: {reason}")
-    print(f"  │ Repo: {repo}")
-    print(f"  │ Deploy branch: {branch}")
-    print(f"  │ Live HEAD: {_short_git_ref(git_cmd, repo, 'HEAD')}")
-    print(f"  │ Origin deploy: {_short_git_ref(git_cmd, repo, f'origin/{branch}')}")
-    print(f"  │ Upstream main: {_short_git_ref(git_cmd, repo, 'upstream/main')}")
-    if upstream_ahead >= 0:
-        print(f"  │ Upstream commits not in origin/{branch}: {upstream_ahead}")
-    if origin_ahead >= 0:
-        print(f"  │ origin/{branch} commits not in live HEAD: {origin_ahead}")
-    if worktree_path is not None:
-        print(f"  │ Worktree: {worktree_path}")
-    if conflict_files:
-        print("  │ Conflicting files:")
-        for f in conflict_files.splitlines()[:12]:
-            print(f"  │   {f}")
-    if error:
-        print(f"  │ Error: {error.splitlines()[0]}")
-    print("  │ ")
-    print(f"  │ Please merge upstream/main into {branch}, resolve conflicts,")
-    print(f"  │ run focused tests, push HEAD:{branch} to origin, then run")
-    print(f"  │ hermes update again so the live checkout fast-forwards cleanly.")
-    print("  └────────────────────────────────────────────")
-    _record_deploy_handoff(
-        repo=repo,
-        branch=branch,
-        reason=reason,
-        worktree_path=worktree_path,
-    )
-    print()
-
-
-def _preserve_deploy_branch_stash(stash_ref: str) -> None:
-    print("⚠ Local changes were stashed and left preserved.")
-    print("  Deploy branch updates keep the live checkout on the tested origin branch.")
-    print(f"  Stash ref: {stash_ref}")
-    print("  Review with: git stash show --stat")
-    print(f"  Restore manually, if needed, with: git stash apply {stash_ref}")
-
-
-def _remove_update_worktree(
-    git_cmd: list[str],
-    repo: Path,
-    worktree_path: Path,
-    parent: Path,
-) -> None:
-    subprocess.run(
-        git_cmd + ["worktree", "remove", str(worktree_path), "--force"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    shutil.rmtree(parent, ignore_errors=True)
-
-
-def _run_deploy_branch_update(
-    git_cmd: list[str],
-    repo: Path,
-    branch: str,
-    pre_update_head: str,
-) -> Optional[int]:
-    """Update a merge-based deploy branch without mutating live code on conflicts.
-
-    The live checkout only fast-forwards to ``origin/<branch>`` after any
-    upstream merge has succeeded and been pushed.  Merge conflicts happen in a
-    temporary worktree so production source files are not left conflicted.
-    Returns the number of commits that changed the live checkout, ``0`` when no
-    code changed, or ``None`` when a handoff was printed and update should stop.
-    """
-    try:
-        from hermes_cli.update_ui import Pipeline
-    except ModuleNotFoundError:
-        class Pipeline:  # lightweight fallback for older TGI branches
-            def __init__(self, steps):
-                self.steps = steps
-
-            def start(self, step):
-                print(f"→ {step}...")
-
-            def advance(self, step):
-                print(f"→ {step}...")
-
-            def finish(self, note=""):
-                if note:
-                    print(f"  ✓ {note}")
-
-            def fail(self, note=""):
-                if note:
-                    print(f"  ✗ {note}")
-
-    remote_ref = f"origin/{branch}"
-    _pipe = Pipeline(["fetch upstream", "merge upstream", f"sync {branch}"])
-    _pipe.start("fetch upstream")
-
-    fetch_upstream = subprocess.run(
-        git_cmd + ["fetch", "upstream", "--quiet"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_upstream.returncode != 0:
-        _pipe.fail(note="cannot fetch upstream")
-        _print_deploy_branch_handoff(
-            reason="cannot fetch upstream.",
-            repo=repo,
-            branch=branch,
-            error=(fetch_upstream.stderr or "").strip(),
-            git_cmd=git_cmd,
-        )
-        return None
-
-    if not _sync_deploy_main_to_upstream(git_cmd, repo):
-        _pipe.fail(note="cannot sync local main")
-        _print_deploy_branch_handoff(
-            reason="local main cannot be synchronized with upstream/main.",
-            repo=repo,
-            branch=branch,
-            git_cmd=git_cmd,
-        )
-        return None
-
-    origin_ahead = _count_commits_between(git_cmd, repo, "HEAD", remote_ref)
-    local_ahead = _count_commits_between(git_cmd, repo, remote_ref, "HEAD")
-    upstream_ahead = _count_commits_between(git_cmd, repo, remote_ref, "upstream/main")
-    if origin_ahead < 0 or local_ahead < 0 or upstream_ahead < 0:
-        _pipe.fail(note="cannot compare deploy refs")
-        _print_deploy_branch_handoff(
-            reason="cannot compare deploy branch refs.",
-            repo=repo,
-            branch=branch,
-            upstream_ahead=upstream_ahead,
-            origin_ahead=origin_ahead,
-            git_cmd=git_cmd,
-        )
-        return None
-    if upstream_ahead == 0 and local_ahead == 0:
-        if origin_ahead == 0:
-            _pipe.finish(note="already up to date")
-            return 0
-
-        _pipe.advance(f"sync {branch}")
-        ff_result = subprocess.run(
-            git_cmd + ["merge", "--ff-only", remote_ref],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-        )
-        if ff_result.returncode != 0:
-            _pipe.fail(note=f"cannot fast-forward to {remote_ref}")
-            _print_deploy_branch_handoff(
-                reason=f"fast-forward to {remote_ref} failed.",
-                repo=repo,
-                branch=branch,
-                upstream_ahead=upstream_ahead,
-                origin_ahead=origin_ahead,
-                error=(ff_result.stderr or "").strip(),
-                git_cmd=git_cmd,
-            )
-            return None
-        _pipe.finish(note=f"fast-forwarded {origin_ahead} commit(s)")
-        return _count_changed_from_pre_update(git_cmd, repo, pre_update_head, origin_ahead)
-
-    parent = Path(tempfile.mkdtemp(prefix=f"hermes-update-{branch}-"))
-    worktree_path = parent / "worktree"
-    worktree_created = False
-
-    _pipe.advance("merge upstream")
-    worktree_base = "HEAD" if local_ahead > 0 else remote_ref
-    add_result = subprocess.run(
-        git_cmd + ["worktree", "add", "--detach", str(worktree_path), worktree_base],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if add_result.returncode != 0:
-        shutil.rmtree(parent, ignore_errors=True)
-        _pipe.fail(note="cannot create update worktree")
-        _print_deploy_branch_handoff(
-            reason="cannot create deploy update worktree.",
-            repo=repo,
-            branch=branch,
-            upstream_ahead=upstream_ahead,
-            origin_ahead=origin_ahead,
-            error=(add_result.stderr or "").strip(),
-            git_cmd=git_cmd,
-        )
-        return None
-    worktree_created = True
-
-    if local_ahead > 0 and origin_ahead > 0:
-        merge_origin = subprocess.run(
-            git_cmd + ["merge", "--no-edit", remote_ref],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-        )
-        if merge_origin.returncode != 0:
-            conflict_result = subprocess.run(
-                git_cmd + ["diff", "--name-only", "--diff-filter=U"],
-                cwd=worktree_path,
-                capture_output=True,
-                text=True,
-            )
-            _pipe.fail(note=f"merge {remote_ref} into live {branch} failed")
-            _print_deploy_branch_handoff(
-                reason=f"merge {remote_ref} into live {branch} failed.",
-                repo=repo,
-                branch=branch,
-                upstream_ahead=upstream_ahead,
-                origin_ahead=origin_ahead,
-                worktree_path=worktree_path,
-                conflict_files=conflict_result.stdout.strip(),
-                error=(merge_origin.stderr or merge_origin.stdout or "").strip(),
-                git_cmd=git_cmd,
-            )
-            print("  The live checkout was left unchanged; resolve the retained worktree above.")
-            return None
-
-    if upstream_ahead > 0:
-        merge_result = subprocess.run(
-            git_cmd + ["merge", "--no-edit", "upstream/main"],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-        )
-        if merge_result.returncode != 0:
-            conflict_result = subprocess.run(
-                git_cmd + ["diff", "--name-only", "--diff-filter=U"],
-                cwd=worktree_path,
-                capture_output=True,
-                text=True,
-            )
-            _pipe.fail(note=f"merge into {branch} failed")
-            _print_deploy_branch_handoff(
-                reason=f"merge into {branch} failed.",
-                repo=repo,
-                branch=branch,
-                upstream_ahead=upstream_ahead,
-                origin_ahead=origin_ahead,
-                worktree_path=worktree_path,
-                conflict_files=conflict_result.stdout.strip(),
-                error=(merge_result.stderr or merge_result.stdout or "").strip(),
-                git_cmd=git_cmd,
-            )
-            print("  The live checkout was left unchanged; resolve the retained worktree above.")
-            return None
-
-    push_result = subprocess.run(
-        git_cmd + ["push", "origin", f"HEAD:{branch}"],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-    )
-    if push_result.returncode != 0:
-        _pipe.fail(note=f"cannot push {branch}")
-        _print_deploy_branch_handoff(
-            reason=f"push to origin/{branch} failed.",
-            repo=repo,
-            branch=branch,
-            upstream_ahead=upstream_ahead,
-            origin_ahead=origin_ahead,
-            worktree_path=worktree_path,
-            error=(push_result.stderr or "").strip(),
-            git_cmd=git_cmd,
-        )
-        print("  The live checkout was left unchanged; the merged worktree was retained.")
-        return None
-
-    _pipe.advance(f"sync {branch}")
-    fetch_deploy = subprocess.run(
-        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_deploy.returncode != 0:
-        _pipe.fail(note=f"cannot refresh origin/{branch}")
-        _print_deploy_branch_handoff(
-            reason=f"fetch origin/{branch} after push failed.",
-            repo=repo,
-            branch=branch,
-            upstream_ahead=upstream_ahead,
-            origin_ahead=origin_ahead,
-            worktree_path=worktree_path,
-            error=(fetch_deploy.stderr or "").strip(),
-            git_cmd=git_cmd,
-        )
-        return None
-
-    ff_result = subprocess.run(
-        git_cmd + ["merge", "--ff-only", remote_ref],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if ff_result.returncode != 0:
-        _pipe.fail(note=f"cannot fast-forward to {remote_ref}")
-        _print_deploy_branch_handoff(
-            reason=f"fast-forward to pushed {remote_ref} failed.",
-            repo=repo,
-            branch=branch,
-            upstream_ahead=upstream_ahead,
-            origin_ahead=origin_ahead,
-            worktree_path=worktree_path,
-            error=(ff_result.stderr or "").strip(),
-            git_cmd=git_cmd,
-        )
-        return None
-
-    if local_ahead > 0:
-        note = (
-            f"reconciled {local_ahead} live + {origin_ahead} origin + "
-            f"{upstream_ahead} upstream commit(s)"
-        )
-        _pipe.finish(note=note)
-    else:
-        _pipe.finish(note=f"merged {upstream_ahead} upstream commit(s)")
-    if worktree_created:
-        _remove_update_worktree(git_cmd, repo, worktree_path, parent)
-    return _count_changed_from_pre_update(
-        git_cmd,
-        repo,
-        pre_update_head,
-        max(origin_ahead, upstream_ahead),
-    )
 
 
 def _should_skip_upstream_prompt() -> bool:

@@ -935,7 +935,14 @@ def test_deploy_handoff_marker_completes_when_live_origin_and_upstream_match(
     )
     calls = []
 
-    monkeypatch.setattr(hermes_main, "_deploy_handoff_marker_path", lambda: marker)
+    # _completed_deploy_handoff_requires_post_update lives in
+    # hermes_cli.fork_update (extracted from main.py to shrink the fork's
+    # footprint in upstream's most-refactored file). Patch the dependencies on
+    # the module where the function actually resolves them, not only on
+    # hermes_cli.main's imported aliases.
+    from hermes_cli import fork_update as hermes_fork_update
+
+    monkeypatch.setattr(hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker)
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
@@ -947,9 +954,10 @@ def test_deploy_handoff_marker_completes_when_live_origin_and_upstream_match(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    assert hermes_main._completed_deploy_handoff_requires_post_update(
+    assert hermes_fork_update._completed_deploy_handoff_requires_post_update(
         ["git"], tmp_path, "axiom"
     ) is True
     assert not marker.exists()
