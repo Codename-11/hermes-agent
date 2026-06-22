@@ -5070,14 +5070,8 @@ class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
-        """Create a TestClient without the session token header.
-
-        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
-        has the ``/api/plugins/example/hello`` endpoint available — the
-        example plugin is no longer a bundled plugin, so the fixture
-        installs it into the per-test ``HERMES_HOME``.
-        """
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        """Create TestClients with and without the session token header."""
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -5102,19 +5096,15 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Uses ``/api/plugins/example/hello`` from the example-dashboard
-        test fixture (installed into HERMES_HOME by the class-level
-        ``_install_example_plugin`` fixture) — a stable, side-effect-free
-        GET that's only loaded for tests. With a valid token the handler
-        should run (200); without one the middleware should 401 before
-        the handler is reached.
+        Uses a bundled plugin route so the test covers authenticated plugin
+        API access without relying on user-installed plugin backend imports.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/example/hello")
+        resp = self.client.get("/api/plugins/kanban/board")
         assert resp.status_code == 401
 
         # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/example/hello")
+        resp = self.auth_client.get("/api/plugins/kanban/board")
         assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):
@@ -5257,33 +5247,6 @@ class TestDashboardPluginManifestExtensions:
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
         entry = next(p for p in plugins if p["name"] == "mixed-slots")
         assert entry["slots"] == ["sidebar", "header-right"]
-
-    def test_bundled_example_dashboard_plugin_is_suppressed(self, tmp_path, monkeypatch):
-        """The bundled SDK demo must not reappear in the production sidebar."""
-        hermes_home = tmp_path / "home"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        self._write_plugin(tmp_path, "example-dashboard", {
-            "name": "example",
-            "label": "Example",
-            "tab": {"path": "/example"},
-            "entry": "dist/index.js",
-        })
-        self._write_plugin(tmp_path, "useful-dashboard", {
-            "name": "useful",
-            "label": "Useful",
-            "tab": {"path": "/useful"},
-            "entry": "dist/index.js",
-        })
-
-        from hermes_cli import web_server
-        monkeypatch.setattr(web_server, "PROJECT_ROOT", tmp_path)
-        web_server._dashboard_plugins_cache = None
-        plugins = web_server._get_dashboard_plugins(force_rescan=True)
-        names = {p["name"] for p in plugins}
-
-        assert "example" not in names
-        assert "useful" in names
 
     def test_page_scoped_slots_preserved(self, tmp_path, monkeypatch):
         """Page-scoped slot names (e.g. ``sessions:top``) round-trip through

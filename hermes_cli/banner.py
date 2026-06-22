@@ -220,9 +220,24 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         return _check_via_rev(head_rev) if head_rev else None
 
+    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
+    # clone the history stops at a single commit, so a plain `git fetch` would
+    # unshallow the repo (dragging in the whole history) and
+    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
+    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
+    # --depth 1 to preserve the boundary and compare tip SHAs instead of
+    # counting. Full clones (developers, Docker dev images) keep the exact
+    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
+    shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
+    is_shallow = shallow == "true"
+
     try:
+        fetch_args = ["git", "fetch", "origin"]
+        if is_shallow:
+            fetch_args += ["--depth", "1"]
+        fetch_args.append("--quiet")
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
@@ -233,13 +248,38 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     has_upstream = _has_git_remote(repo_dir, "upstream")
     if has_upstream:
         try:
+            fetch_args = ["git", "fetch", "upstream"]
+            if is_shallow:
+                fetch_args += ["--depth", "1"]
+            fetch_args.append("--quiet")
             subprocess.run(
-                ["git", "fetch", "upstream", "--quiet"],
+                fetch_args,
                 capture_output=True, timeout=10,
                 cwd=str(repo_dir),
             )
         except Exception:
             pass
+
+    current_branch = _current_git_branch(repo_dir)
+
+    if is_shallow:
+        # No history to count across the shallow boundary. Compare tip SHAs and
+        # report presence-only instead of a bogus large commit count.
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        if current_branch in _DEPLOY_BRANCHES:
+            remote_ref = f"origin/{current_branch}"
+            target_refs = [remote_ref]
+            if has_upstream:
+                target_refs.append("upstream/main")
+        else:
+            target_refs = ["upstream/main"] if has_upstream else []
+            target_refs.append("FETCH_HEAD")
+            target_refs.append("origin/main")
+        for ref in target_refs:
+            target_rev = _git_stdout(["rev-parse", ref], cwd=repo_dir)
+            if target_rev and head_rev and target_rev != head_rev:
+                return UPDATE_AVAILABLE_NO_COUNT
+        return 0 if head_rev else None
 
     current_branch = _current_git_branch(repo_dir)
 
@@ -660,6 +700,18 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     enabled_toolsets = enabled_toolsets or []
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
+    # The availability check walks the GLOBAL toolset registry, so it includes
+    # toolsets that aren't part of this agent's platform set at all (e.g.
+    # `discord`, `feishu_doc` on a CLI session). Those must never surface in the
+    # banner's "Available Tools" — they aren't exposed to the agent. Restrict to
+    # toolsets actually enabled for this agent; a toolset that's enabled but
+    # currently has unmet deps legitimately shows as disabled/lazy below.
+    _enabled_ts = {str(t) for t in enabled_toolsets}
+    if _enabled_ts:
+        unavailable_toolsets = [
+            item for item in unavailable_toolsets
+            if str(item.get("id", item.get("name", ""))) in _enabled_ts
+        ]
     disabled_tools = set()
     # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
     # homeassistant) — they show as unavailable at banner time because the
@@ -807,10 +859,21 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     right_lines.append("")
     right_lines.append(f"[bold {accent}]Available Skills[/]")
-    skills_by_category = get_available_skills()
-    total_skills = sum(len(s) for s in skills_by_category.values())
+    # The skills catalog is only reachable when the `skills` toolset is enabled
+    # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
+    # Slate install — the agent literally cannot load any skill, so advertising
+    # the on-disk catalog here is misleading. Reflect the real state instead.
+    _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
+    if _skills_enabled:
+        skills_by_category = get_available_skills()
+        total_skills = sum(len(s) for s in skills_by_category.values())
+    else:
+        skills_by_category = {}
+        total_skills = 0
 
-    if skills_by_category:
+    if not _skills_enabled:
+        right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")
+    elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
             if len(skill_names) > 8:
