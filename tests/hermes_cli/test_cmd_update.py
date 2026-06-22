@@ -47,21 +47,18 @@ def mock_args():
 
 
 # ---------------------------------------------------------------------------
-# Managed-uv compatibility for tests that patch shutil.which
+# Managed dependency resolver compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
-# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
-# instead of ``shutil.which("uv")``.  Many tests in this file patch
-# ``shutil.which`` to control whether uv is "available" — these autouse
-# fixtures make the managed_uv functions delegate to the patched
-# ``shutil.which`` so the existing test setup keeps working without
-# per-test changes.
+# Production code resolves uv/npm through helper layers that may prefer managed
+# installs before PATH. Many tests in this file patch ``shutil.which`` to
+# control whether uv/npm are "available" — this autouse fixture makes those
+# helper layers delegate to the patched ``shutil.which`` so the existing test
+# setup stays deterministic without per-test changes.
 @pytest.fixture(autouse=True)
-def _patch_managed_uv(request):
-    """Make managed_uv helpers follow shutil.which mocking in tests."""
+def _patch_managed_dependency_resolvers(request):
+    """Make managed uv/node helpers follow shutil.which mocking in tests."""
     import shutil
 
-    # resolve_uv delegates to shutil.which("uv") so that test patches
-    # on shutil.which flow through naturally.
     def _fake_resolve_uv():
         return shutil.which("uv")
 
@@ -71,9 +68,13 @@ def _patch_managed_uv(request):
     def _fake_update_managed_uv():
         return None  # never actually self-update in tests
 
+    def _fake_find_node_executable(command: str):
+        return shutil.which(command)
+
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch("hermes_constants.find_node_executable", side_effect=_fake_find_node_executable):
         yield
 
 
