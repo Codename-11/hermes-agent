@@ -390,6 +390,163 @@ def _print_deploy_branch_handoff(
     print()
 
 
+def _fast_forward_live_deploy_checkout(
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    pre_update_head: str,
+    fallback: int,
+) -> Optional[int]:
+    """Refresh ``origin/<branch>`` and fast-forward the live checkout to it."""
+    remote_ref = f"origin/{branch}"
+    fetch_deploy = subprocess.run(
+        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_deploy.returncode != 0:
+        return None
+
+    ff_result = subprocess.run(
+        git_cmd + ["merge", "--ff-only", remote_ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if ff_result.returncode != 0:
+        return None
+
+    return _count_changed_from_pre_update(git_cmd, repo, pre_update_head, fallback)
+
+
+def _recover_deploy_push_rejection(
+    *,
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    worktree_path: Path,
+    pre_update_head: str,
+    upstream_ahead: int,
+    origin_ahead: int,
+) -> Optional[int]:
+    """Recover common deploy-branch push races before requiring a handoff.
+
+    Docker-Server and Axiom-Desktop often run ``hermes update`` back-to-back.
+    In that flow ``origin/<branch>`` can advance after this process created its
+    temp merge worktree but before it pushes. A raw push rejection is not yet a
+    conflict; first fetch the new remote tip and classify whether the remote
+    already contains this merge, whether the live checkout can simply
+    fast-forward, or whether the temp worktree can merge the new remote tip and
+    retry once.
+    """
+    from hermes_cli.main import _count_commits_between  # lazy: avoid circular import at module load
+
+    remote_ref = f"origin/{branch}"
+    print(f"  ⚠ origin/{branch} advanced during update; reconciling once...")
+
+    subprocess.run(
+        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        git_cmd + ["fetch", "upstream", "--quiet"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+    # Another host may have already pushed the same/equivalent merge. If the
+    # retained temp merge is now an ancestor of origin/<branch>, do not hand off;
+    # just fast-forward live and continue the install/restart phase.
+    temp_in_origin = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", "HEAD", remote_ref],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    if temp_in_origin.returncode == 0:
+        changed = _fast_forward_live_deploy_checkout(
+            git_cmd,
+            repo,
+            branch,
+            pre_update_head,
+            max(origin_ahead, upstream_ahead),
+        )
+        if changed is not None:
+            print(f"  ✓ origin/{branch} already contains this deploy merge; fast-forwarded live checkout.")
+            return changed
+
+    live_in_origin = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", "HEAD", remote_ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    upstream_in_origin = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", "upstream/main", remote_ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if live_in_origin.returncode == 0 and upstream_in_origin.returncode == 0:
+        changed = _fast_forward_live_deploy_checkout(
+            git_cmd,
+            repo,
+            branch,
+            pre_update_head,
+            max(origin_ahead, upstream_ahead),
+        )
+        if changed is not None:
+            print(f"  ✓ origin/{branch} already includes upstream/main; fast-forwarded live checkout.")
+            return changed
+
+    merge_origin = subprocess.run(
+        git_cmd + ["merge", "--no-edit", remote_ref],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    if merge_origin.returncode != 0:
+        return None
+
+    # Upstream may have advanced too while the first temp merge was running.
+    upstream_remaining = _count_commits_between(git_cmd, worktree_path, "HEAD", "upstream/main")
+    if upstream_remaining > 0:
+        merge_upstream = subprocess.run(
+            git_cmd + ["merge", "--no-edit", "upstream/main"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if merge_upstream.returncode != 0:
+            return None
+
+    retry_push = subprocess.run(
+        git_cmd + ["push", "origin", f"HEAD:{branch}"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    if retry_push.returncode != 0:
+        return None
+
+    changed = _fast_forward_live_deploy_checkout(
+        git_cmd,
+        repo,
+        branch,
+        pre_update_head,
+        max(origin_ahead, upstream_ahead),
+    )
+    if changed is None:
+        return None
+
+    print(f"  ✓ Reconciled remote-advanced origin/{branch} and pushed retry merge.")
+    return changed
+
+
 def _preserve_deploy_branch_stash(stash_ref: str) -> None:
     print("⚠ Local changes were stashed and left preserved.")
     print("  Deploy branch updates keep the live checkout on the tested origin branch.")
@@ -595,6 +752,22 @@ def _run_deploy_branch_update(
         text=True,
     )
     if push_result.returncode != 0:
+        recovered = _recover_deploy_push_rejection(
+            git_cmd=git_cmd,
+            repo=repo,
+            branch=branch,
+            worktree_path=worktree_path,
+            pre_update_head=pre_update_head,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+        )
+        if recovered is not None:
+            _pipe.advance(f"sync {branch}")
+            _pipe.finish(note="recovered remote-advanced push")
+            if worktree_created:
+                _remove_update_worktree(git_cmd, repo, worktree_path, parent)
+            return recovered
+
         _pipe.fail(note=f"cannot push {branch}")
         _print_deploy_branch_handoff(
             reason=f"push to origin/{branch} failed.",

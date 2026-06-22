@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
@@ -7,6 +8,13 @@ import pytest
 
 from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
+
+
+def _plain_git_cmd(cmd):
+    """Normalize Windows git -c wrappers so tests assert git semantics."""
+    if cmd[:3] == ["git", "-c", "windows.appendAtomically=false"]:
+        return ["git"] + cmd[3:]
+    return cmd
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +535,7 @@ def test_deploy_handoff_marker_completes_when_live_origin_and_upstream_match(
 ):
     marker = tmp_path / ".update_handoff.json"
     marker.write_text(
-        '{"repo":"%s","branch":"axiom","pre_update_head":"oldhead"}' % tmp_path,
+        json.dumps({"repo": str(tmp_path), "branch": "axiom", "pre_update_head": "oldhead"}),
         encoding="utf-8",
     )
     calls = []
@@ -619,6 +627,140 @@ def test_deploy_branch_update_merges_upstream_in_temp_worktree(monkeypatch, tmp_
     assert not parent.exists()
 
 
+def test_deploy_branch_update_recovers_when_push_reject_remote_already_contains_merge(
+    monkeypatch, tmp_path, capsys
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = tmp_path / "update-parent"
+    parent.mkdir()
+    worktree_path = parent / "worktree"
+    calls = []
+
+    monkeypatch.setattr(hermes_main.tempfile, "mkdtemp", lambda prefix: str(parent))
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = kwargs.get("cwd")
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "add", "--detach", str(worktree_path), "origin/axiom"]:
+            worktree_path.mkdir()
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--no-edit", "upstream/main"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="Merge made\n", stderr="", returncode=0)
+        if cmd == ["git", "push", "origin", "HEAD:axiom"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="", stderr="remote advanced\n", returncode=1)
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge-base", "--is-ancestor", "HEAD", "origin/axiom"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--ff-only", "origin/axiom"] and cwd == repo:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "remove", str(worktree_path), "--force"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "oldhead..HEAD"]:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+
+    assert changed == 3
+    assert not parent.exists()
+    commands = [cmd for cmd, _ in calls]
+    assert commands.count(["git", "push", "origin", "HEAD:axiom"]) == 1
+    assert ["git", "merge", "--ff-only", "origin/axiom"] in commands
+    out = capsys.readouterr().out
+    assert "origin/axiom advanced during update; reconciling once" in out
+    assert "already contains this deploy merge" in out
+    assert "hermes update: push to origin/axiom failed" not in out
+
+
+def test_deploy_branch_update_retries_push_after_merging_remote_advanced_origin(
+    monkeypatch, tmp_path, capsys
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = tmp_path / "update-parent"
+    parent.mkdir()
+    worktree_path = parent / "worktree"
+    calls = []
+    first_push = {"done": False}
+
+    monkeypatch.setattr(hermes_main.tempfile, "mkdtemp", lambda prefix: str(parent))
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = kwargs.get("cwd")
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "add", "--detach", str(worktree_path), "origin/axiom"]:
+            worktree_path.mkdir()
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--no-edit", "upstream/main"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="Merge upstream\n", stderr="", returncode=0)
+        if cmd == ["git", "push", "origin", "HEAD:axiom"] and cwd == worktree_path:
+            if not first_push["done"]:
+                first_push["done"] = True
+                return SimpleNamespace(stdout="", stderr="remote advanced\n", returncode=1)
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge-base", "--is-ancestor", "HEAD", "origin/axiom"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="", stderr="", returncode=1)
+        if cmd == ["git", "merge-base", "--is-ancestor", "HEAD", "origin/axiom"] and cwd == repo:
+            return SimpleNamespace(stdout="", stderr="", returncode=1)
+        if cmd == ["git", "merge-base", "--is-ancestor", "upstream/main", "origin/axiom"] and cwd == repo:
+            return SimpleNamespace(stdout="", stderr="", returncode=1)
+        if cmd == ["git", "merge", "--no-edit", "origin/axiom"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="Merge origin\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--ff-only", "origin/axiom"] and cwd == repo:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "remove", str(worktree_path), "--force"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "oldhead..HEAD"]:
+            return SimpleNamespace(stdout="4\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+
+    assert changed == 4
+    assert not parent.exists()
+    commands = [cmd for cmd, _ in calls]
+    assert commands.count(["git", "push", "origin", "HEAD:axiom"]) == 2
+    assert ["git", "merge", "--no-edit", "origin/axiom"] in commands
+    assert ["git", "merge", "--ff-only", "origin/axiom"] in commands
+    out = capsys.readouterr().out
+    assert "Reconciled remote-advanced origin/axiom and pushed retry merge" in out
+    assert "hermes update: push to origin/axiom failed" not in out
+
+
 def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     monkeypatch, tmp_path, capsys
 ):
@@ -701,13 +843,14 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        plain = _plain_git_cmd(cmd)
+        if plain == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if plain == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if plain == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if plain == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -750,13 +893,14 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        plain = _plain_git_cmd(cmd)
+        if plain == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if plain == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if plain == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if plain == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -874,7 +1018,7 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert _plain_git_cmd(reset_calls[0]) == ["git", "reset", "--hard", "origin/main"]
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
@@ -993,9 +1137,9 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    fetch_calls = [c for c in recorded if "fetch" in c]
+    fetch_calls = [_plain_git_cmd(c) for c in recorded if "fetch" in c]
     assert fetch_calls == [["git", "fetch", "origin", "main"]]
-    assert ["git", "fetch", "origin"] not in recorded
+    assert ["git", "fetch", "origin"] not in [_plain_git_cmd(c) for c in recorded]
 
 
 # ---------------------------------------------------------------------------
