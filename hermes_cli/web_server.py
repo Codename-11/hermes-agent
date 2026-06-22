@@ -62,6 +62,7 @@ from hermes_cli.config import (
     format_docker_update_message,
     recommended_update_command_for_method,
     redact_key,
+    write_platform_config_field,
 )
 from hermes_cli.memory_providers import (
     MemoryProvider,
@@ -373,20 +374,26 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def should_require_auth(host: str, allow_public: bool) -> bool:
-    """Return True iff the dashboard OAuth auth gate must be active.
+def should_require_auth(host: str, allow_public: bool = False) -> bool:
+    """Return True iff the dashboard auth gate must be active.
 
     Truth table:
-      host == loopback                              → False (no auth)
-      host != loopback AND allow_public (--insecure)→ False (legacy escape hatch)
-      host != loopback AND NOT allow_public         → True  (gate engages)
+      host == loopback        → False (no auth — local-only, trusted operator)
+      host != loopback        → True  (gate engages — OAuth or password required)
 
-    "Loopback" matches the same set used by ``--insecure`` enforcement in
-    ``start_server``: 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local
-    are deliberately treated as PUBLIC — a hostile device on the same LAN is
-    exactly the threat model the gate is designed for.
+    "Loopback" is 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local are
+    deliberately treated as PUBLIC — a hostile device on the same LAN is exactly
+    the threat model the gate is designed for.
+
+    ``allow_public`` (the legacy ``--insecure`` escape hatch) NO LONGER disables
+    the gate. It is accepted for backward-compat with old launch scripts and
+    desktop shells but is ignored: a non-loopback bind ALWAYS requires an auth
+    provider (OAuth or the bundled password provider). This closes the
+    unauthenticated-public-dashboard hole behind the June 2026 ``hermes-0day``
+    MCP-persistence campaign, where ``--insecure --host 0.0.0.0`` left the
+    config/MCP/agent surface open to internet scanners.
     """
-    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
+    return host not in _LOOPBACK_HOST_VALUES
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
@@ -639,6 +646,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
     "telegram": "discord",
+    # `computer_use.cua_telemetry` is the only schema-surfaced computer_use
+    # field — fold it into the agent tab rather than spawning a one-field
+    # orphan category.
+    "computer_use": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -5142,17 +5153,7 @@ def _messaging_platform_payload(
 
 
 def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
-    config = load_config()
-    platforms = config.setdefault("platforms", {})
-    if not isinstance(platforms, dict):
-        platforms = {}
-        config["platforms"] = platforms
-    platform_config = platforms.setdefault(platform_id, {})
-    if not isinstance(platform_config, dict):
-        platform_config = {}
-        platforms[platform_id] = platform_config
-    platform_config["enabled"] = enabled
-    save_config(config)
+    write_platform_config_field(platform_id, "enabled", enabled)
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
@@ -5776,23 +5777,6 @@ def _claude_code_only_status() -> Dict[str, Any]:
     return {"logged_in": False, "source": None}
 
 
-def _gemini_cli_status() -> Dict[str, Any]:
-    """Status for the google-gemini-cli OAuth provider (Code Assist login)."""
-    try:
-        from hermes_cli import auth as hauth
-        raw = hauth.get_gemini_oauth_auth_status()
-    except Exception as e:
-        return {"logged_in": False, "error": str(e)}
-    return {
-        "logged_in": bool(raw.get("logged_in")),
-        "source": raw.get("source") or "google_oauth",
-        "source_label": raw.get("email") or raw.get("auth_file") or "Google Code Assist",
-        "token_preview": _truncate_token(raw.get("api_key")),
-        "expires_at": None,
-        "has_refresh_token": True,
-    }
-
-
 def _copilot_acp_status() -> Dict[str, Any]:
     """Status for copilot-acp — credentials are owned by the Copilot CLI.
 
@@ -5871,14 +5855,6 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "hermes auth add xai-oauth",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
-    },
-    {
-        "id": "google-gemini-cli",
-        "name": "Google Gemini (OAuth + Code Assist)",
-        "flow": "external",
-        "cli_command": "hermes auth add google-gemini-cli",
-        "docs_url": "https://ai.google.dev/gemini-api/docs",
-        "status_fn": _gemini_cli_status,
     },
     {
         "id": "copilot-acp",
@@ -12362,12 +12338,20 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
+# Plugin sources whose Python backend (dashboard manifest `api` file) must NEVER
+# be auto-imported by the dashboard web server — only bundled plugins may. Shared
+# by the discovery-time scrub and the mount-time refuse guards so a typo in one
+# site cannot silently disable a security gate (GHSA-5qr3-c538-wm9j / #43719).
+_NON_BUNDLED_PLUGIN_SOURCES = frozenset({"user", "project"})
+
+
 def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
-    Checks three plugin sources (same as hermes_cli.plugins):
-    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
-    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
+    Checks three plugin sources. Bundled dashboard plugins win name conflicts
+    so non-bundled plugins cannot shadow trusted backend-capable routes:
+    1. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
+    2. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
     3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
     """
     plugins = []
@@ -12375,9 +12359,9 @@ def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> 
 
     bundled_root = _bundled_dashboard_plugins_root()
     search_dirs = [
-        (get_hermes_home() / "plugins", "user"),
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
+        (get_hermes_home() / "plugins", "user"),
     ]
     # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
     # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,
@@ -12442,10 +12426,20 @@ def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> 
                 raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
                 safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
+                if source in _NON_BUNDLED_PLUGIN_SOURCES and safe_api:
+                    _log.warning(
+                        "Plugin %s: refusing dashboard backend api=%s "
+                        "(only bundled plugins may auto-import Python "
+                        "backend routes; non-bundled plugins may extend "
+                        "the dashboard with static UI assets only)",
+                        name, safe_api,
+                    )
+                    safe_api = None
+                    raw_api = None
                 if raw_api and safe_api is None:
                     _log.warning(
                         "Plugin %s: refusing unsafe api path %r (must be a "
-                        "relative file inside the plugin's dashboard/ "
+                        "relative file inside a bundled plugin's dashboard/ "
                         "directory); backend routes from this plugin will "
                         "not be mounted",
                         name, raw_api,
@@ -12856,12 +12850,10 @@ def _mount_plugin_api_routes():
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
 
-    Backend import is restricted to ``bundled`` and ``user`` sources.
-    Project plugins (``./.hermes/plugins/``) ship with the CWD and are
-    therefore attacker-controlled in any threat model where the user
-    opens a malicious repo; they can extend the dashboard UI via
-    static JS/CSS but their Python ``api`` file is never auto-imported
-    by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
+    Backend import is restricted to bundled plugins. User and project
+    plugins can extend the dashboard UI via static JS/CSS, but their
+    Python ``api`` files are never auto-imported by the web server.
+    See GHSA-5qr3-c538-wm9j (#29156) and #43719.
     """
     # API routes are not sidebar entries.  Keep bundled demo plugins hidden
     # from the production dashboard while still mounting their backend routes
@@ -12880,12 +12872,27 @@ def _mount_plugin_api_routes():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        if plugin.get("source") == "project":
+        source = plugin.get("source")
+        if source in _NON_BUNDLED_PLUGIN_SOURCES:
+            # Backend Python auto-import is reserved for bundled plugins; user
+            # and project plugins extend the dashboard with static UI assets
+            # only (GHSA-5qr3-c538-wm9j / #43719). Defence-in-depth: discovery
+            # already nulls _api_file for these sources, but re-refusing here —
+            # at the actual importlib call site — keeps the import primitive
+            # contained even if a future caller or a tampered cache entry slips
+            # a non-bundled plugin through with an _api_file set.
+            _reason = {
+                "user": (
+                    "user-installed plugins may not auto-import Python code"
+                ),
+                "project": (
+                    "project plugins may not auto-import Python code; backend "
+                    "auto-import is reserved for bundled plugins"
+                ),
+            }.get(source, "only bundled plugins may auto-import Python code")
             _log.warning(
-                "Plugin %s: ignoring backend api=%s (project plugins may "
-                "not auto-import Python code; move the plugin to "
-                "~/.hermes/plugins/ if you trust it)",
-                plugin["name"], api_file_name,
+                "Plugin %s: ignoring backend api=%s (%s)",
+                plugin["name"], api_file_name, _reason,
             )
             continue
         dashboard_dir = Path(plugin["_dir"])
@@ -13020,16 +13027,36 @@ def start_server(
     """
     import uvicorn
 
+    try:
+        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+
+        start_nous_auth_keepalive()
+    except Exception as exc:
+        _log.debug("Nous auth keepalive did not start: %s", exc)
+
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host, allow_public)
+    app.state.auth_required = should_require_auth(host)
+
+    # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
+    # the hermes-0day MCP-persistence campaign abused unauthenticated public
+    # dashboards). If a caller still passes it, warn that it is now a no-op
+    # rather than silently changing their expectation of an open bind.
+    if allow_public and host not in _LOOPBACK_HOST_VALUES:
+        _log.warning(
+            "--insecure no longer bypasses dashboard authentication. A "
+            "non-loopback bind (%s) now ALWAYS requires an auth provider "
+            "(OAuth or the bundled password provider). Configure one — see "
+            "below — or bind to 127.0.0.1 and reach it over an SSH tunnel / "
+            "Tailscale.", host,
+        )
 
     if app.state.auth_required:
-        # Phase 3.5: the gate engages on non-loopback binds.  The legacy
-        # "refusing to bind" guard is replaced by "require at least one
-        # provider to be registered, else fail closed".
+        # The gate engages on every non-loopback bind. Require at least one
+        # provider to be registered, else fail closed — there is no longer an
+        # escape hatch that serves the dashboard without authentication.
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():
             # Surface the *specific* reason any bundled provider declined
@@ -13049,39 +13076,37 @@ def start_server(
             except Exception:
                 pass
 
+            _fix_hint = (
+                "Configure an auth provider before exposing the dashboard:\n"
+                "  • Password: set dashboard.basic_auth.username + "
+                "password_hash in config.yaml\n"
+                "    (hash with: python -c \"from "
+                "plugins.dashboard_auth.basic import hash_password; "
+                "print(hash_password('your-password'))\")\n"
+                "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
+                "install a DashboardAuthProvider plugin.\n"
+                "There is no unauthenticated public-bind option — to keep it "
+                "local, bind 127.0.0.1 and tunnel in (SSH / Tailscale)."
+            )
             if skip_reasons:
                 raise SystemExit(
-                    f"Refusing to bind dashboard to {host} — the OAuth auth "
-                    f"gate engages on non-loopback binds, but no auth "
-                    f"providers are registered.\n"
-                    f"\n"
+                    f"Refusing to bind dashboard to {host} — the auth gate "
+                    f"engages on non-loopback binds, but no auth providers "
+                    f"are registered.\n\n"
                     f"Bundled providers reported these issues:\n"
                     + "\n".join(skip_reasons)
-                    + "\n"
-                    f"\n"
-                    f"Or pass --insecure to skip the auth gate (NOT "
-                    f"recommended on untrusted networks)."
+                    + "\n\n"
+                    + _fix_hint
                 )
             raise SystemExit(
-                f"Refusing to bind dashboard to {host} — the OAuth auth "
-                f"gate engages on non-loopback binds, but no auth providers "
-                f"are registered and no bundled plugin reported a reason "
-                f"(was the dashboard_auth/nous plugin removed?).\n"
-                f"Install a DashboardAuthProvider plugin, or pass --insecure "
-                f"to skip the auth gate (NOT recommended on untrusted "
-                f"networks)."
+                f"Refusing to bind dashboard to {host} — the auth gate "
+                f"engages on non-loopback binds, but no auth providers are "
+                f"registered.\n\n" + _fix_hint
             )
         _log.info(
-            "Dashboard binding to %s with OAuth auth gate enabled. "
-            "Providers: %s",
+            "Dashboard binding to %s with auth gate enabled. Providers: %s",
             host,
             ", ".join(p.name for p in list_providers()),
-        )
-    elif host not in _LOOPBACK_HOST_VALUES and allow_public:
-        # --insecure path — no auth, loud warning.
-        _log.warning(
-            "Binding to %s with --insecure — the dashboard has no robust "
-            "authentication. Only use on trusted networks.", host,
         )
 
     # Record the bound host so host_header_middleware can validate incoming
