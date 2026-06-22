@@ -355,6 +355,43 @@ node --check apps/desktop/electron/preload.cjs
 cd apps/desktop && npm run typecheck
 ```
 
+### Desktop OAuth remote artifact opening — local carry pending upstream equivalent
+
+Axiom carries `fix(desktop): open OAuth remote artifacts from gateway session` so Desktop can preview/open gateway-local artifacts from a remote backend authenticated through dashboard/basic OAuth, not only the legacy token-mode URL path.
+
+Primary files:
+
+- `apps/desktop/electron/main.cjs`
+- `apps/desktop/electron/preload.cjs`
+- `apps/desktop/src/global.d.ts`
+- `apps/desktop/src/app/artifacts/index.tsx`
+- `apps/desktop/src/lib/media.ts`
+- `apps/desktop/src/lib/media.remote.test.ts`
+- `apps/desktop/src/app/artifacts/index.test.ts`
+
+Required behavior:
+
+- Remote artifact image cards fetch gateway-local images through the authenticated REST bridge and include the owning profile when present.
+- Opening a gateway-local artifact in remote OAuth mode asks Electron main to download it through the OAuth session partition, write a local temp copy, and open/reveal it via the OS.
+- Token-mode remote artifacts keep using the existing token-authenticated path.
+- Browser-native `http(s)` and `data:` artifacts remain normal external links/previews.
+
+Retire this carry when upstream handles remote-gateway artifact previews and file opening through the active authenticated Desktop session for both token and OAuth/dashboard auth modes, including profile-scoped remote sessions.
+
+Focused checks:
+
+```bash
+node --check apps/desktop/electron/main.cjs
+node --check apps/desktop/electron/preload.cjs
+cd apps/desktop && npx vitest run --environment jsdom \
+  src/lib/media.remote.test.ts \
+  src/lib/desktop-fs.test.ts \
+  src/app/artifacts/index.test.ts
+cd apps/desktop && npm run typecheck
+```
+
+## Current known update/build pitfalls
+
 ### Desktop model picker snap-back — local carry pending upstream equivalent
 
 - **Status:** LOCAL TEMPORARY CARRY — no upstream PR opened at operator direction.

@@ -23,7 +23,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
-import { mediaExternalUrl } from '@/lib/media'
+import { gatewayMediaDataUrl, isGatewayLocalMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
@@ -45,6 +45,7 @@ interface ArtifactRecord {
   value: string
   href: string
   label: string
+  profile?: null | string
   sessionId: string
   sessionTitle: string
   timestamp: number
@@ -295,6 +296,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         value,
         href: artifactHref(value),
         label: artifactLabel(value),
+        profile: session.profile ?? null,
         sessionId: session.id,
         sessionTitle: title,
         timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
@@ -347,7 +349,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 }
 
 type CellCtx = {
-  onOpen: (href: string) => void | Promise<void>
+  onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
 }
 
@@ -477,8 +479,19 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [artifacts])
 
-  const openArtifact = useCallback(async (href: string) => {
+  const openArtifact = useCallback(async (artifact: ArtifactRecord) => {
     try {
+      if (
+        artifact.kind !== 'link' &&
+        isRemoteGateway() &&
+        isGatewayLocalMediaPath(artifact.value) &&
+        window.hermesDesktop?.openRemoteFile
+      ) {
+        await window.hermesDesktop.openRemoteFile({ path: artifact.value, profile: artifact.profile ?? null })
+        return
+      }
+
+      const href = artifact.href
       if (window.hermesDesktop?.openExternal) {
         await window.hermesDesktop.openExternal(href)
       } else {
@@ -680,6 +693,28 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   const { t } = useI18n()
   const a = t.artifacts
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
+  const [src, setSrc] = useState(artifact.href)
+
+  useEffect(() => {
+    let cancelled = false
+    setSrc(artifact.href)
+
+    if (!window.hermesDesktop || !isRemoteGateway() || !isGatewayLocalMediaPath(artifact.value)) {
+      return
+    }
+
+    void gatewayMediaDataUrl(artifact.value, artifact.profile ?? null)
+      .then(resolved => {
+        if (!cancelled) setSrc(resolved)
+      })
+      .catch(() => {
+        if (!cancelled) onImageError(artifact.id)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [artifact.href, artifact.id, artifact.value, onImageError])
 
   return (
     <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
@@ -698,7 +733,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
             loading="lazy"
             onError={() => onImageError(artifact.id)}
             slot="artifact-media"
-            src={artifact.href}
+            src={src}
           />
         )}
       </div>
@@ -777,7 +812,7 @@ function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
   return (
     <ArtifactCellAction
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact.href)}
+      onClick={isLink ? undefined : () => void ctx.onOpen(artifact)}
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
