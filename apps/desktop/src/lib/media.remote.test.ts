@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl } from './media'
+import { filePathFromMediaPath, gatewayMediaDataUrl, isGatewayLocalMediaPath, isRemoteGateway, mediaExternalUrl } from './media'
 
 describe('isRemoteGateway', () => {
   afterEach(() => {
@@ -32,6 +32,15 @@ describe('filePathFromMediaPath', () => {
 
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
+  })
+})
+
+describe('isGatewayLocalMediaPath', () => {
+  it('matches gateway-local file paths and excludes browser-native URLs', () => {
+    expect(isGatewayLocalMediaPath('/home/u/out.pdf')).toBe(true)
+    expect(isGatewayLocalMediaPath('file:///home/u/out.pdf')).toBe(true)
+    expect(isGatewayLocalMediaPath('https://example.com/out.pdf')).toBe(false)
+    expect(isGatewayLocalMediaPath('data:image/png;base64,abc')).toBe(false)
   })
 })
 
@@ -84,7 +93,8 @@ describe('gatewayMediaDataUrl', () => {
 
     expect(url).toBe('data:image/png;base64,ZHVtbXk=')
     expect(api).toHaveBeenCalledWith({
-      path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png'
+      path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png',
+      profile: null
     })
   })
 })

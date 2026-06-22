@@ -66,6 +66,7 @@ declare global {
       setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      openRemoteFile?: (payload: DesktopOpenRemoteFileInput) => Promise<DesktopOpenRemoteFileResult>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
@@ -130,6 +131,16 @@ declare global {
       }
     }
   }
+}
+
+export interface DesktopOpenRemoteFileInput {
+  path: string
+  profile?: null | string
+}
+
+export interface DesktopOpenRemoteFileResult {
+  ok: boolean
+  path: string
 }
 
 export interface DesktopMarketplaceSearchItem {

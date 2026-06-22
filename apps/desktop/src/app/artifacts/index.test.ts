@@ -25,7 +25,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 describe('collectArtifactsForSession', () => {
   it('indexes plain https links from assistant text', () => {
-    const artifacts = collectArtifactsForSession(makeSession(), [
+    const artifacts = collectArtifactsForSession(makeSession({ profile: 'remote-default' }), [
       {
         content: 'Reference: https://example.com/docs/getting-started',
         role: 'assistant',
@@ -37,6 +37,7 @@ describe('collectArtifactsForSession', () => {
     expect(artifacts[0]).toMatchObject({
       href: 'https://example.com/docs/getting-started',
       kind: 'link',
+      profile: 'remote-default',
       value: 'https://example.com/docs/getting-started'
     })
   })

@@ -396,6 +396,56 @@ node --check apps/desktop/electron/preload.cjs
 cd apps/desktop && npm run typecheck
 ```
 
+### 8. Desktop OAuth remote artifact opening
+
+Commit:
+
+- This commit — `fix(desktop): open OAuth remote artifacts from gateway session`
+
+Primary files:
+
+- `apps/desktop/electron/main.cjs`
+- `apps/desktop/electron/preload.cjs`
+- `apps/desktop/src/global.d.ts`
+- `apps/desktop/src/app/artifacts/index.tsx`
+- `apps/desktop/src/lib/media.ts`
+- `apps/desktop/src/lib/media.remote.test.ts`
+- `apps/desktop/src/app/artifacts/index.test.ts`
+
+Why TGI needs it:
+
+- TGI's Desktop gateway connection now uses dashboard/basic auth (`authMode: oauth`) instead of the legacy session-token query path.
+- Upstream's remote artifact download URL was token-mode biased: it only built `/api/files/download?...&token=...` when a saved token existed, so OAuth remote artifacts could fall back to `file://` paths that exist on the gateway host, not the Desktop client.
+- Operators need the Artifacts panel to preview/open files produced by Atlas on the remote gateway after signing in through the dashboard flow.
+
+Required behavior:
+
+- Remote artifact image cards fetch gateway-local images through the authenticated REST bridge and include the owning profile when present.
+- Opening a gateway-local artifact in remote OAuth mode asks Electron main to download it through the OAuth session partition, write a local temp copy, and open/reveal it via the OS.
+- Token-mode remote artifacts keep using the existing token-authenticated path.
+- Browser-native `http(s)` and `data:` artifacts remain normal external links/previews.
+
+Retirement criteria:
+
+- Upstream handles remote-gateway artifact previews and file opening through the active authenticated Desktop session for both token and OAuth/dashboard auth modes, including profile-scoped remote sessions.
+- Once upstream covers those outcomes, remove this TGI IPC/UI/media patch and keep the upstream implementation.
+
+Watch upstream for:
+
+- Desktop changes touching Artifacts, `/api/files/download`, `/api/media`, `authMode: oauth`, remote gateway file previews, profile-routed REST, or Electron OAuth session requests.
+
+Focused checks:
+
+```bash
+node --check apps/desktop/electron/main.cjs
+node --check apps/desktop/electron/preload.cjs
+cd apps/desktop && npx vitest run --environment jsdom \
+  src/lib/media.remote.test.ts \
+  src/lib/desktop-fs.test.ts \
+  src/app/artifacts/index.test.ts
+cd apps/desktop && npm run typecheck
+```
+
 ## Current known update/build pitfalls
 
 ### 7. Anthropic Claude OAuth billing-lane fixes
