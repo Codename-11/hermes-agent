@@ -4,11 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { DesktopAuthProvider, DesktopConnectionProbeResult } from '@/global'
+import { createProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Check, FileText, Globe, Loader2, LogIn, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
+import type { ProfileInfo } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
 import { EmptyState, ListRow, LoadingState, Pill, SettingsContent } from './primitives'
@@ -104,6 +106,10 @@ export function GatewaySettings() {
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
+  const [remoteProfiles, setRemoteProfiles] = useState<ProfileInfo[] | null>(null)
+  const [remoteProfilesBaseUrl, setRemoteProfilesBaseUrl] = useState('')
+  const [remoteProfilesLoading, setRemoteProfilesLoading] = useState(false)
+  const [pinningProfile, setPinningProfile] = useState<null | string>(null)
 
   // Connection scope: null = the global/default connection (the original
   // behavior); a profile name = that profile's per-profile remote override, so
@@ -137,6 +143,8 @@ export function GatewaySettings() {
     // the next when switching profiles.
     setRemoteToken('')
     setLastTest(null)
+    setRemoteProfiles(null)
+    setRemoteProfilesBaseUrl('')
 
     desktop
       .getConnectionConfig(scope)
@@ -155,7 +163,7 @@ export function GatewaySettings() {
       })
 
     return () => void (cancelled = true)
-  }, [scope])
+  }, [g.failedLoad, scope])
 
   // Debounced probe of the entered remote URL. Only runs in remote mode with a
   // syntactically plausible URL. The probe result drives whether we render the
@@ -417,6 +425,68 @@ export function GatewaySettings() {
     }
   }
 
+  const localProfileNames = useMemo(() => new Set(profiles.map(profile => profile.name)), [profiles])
+
+  const loadRemoteProfiles = async () => {
+    if (!canUseRemote) {
+      notify({
+        kind: 'warning',
+        title: g.incompleteTitle,
+        message:
+          authMode === 'oauth'
+            ? g.incompleteSignInTest
+            : g.incompleteTokenTest
+      })
+
+      return
+    }
+
+    setRemoteProfilesLoading(true)
+
+    try {
+      const result = await window.hermesDesktop.listRemoteProfilesForConnection(payload())
+      setRemoteProfiles(result.profiles)
+      setRemoteProfilesBaseUrl(result.baseUrl)
+      notify({
+        kind: 'success',
+        title: g.remoteProfilesLoadedTitle,
+        message: g.remoteProfilesLoaded(result.profiles.length, result.baseUrl)
+      })
+    } catch (err) {
+      notifyError(err, g.remoteProfilesFailed)
+    } finally {
+      setRemoteProfilesLoading(false)
+    }
+  }
+
+  const pinRemoteProfile = async (profile: ProfileInfo) => {
+    if (profile.is_default || profile.name === 'default') {
+      notify({ kind: 'warning', title: g.remoteProfileDefaultTitle, message: g.remoteProfileDefaultDesc })
+
+      return
+    }
+
+    setPinningProfile(profile.name)
+
+    try {
+      if (!localProfileNames.has(profile.name)) {
+        await createProfile({ name: profile.name, no_skills: true })
+      }
+
+      await window.hermesDesktop.pinRemoteProfileConnection({
+        ...payload(),
+        sourceProfile: scope ?? undefined,
+        targetProfile: profile.name
+      })
+      await refreshActiveProfile()
+      notify({ kind: 'success', title: g.remoteProfilePinnedTitle, message: g.remoteProfilePinned(profile.name) })
+    } catch (err) {
+      notifyError(err, g.remoteProfilePinFailed(profile.name))
+    } finally {
+      setPinningProfile(null)
+    }
+  }
+
   if (loading) {
     return <LoadingState label={g.loading} />
   }
@@ -602,6 +672,80 @@ export function GatewaySettings() {
           {g.saveAndReconnect}
         </Button>
       </div>
+
+      {state.mode === 'remote' ? (
+        <div className="mt-6 rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-[length:var(--conversation-text-font-size)] font-medium">
+                {g.remoteProfilesTitle}
+              </div>
+              <p className="mt-1 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                {g.remoteProfilesDesc}
+              </p>
+            </div>
+            <Button
+              disabled={remoteProfilesLoading || !canUseRemote}
+              onClick={() => void loadRemoteProfiles()}
+              size="sm"
+              variant="textStrong"
+            >
+              {remoteProfilesLoading ? <Loader2 className="animate-spin" /> : null}
+              {g.loadRemoteProfiles}
+            </Button>
+          </div>
+
+          {remoteProfiles ? (
+            <div className="mt-3 grid gap-2">
+              {remoteProfilesBaseUrl ? (
+                <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {g.remoteProfilesFrom(remoteProfilesBaseUrl)}
+                </div>
+              ) : null}
+              {remoteProfiles.length === 0 ? (
+                <div className="rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {g.remoteProfilesEmpty}
+                </div>
+              ) : (
+                remoteProfiles.map(profile => {
+                  const exists = localProfileNames.has(profile.name)
+                  const isDefault = profile.is_default || profile.name === 'default'
+                  const busy = pinningProfile === profile.name
+
+                  return (
+                    <div
+                      className="flex flex-wrap items-center gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2"
+                      key={profile.name}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">
+                          {profile.name}
+                          {isDefault ? <span className="ml-2 text-(--ui-text-tertiary)">({g.remoteProfileDefault})</span> : null}
+                        </div>
+                        <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {profile.provider && profile.model
+                            ? `${profile.provider} · ${profile.model}`
+                            : g.remoteProfileNoModel}
+                        </div>
+                      </div>
+                      {exists ? <Pill tone="primary">{g.remoteProfileLocal}</Pill> : null}
+                      <Button
+                        disabled={busy || isDefault}
+                        onClick={() => void pinRemoteProfile(profile)}
+                        size="sm"
+                        variant={exists ? 'textStrong' : 'outline'}
+                      >
+                        {busy ? <Loader2 className="animate-spin" /> : null}
+                        {exists ? g.pinRemoteProfileExisting : g.pinRemoteProfileNew}
+                      </Button>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="mt-6 grid gap-1">
         <ListRow

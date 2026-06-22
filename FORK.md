@@ -331,6 +331,30 @@ Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` fr
 - **Known review notes:** Binding directly to Tailscale IPs avoids the current public Agent Card `0.0.0.0` URL wart. If wider binds are needed later, prefer `A2A_PUBLIC_URL` / forwarded-host behavior. Axiom-Desktop is callable while its Windows Hermes gateway process is running; user-level scheduled task `Hermes Gateway A2A` handles login auto-start.
 - **Drop condition:** When upstream merges #41711 or a superseding A2A implementation, compare file behavior/tests, then either absorb upstream naturally or revert this carry as a unit before syncing.
 
+
+### Desktop remote profile handles — local carry pending upstream equivalent
+
+Axiom carries `feat(desktop): add remote profile handles` so Desktop can discover named profiles exposed by a selected remote gateway and pin them as local profile handles. This turns the existing profile rail into the practical local/remote agent switcher without hand-creating stub profiles or copying remote connection settings.
+
+Primary files:
+
+- `apps/desktop/electron/main.cjs`
+- `apps/desktop/electron/preload.cjs`
+- `apps/desktop/src/app/settings/gateway-settings.tsx`
+- `apps/desktop/src/global.d.ts`
+- `apps/desktop/src/i18n/*.ts`
+- `docs/refs/2026-06-desktop-remote-profile-handles.md`
+
+Retire this carry when upstream provides an equivalent Desktop workflow for remote gateway profile discovery, local handle creation, persisted per-profile remote routing, and safe local -> remote -> local switching.
+
+Focused checks:
+
+```bash
+node --check apps/desktop/electron/main.cjs
+node --check apps/desktop/electron/preload.cjs
+cd apps/desktop && npm run typecheck
+```
+
 ### Desktop model picker snap-back — local carry pending upstream equivalent
 
 - **Status:** LOCAL TEMPORARY CARRY — no upstream PR opened at operator direction.
