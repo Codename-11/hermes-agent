@@ -1462,6 +1462,14 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "language": "",
         },
+        "update_review": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 45,
+            "extra_body": {},
+        },
         "tts_audio_tags": {
             "provider": "auto",
             "model": "",

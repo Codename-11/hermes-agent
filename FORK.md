@@ -110,7 +110,8 @@ Required behavior:
 - Detect deploy branches such as `tgi` when no explicit update branch was requested.
 - Fetch/sync upstream safely.
 - Merge upstream into a temp worktree based on `origin/tgi`.
-- On conflict, write/update the handoff marker and do not damage the live checkout.
+- On conflict, write/update the handoff marker, generate a human-readable update conflict review in `~/.hermes/update-reports/`, attempt a best-effort LLM operator brief without mutating code, and do not damage the live checkout.
+- The LLM conflict review is always shown for deploy-branch merge conflicts when available; if the LLM path fails, the updater prints a deterministic review excerpt and still stops safely for human resolution.
 - After manual push to `origin/tgi`, rerunning `hermes update --yes` fast-forwards live cleanly and refreshes install state.
 
 Retirement criteria:

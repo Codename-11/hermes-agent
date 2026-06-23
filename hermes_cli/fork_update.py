@@ -44,6 +44,92 @@ logger = logging.getLogger("hermes_cli.fork_update")
 # Fork-only: relative path under HERMES_HOME for the deploy-branch update
 # handoff marker. Not referenced upstream.
 DEPLOY_HANDOFF_FILE = ".update_handoff.json"
+UPDATE_REVIEW_DIR = "update-reports"
+
+
+FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
+    {
+        "name": "Deploy-branch-safe updater",
+        "paths": (
+            "hermes_cli/fork_update.py",
+            "hermes_cli/main.py",
+            "tests/hermes_cli/test_update_autostash.py",
+            "tests/hermes_cli/test_cmd_update.py",
+        ),
+        "checks": (
+            "python -m py_compile hermes_cli/main.py hermes_cli/fork_update.py",
+            "python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py",
+        ),
+    },
+    {
+        "name": "Desktop OAuth remote artifact opening",
+        "paths": (
+            "apps/desktop/electron/main.cjs",
+            "apps/desktop/electron/preload.cjs",
+            "apps/desktop/src/global.d.ts",
+            "apps/desktop/src/app/artifacts/",
+            "apps/desktop/src/lib/media",
+        ),
+        "checks": (
+            "cd apps/desktop && node --check electron/main.cjs && node --check electron/preload.cjs",
+            "cd apps/desktop && npx vitest run --environment jsdom src/lib/media.remote.test.ts src/lib/desktop-fs.test.ts src/app/artifacts/index.test.ts",
+            "cd apps/desktop && npm run typecheck",
+        ),
+    },
+    {
+        "name": "Desktop remote profile handles / remote routing",
+        "paths": (
+            "apps/desktop/electron/connection-config.cjs",
+            "apps/desktop/electron/main.cjs",
+            "apps/desktop/src/store/profile.ts",
+            "apps/desktop/src/app/settings/gateway-settings.tsx",
+        ),
+        "checks": (
+            "cd apps/desktop && node --test electron/connection-config.test.cjs",
+            "cd apps/desktop && npm run typecheck",
+        ),
+    },
+    {
+        "name": "Slack channel/session behavior",
+        "paths": (
+            "gateway/platforms/slack.py",
+            "gateway/platforms/base.py",
+            "gateway/run.py",
+            "gateway/session.py",
+            "gateway/config.py",
+            "tests/gateway/test_slack",
+        ),
+        "checks": (
+            "python -m pytest -o addopts= -q tests/gateway/test_slack.py tests/gateway/test_slack_mention.py tests/gateway/test_slack_channel_session_scope.py tests/gateway/test_slack_session_model.py",
+        ),
+    },
+    {
+        "name": "Anthropic Claude OAuth billing-lane fixes",
+        "paths": (
+            "agent/anthropic_adapter.py",
+            "agent/transports/anthropic.py",
+            "tests/agent/test_anthropic_adapter.py",
+            "tests/agent/test_anthropic_oauth_system_relocation.py",
+        ),
+        "checks": (
+            "python -m py_compile agent/anthropic_adapter.py agent/transports/anthropic.py",
+            "python -m pytest -o addopts= -q tests/agent/test_anthropic_adapter.py tests/agent/test_anthropic_oauth_system_relocation.py",
+        ),
+    },
+    {
+        "name": "Live MCP/tool-schema refresh",
+        "paths": (
+            "agent/agent_init.py",
+            "agent/chat_completion_helpers.py",
+            "tools/mcp_tool.py",
+            "tests/agent/test_live_tool_schema_refresh.py",
+            "tests/tools/test_mcp_tool.py",
+        ),
+        "checks": (
+            "python -m pytest -o addopts= -q tests/agent/test_live_tool_schema_refresh.py tests/tools/test_mcp_tool.py::TestMCPServerTask::test_refresh_tools_replaces_schema_for_unchanged_tool_name",
+        ),
+    },
+)
 
 
 def _validate_update_after_pull(git_cmd, root, pre_pull_sha: str | None) -> None:
@@ -221,6 +307,259 @@ def _short_git_ref(git_cmd: list[str], cwd: Path, ref: str) -> str:
     return "unknown"
 
 
+def _git_output(git_cmd: list[str], cwd: Path, args: list[str], *, limit: int = 8000) -> str:
+    """Best-effort git output helper for update reports."""
+    try:
+        result = subprocess.run(
+            git_cmd + args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    text = (result.stdout or "").strip()
+    if len(text) > limit:
+        return text[:limit].rstrip() + "\n…(truncated)…"
+    return text
+
+
+def _matched_fork_watch_areas(paths: list[str]) -> list[dict[str, object]]:
+    normalized = [p.replace("\\", "/") for p in paths]
+    matched: list[dict[str, object]] = []
+    for area in FORK_WATCH_AREAS:
+        prefixes = tuple(str(p).replace("\\", "/") for p in area.get("paths", ()))
+        if any(path.startswith(prefix) for path in normalized for prefix in prefixes):
+            matched.append(area)
+    return matched
+
+
+def _review_reports_dir() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / UPDATE_REVIEW_DIR
+
+
+def _build_update_review_prompt(review: dict[str, object]) -> str:
+    conflict_files = "\n".join(f"- {f}" for f in review.get("conflict_files", []) or []) or "- none reported"
+    watch_areas = review.get("watch_areas", []) or []
+    watch_text = "\n".join(
+        f"- {area.get('name')}\n  checks: " + "; ".join(str(c) for c in area.get("checks", ())[:4])
+        for area in watch_areas
+    ) or "- none matched"
+    incoming = str(review.get("incoming_commits") or "").strip() or "(not available)"
+    status = str(review.get("worktree_status") or "").strip() or "(not available)"
+    error = str(review.get("error") or "").strip() or "(none)"
+
+    return f"""You are reviewing a Hermes Agent TGI deploy-branch update conflict.
+
+Return a concise human-readable operator brief only. Do not propose automatic
+mutation, do not ask the updater to continue unattended, and do not include
+secrets. Prefer upstream behavior when it satisfies the same TGI requirement,
+but preserve documented TGI operational outcomes until tests prove upstream is
+equivalent.
+
+Required output shape:
+1. What happened — one or two sentences.
+2. Likely fork areas involved — bullets.
+3. Safest next move — concrete commands/checks.
+4. What not to do — one bullet if relevant.
+
+Context:
+- Repo: {review.get('repo')}
+- Branch: {review.get('branch')}
+- Reason: {review.get('reason')}
+- Live HEAD: {review.get('live_head')}
+- origin/{review.get('branch')}: {review.get('origin_head')}
+- upstream/main: {review.get('upstream_head')}
+- Upstream commits not in origin: {review.get('upstream_ahead')}
+- Origin commits not in live HEAD: {review.get('origin_ahead')}
+- Worktree: {review.get('worktree') or '(none)'}
+
+Conflicting files:
+{conflict_files}
+
+Matched TGI fork watch areas:
+{watch_text}
+
+Merge error excerpt:
+{error[:1200]}
+
+Worktree status:
+{status[:2000]}
+
+Incoming upstream commits:
+{incoming[:3000]}
+"""
+
+
+def _call_llm_update_review(review: dict[str, object]) -> tuple[str, str]:
+    """Return (summary, error) for the best-effort LLM conflict review."""
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="update_review",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You write concise, production-safe git conflict review briefs. "
+                        "You never approve code changes or recommend unattended mutation."
+                    ),
+                },
+                {"role": "user", "content": _build_update_review_prompt(review)},
+            ],
+            max_tokens=900,
+            temperature=0.2,
+            timeout=45,
+        )
+        summary = (response.choices[0].message.content or "").strip()
+        return (summary[:6000], "") if summary else ("", "empty LLM response")
+    except Exception as exc:
+        logger.debug("Update conflict LLM review failed", exc_info=True)
+        return "", str(exc).splitlines()[0]
+
+
+def _deterministic_update_review_summary(review: dict[str, object]) -> str:
+    files = review.get("conflict_files", []) or []
+    watch_areas = review.get("watch_areas", []) or []
+    lines = [
+        "What happened: the deploy-branch update hit a conflict in the retained update worktree; the live checkout was not changed.",
+    ]
+    if files:
+        lines.append("Conflicting files: " + ", ".join(str(f) for f in files[:8]))
+    if watch_areas:
+        lines.append("Likely TGI fork areas involved:")
+        for area in watch_areas[:6]:
+            lines.append(f"- {area.get('name')}")
+    else:
+        lines.append("No documented TGI fork watch area matched the conflict files; treat this as a normal upstream merge conflict.")
+    checks: list[str] = []
+    for area in watch_areas:
+        for check in area.get("checks", ()):
+            if str(check) not in checks:
+                checks.append(str(check))
+    lines.append("Safest next move: resolve in the retained worktree, prefer upstream when it preserves the documented TGI outcome, then run focused tests before pushing HEAD back to the deploy branch.")
+    if checks:
+        lines.append("Focused checks to consider:")
+        for check in checks[:6]:
+            lines.append(f"- {check}")
+    lines.append("Do not auto-approve or continue unattended from this state.")
+    return "\n".join(lines)
+
+
+def _write_update_review_report(review: dict[str, object]) -> Optional[Path]:
+    try:
+        reports_dir = _review_reports_dir()
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        branch = str(review.get("branch") or "deploy").replace("/", "-")
+        report_path = reports_dir / f"{stamp}-{branch}-conflict-review.md"
+        files = review.get("conflict_files", []) or []
+        watch_areas = review.get("watch_areas", []) or []
+        llm_error = str(review.get("llm_error") or "").strip()
+        content = [
+            f"# Hermes update conflict review — {branch}",
+            "",
+            f"Created: {datetime.now().isoformat(timespec='seconds')}",
+            f"Repo: `{review.get('repo')}`",
+            f"Worktree: `{review.get('worktree') or ''}`",
+            f"Reason: {review.get('reason')}",
+            "",
+            "## Refs",
+            "",
+            f"- Live HEAD: `{review.get('live_head')}`",
+            f"- Origin deploy: `{review.get('origin_head')}`",
+            f"- Upstream main: `{review.get('upstream_head')}`",
+            f"- Upstream commits not in origin: `{review.get('upstream_ahead')}`",
+            f"- Origin commits not in live HEAD: `{review.get('origin_ahead')}`",
+            "",
+            "## LLM / operator brief",
+            "",
+            str(review.get("llm_summary") or review.get("deterministic_summary") or "").strip(),
+            "",
+        ]
+        if llm_error:
+            content.extend(["> LLM review unavailable: " + llm_error, ""])
+        content.extend(["## Conflicting files", ""])
+        content.extend([f"- `{f}`" for f in files] or ["- none reported"])
+        content.extend(["", "## Matched TGI fork watch areas", ""])
+        if watch_areas:
+            for area in watch_areas:
+                content.append(f"### {area.get('name')}")
+                content.append("")
+                content.append("Focused checks:")
+                for check in area.get("checks", ()):
+                    content.append(f"- `{check}`")
+                content.append("")
+        else:
+            content.append("No documented watch area matched these files.")
+            content.append("")
+        for title, key in (
+            ("Worktree status", "worktree_status"),
+            ("Incoming upstream commits", "incoming_commits"),
+            ("Merge error excerpt", "error"),
+        ):
+            value = str(review.get(key) or "").strip()
+            if value:
+                content.extend([f"## {title}", "", "```text", value, "```", ""])
+        report_path.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")
+        return report_path
+    except Exception:
+        logger.debug("Failed to write update conflict review report", exc_info=True)
+        return None
+
+
+def _generate_update_conflict_review(
+    *,
+    reason: str,
+    repo: Path,
+    branch: str,
+    upstream_ahead: int,
+    origin_ahead: int,
+    worktree_path: Optional[Path],
+    conflict_files: str,
+    error: str,
+    git_cmd: list[str],
+) -> dict[str, object]:
+    files = [line.strip() for line in (conflict_files or "").splitlines() if line.strip()]
+    watch_areas = _matched_fork_watch_areas(files)
+    worktree_status = _git_output(git_cmd, worktree_path, ["status", "--short", "--branch"], limit=4000) if worktree_path else ""
+    incoming_commits = _git_output(
+        git_cmd,
+        repo,
+        ["log", "--oneline", "--no-merges", f"origin/{branch}..upstream/main", "--", *(files or [])],
+        limit=5000,
+    )
+    review: dict[str, object] = {
+        "repo": str(repo),
+        "branch": branch,
+        "reason": reason,
+        "worktree": str(worktree_path) if worktree_path is not None else "",
+        "conflict_files": files,
+        "error": error,
+        "upstream_ahead": upstream_ahead,
+        "origin_ahead": origin_ahead,
+        "live_head": _short_git_ref(git_cmd, repo, "HEAD"),
+        "origin_head": _short_git_ref(git_cmd, repo, f"origin/{branch}"),
+        "upstream_head": _short_git_ref(git_cmd, repo, "upstream/main"),
+        "watch_areas": watch_areas,
+        "worktree_status": worktree_status,
+        "incoming_commits": incoming_commits,
+    }
+    review["deterministic_summary"] = _deterministic_update_review_summary(review)
+    llm_summary, llm_error = _call_llm_update_review(review)
+    review["llm_summary"] = llm_summary
+    review["llm_error"] = llm_error
+    report_path = _write_update_review_report(review)
+    review["report_path"] = str(report_path) if report_path is not None else ""
+    return review
+
+
 def _count_changed_from_pre_update(
     git_cmd: list[str],
     cwd: Path,
@@ -354,7 +693,31 @@ def _print_deploy_branch_handoff(
     git_cmd: Optional[list[str]] = None,
 ) -> None:
     git_cmd = git_cmd or ["git"]
+    review: dict[str, object] | None = None
+    if conflict_files or (worktree_path is not None and "merge" in reason.lower()):
+        review = _generate_update_conflict_review(
+            reason=reason,
+            repo=repo,
+            branch=branch,
+            upstream_ahead=upstream_ahead,
+            origin_ahead=origin_ahead,
+            worktree_path=worktree_path,
+            conflict_files=conflict_files,
+            error=error,
+            git_cmd=git_cmd,
+        )
     print()
+    if review:
+        print("  ── Update conflict review ─────────────────────")
+        print()
+        summary = str(review.get("llm_summary") or review.get("deterministic_summary") or "").strip()
+        for line in summary.splitlines()[:18]:
+            print(f"  {line}" if line else "")
+        if review.get("llm_error"):
+            print(f"  LLM review unavailable; deterministic brief shown. ({review.get('llm_error')})")
+        if review.get("report_path"):
+            print(f"  Full report: {review.get('report_path')}")
+        print()
     print("  ── Pass this to your Hermes agent ─────────────")
     print()
     print("  ┌─ Copy below ─────────────────────────────────")
@@ -429,7 +792,24 @@ def _run_deploy_branch_update(
     code changed, or ``None`` when a handoff was printed and update should stop.
     """
     from hermes_cli.main import _count_commits_between  # lazy: avoid circular import at module load
-    from hermes_cli.update_ui import Pipeline
+    try:
+        from hermes_cli.update_ui import Pipeline
+    except ModuleNotFoundError:
+        class Pipeline:  # minimal fallback for deploy-branch update progress
+            def __init__(self, stages: list[str]):
+                self.stages = stages
+
+            def start(self, stage: str) -> None:
+                print(f"→ {stage}...")
+
+            def advance(self, stage: str) -> None:
+                print(f"→ {stage}...")
+
+            def fail(self, note: str = "") -> None:
+                print(f"✗ {note or 'update failed'}")
+
+            def finish(self, note: str = "") -> None:
+                print(f"✓ {note or 'update complete'}")
 
     remote_ref = f"origin/{branch}"
     _pipe = Pipeline(["fetch upstream", "merge upstream", f"sync {branch}"])
