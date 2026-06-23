@@ -38,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -236,7 +236,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, job_hermes_home
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -316,9 +316,15 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored."""
-    hermes_home = _get_hermes_home()
-    lock_dir = hermes_home / "cron"
+    """Resolve the shared cron lock paths at call time.
+
+    Jobs live in the shared root cron store. Individual gateways filter by
+    ``owner_profile`` before execution, but storage coordination must use one
+    lock next to the shared jobs.json so CLI/gateway/external-provider writes do
+    not race.
+    """
+    from hermes_constants import get_default_hermes_root
+    lock_dir = (_hermes_home or get_default_hermes_root()) / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -1259,13 +1265,15 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        env = _sanitize_subprocess_env(os.environ.copy())
+        env["HERMES_HOME"] = str(_get_hermes_home())
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            env=env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -1595,9 +1603,25 @@ def _scan_assembled_cron_prompt(
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a single cron job under its owner profile's Hermes home."""
+    owner_home = job_hermes_home(job)
+    previous_home = os.environ.get("HERMES_HOME")
+    token = set_hermes_home_override(owner_home)
+    os.environ["HERMES_HOME"] = str(owner_home)
+    try:
+        return _run_job_inner(job)
+    finally:
+        reset_hermes_home_override(token)
+        if previous_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous_home
+
+
+def _run_job_inner(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
@@ -1848,6 +1872,32 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if _job_workdir:
         os.environ["TERMINAL_CWD"] = _job_workdir
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
+
+    # Scope this job's execution to its owning profile's HERMES_HOME (#32091).
+    # The shared root store holds every profile's jobs, but a job must run with
+    # the .env / config.yaml / credentials of the profile that created it — not
+    # whichever profile's ticker happened to pick it up. We set both the
+    # in-process ContextVar override (consumed by _get_hermes_home() for the
+    # config/.env/script loads below) AND os.environ["HERMES_HOME"] (inherited
+    # by any child subprocess the agent spawns). tick() routes profile-scoped
+    # jobs to the single-worker sequential pool, so mutating os.environ here is
+    # safe — they never overlap. Restored in the finally block.
+    from cron.jobs import resolve_profile_home
+    from hermes_constants import set_hermes_home_override
+    _job_profile = (job.get("profile") or "default").strip() or "default"
+    _profile_home = resolve_profile_home(_job_profile)
+    _prior_hermes_home = os.environ.get("HERMES_HOME", "_UNSET_")
+    _hermes_home_token = None
+    if _profile_home is not None and _profile_home != _get_hermes_home().resolve():
+        os.environ["HERMES_HOME"] = str(_profile_home)
+        _hermes_home_token = set_hermes_home_override(str(_profile_home))
+        logger.info("Job '%s': executing under profile %r (HERMES_HOME=%s)",
+                    job_id, _job_profile, _profile_home)
+    elif _profile_home is None and _job_profile != "default":
+        logger.warning(
+            "Job '%s': profile %r no longer exists — running under the "
+            "ticker's profile instead", job_id, _job_profile,
+        )
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -2260,6 +2310,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        # Restore HERMES_HOME to the ticker's value when this job overrode it
+        # for profile-scoped execution (#32091). Mirrors the TERMINAL_CWD
+        # restore above; the sequential pool guarantees no overlap.
+        if _hermes_home_token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+                reset_hermes_home_override(_hermes_home_token)
+            except Exception:
+                pass
+            if _prior_hermes_home == "_UNSET_":
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = _prior_hermes_home
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
@@ -2465,12 +2528,26 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition due jobs: those that mutate process-global os.environ
+        # inside run_job MUST run sequentially to avoid corrupting each other.
+        # Two cases mutate env:
+        #   - a per-job workdir sets os.environ["TERMINAL_CWD"].
+        #   - a per-job profile whose HERMES_HOME differs from the ticker's
+        #     sets os.environ["HERMES_HOME"] to scope execution (#32091).
+        # Jobs that need neither leave env untouched and stay parallel-safe.
+        def _needs_sequential(j: dict) -> bool:
+            if (j.get("workdir") or "").strip():
+                return True
+            prof = (j.get("profile") or "default").strip() or "default"
+            try:
+                from cron.jobs import resolve_profile_home
+                phome = resolve_profile_home(prof)
+            except Exception:
+                phome = None
+            return phome is not None and phome != _get_hermes_home().resolve()
+
+        sequential_jobs = [j for j in due_jobs if _needs_sequential(j)]
+        parallel_jobs = [j for j in due_jobs if not _needs_sequential(j)]
 
         _results: list = []
         _all_futures: list = []

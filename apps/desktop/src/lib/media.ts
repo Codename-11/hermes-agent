@@ -57,6 +57,10 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+export function isGatewayLocalMediaPath(path: string): boolean {
+  return !/^(?:https?:|data:)/i.test(path) && (path.startsWith('file:') || path.startsWith('/'))
+}
+
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
@@ -119,11 +123,12 @@ export function isRemoteGateway(): boolean {
 // Used in remote mode where readFileDataUrl (which reads THIS machine's disk)
 // can't see files the agent wrote on the gateway. Requires the gateway to
 // expose GET /api/media (hermes_cli/web_server.py).
-export async function gatewayMediaDataUrl(path: string): Promise<string> {
+export async function gatewayMediaDataUrl(path: string, profile?: null | string): Promise<string> {
   const file = filePathFromMediaPath(path)
 
   const result = await window.hermesDesktop!.api<{ data_url: string }>({
-    path: `/api/media?path=${encodeURIComponent(file)}`
+    path: `/api/media?path=${encodeURIComponent(file)}`,
+    profile: profile ?? null
   })
 
   return result.data_url

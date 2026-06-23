@@ -771,7 +771,15 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     worktree_path = parent / "worktree"
     calls = []
 
+    from hermes_cli import axiom_update as hermes_axiom_update
+
     monkeypatch.setattr(hermes_main.tempfile, "mkdtemp", lambda prefix: str(parent))
+    monkeypatch.setattr(hermes_axiom_update, "_review_reports_dir", lambda: tmp_path / "reports")
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_call_llm_update_review",
+        lambda review: ("LLM says: pause, resolve in worktree, run focused tests.", ""),
+    )
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
@@ -809,10 +817,19 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     assert ["git", "push", "origin", "HEAD:axiom"] not in commands
     assert ["git", "merge", "--ff-only", "origin/axiom"] not in commands
     out = capsys.readouterr().out
+    assert "Update conflict review" in out
+    assert "LLM says: pause" in out
+    assert "Full report:" in out
     assert "hermes update: merge into axiom failed." in out
     assert "Worktree:" in out
     assert "hermes_cli/main.py" in out
     assert "live checkout was left unchanged" in out
+    reports = list((tmp_path / "reports").glob("*-axiom-conflict-review.md"))
+    assert len(reports) == 1
+    report_text = reports[0].read_text(encoding="utf-8")
+    assert "LLM says: pause" in report_text
+    assert "hermes_cli/main.py" in report_text
+    assert "Deploy-branch-safe updater" in report_text
 
 
 # ---------------------------------------------------------------------------

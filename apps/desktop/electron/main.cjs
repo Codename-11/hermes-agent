@@ -976,6 +976,88 @@ async function openPreviewInBrowser(rawUrl) {
   return openExternalUrl(raw)
 }
 
+function remoteFilePathFromMediaPath(rawPath) {
+  const value = String(rawPath || '').trim()
+  if (!value) return ''
+  if (!value.startsWith('file:')) return value
+  try {
+    return decodeURIComponent(new URL(value).pathname)
+  } catch {
+    return value.replace(/^file:\/\//, '')
+  }
+}
+
+function safeDownloadFilename(rawName) {
+  const base = String(rawName || '')
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .pop()
+  const cleaned = String(base || 'artifact')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .trim()
+    .slice(0, 160)
+  return cleaned || 'artifact'
+}
+
+function headerValue(headers, name) {
+  const wanted = String(name || '').toLowerCase()
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (String(key).toLowerCase() !== wanted) continue
+    return Array.isArray(value) ? String(value[0] || '') : String(value || '')
+  }
+  return ''
+}
+
+function filenameFromContentDisposition(value) {
+  const header = String(value || '')
+  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded.replace(/^"|"$/g, ''))
+    } catch {
+      return encoded.replace(/^"|"$/g, '')
+    }
+  }
+  return header.match(/filename="?([^";]+)"?/i)?.[1] || ''
+}
+
+async function openDownloadedFile(buffer, remotePath, headers = {}) {
+  const dir = path.join(app.getPath('temp'), 'hermes-remote-files')
+  fs.mkdirSync(dir, { recursive: true })
+  const filename = safeDownloadFilename(filenameFromContentDisposition(headerValue(headers, 'content-disposition')) || remotePath)
+  const target = path.join(dir, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${filename}`)
+  fs.writeFileSync(target, buffer)
+
+  const error = await shell.openPath(target)
+  if (error) {
+    rememberLog(`[file] openPath failed for downloaded remote file: ${error}; revealing in folder instead`)
+    shell.showItemInFolder(target)
+  }
+
+  return { ok: true, path: target }
+}
+
+async function openRemoteFile(payload = {}) {
+  const remotePath = remoteFilePathFromMediaPath(payload.path)
+  if (!remotePath) {
+    throw new Error('Remote file path is required')
+  }
+
+  const conn = await ensureBackend(payload.profile)
+  if (conn.mode !== 'remote') {
+    throw new Error('Remote file opening requires a remote gateway connection')
+  }
+
+  const base = String(conn.baseUrl || '').replace(/\/+$/, '')
+  const url = `${base}/api/files/download?path=${encodeURIComponent(remotePath)}`
+  const download =
+    conn.authMode === 'oauth'
+      ? await fetchBinaryViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+      : await fetchBinary(url, conn.token, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+
+  return openDownloadedFile(download.buffer, remotePath, download.headers)
+}
+
 function ensureWslWindowsFonts() {
   if (!IS_WSL) return
 
@@ -2966,6 +3048,48 @@ function fetchJson(url, token, options = {}) {
   })
 }
 
+function fetchBinary(url, token, options = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url)
+    const client = parsed.protocol === 'https:' ? https : http
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      return
+    }
+
+    const req = client.request(
+      parsed,
+      {
+        method: 'GET',
+        headers: {
+          'X-Hermes-Session-Token': token
+        }
+      },
+      res => {
+        const chunks = []
+        res.on('error', reject)
+        res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks)
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`${res.statusCode}: ${buffer.toString('utf8') || res.statusMessage}`))
+            return
+          }
+          resolve({ buffer, headers: res.headers || {} })
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
+    req.end()
+  })
+}
+
 function fetchPublicJson(url, options = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
@@ -4251,6 +4375,70 @@ function fetchJsonViaOauthSession(url, options = {}) {
       reject(error)
     })
     if (body) request.write(body)
+    request.end()
+  })
+}
+
+function fetchBinaryViaOauthSession(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const sess = getOauthSession()
+    if (!sess) {
+      reject(new Error('OAuth session partition is unavailable.'))
+      return
+    }
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid URL: ${error.message}`))
+      return
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      return
+    }
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    const request = electronNet.request({
+      method: 'GET',
+      url,
+      session: sess,
+      useSessionCookies: true,
+      redirect: 'follow'
+    })
+
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        request.abort()
+      } catch {
+        // already finished
+      }
+      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    request.on('response', res => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      res.on('end', () => {
+        if (timedOut) return
+        clearTimeout(timer)
+        const buffer = Buffer.concat(chunks)
+        const statusCode = res.statusCode || 500
+        if (statusCode >= 400) {
+          const err = new Error(`${statusCode}: ${buffer.toString('utf8') || ''}`)
+          err.statusCode = statusCode
+          reject(err)
+          return
+        }
+        resolve({ buffer, headers: res.headers || {} })
+      })
+    })
+    request.on('error', error => {
+      if (timedOut) return
+      clearTimeout(timer)
+      reject(error)
+    })
     request.end()
   })
 }
@@ -6139,6 +6327,7 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
     throw new Error('Invalid external URL')
   }
 })
+ipcMain.handle('hermes:openRemoteFile', (_event, payload) => openRemoteFile(payload))
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {
