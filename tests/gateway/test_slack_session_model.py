@@ -2,7 +2,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.slack import SlackAdapter
+from plugins.platforms.slack.adapter import SlackAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource
 
