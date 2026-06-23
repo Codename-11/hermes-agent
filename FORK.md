@@ -70,7 +70,9 @@ _get_dashboard_service_pids          _desktop_shortcut_exists
 _detect_windows_gateway_launcher_instances
 ```
 
-Plus the fork-only `DEPLOY_HANDOFF_FILE` constant.
+Plus fork-only update metadata constants such as `DEPLOY_HANDOFF_FILE`, `UPDATE_REVIEW_DIR`, and `FORK_WATCH_AREAS`.
+
+**Conflict-review carry:** deploy-branch merge conflicts now automatically generate a visible operator review and full markdown report under `~/.hermes/update-reports/`. The LLM summary is best-effort/advisory only; if auxiliary LLM review fails, the updater prints and writes a deterministic brief, keeps the retained conflict worktree, and stops without mutating the live checkout.
 
 **Seam contract:**
 - `main.py` imports all 15 names from `hermes_cli.axiom_update` at module load
@@ -242,6 +244,7 @@ Protected behavior:
 - Axiom deploy branch strategy remains explicit: upstream merges into `origin/axiom`; live checkout updates happen in a separate maintenance/update step.
 - `hermes update` / update checks understand fork deploy branches and do not incorrectly declare up-to-date by checking only `origin`.
 - Deploy branch updates are transactional and preserve rescue prompts for stash/merge conflicts.
+- Deploy-branch merge conflicts automatically print an `Update conflict review`, write a full markdown report under `~/.hermes/update-reports/`, and use LLM review only as a best-effort advisory layer with deterministic fallback. The updater must still stop and leave the live checkout untouched.
 - Update path can restart named profile gateway services without leaking profile env between processes.
 - Update path excludes systemd-managed dashboard/Desktop child processes from unsafe kill sweeps.
 - Windows update path pauses mapped gateway processes before the concurrent `hermes.exe` shim guard, so Scheduled-Task/manual gateways can release `venv\\Scripts\\hermes.exe` before dependency reinstall; unrelated REPL/Desktop backend processes still block unless `--force` is explicit.
@@ -258,6 +261,8 @@ Primary files:
 
 ```text
 hermes_cli/main.py
+hermes_cli/axiom_update.py
+hermes_cli/config.py
 hermes_cli/banner.py
 hermes_cli/update_ui.py
 hermes_cli/gateway.py
