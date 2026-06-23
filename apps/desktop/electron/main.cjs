@@ -1031,6 +1031,33 @@ async function openRemoteFile(payload = {}) {
   return openDownloadedFile(download.buffer, remotePath, download.headers)
 }
 
+async function openPreviewInBrowser(rawUrl) {
+  const raw = String(rawUrl || '').trim()
+  if (!raw) return false
+
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return false
+  }
+
+  if (parsed.protocol === 'file:') {
+    let localPath
+    try {
+      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open preview in browser' })
+    } catch {
+      return false
+    }
+
+    await shell.openExternal(pathToFileURL(localPath).toString())
+
+    return true
+  }
+
+  return openExternalUrl(raw)
+}
+
 function ensureWslWindowsFonts() {
   if (!IS_WSL) return
 
@@ -6302,6 +6329,12 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
   }
 })
 ipcMain.handle('hermes:openRemoteFile', (_event, payload) => openRemoteFile(payload))
+
+ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
+  if (!(await openPreviewInBrowser(url))) {
+    throw new Error('Invalid preview URL')
+  }
+})
 
 // User-configurable default project directory. The renderer reads this on
 // settings mount and seeds the value into the picker; writing back persists
