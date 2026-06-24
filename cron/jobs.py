@@ -1149,12 +1149,14 @@ def create_job(
         # profile unless scope is explicitly global.
         "owner_profile": normalized_profile,
         "scope": _PROFILE_SCOPE,
+        # Backward-compatible alias for older scheduler/runtime paths that
+        # still look at ``profile`` for execution scoping.
+        "profile": normalized_profile,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
-        "profile": normalized_profile,
     }
 
     with _jobs_lock():
