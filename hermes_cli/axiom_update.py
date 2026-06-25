@@ -435,26 +435,62 @@ Incoming upstream commits:
 """
 
 
+class _UpdateStatus:
+    """Small wrapper around the update Pipeline with a plain-print fallback."""
+
+    def __init__(self, phases: list[str], *, label: str = ""):
+        self._phases = phases
+        self._label = label
+        self._pipe = None
+        self._done = False
+        try:
+            from hermes_cli.update_ui import Pipeline
+
+            self._pipe = Pipeline(phases, label=label)
+        except Exception:
+            logger.debug("Update status pipeline unavailable", exc_info=True)
+
+    def start(self, phase: str) -> None:
+        if self._pipe is not None:
+            self._pipe.start(phase)
+        else:
+            prefix = f"{self._label}: " if self._label else ""
+            print(f"→ {prefix}{phase}", flush=True)
+
+    def advance(self, phase: str) -> None:
+        if self._pipe is not None:
+            self._pipe.advance(phase)
+        else:
+            prefix = f"{self._label}: " if self._label else ""
+            print(f"→ {prefix}{phase}", flush=True)
+
+    def finish(self, *, note: str = "") -> None:
+        if self._done:
+            return
+        self._done = True
+        if self._pipe is not None:
+            self._pipe.finish(note=note)
+        elif note:
+            print(f"  {note}", flush=True)
+
+    def fail(self, *, note: str = "") -> None:
+        if self._done:
+            return
+        self._done = True
+        if self._pipe is not None:
+            self._pipe.fail(note=note)
+        elif note:
+            print(f"  {note}", flush=True)
+
+
 def _run_conflict_review_status(label: str, fn):
     """Show a clean update status/spinner while expensive handoff prep runs."""
-    pipe = None
-    try:
-        from hermes_cli.update_ui import Pipeline
-
-        pipe = Pipeline([label])
-        pipe.start(label)
-    except Exception:
-        # Status rendering must never prevent the conflict handoff from being
-        # generated.  Fall back to running the wrapped operation directly.
-        logger.debug("Update conflict status spinner failed", exc_info=True)
+    status = _UpdateStatus([label])
+    status.start(label)
     try:
         return fn()
     finally:
-        if pipe is not None:
-            try:
-                pipe.finish(note="handoff ready")
-            except Exception:
-                logger.debug("Update conflict status spinner cleanup failed", exc_info=True)
+        status.finish(note="handoff ready")
 
 
 def _call_llm_update_review(review: dict[str, object]) -> tuple[str, str]:
@@ -943,7 +979,25 @@ def _resolve_deploy_handoff(
 
     worktree_raw = str(payload.get("worktree") or "").strip()
     worktree = Path(worktree_raw) if worktree_raw else Path()
+    status = _UpdateStatus(
+        [
+            "prepare resolve",
+            "agent resolve",
+            "validate",
+            "focused checks",
+            "commit",
+            "push",
+            "sync live",
+            "cleanup",
+        ],
+        label="resolve",
+    )
+    print("→ Resolving retained deploy handoff with Hermes agent...")
+    if worktree_raw:
+        print(f"  Worktree: {worktree}")
+    status.start("prepare resolve")
     if not worktree_raw or not worktree.exists():
+        status.fail(note="worktree missing")
         print("✗ Deploy handoff worktree is missing; cannot auto-resolve.")
         if _completed_deploy_handoff_requires_post_update(git_cmd, repo, branch):
             return 1
@@ -955,6 +1009,7 @@ def _resolve_deploy_handoff(
     conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
     blocked = _egregious_handoff_paths(conflict_files)
     if blocked:
+        status.fail(note="sensitive path gate")
         print("✗ Refusing unattended resolve: conflict touches sensitive paths:")
         for item in blocked:
             print(f"  - {item}")
@@ -962,16 +1017,18 @@ def _resolve_deploy_handoff(
         return None
 
     checks = _focused_checks_for_paths(conflict_files, payload)
-    print("→ Resolving retained deploy handoff with Hermes agent...")
-    print(f"  Worktree: {worktree}")
+    status.advance("agent resolve")
     result = _run_update_resolver_agent(_build_deploy_resolver_prompt({**payload, "conflict_files": conflict_files}, checks), worktree)
     if result.returncode != 0:
+        status.fail(note="resolver agent failed")
         print("✗ Resolver agent failed; retained worktree was left untouched for manual review.")
         return None
 
+    status.advance("validate")
     unmerged = _git_output(git_cmd, worktree, ["diff", "--name-only", "--diff-filter=U"], limit=4000)
     remaining = [line.strip() for line in unmerged.splitlines() if line.strip()]
     if remaining:
+        status.fail(note="unmerged files remain")
         print("✗ Resolver exited but unmerged files remain:")
         for item in remaining[:20]:
             print(f"  - {item}")
@@ -980,18 +1037,22 @@ def _resolve_deploy_handoff(
     marker_files = conflict_files or _git_output(git_cmd, worktree, ["diff", "--name-only", "HEAD"], limit=4000).splitlines()
     marker_hits = _scan_conflict_markers(worktree, [line.strip() for line in marker_files if line.strip()])
     if marker_hits:
+        status.fail(note="conflict markers remain")
         print("✗ Resolver left conflict markers in files:")
         for item in marker_hits[:20]:
             print(f"  - {item}")
         return None
 
+    status.advance("focused checks")
     for check in checks:
         print(f"→ Focused check: {check}")
         check_result = subprocess.run(check, cwd=worktree, shell=True, text=True, timeout=900)
         if check_result.returncode != 0:
+            status.fail(note="focused check failed")
             print(f"✗ Focused check failed: {check}")
             return None
 
+    status.advance("commit")
     subprocess.run(git_cmd + ["add", "-A"], cwd=worktree, capture_output=True, text=True)
     commit_needed = subprocess.run(git_cmd + ["diff", "--cached", "--quiet"], cwd=worktree)
     if commit_needed.returncode != 0:
@@ -1004,9 +1065,11 @@ def _resolve_deploy_handoff(
                 text=True,
             )
         if commit.returncode != 0:
+            status.fail(note="commit failed")
             print("✗ Could not commit resolver changes.")
             return None
 
+    status.advance("push")
     push = subprocess.run(
         git_cmd + ["push", "origin", f"HEAD:{branch}"],
         cwd=worktree,
@@ -1014,16 +1077,20 @@ def _resolve_deploy_handoff(
         text=True,
     )
     if push.returncode != 0:
+        status.fail(note="push failed")
         print(f"✗ Could not push resolved deploy branch origin/{branch}.")
         if push.stderr.strip():
             print(f"  {push.stderr.strip().splitlines()[0]}")
         return None
 
+    status.advance("sync live")
     changed = _fast_forward_live_deploy_checkout(git_cmd, repo, branch, pre_update_head, 1)
     if changed is None:
+        status.fail(note="live fast-forward failed")
         print(f"✗ Resolved branch pushed, but live checkout could not fast-forward to origin/{branch}.")
         return None
 
+    status.advance("cleanup")
     try:
         _deploy_handoff_marker_path().unlink()
     except OSError:
@@ -1037,6 +1104,7 @@ def _resolve_deploy_handoff(
     except Exception:
         logger.debug("Failed to remove resolved deploy handoff worktree", exc_info=True)
 
+    status.finish(note="resolved handoff")
     print(f"✓ Resolved deploy handoff, pushed origin/{branch}, and fast-forwarded live checkout.")
     return changed or 1
 

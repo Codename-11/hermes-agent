@@ -925,6 +925,10 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     assert ["git", "push", "origin", "HEAD:axiom"] in commands
     assert ["git", "merge", "--ff-only", "origin/axiom"] in commands
     out = capsys.readouterr().out
+    assert "prepare resolve" in out
+    assert "agent resolve" in out
+    assert "sync live" in out
+    assert "resolved handoff" in out
     assert "Resolved deploy handoff" in out
 
 
