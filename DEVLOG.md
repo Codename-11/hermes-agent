@@ -1,5 +1,25 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-25 — Add deploy update resolve/consume modes
+
+### Summary
+
+Added explicit deploy-branch update modes so operators can either authorize Hermes to resolve retained conflict handoffs unattended or keep client/Desktop installs in consume-only mode.
+
+### What changed
+
+- Added `hermes update --resolve` for deploy branches. It resumes an existing `.update_handoff.json` or auto-resolves conflicts encountered during the run by launching a non-interactive Hermes resolver in the retained worktree, validating no unmerged files/conflict markers remain, running focused checks, committing/pushing `HEAD:<deploy>`, fast-forwarding the live checkout, clearing the marker, and continuing the normal install/restart phase.
+- Added `hermes update --consume` for deploy branches. It only fast-forwards from `origin/<deploy>` and refuses to merge `upstream/main` from the current host, so Desktop/client installs can consume the server-produced artifact without accidentally becoming merge authority.
+- Enriched `.update_handoff.json` with schema, conflict files, report path, watch areas, focused checks, and ref heads.
+- Expanded deploy-branch recognition to include both `axiom` and `tgi` in CLI/banner update checks.
+- Updated fork contract, CLI reference docs, SYSTEM pointer, Obsidian runbook, and Hermes update skill guidance.
+
+### Verification
+
+- `python -m py_compile hermes_cli/axiom_update.py hermes_cli/main.py hermes_cli/subcommands/update.py hermes_cli/banner.py` → OK.
+- `python -m pytest -q -o addopts='' tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_update_check.py tests/hermes_cli/test_version_preview.py` → 90 passed.
+- `python -m hermes_cli.main update --help` → shows `--resolve` and `--consume`.
+
 ## 2026-06-18 — Fix Windows gateway update lock ordering
 
 ### Summary

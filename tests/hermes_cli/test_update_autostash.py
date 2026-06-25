@@ -775,6 +775,12 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
 
     monkeypatch.setattr(hermes_main.tempfile, "mkdtemp", lambda prefix: str(parent))
     monkeypatch.setattr(hermes_axiom_update, "_review_reports_dir", lambda: tmp_path / "reports")
+    marker = tmp_path / ".update_handoff.json"
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_deploy_handoff_marker_path",
+        lambda: marker,
+    )
     monkeypatch.setattr(
         hermes_axiom_update,
         "_call_llm_update_review",
@@ -830,6 +836,130 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     assert "LLM says: pause" in report_text
     assert "hermes_cli/main.py" in report_text
     assert "Deploy-branch-safe updater" in report_text
+    marker_text = marker.read_text(encoding="utf-8")
+    marker_payload = json.loads(marker_text)
+    assert marker_payload["schema"] == 2
+    assert marker_payload["conflict_files"] == ["hermes_cli/main.py"]
+    assert marker_payload["report_path"]
+    assert marker_payload["focused_checks"]
+
+
+def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "README.md").write_text("resolved\n", encoding="utf-8")
+    (worktree / "MERGE_HEAD").write_text("merge\n", encoding="utf-8")
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "axiom",
+                "reason": "merge into axiom failed.",
+                "worktree": str(worktree),
+                "conflict_files": ["README.md"],
+                "focused_checks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_deploy_handoff_marker_path",
+        lambda: marker,
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_update_resolver_agent",
+        lambda prompt, cwd: SimpleNamespace(returncode=0),
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = kwargs.get("cwd")
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "fetch", "upstream", "main", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "--diff-filter=U"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "add", "-A"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--cached", "--quiet"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=1)
+        if cmd == ["git", "rev-parse", "--git-path", "MERGE_HEAD"] and cwd == worktree:
+            return SimpleNamespace(stdout="MERGE_HEAD\n", stderr="", returncode=0)
+        if cmd == ["git", "commit", "--no-edit"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "push", "origin", "HEAD:axiom"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--ff-only", "origin/axiom"] and cwd == repo:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "oldhead..HEAD"] and cwd == repo:
+            return SimpleNamespace(stdout="2\n", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "remove", str(worktree), "--force"] and cwd == repo:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="axiom", pre_update_head="oldhead"
+    )
+
+    assert changed == 2
+    assert not marker.exists()
+    commands = [cmd for cmd, _ in calls]
+    assert ["git", "commit", "--no-edit"] in commands
+    assert ["git", "push", "origin", "HEAD:axiom"] in commands
+    assert ["git", "merge", "--ff-only", "origin/axiom"] in commands
+    out = capsys.readouterr().out
+    assert "Resolved deploy handoff" in out
+
+
+def test_deploy_branch_update_consume_only_does_not_merge_upstream(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return SimpleNamespace(stdout="5\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], tmp_path, "axiom", "oldhead", consume_only=True
+    )
+
+    assert changed == 0
+    commands = [cmd for cmd, _ in calls]
+    assert not any(cmd[:2] == ["git", "worktree"] for cmd in commands)
+    assert ["git", "merge", "--no-edit", "upstream/main"] not in commands
+    out = capsys.readouterr().out
+    assert "consume-only" in out
 
 
 # ---------------------------------------------------------------------------

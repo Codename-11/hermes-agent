@@ -310,6 +310,7 @@ from hermes_cli.axiom_update import (  # noqa: E402  (fork seam)
     _clean_managed_worktree,
     _completed_deploy_handoff_requires_post_update,
     _count_changed_from_pre_update,
+    _deploy_handoff_exists_for,
     _deploy_handoff_marker_path,
     _desktop_shortcut_exists,
     _detect_windows_gateway_launcher_instances,
@@ -318,6 +319,7 @@ from hermes_cli.axiom_update import (  # noqa: E402  (fork seam)
     _print_deploy_branch_handoff,
     _record_deploy_handoff,
     _remove_update_worktree,
+    _resolve_deploy_handoff,
     _run_deploy_branch_update,
     _short_git_ref,
     _sync_deploy_main_to_upstream,
@@ -4257,7 +4259,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
     print(f"Project: {PROJECT_ROOT}")
 
     # Show branch info for deploy branches
-    _DEPLOY_BRANCHES = {"axiom"}
+    _DEPLOY_BRANCHES = {"axiom", "tgi"}
     try:
         br_result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -6513,7 +6515,7 @@ OFFICIAL_REPO_URLS = {
 }
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
-DEPLOY_BRANCHES = {"axiom"}
+DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -9199,12 +9201,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
             )
 
-            deploy_commit_count = _run_deploy_branch_update(
-                git_cmd,
-                PROJECT_ROOT,
-                current_branch,
-                pre_update_head,
-            )
+            resolve_handoff = bool(getattr(args, "resolve", False))
+            consume_only = bool(getattr(args, "consume", False))
+            if resolve_handoff and consume_only:
+                print("✗ --resolve and --consume are mutually exclusive for deploy branches.")
+                return
+
+            if resolve_handoff and _deploy_handoff_exists_for(PROJECT_ROOT, current_branch):
+                deploy_commit_count = _resolve_deploy_handoff(
+                    git_cmd=git_cmd,
+                    repo=PROJECT_ROOT,
+                    branch=current_branch,
+                    pre_update_head=pre_update_head,
+                )
+            else:
+                deploy_commit_count = _run_deploy_branch_update(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    current_branch,
+                    pre_update_head,
+                    auto_resolve=resolve_handoff,
+                    consume_only=consume_only,
+                )
             if deploy_commit_count is None:
                 if auto_stash_ref is not None:
                     _restore_stashed_changes(

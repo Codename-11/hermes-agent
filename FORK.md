@@ -55,7 +55,7 @@ functions"*). The fork carried **+1623/−537** lines there, so nearly every
 upstream merge collided. Measured fork divergence at extraction time: 309
 fork-only commits; `main.py` touched by 31 of them.
 
-**What moved:** 15 genuinely fork-only functions (≈692 lines), all in the
+**What moved:** 17 imported seam helpers plus internal support functions (≈950 lines), all in the
 deploy-branch update domain — none exist upstream, so they carry with zero
 `main.py` merge surface:
 
@@ -63,6 +63,7 @@ deploy-branch update domain — none exist upstream, so they carry with zero
 _run_deploy_branch_update            _sync_deploy_main_to_upstream
 _validate_update_after_pull          _completed_deploy_handoff_requires_post_update
 _record_deploy_handoff               _deploy_handoff_marker_path
+_deploy_handoff_exists_for           _resolve_deploy_handoff
 _count_changed_from_pre_update       _print_deploy_branch_handoff
 _preserve_deploy_branch_stash        _remove_update_worktree
 _clean_managed_worktree              _short_git_ref
@@ -72,10 +73,10 @@ _detect_windows_gateway_launcher_instances
 
 Plus fork-only update metadata constants such as `DEPLOY_HANDOFF_FILE`, `UPDATE_REVIEW_DIR`, and `FORK_WATCH_AREAS`.
 
-**Conflict-review carry:** deploy-branch merge conflicts now automatically generate a visible operator review and full markdown report under `~/.hermes/update-reports/`. The LLM summary is best-effort/advisory only; if auxiliary LLM review fails, the updater prints and writes a deterministic brief, keeps the retained conflict worktree, and stops without mutating the live checkout.
+**Conflict-review / resolve carry:** deploy-branch merge conflicts automatically generate a visible operator review and full markdown report under `~/.hermes/update-reports/`. The LLM summary is best-effort/advisory only; if auxiliary LLM review fails, the updater prints and writes a deterministic brief, keeps the retained conflict worktree, and stops without mutating the live checkout. If the operator passes `hermes update --resolve`, the updater treats that as explicit authorization to run a non-interactive Hermes resolver in the retained worktree, validate no unmerged files/conflict markers remain, run matched focused checks, commit/push `HEAD:<deploy>`, fast-forward the live checkout, clear `.update_handoff.json`, and continue the normal install/restart phase. `hermes update --consume` is the opposite: consume only `origin/<deploy>` and refuse to merge `upstream/main` from that host.
 
 **Seam contract:**
-- `main.py` imports all 15 names from `hermes_cli.axiom_update` at module load
+- `main.py` imports the public seam helpers from `hermes_cli.axiom_update` at module load
   (one import block, just after the `subcommands.*` imports) and calls them at
   the original call sites unchanged (8 external seam sites; the rest are
   internal cross-calls that travel together).
@@ -244,7 +245,8 @@ Protected behavior:
 - Axiom deploy branch strategy remains explicit: upstream merges into `origin/axiom`; live checkout updates happen in a separate maintenance/update step.
 - `hermes update` / update checks understand fork deploy branches and do not incorrectly declare up-to-date by checking only `origin`.
 - Deploy branch updates are transactional and preserve rescue prompts for stash/merge conflicts.
-- Deploy-branch merge conflicts automatically print an `Update conflict review`, write a full markdown report under `~/.hermes/update-reports/`, and use LLM review only as a best-effort advisory layer with deterministic fallback. The updater must still stop and leave the live checkout untouched.
+- Deploy-branch merge conflicts automatically print an `Update conflict review`, write a full markdown report under `~/.hermes/update-reports/`, and use LLM review only as a best-effort advisory layer with deterministic fallback. Without `--resolve`, the updater must still stop and leave the live checkout untouched; with `--resolve`, it may run the resolver agent in the retained worktree, validate focused checks, push, fast-forward, and finish install/restart.
+- `hermes update --consume` on deploy branches consumes `origin/<deploy>` only and must not merge `upstream/main` from a non-authority host.
 - Update path can restart named profile gateway services without leaking profile env between processes.
 - Update path excludes systemd-managed dashboard/Desktop child processes from unsafe kill sweeps.
 - Windows update path pauses mapped gateway processes before the concurrent `hermes.exe` shim guard, so Scheduled-Task/manual gateways can release `venv\\Scripts\\hermes.exe` before dependency reinstall; unrelated REPL/Desktop backend processes still block unless `--force` is explicit.

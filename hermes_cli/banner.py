@@ -125,7 +125,7 @@ UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 _OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
-_DEPLOY_BRANCHES = {"axiom"}
+_DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
 def _canonical_github_remote(url: str | None) -> str:
