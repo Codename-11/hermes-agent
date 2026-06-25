@@ -435,6 +435,28 @@ Incoming upstream commits:
 """
 
 
+def _run_conflict_review_status(label: str, fn):
+    """Show a clean update status/spinner while expensive handoff prep runs."""
+    pipe = None
+    try:
+        from hermes_cli.update_ui import Pipeline
+
+        pipe = Pipeline([label])
+        pipe.start(label)
+    except Exception:
+        # Status rendering must never prevent the conflict handoff from being
+        # generated.  Fall back to running the wrapped operation directly.
+        logger.debug("Update conflict status spinner failed", exc_info=True)
+    try:
+        return fn()
+    finally:
+        if pipe is not None:
+            try:
+                pipe.finish(note="handoff ready")
+            except Exception:
+                logger.debug("Update conflict status spinner cleanup failed", exc_info=True)
+
+
 def _call_llm_update_review(review: dict[str, object]) -> tuple[str, str]:
     """Return (summary, error) for the best-effort LLM conflict review."""
     try:
@@ -591,7 +613,10 @@ def _generate_update_conflict_review(
         "incoming_commits": incoming_commits,
     }
     review["deterministic_summary"] = _deterministic_update_review_summary(review)
-    llm_summary, llm_error = _call_llm_update_review(review)
+    llm_summary, llm_error = _run_conflict_review_status(
+        "review conflict handoff",
+        lambda: _call_llm_update_review(review),
+    )
     review["llm_summary"] = llm_summary
     review["llm_error"] = llm_error
     report_path = _write_update_review_report(review)
@@ -868,6 +893,7 @@ Required local references to read before editing when present:
 - FORK.md
 - docs/axiom-fork-contract.md
 - ~/obsidian-vault/3. System/Operations/Hermes Axiom Sync Runbook.md
+- skill_view(name="hermes-update") when the skills tool is available
 
 Resolver contract:
 1. Work only inside the retained worktree above.
@@ -888,14 +914,10 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         sys.executable,
         "-m",
         "hermes_cli.main",
-        "chat",
-        "-Q",
-        "-q",
+        "-z",
         prompt,
         "-t",
-        "terminal,file,search",
-        "-s",
-        "hermes-update,software-engineering-workflows",
+        "terminal,file,search,skills",
     ]
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "HERMES_UPDATE_RESOLVE": "1"}
     return subprocess.run(cmd, cwd=worktree, env=env, text=True, timeout=timeout)

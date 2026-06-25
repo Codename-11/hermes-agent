@@ -1,5 +1,22 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-25 — Add conflict handoff status spinner and one-shot resolver agent
+
+### Summary
+
+Improved deploy-update conflict UX so the delay between an initial merge failure and the printed handoff is visible, and made the autonomous resolver subprocess use Hermes' scripted one-shot path instead of chat mode.
+
+### What changed
+
+- Wrapped best-effort LLM conflict review generation with the existing Unicode update pipeline spinner/status line (`review conflict handoff`). TTYs get a clean single-line spinner; non-TTY/gateway logs get plain progress lines and `handoff ready`.
+- Switched the `hermes update --resolve` resolver subprocess from `hermes chat -Q -q ...` to `hermes -z ...`, avoiding TUI/session UI paths entirely and producing only the final resolver response.
+- Added the `skills` toolset to the resolver subprocess and told it to load `hermes-update` via `skill_view` when available.
+
+### Verification
+
+- `python -m py_compile hermes_cli/axiom_update.py tests/hermes_cli/test_update_autostash.py` → OK.
+- `python -m pytest -q -o addopts='' tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py tests/hermes_cli/test_update_check.py tests/hermes_cli/test_version_preview.py` → 92 passed.
+
 ## 2026-06-25 — Add deploy update resolve/consume modes
 
 ### Summary

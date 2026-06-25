@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
@@ -925,6 +926,45 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     assert ["git", "merge", "--ff-only", "origin/axiom"] in commands
     out = capsys.readouterr().out
     assert "Resolved deploy handoff" in out
+
+
+def test_update_conflict_review_status_prints_plain_progress(capsys):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    result = getattr(hermes_axiom_update, "_run_conflict_review_status")(
+        "review conflict handoff",
+        lambda: ("summary", ""),
+    )
+
+    assert result == ("summary", "")
+    out = capsys.readouterr().out
+    assert "review conflict handoff" in out
+    assert "handoff ready" in out
+
+
+def test_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+
+    result = hermes_axiom_update._run_update_resolver_agent("resolve this", tmp_path)
+
+    assert result.returncode == 0
+    cmd, kwargs = calls[0]
+    assert cmd[:3] == [sys.executable, "-m", "hermes_cli.main"]
+    assert "-z" in cmd
+    assert "chat" not in cmd
+    assert "-Q" not in cmd
+    assert cmd[cmd.index("-z") + 1] == "resolve this"
+    assert "terminal,file,search,skills" in cmd
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["env"]["HERMES_UPDATE_RESOLVE"] == "1"
 
 
 def test_deploy_branch_update_consume_only_does_not_merge_upstream(
