@@ -16,6 +16,7 @@ Two things live here so `main.cmd_update` can stay focused on git/pip logic:
 from __future__ import annotations
 
 import datetime as _dt
+import shutil
 import subprocess
 import sys
 import threading
@@ -39,6 +40,107 @@ def _stdout_is_tty() -> bool:
         return bool(stream.isatty())
     except Exception:
         return False
+
+
+class StatusLine:
+    """Short-lived single-line loader for slow update substeps.
+
+    Unlike :class:`Pipeline`, this renders only the current activity.  Animated
+    frames are written directly to the real TTY underneath ``_UpdateOutputStream``
+    instead of through ``sys.stdout`` so carriage-return redraws are not mirrored
+    into ``~/.hermes/logs/update.log`` or gateway captures.  The durable log gets
+    only final success/failure notes.  Non-TTY callers get sparse plain progress
+    lines.
+    """
+
+    def __init__(self, *, interval: float = _FRAME_INTERVAL):
+        self._stream = getattr(sys.stdout, "_original", sys.stdout)
+        self._tty = self._stream_is_tty(self._stream)
+        self._interval = interval
+        self._text = ""
+        self._frame = 0
+        self._stopped = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._started = False
+
+    @property
+    def is_interactive(self) -> bool:
+        return self._tty
+
+    def start(self, text: str) -> None:
+        self._set_text(text)
+        if not self._tty:
+            print(f"→ {text}", flush=True)
+            return
+        if self._started:
+            return
+        self._started = True
+        self._thread = threading.Thread(target=self._animate, daemon=True)
+        self._thread.start()
+
+    def update(self, text: str) -> None:
+        self._set_text(text)
+        if not self._tty:
+            print(f"→ {text}", flush=True)
+
+    def success(self, *, note: str = "") -> None:
+        self._stop()
+        if note:
+            print(f"✓ {note}", flush=True)
+
+    def fail(self, *, note: str = "") -> None:
+        self._stop()
+        if note:
+            print(f"✗ {note}", flush=True)
+
+    def clear(self) -> None:
+        if self._tty:
+            self._write_raw("\r\033[2K")
+
+    def _set_text(self, text: str) -> None:
+        with self._lock:
+            self._text = str(text)
+
+    @staticmethod
+    def _stream_is_tty(stream) -> bool:
+        try:
+            return bool(stream.isatty())
+        except Exception:
+            return False
+
+    def _animate(self) -> None:
+        while not self._stopped.is_set():
+            with self._lock:
+                text = self._text
+            frame = _SPINNER_FRAMES[self._frame % len(_SPINNER_FRAMES)]
+            self._write_raw("\r\033[2K" + self._fit_line(f"{frame} {text}"))
+            self._frame += 1
+            if self._stopped.wait(self._interval):
+                break
+
+    def _fit_line(self, line: str) -> str:
+        width = max(20, shutil.get_terminal_size(fallback=(80, 20)).columns)
+        if len(line) <= width - 1:
+            return line
+        return line[: max(1, width - 2)] + "…"
+
+    def _write_raw(self, data: str) -> None:
+        try:
+            self._stream.write(data)
+            self._stream.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            self._tty = False
+        except Exception:
+            self._tty = False
+
+    def _stop(self) -> None:
+        if self._stopped.is_set():
+            return
+        self._stopped.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(self._interval * 4, 0.05))
+        self.clear()
 
 
 class Pipeline:

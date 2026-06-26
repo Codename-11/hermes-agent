@@ -436,15 +436,7 @@ Incoming upstream commits:
 
 
 class _UpdateStatus:
-    """Sparse deploy-update progress reporter.
-
-    Do not use the animated update Pipeline here.  Retained handoff resolution
-    can sit in a single phase for minutes while the resolver agent works.  In
-    some real TTY/relay/log combinations carriage-return animation is captured
-    verbatim, which turns a helpful spinner into repeated-line spam.  This
-    reporter prints one line per phase transition instead: boring, readable,
-    and impossible to spam while a phase is genuinely slow.
-    """
+    """Deploy-update progress wrapper with TTY status line + log-safe fallback."""
 
     def __init__(self, phases: list[str], *, label: str = ""):
         self._phases = phases
@@ -452,6 +444,17 @@ class _UpdateStatus:
         self._active = ""
         self._done = False
         self._completed: set[str] = set()
+        try:
+            from hermes_cli.update_ui import StatusLine
+
+            self._line = StatusLine()
+        except Exception:
+            logger.debug("Update status line unavailable", exc_info=True)
+            self._line = None
+
+    @property
+    def _interactive(self) -> bool:
+        return bool(self._line is not None and self._line.is_interactive)
 
     def _format(self, phase: str) -> str:
         prefix = f"{self._label}: " if self._label else ""
@@ -461,10 +464,18 @@ class _UpdateStatus:
         if phase not in self._phases:
             return
         self._active = phase
-        print(f"→ {self._format(phase)}", flush=True)
+        if self._line is not None:
+            self._line.start(self._format(phase))
+        else:
+            print(f"→ {self._format(phase)}", flush=True)
 
     def advance(self, phase: str) -> None:
         if self._done or phase not in self._phases:
+            return
+        if self._interactive:
+            self._active = phase
+            if self._line is not None:
+                self._line.update(self._format(phase))
             return
         if self._active and self._active not in self._completed:
             self._completed.add(self._active)
@@ -476,6 +487,10 @@ class _UpdateStatus:
         if self._done:
             return
         self._done = True
+        if self._interactive:
+            if self._line is not None:
+                self._line.success(note=note)
+            return
         if self._active and self._active not in self._completed:
             self._completed.add(self._active)
             print(f"  ✓ {self._format(self._active)}", flush=True)
@@ -486,6 +501,10 @@ class _UpdateStatus:
         if self._done:
             return
         self._done = True
+        if self._interactive:
+            if self._line is not None:
+                self._line.fail(note=note or self._format(self._active))
+            return
         if self._active:
             suffix = f" — {note}" if note else ""
             print(f"  ✗ {self._format(self._active)}{suffix}", flush=True)
