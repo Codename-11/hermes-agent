@@ -3665,8 +3665,15 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, f"/voice {mode}".strip())
 
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
-        async def slash_update(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/update", "Update initiated~")
+        @discord.app_commands.describe(mode="Update mode: normal, resolve a retained handoff, or consume origin only")
+        @discord.app_commands.choices(mode=[
+            discord.app_commands.Choice(name="normal — run the standard update flow", value="normal"),
+            discord.app_commands.Choice(name="resolve — resolve a retained deploy handoff", value="resolve"),
+            discord.app_commands.Choice(name="consume — fast-forward from origin only", value="consume"),
+        ])
+        async def slash_update(interaction: discord.Interaction, mode: str = "normal"):
+            mode_arg = "" if (mode or "normal") == "normal" else f" {mode}"
+            await self._run_simple_slash(interaction, f"/update{mode_arg}", "Update initiated~")
 
         @tree.command(name="restart", description="Gracefully restart the Hermes gateway")
         async def slash_restart(interaction: discord.Interaction):

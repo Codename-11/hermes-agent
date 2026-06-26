@@ -3986,6 +3986,35 @@ class GatewaySlashCommandsMixin:
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+
+        raw_update_args = (event.get_command_args() or "").strip()
+        update_mode = "normal"
+        update_flags: list[str] = []
+        if raw_update_args:
+            try:
+                tokens = [token.lower() for token in shlex.split(raw_update_args)]
+            except ValueError as exc:
+                return f"✗ Could not parse /update arguments: {exc}"
+            for token in tokens:
+                if token in {"normal", "default", "standard"}:
+                    continue
+                if token in {"resolve", "--resolve"}:
+                    if update_mode == "consume":
+                        return "✗ /update resolve and consume modes are mutually exclusive."
+                    update_mode = "resolve"
+                    continue
+                if token in {"consume", "--consume"}:
+                    if update_mode == "resolve":
+                        return "✗ /update resolve and consume modes are mutually exclusive."
+                    update_mode = "consume"
+                    continue
+                return "✗ Unknown /update mode. Use `/update`, `/update resolve`, or `/update consume`."
+            if update_mode == "resolve":
+                update_flags.append("--resolve")
+            elif update_mode == "consume":
+                update_flags.append("--consume")
+
+        update_argv = ["update", "--gateway", *update_flags]
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -3994,6 +4023,7 @@ class GatewaySlashCommandsMixin:
             "user_id": event.source.user_id,
             "session_key": session_key,
             "timestamp": datetime.now().isoformat(),
+            "update_mode": update_mode,
         }
         if event.source.thread_id:
             pending["thread_id"] = event.source.thread_id
@@ -4054,7 +4084,7 @@ class GatewaySlashCommandsMixin:
                     [
                         sys.executable, "-c", helper,
                         str(output_path), str(exit_code_path),
-                        *hermes_cmd, "update", "--gateway",
+                        *hermes_cmd, *update_argv,
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -4062,8 +4092,9 @@ class GatewaySlashCommandsMixin:
                 )
             else:
                 hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
+                update_argv_str = " ".join(shlex.quote(part) for part in update_argv)
                 update_cmd = (
-                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
+                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} {update_argv_str}"
                     f" > {shlex.quote(str(output_path))} 2>&1; "
                     # Avoid `status=$?`: `status` is a read-only special parameter
                     # in zsh, and this command string is copied/reused in macOS/zsh
