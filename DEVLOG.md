@@ -8,8 +8,8 @@ Improved deploy-update conflict UX so the delay between an initial merge failure
 
 ### What changed
 
-- Wrapped best-effort LLM conflict review generation with the existing Unicode update pipeline spinner/status line (`review conflict handoff`). TTYs get a clean single-line spinner; non-TTY/gateway logs get plain progress lines and `handoff ready`.
-- Added the same status-line coverage to `hermes update --resolve` retained-handoff execution: prepare, agent resolve, validate, focused checks, commit, push, live sync, and cleanup now each advance the spinner/plain progress line so every long wait has a visible phase.
+- Wrapped best-effort LLM conflict review generation with sparse Unicode progress lines (`review conflict handoff` → `handoff ready`). Avoided background spinner animation here because long waits can make carriage-return animation appear as TTY/log spam in real relay/terminal combinations.
+- Added the same sparse progress coverage to `hermes update --resolve` retained-handoff execution: prepare, agent resolve, validate, focused checks, commit, push, live sync, and cleanup now each print a single transition line so every long wait has a visible phase without animation spam.
 - Switched the `hermes update --resolve` resolver subprocess from `hermes chat -Q -q ...` to `hermes -z ...`, avoiding TUI/session UI paths entirely and producing only the final resolver response.
 - Added the `skills` toolset to the resolver subprocess and told it to load `hermes-update` via `skill_view` when available.
 

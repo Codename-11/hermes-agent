@@ -436,51 +436,61 @@ Incoming upstream commits:
 
 
 class _UpdateStatus:
-    """Small wrapper around the update Pipeline with a plain-print fallback."""
+    """Sparse deploy-update progress reporter.
+
+    Do not use the animated update Pipeline here.  Retained handoff resolution
+    can sit in a single phase for minutes while the resolver agent works.  In
+    some real TTY/relay/log combinations carriage-return animation is captured
+    verbatim, which turns a helpful spinner into repeated-line spam.  This
+    reporter prints one line per phase transition instead: boring, readable,
+    and impossible to spam while a phase is genuinely slow.
+    """
 
     def __init__(self, phases: list[str], *, label: str = ""):
         self._phases = phases
         self._label = label
-        self._pipe = None
+        self._active = ""
         self._done = False
-        try:
-            from hermes_cli.update_ui import Pipeline
+        self._completed: set[str] = set()
 
-            self._pipe = Pipeline(phases, label=label)
-        except Exception:
-            logger.debug("Update status pipeline unavailable", exc_info=True)
+    def _format(self, phase: str) -> str:
+        prefix = f"{self._label}: " if self._label else ""
+        return f"{prefix}{phase}"
 
     def start(self, phase: str) -> None:
-        if self._pipe is not None:
-            self._pipe.start(phase)
-        else:
-            prefix = f"{self._label}: " if self._label else ""
-            print(f"→ {prefix}{phase}", flush=True)
+        if phase not in self._phases:
+            return
+        self._active = phase
+        print(f"→ {self._format(phase)}", flush=True)
 
     def advance(self, phase: str) -> None:
-        if self._pipe is not None:
-            self._pipe.advance(phase)
-        else:
-            prefix = f"{self._label}: " if self._label else ""
-            print(f"→ {prefix}{phase}", flush=True)
+        if self._done or phase not in self._phases:
+            return
+        if self._active and self._active not in self._completed:
+            self._completed.add(self._active)
+            print(f"  ✓ {self._format(self._active)}", flush=True)
+        self._active = phase
+        print(f"→ {self._format(phase)}", flush=True)
 
     def finish(self, *, note: str = "") -> None:
         if self._done:
             return
         self._done = True
-        if self._pipe is not None:
-            self._pipe.finish(note=note)
-        elif note:
+        if self._active and self._active not in self._completed:
+            self._completed.add(self._active)
+            print(f"  ✓ {self._format(self._active)}", flush=True)
+        if note:
             print(f"  {note}", flush=True)
 
     def fail(self, *, note: str = "") -> None:
         if self._done:
             return
         self._done = True
-        if self._pipe is not None:
-            self._pipe.fail(note=note)
+        if self._active:
+            suffix = f" — {note}" if note else ""
+            print(f"  ✗ {self._format(self._active)}{suffix}", flush=True)
         elif note:
-            print(f"  {note}", flush=True)
+            print(f"  ✗ {note}", flush=True)
 
 
 def _run_conflict_review_status(label: str, fn):

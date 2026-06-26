@@ -930,6 +930,8 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     assert "sync live" in out
     assert "resolved handoff" in out
     assert "Resolved deploy handoff" in out
+    assert "\r" not in out
+    assert not any(frame in out for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 
 def test_update_conflict_review_status_prints_plain_progress(capsys):
