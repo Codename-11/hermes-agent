@@ -240,6 +240,118 @@ class TestUpdateCommandGatewayFlag:
         assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
+    @pytest.mark.asyncio
+    async def test_resolve_mode_spawns_with_resolve_flag(self, tmp_path):
+        """/update resolve maps to hermes update --gateway --resolve."""
+        runner = _make_runner()
+        event = _make_event("/update resolve")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        call_args = mock_popen.call_args[0][0]
+        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
+        assert "update --gateway --resolve" in cmd_string
+        assert "--consume" not in cmd_string
+        pending = json.loads((hermes_home / ".update_pending.json").read_text())
+        assert pending["update_mode"] == "resolve"
+        assert "stream progress" in result
+
+    @pytest.mark.asyncio
+    async def test_consume_mode_spawns_with_consume_flag(self, tmp_path):
+        """/update --consume maps to hermes update --gateway --consume."""
+        runner = _make_runner()
+        event = _make_event("/update --consume")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        call_args = mock_popen.call_args[0][0]
+        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
+        assert "update --gateway --consume" in cmd_string
+        assert "--resolve" not in cmd_string
+        pending = json.loads((hermes_home / ".update_pending.json").read_text())
+        assert pending["update_mode"] == "consume"
+        assert "stream progress" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_conflicting_update_modes(self, tmp_path):
+        """Resolve and consume cannot be requested together."""
+        runner = _make_runner()
+        event = _make_event("/update resolve consume")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "mutually exclusive" in result
+        mock_popen.assert_not_called()
+        assert not (hermes_home / ".update_pending.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_windows_resolve_mode_passes_argv_list(self, tmp_path):
+        """Windows helper receives --resolve as an argv part, not shell text."""
+        runner = _make_runner()
+        event = _make_event("/update --resolve")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.windows_detach_popen_kwargs", return_value={}), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        call_args = mock_popen.call_args[0][0]
+        assert call_args[-3:] == ["update", "--gateway", "--resolve"]
+        assert "stream progress" in result
+
 
 # ---------------------------------------------------------------------------
 # _watch_update_progress — output streaming
