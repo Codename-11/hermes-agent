@@ -27,7 +27,7 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
+    cache_file.write_text(json.dumps({"schema": 2, "ts": time.time(), "behind": 3, "ver": __version__}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
@@ -86,15 +86,74 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
 
-    mock_result = MagicMock(returncode=0, stdout="5\n")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/Codename-11/hermes-agent.git\n")
+        if cmd == ["git", "fetch", "origin", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "remote", "get-url", "upstream"]:
+            return MagicMock(returncode=1, stdout="")
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return MagicMock(returncode=0, stdout="main\n")
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/main"]:
+            return MagicMock(returncode=0, stdout="5\n")
+        raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         result = check_for_updates()
 
     assert result == 5
-    # origin probe + is-shallow probe + git fetch + git rev-list
-    assert mock_run.call_count == 4
+    assert ["git", "remote", "get-url", "origin"] in calls
+    assert ["git", "rev-parse", "--is-shallow-repository"] in calls
+    assert ["git", "fetch", "origin", "--quiet"] in calls
+    assert ["git", "remote", "get-url", "upstream"] in calls
+    assert ["git", "rev-parse", "--abbrev-ref", "HEAD"] in calls
+    assert ["git", "rev-list", "--count", "HEAD..origin/main"] in calls
+
+
+def test_check_for_updates_deploy_branch_uses_origin_deploy_baseline(tmp_path, monkeypatch):
+    """Deploy branches compare against origin/<branch>, not stale local main."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/Codename-11/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n")
+        if cmd == ["git", "fetch", "origin", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "remote", "get-url", "upstream"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return MagicMock(returncode=0, stdout="axiom\n")
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return MagicMock(returncode=0, stdout="2\n")
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return MagicMock(returncode=0, stdout="3\n")
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            raise AssertionError("deploy branch status must not use local main")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(banner, "__file__", str(repo_dir / "hermes_cli" / "banner.py"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        assert banner.check_for_updates() == 5
+
+    assert ["git", "rev-list", "--count", "HEAD..origin/axiom"] in calls
+    assert ["git", "rev-list", "--count", "origin/axiom..upstream/main"] in calls
 
 
 def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):

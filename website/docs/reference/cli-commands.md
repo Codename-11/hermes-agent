@@ -1457,7 +1457,7 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
+hermes update [--gateway] [--check] [--resolve] [--consume] [--no-backup] [--backup] [--yes]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
@@ -1468,6 +1468,8 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed 
 |--------|-------------|
 | `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
 | `--check` | Check whether an update is available without pulling, installing dependencies, or restarting anything. |
+| `--resolve` | Deploy branches only: autonomously resolve a retained update handoff, or auto-resolve conflicts encountered during this update, then push and finish the install/restart phase. |
+| `--consume` | Deploy branches only: only consume `origin/<branch>`; do not merge `upstream/main` into the deploy branch from this host. |
 | `--no-backup` | Skip the pre-update backup for this run, even if `updates.pre_update_backup` is enabled in `config.yaml`. |
 | `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `updates.pre_update_backup: true` in `config.yaml`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
@@ -1478,7 +1480,7 @@ Additional behavior:
 - **Local source changes.** For git installs, dirty tracked files and untracked files are auto-stashed before branch checkout or pull (`git stash push --include-untracked`). Interactive terminal updates ask before restoring the stash. Non-interactive updates restore it by default; set `updates.non_interactive_local_changes: discard` only on managed installs where local source edits should be thrown away after a successful pull. If stash restore conflicts or the pull fails, the stash is left in place for manual recovery.
 - **npm lockfile churn.** Before stashing or switching branches, Hermes makes a best-effort cleanup of tracked `package-lock.json` diffs produced by npm install/build steps. Commit or manually stash intentional lockfile edits before running `hermes update`.
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
-- **Patched deploy branches.** If you maintain a long-lived deploy branch with local runtime patches, keep `main` aligned with upstream and commit those patches on the deploy branch. When syncing upstream, prefer upstream code if it satisfies the same outcome, keep focused tests for the behavior you depend on, and reapply any preserved update stash before committing and pushing the deploy branch.
+- **Patched deploy branches.** If you maintain a long-lived deploy branch with local runtime patches, keep `main` aligned with upstream and commit those patches on the deploy branch. When syncing upstream, prefer upstream code if it satisfies the same outcome, keep focused tests for the behavior you depend on, and reapply any preserved update stash before committing and pushing the deploy branch. Use `--resolve` only when this host is allowed to resolve and publish a retained deploy handoff; use `--consume` on client installs that should only fast-forward from the shared deploy branch.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
 

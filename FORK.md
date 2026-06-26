@@ -86,12 +86,19 @@ Commits:
 - `f348dc1b1` — `fix(update): harden TGI deploy branch reconciliation`
 - `a400363a5` — `docs: document patched deploy branch sync`
 - `47bbd3eed` — `test(update): force stale web dist in build assertion`
+- This commit — `fix(update): port deploy resolver to TGI`
 
 Primary files:
 
+- `hermes_cli/banner.py` — deploy/upstream update check and `hermes version` preview ranges
 - `hermes_cli/fork_update.py` — fork-owned deploy update helper implementation
+- `hermes_cli/update_ui.py` — update progress/status helpers used by deploy handoff review and resolve output
 - `hermes_cli/main.py` — thin import/call-site seam only
+- `hermes_cli/subcommands/update.py`
 - `tests/hermes_cli/test_update_autostash.py`
+- `tests/hermes_cli/test_update_ui.py`
+- `tests/hermes_cli/test_update_check.py`
+- `tests/hermes_cli/test_version_preview.py`
 - `tests/hermes_cli/test_cmd_update.py`
 - `AGENTS.md`
 - `website/docs/getting-started/updating.md`
@@ -101,9 +108,10 @@ Why TGI needs it:
 
 - The live runtime runs from `tgi`, not a clean upstream `main` checkout.
 - A normal update that switches or resets to `main` would drop TGI Slack/runtime patches.
-- Update conflicts must leave the live checkout untouched and hand off a retained temp worktree for manual resolution.
+- Update conflicts must leave the live checkout untouched and hand off a retained temp worktree for manual or explicitly authorized agentic resolution.
 - The helper implementation lives in `hermes_cli/fork_update.py` so upstream churn in `hermes_cli/main.py` only sees a small import seam.
 - Dashboard web builds must install devDependencies even when the runtime environment exports `NODE_ENV=production`, otherwise `typescript`/`vite` can be omitted and stale dashboard assets may survive an update.
+- CLI/Desktop-facing update checks must explain both deploy branch freshness (`HEAD..origin/tgi`) and upstream work not yet merged into the deploy artifact (`origin/tgi..upstream/main`).
 
 Required behavior:
 
@@ -111,6 +119,11 @@ Required behavior:
 - Fetch/sync upstream safely.
 - Merge upstream into a temp worktree based on `origin/tgi`.
 - On conflict, write/update the handoff marker, generate a human-readable update conflict review in `~/.hermes/update-reports/`, attempt a best-effort LLM operator brief without mutating code, and do not damage the live checkout.
+- `hermes update --resolve` may resume an existing handoff or immediately resolve a newly created handoff after safety gates pass, then validate, commit, push `HEAD:tgi`, fast-forward the live checkout, and clean the retained worktree.
+- `hermes update --consume` only fast-forwards from `origin/tgi`; it never merges `upstream/main` from that host, which is useful for Desktop/client installs that should not act as merge authority.
+- Deploy handoff progress must remain scrollback-safe: persistent phase lines only, no carriage-return spinner frames or ANSI clear-line output.
+- Recover the common push race where another TGI host advances `origin/tgi` while an update is preparing its temp merge; retry once when reconciliation is safe before falling back to a handoff.
+- `hermes version` should show the deploy branch and preview both pending deploy-branch commits and pending upstream commits.
 - The LLM conflict review is always shown for deploy-branch merge conflicts when available; if the LLM path fails, the updater prints a deterministic review excerpt and still stops safely for human resolution.
 - After manual push to `origin/tgi`, rerunning `hermes update --yes` fast-forwards live cleanly and refreshes install state.
 
@@ -130,7 +143,9 @@ Focused tests:
 ```bash
 venv/bin/python -m pytest -o 'addopts=' -q \
   tests/hermes_cli/test_update_autostash.py \
+  tests/hermes_cli/test_update_ui.py \
   tests/hermes_cli/test_update_check.py \
+  tests/hermes_cli/test_version_preview.py \
   tests/hermes_cli/test_cmd_update.py \
   tests/hermes_cli/test_update_interrupted_recovery.py
 ```

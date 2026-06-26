@@ -309,11 +309,13 @@ from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.fork_update import (  # noqa: E402  (fork seam)
     _completed_deploy_handoff_requires_post_update,
     _count_changed_from_pre_update,
+    _deploy_handoff_exists_for,
     _deploy_handoff_marker_path,
     _preserve_deploy_branch_stash,
     _print_deploy_branch_handoff,
     _record_deploy_handoff,
     _remove_update_worktree,
+    _resolve_deploy_handoff,
     _run_deploy_branch_update,
     _short_git_ref,
     _sync_deploy_main_to_upstream,
@@ -4340,6 +4342,21 @@ def _print_version_info(*, check_updates: bool = True) -> None:
     print(format_banner_version_label())
     print(f"Project: {PROJECT_ROOT}")
 
+    # Show branch info for deploy branches
+    _DEPLOY_BRANCHES = {"axiom", "tgi"}
+    try:
+        br_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=str(PROJECT_ROOT),
+        )
+        current_branch = br_result.stdout.strip() if br_result.returncode == 0 else None
+        if current_branch and current_branch in _DEPLOY_BRANCHES:
+            print(f"Branch: {current_branch} (deploy)")
+        elif current_branch and current_branch != "main":
+            print(f"Branch: {current_branch}")
+    except Exception:
+        pass
+
     # Show Python version
     print(f"Python: {sys.version.split()[0]}")
 
@@ -4371,6 +4388,23 @@ def _print_version_info(*, check_updates: bool = True) -> None:
                 f"Update available: {behind} {commits_word} behind — "
                 f"run '{recommended_update_command()}'"
             )
+            # Preview digest — walks the pending commit range and prints a
+            # categorized top-10-per-bucket view so the operator can decide
+            # whether to update right now.  Opt out with HERMES_VERSION_NO_PREVIEW=1.
+            if os.environ.get("HERMES_VERSION_NO_PREVIEW") != "1":
+                try:
+                    from hermes_cli.banner import get_update_preview_ranges
+                    from hermes_cli.update_ui import compute_pending_digest
+
+                    for base, target, title in get_update_preview_ranges(PROJECT_ROOT):
+                        digest = compute_pending_digest(
+                            PROJECT_ROOT, base, target,
+                            title=title,
+                        )
+                        if digest:
+                            print(digest)
+                except Exception:
+                    pass  # preview is best-effort — never fail `hermes version`
         elif behind == 0:
             print("Up to date")
     except Exception:
@@ -9349,12 +9383,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
             )
 
-            deploy_commit_count = _run_deploy_branch_update(
-                git_cmd,
-                PROJECT_ROOT,
-                current_branch,
-                pre_update_head,
-            )
+            resolve_handoff = bool(getattr(args, "resolve", False))
+            consume_only = bool(getattr(args, "consume", False))
+            if resolve_handoff and consume_only:
+                print("✗ --resolve and --consume are mutually exclusive for deploy branches.")
+                return
+
+            if resolve_handoff and _deploy_handoff_exists_for(PROJECT_ROOT, current_branch):
+                deploy_commit_count = _resolve_deploy_handoff(
+                    git_cmd=git_cmd,
+                    repo=PROJECT_ROOT,
+                    branch=current_branch,
+                    pre_update_head=pre_update_head,
+                )
+            else:
+                deploy_commit_count = _run_deploy_branch_update(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    current_branch,
+                    pre_update_head,
+                    auto_resolve=resolve_handoff,
+                    consume_only=consume_only,
+                )
             if deploy_commit_count is None:
                 if auto_stash_ref is not None:
                     _restore_stashed_changes(
