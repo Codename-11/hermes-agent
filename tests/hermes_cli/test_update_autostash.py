@@ -1786,10 +1786,75 @@ def test_tgi_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     result = hermes_fork_update._run_update_resolver_agent("resolve this", tmp_path)
 
     assert result.returncode == 0
-    cmd = calls[0][0]
+    cmd, kwargs = calls[0]
     assert "-z" in cmd
     assert "chat" not in cmd
     assert "terminal,file,search,skills" in cmd
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["env"]["HERMES_UPDATE_RESOLVE"] == "1"
+    assert kwargs["capture_output"] is True
+
+
+def test_tgi_deploy_handoff_resolve_suppresses_child_success_before_validation(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    jobs = worktree / "cron" / "jobs.py"
+    jobs.parent.mkdir(parents=True)
+    jobs.write_text("<<<<<<< ours\nold\n=======\nnew\n>>>>>>> theirs\n", encoding="utf-8")
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "tgi",
+                "reason": "merge into tgi failed.",
+                "worktree": str(worktree),
+                "conflict_files": ["cron/jobs.py"],
+                "focused_checks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_run_update_resolver_agent",
+        lambda prompt, cwd: SimpleNamespace(
+            returncode=0,
+            stdout="Ready for the parent updater to validate, commit, push, fast-forward the live checkout.\n",
+            stderr="",
+        ),
+    )
+
+    def fake_run(cmd, **kwargs):
+        cwd = kwargs.get("cwd")
+        if cmd == ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "fetch", "upstream", "main", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "--diff-filter=U"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+
+    changed = hermes_fork_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="tgi", pre_update_head="oldhead"
+    )
+
+    assert changed is None
+    out = capsys.readouterr().out
+    assert "Ready for the parent updater" not in out
+    assert "conflict markers remain" in out
+    assert "Resolver left conflict markers in files" in out
+    assert "cron/jobs.py" in out
 
 
 def test_tgi_deploy_branch_update_consume_only_does_not_merge_upstream(

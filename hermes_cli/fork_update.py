@@ -933,7 +933,12 @@ Do not push or run `hermes update` yourself; the parent updater will validate, c
 
 
 def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.CompletedProcess:
-    """Run a non-interactive Hermes resolver session in the retained worktree."""
+    """Run a non-interactive Hermes resolver session in the retained worktree.
+
+    The parent updater owns user-facing progress and validation. Capture the
+    child agent's transcript so optimistic final self-reports do not appear as
+    authoritative status before the parent has verified the worktree.
+    """
     timeout = int(os.environ.get("HERMES_UPDATE_RESOLVE_TIMEOUT", "3600") or "3600")
     cmd = [
         sys.executable,
@@ -945,7 +950,14 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         "terminal,file,search,skills",
     ]
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "HERMES_UPDATE_RESOLVE": "1"}
-    return subprocess.run(cmd, cwd=worktree, env=env, text=True, timeout=timeout)
+    return subprocess.run(
+        cmd,
+        cwd=worktree,
+        env=env,
+        text=True,
+        timeout=timeout,
+        capture_output=True,
+    )
 
 
 def _resolve_deploy_handoff(
