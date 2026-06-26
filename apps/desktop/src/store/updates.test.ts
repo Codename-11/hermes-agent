@@ -53,6 +53,7 @@ const {
   $updateOverlayOpen,
   resetUpdateApplyState
 } = await import('./updates')
+
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -204,6 +205,7 @@ describe('checkBackendUpdates', () => {
 
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
     expect(result?.behind).toBe(2)
+    expect(result?.updateAvailable).toBe(true)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.deployBranch).toBe('origin/axiom')
     expect(result?.deployBehind).toBe(0)
@@ -212,6 +214,25 @@ describe('checkBackendUpdates', () => {
     expect(result?.backendMessage).toContain('upstream commits')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+  })
+
+  it('preserves backend update_available when the backend cannot count commits', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'nixos',
+      current_version: '0.16.0',
+      behind: -1,
+      update_available: true,
+      can_apply: false,
+      update_command: 'managed outside dashboard',
+      message: 'Update available.'
+    })
+
+    const result = await checkBackendUpdates()
+
+    expect(result?.behind).toBe(0)
+    expect(result?.updateAvailable).toBe(true)
+    expect(result?.targetSha).toBe('backend:0.16.0')
   })
 
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
@@ -358,7 +379,15 @@ describe('applyBackendUpdate recovery', () => {
     checkHermesUpdateSpy.mockReset()
     updateHermesSpy.mockReset()
     getActionStatusSpy.mockReset()
-    $backendUpdateApply.set({ applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] })
+    $backendUpdateApply.set({
+      applying: false,
+      stage: 'idle',
+      message: '',
+      percent: null,
+      error: null,
+      command: null,
+      log: []
+    })
     vi.useFakeTimers()
   })
 
@@ -369,7 +398,15 @@ describe('applyBackendUpdate recovery', () => {
   it('waits for the backend to return after the restart drops the connection, then clears the overlay', async () => {
     updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
     getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
-    checkHermesUpdateSpy.mockResolvedValue({ install_method: 'git', current_version: '0.16.0', behind: 0, update_available: false, can_apply: true, update_command: 'hermes update', message: null })
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
 
     const promise = applyBackendUpdate()
     await vi.advanceTimersByTimeAsync(5000)

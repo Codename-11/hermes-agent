@@ -479,28 +479,33 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [artifacts])
 
-  const openArtifact = useCallback(async (artifact: ArtifactRecord) => {
-    try {
-      if (
-        artifact.kind !== 'link' &&
-        isRemoteGateway() &&
-        isGatewayLocalMediaPath(artifact.value) &&
-        window.hermesDesktop?.openRemoteFile
-      ) {
-        await window.hermesDesktop.openRemoteFile({ path: artifact.value, profile: artifact.profile ?? null })
-        return
-      }
+  const openArtifact = useCallback(
+    async (artifact: ArtifactRecord) => {
+      try {
+        if (
+          artifact.kind !== 'link' &&
+          isRemoteGateway() &&
+          isGatewayLocalMediaPath(artifact.value) &&
+          window.hermesDesktop?.openRemoteFile
+        ) {
+          await window.hermesDesktop.openRemoteFile({ path: artifact.value, profile: artifact.profile ?? null })
 
-      const href = artifact.href
-      if (window.hermesDesktop?.openExternal) {
-        await window.hermesDesktop.openExternal(href)
-      } else {
-        window.open(href, '_blank', 'noopener,noreferrer')
+          return
+        }
+
+        const href = artifact.href
+
+        if (window.hermesDesktop?.openExternal) {
+          await window.hermesDesktop.openExternal(href)
+        } else {
+          window.open(href, '_blank', 'noopener,noreferrer')
+        }
+      } catch (err) {
+        notifyError(err, a.openFailed)
       }
-    } catch (err) {
-      notifyError(err, a.openFailed)
-    }
-  }, [a])
+    },
+    [a]
+  )
 
   const markImageFailed = useCallback((id: string) => {
     setFailedImageIds(current => {
@@ -705,16 +710,20 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
 
     void gatewayMediaDataUrl(artifact.value, artifact.profile ?? null)
       .then(resolved => {
-        if (!cancelled) setSrc(resolved)
+        if (!cancelled) {
+          setSrc(resolved)
+        }
       })
       .catch(() => {
-        if (!cancelled) onImageError(artifact.id)
+        if (!cancelled) {
+          onImageError(artifact.id)
+        }
       })
 
     return () => {
       cancelled = true
     }
-  }, [artifact.href, artifact.id, artifact.value, onImageError])
+  }, [artifact.href, artifact.id, artifact.profile, artifact.value, onImageError])
 
   return (
     <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
@@ -874,7 +883,8 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
   {
     Cell: PrimaryCell,
     bodyClassName: 'p-0',
-    header: (filter, a) => (filter === 'link' ? a.colTitleLink : filter === 'file' ? a.colTitleFile : a.colTitleDefault),
+    header: (filter, a) =>
+      filter === 'link' ? a.colTitleLink : filter === 'file' ? a.colTitleFile : a.colTitleDefault,
     id: 'primary',
     width: filter => (filter === 'link' ? 'w-[50%]' : 'w-[35%]')
   },

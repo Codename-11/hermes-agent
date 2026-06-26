@@ -4,21 +4,11 @@ import { useCallback, useMemo } from 'react'
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import type { DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
-import {
-  Activity,
-  AlertCircle,
-  Clock,
-  Command,
-  Hash,
-  Loader2,
-  Sparkles,
-  Terminal,
-  Zap,
-  ZapFilled
-} from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -58,14 +48,20 @@ function backendUpdateLabel(status: DesktopUpdateStatus | null | undefined): str
   const deployBehind = status.deployBehind ?? 0
   const upstreamBehind = status.upstreamBehind ?? 0
 
-  if (deployBehind > 0) parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
-  if (upstreamBehind > 0) parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+  if (deployBehind > 0) {
+    parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
+  }
+
+  if (upstreamBehind > 0) {
+    parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+  }
 
   if (parts.length > 0) {
     return `Pending backend update: ${parts.join(', ')}`
   }
 
   const behind = status.behind ?? 0
+
   return behind > 0 ? `${behind} pending backend update commit${behind === 1 ? '' : 's'}` : null
 }
 
@@ -78,9 +74,17 @@ function upstreamDisparityLabel(status: DesktopUpdateStatus | null | undefined):
   const behind = status.upstreamBehind ?? 0
   const parts = []
 
-  if (ahead > 0) parts.push(`+${ahead} carried`)
-  if (behind > 0) parts.push(`${behind} behind`)
-  if (parts.length === 0) parts.push('aligned')
+  if (ahead > 0) {
+    parts.push(`+${ahead} carried`)
+  }
+
+  if (behind > 0) {
+    parts.push(`${behind} behind`)
+  }
+
+  if (parts.length === 0) {
+    parts.push('aligned')
+  }
 
   return `${status.upstreamBranch}: ${parts.join(', ')}`
 }
@@ -269,12 +273,7 @@ export function useStatusbarItems({
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
-    updateStatus?.behind,
-    updateStatus?.branch,
-    updateStatus?.currentSha,
-    updateStatus?.upstreamAhead,
-    updateStatus?.upstreamBehind,
-    updateStatus?.upstreamBranch
+    updateStatus
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -284,10 +283,14 @@ export function useStatusbarItems({
 
     const backendVersion = statusSnapshot?.version
     const behind = backendUpdateStatus?.behind ?? 0
+    const updateAvailable = backendUpdateStatus?.updateAvailable || behind > 0
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
     const base = copy.backendLabel(backendVersion ?? copy.unknown)
-    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+
+    const behindHint =
+      !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
+
     const updateBreakdown = backendUpdateLabel(backendUpdateStatus)
 
     const label = applying
@@ -296,7 +299,8 @@ export function useStatusbarItems({
 
     const tooltip = [
       applying ? backendUpdateApply.message || copy.updateInProgress : null,
-      !applying && updateBreakdown,
+      !applying && (updateBreakdown || (behind > 0 ? copy.commitsBehind(behind, 'main') : null)),
+      !applying && behind <= 0 && updateAvailable && copy.update,
       backendVersion && copy.backendVersion(backendVersion),
       backendUpdateStatus?.backendMessage
     ]
@@ -304,7 +308,7 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      className: !applying && updateAvailable ? 'text-primary hover:text-primary' : undefined,
       hidden: !backendVersion,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-backend',
@@ -316,12 +320,7 @@ export function useStatusbarItems({
   }, [
     connection?.mode,
     statusSnapshot?.version,
-    backendUpdateStatus?.backendMessage,
-    backendUpdateStatus?.behind,
-    backendUpdateStatus?.deployBehind,
-    backendUpdateStatus?.deployBranch,
-    backendUpdateStatus?.upstreamBehind,
-    backendUpdateStatus?.upstreamBranch,
+    backendUpdateStatus,
     backendUpdateApply.applying,
     backendUpdateApply.message,
     backendUpdateApply.stage,
@@ -372,7 +371,7 @@ export function useStatusbarItems({
           ) : subagentsRunning > 0 ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
-            <Sparkles className="size-3" />
+            <Codicon name="hubot" size="0.75rem" />
           ),
         id: 'agents',
         label: copy.agents,
