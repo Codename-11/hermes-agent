@@ -8,8 +8,8 @@ Improved deploy-update conflict UX so the delay between an initial merge failure
 
 ### What changed
 
-- Wrapped best-effort LLM conflict review generation with the new log-safe TTY `StatusLine` loader (`review conflict handoff` → `handoff ready`). The spinner writes animation frames only to the real terminal underneath the update log wrapper; logs/gateway captures get only final success/failure lines.
-- Added the same loader coverage to `hermes update --resolve` retained-handoff execution: prepare, agent resolve, validate, focused checks, commit, push, live sync, and cleanup now update a short current-phase status line instead of the old full pipeline, avoiding line-wrap and carriage-return spam.
+- Wrapped best-effort LLM conflict review generation with the scrollback-safe `StatusLine` loader (`⏳ review conflict handoff` → `✓ handoff ready`). It uses persistent Unicode phase lines instead of in-place redraws, so the user can scroll the shell normally after the command exits.
+- Added the same loader coverage to `hermes update --resolve` retained-handoff execution: prepare, agent resolve, validate, focused checks, commit, push, live sync, and cleanup now emit short current-phase lines instead of the old full pipeline, avoiding line-wrap, carriage-return spam, and scrollback breakage.
 - Switched the `hermes update --resolve` resolver subprocess from `hermes chat -Q -q ...` to `hermes -z ...`, avoiding TUI/session UI paths entirely and producing only the final resolver response.
 - Added the `skills` toolset to the resolver subprocess and told it to load `hermes-update` via `skill_view` when available.
 
