@@ -236,7 +236,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, job_hermes_home
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -355,20 +355,21 @@ _hermes_home: Path | None = None
 
 
 def _get_hermes_home() -> Path:
-    """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
+    """Resolve Hermes home dynamically while preserving test monkeypatch hooks.
+
+    Cron is per-profile by design (#4707): the in-process ticker runs inside a
+    profile-scoped gateway, so resolving the active HERMES_HOME at call time
+    means a profile's jobs are stored AND executed under that profile's home
+    (its .env, config.yaml, scripts, skills). Do not freeze this at import or
+    anchor it at the shared default root — either re-breaks profile isolation.
+    """
     return _hermes_home or get_hermes_home()
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve the shared cron lock paths at call time.
-
-    Jobs live in the shared root cron store. Individual gateways filter by
-    ``owner_profile`` before execution, but storage coordination must use one
-    lock next to the shared jobs.json so CLI/gateway/external-provider writes do
-    not race.
-    """
-    from hermes_constants import get_default_hermes_root
-    lock_dir = (_hermes_home or get_default_hermes_root()) / "cron"
+    """Resolve cron lock paths at call time so profile/env changes are honored."""
+    hermes_home = _get_hermes_home()
+    lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -1968,22 +1969,6 @@ def _scan_assembled_cron_prompt(
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
-    """Execute a single cron job under its owner profile's Hermes home."""
-    owner_home = job_hermes_home(job)
-    previous_home = os.environ.get("HERMES_HOME")
-    token = set_hermes_home_override(owner_home)
-    os.environ["HERMES_HOME"] = str(owner_home)
-    try:
-        return _run_job_inner(job)
-    finally:
-        reset_hermes_home_override(token)
-        if previous_home is None:
-            os.environ.pop("HERMES_HOME", None)
-        else:
-            os.environ["HERMES_HOME"] = previous_home
-
-
-def _run_job_inner(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
 
