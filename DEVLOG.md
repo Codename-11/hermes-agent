@@ -1,5 +1,20 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-27 — Accept gateway reconnect flag in A2A and Forge plugins
+
+### Summary
+
+Fixed Axiom plugin adapters that were still using the pre-reconnect lifecycle signature, which caused gateway reconnect loops to log `unexpected keyword argument 'is_reconnect'` for A2A and Forge.
+
+### What changed
+
+- Updated `plugins/platforms/a2a/adapter.py` and `plugins/platforms/forge/adapter.py` so `connect()` accepts keyword-only `is_reconnect: bool = False`, matching the gateway/platform adapter contract.
+- Added regression tests for both plugin adapters to ensure future reconnect calls continue accepting the kwarg.
+
+### Verification
+
+- `python -m pytest tests/gateway/test_forge_plugin.py tests/plugins/test_a2a_plugin.py -q -o 'addopts='` → 46 passed.
+
 ## 2026-06-25 — Add conflict handoff status spinner and one-shot resolver agent
 
 ### Summary

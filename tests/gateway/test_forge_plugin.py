@@ -56,6 +56,14 @@ def test_adapter_uses_configured_base_url_and_chat_info() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connect_accepts_reconnect_kwarg() -> None:
+    module = _load_adapter_module()
+    adapter = module.ForgeAdapter(_config())
+
+    assert await adapter.connect(is_reconnect=True) is True
+
+
+@pytest.mark.asyncio
 async def test_silent_response_is_treated_as_success_without_network() -> None:
     module = _load_adapter_module()
     adapter = module.ForgeAdapter(_config())

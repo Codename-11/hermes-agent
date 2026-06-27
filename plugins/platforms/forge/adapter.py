@@ -99,7 +99,7 @@ class ForgeAdapter(BasePlatformAdapter):
         # Cleared on finalize OR on a fallback to appendMessage.
         self._drafts: Dict[tuple, Dict[str, Any]] = {}
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self.api_key:
             self._set_fatal_error("missing_api_key", "FORGE_API_KEY is required", retryable=False)
             return False

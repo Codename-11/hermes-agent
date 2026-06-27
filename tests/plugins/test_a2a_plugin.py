@@ -316,6 +316,26 @@ class TestRegistryDispatchConvention:
 
 @pytest.mark.integration
 class TestInboundRoundTrip:
+    def test_connect_accepts_reconnect_kwarg(self, monkeypatch):
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        import socket
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        monkeypatch.setenv("A2A_PORT", str(port))
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+
+        async def run():
+            assert await adapter.connect(is_reconnect=True) is True
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
     def test_live_server_card_and_message_send(self, monkeypatch):
         """Start the real adapter server, hit the Agent Card, then send a task
         and verify the mocked agent's reply comes back as an A2A Task."""
