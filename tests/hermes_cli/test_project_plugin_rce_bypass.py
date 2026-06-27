@@ -216,15 +216,15 @@ class TestDiscoveryScrubsApiField:
         assert entry["_api_file"] is None
         assert entry["has_api"] is False
 
-    def test_safe_api_path_survives(self, user_plugin_factory, tmp_path):
+    def test_safe_user_api_path_survives(self, user_plugin_factory, tmp_path):
         user_plugin_factory("safe", {
             "name": "safe",
             "label": "Safe",
             "api": "api.py",
             "entry": "dist/index.js",
         })
-        # Make the api file actually exist so a downstream mount could
-        # in principle proceed — we're only testing the discovery scrub.
+        # Make the api file actually exist so a downstream mount can proceed;
+        # upstream parity allows trusted-by-install-location user plugins.
         (tmp_path / "plugins" / "safe" / "dashboard" / "api.py").write_text(
             "router = None\n"
         )
@@ -287,6 +287,14 @@ class TestMountApiRoutesRefusesUntrusted:
         called_path = Path(spec.call_args.args[1])
         assert called_path.name == "api.py"
         assert called_path.is_absolute()
+
+    def test_user_source_api_imports_normally(self, tmp_path):
+        plugin = self._payload_plugin(tmp_path, source="user")
+        web_server._dashboard_plugins_cache = [plugin]
+        with patch("importlib.util.spec_from_file_location") as spec:
+            spec.return_value = None  # loader is None -> early continue, safe
+            web_server._mount_plugin_api_routes()
+        assert spec.call_count == 1
 
     def test_traversal_api_caught_at_mount_time(self, tmp_path):
         """Defence-in-depth: if discovery is bypassed (e.g. cache

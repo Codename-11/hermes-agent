@@ -13072,13 +13072,6 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
-# Plugin sources whose Python backend (dashboard manifest `api` file) must NEVER
-# be auto-imported by the dashboard web server — only bundled plugins may. Shared
-# by the discovery-time scrub and the mount-time refuse guards so a typo in one
-# site cannot silently disable a security gate (GHSA-5qr3-c538-wm9j / #43719).
-_NON_BUNDLED_PLUGIN_SOURCES = frozenset({"user", "project"})
-
-
 def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -13160,16 +13153,6 @@ def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> 
                 raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
                 safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
-                if source in _NON_BUNDLED_PLUGIN_SOURCES and safe_api:
-                    _log.warning(
-                        "Plugin %s: refusing dashboard backend api=%s "
-                        "(only bundled plugins may auto-import Python "
-                        "backend routes; non-bundled plugins may extend "
-                        "the dashboard with static UI assets only)",
-                        name, safe_api,
-                    )
-                    safe_api = None
-                    raw_api = None
                 if raw_api and safe_api is None:
                     _log.warning(
                         "Plugin %s: refusing unsafe api path %r (must be a "
@@ -13584,10 +13567,12 @@ def _mount_plugin_api_routes():
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
 
-    Backend import is restricted to bundled plugins. User and project
-    plugins can extend the dashboard UI via static JS/CSS, but their
-    Python ``api`` files are never auto-imported by the web server.
-    See GHSA-5qr3-c538-wm9j (#29156) and #43719.
+    Backend import is restricted to ``bundled`` and ``user`` sources.
+    Project plugins (``./.hermes/plugins/``) ship with the CWD and are
+    therefore attacker-controlled in any threat model where the user
+    opens a malicious repo; they can extend the dashboard UI via
+    static JS/CSS but their Python ``api`` file is never auto-imported
+    by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
     """
     # API routes are not sidebar entries.  Keep bundled demo plugins hidden
     # from the production dashboard while still mounting their backend routes
@@ -13607,26 +13592,12 @@ def _mount_plugin_api_routes():
         if not api_file_name:
             continue
         source = plugin.get("source")
-        if source in _NON_BUNDLED_PLUGIN_SOURCES:
-            # Backend Python auto-import is reserved for bundled plugins; user
-            # and project plugins extend the dashboard with static UI assets
-            # only (GHSA-5qr3-c538-wm9j / #43719). Defence-in-depth: discovery
-            # already nulls _api_file for these sources, but re-refusing here —
-            # at the actual importlib call site — keeps the import primitive
-            # contained even if a future caller or a tampered cache entry slips
-            # a non-bundled plugin through with an _api_file set.
-            _reason = {
-                "user": (
-                    "user-installed plugins may not auto-import Python code"
-                ),
-                "project": (
-                    "project plugins may not auto-import Python code; backend "
-                    "auto-import is reserved for bundled plugins"
-                ),
-            }.get(source, "only bundled plugins may auto-import Python code")
+        if source == "project":
             _log.warning(
-                "Plugin %s: ignoring backend api=%s (%s)",
-                plugin["name"], api_file_name, _reason,
+                "Plugin %s: ignoring backend api=%s (project plugins may "
+                "not auto-import Python code; move the plugin to "
+                "~/.hermes/plugins/ if you trust it)",
+                plugin["name"], api_file_name,
             )
             continue
         dashboard_dir = Path(plugin["_dir"])
