@@ -905,7 +905,7 @@ def _scan_conflict_markers(worktree: Path, paths: list[str]) -> list[str]:
             text = candidate.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if any(marker in text for marker in ("<<<<<<< ", "=======\n", ">>>>>>> ")):
+        if any(line.startswith(("<<<<<<< ", "=======", ">>>>>>> ")) for line in text.splitlines()):
             offenders.append(rel)
     return offenders
 
