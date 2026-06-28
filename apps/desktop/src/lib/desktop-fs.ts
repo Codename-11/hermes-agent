@@ -32,6 +32,12 @@ export function isDesktopFsRemoteMode() {
   return $connection.get()?.mode === 'remote'
 }
 
+function activeGatewayProfile(): { profile?: string } {
+  const profile = $connection.get()?.profile
+
+  return profile ? { profile } : {}
+}
+
 function fsPath(endpoint: string, filePath: string) {
   return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}`
 }
@@ -53,7 +59,7 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
     return desktop.readDir(path)
   }
 
-  return desktop.api<HermesReadDirResult>({ path: fsPath('list', path) })
+  return desktop.api<HermesReadDirResult>({ ...activeGatewayProfile(), path: fsPath('list', path) })
 }
 
 export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
@@ -63,7 +69,7 @@ export async function readDesktopFileText(path: string): Promise<HermesReadFileT
     return desktop.readFileText(path)
   }
 
-  return desktop.api<HermesReadFileTextResult>({ path: fsPath('read-text', path) })
+  return desktop.api<HermesReadFileTextResult>({ ...activeGatewayProfile(), path: fsPath('read-text', path) })
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron
@@ -82,6 +88,7 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   }
 
   const result = await desktop.api<{ ok?: boolean; path?: string }>({
+    ...activeGatewayProfile(),
     body: { content, path },
     method: 'POST',
     path: '/api/fs/write-text'
@@ -97,7 +104,10 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
     return desktop.readFileDataUrl(path)
   }
 
-  const result = await desktop.api<string | { dataUrl?: string }>({ path: fsPath('read-data-url', path) })
+  const result = await desktop.api<string | { dataUrl?: string }>({
+    ...activeGatewayProfile(),
+    path: fsPath('read-data-url', path)
+  })
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }
@@ -109,7 +119,7 @@ export async function desktopGitRoot(path: string): Promise<string | null> {
     return desktop.gitRoot ? desktop.gitRoot(path) : null
   }
 
-  const result = await desktop.api<{ root: string | null }>({ path: fsPath('git-root', path) })
+  const result = await desktop.api<{ root: string | null }>({ ...activeGatewayProfile(), path: fsPath('git-root', path) })
 
   return result.root
 }
@@ -119,7 +129,7 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
     return null
   }
 
-  return bridge().api<{ branch: string; cwd: string }>({ path: '/api/fs/default-cwd' })
+  return bridge().api<{ branch: string; cwd: string }>({ ...activeGatewayProfile(), path: '/api/fs/default-cwd' })
 }
 
 // Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.

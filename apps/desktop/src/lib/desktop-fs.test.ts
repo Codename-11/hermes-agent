@@ -88,7 +88,7 @@ describe('desktop filesystem facade', () => {
   })
 
   it('routes filesystem reads through authenticated backend REST in remote mode', async () => {
-    $connection.set({ mode: 'remote' } as never)
+    $connection.set({ mode: 'remote', profile: 'coder' } as never)
 
     await expect(readDesktopDir('/home/user/project')).resolves.toMatchObject({ entries: [{ name: 'remote' }] })
     await expect(readDesktopFileText('/home/user/project/a b.txt')).resolves.toMatchObject({ text: 'remote' })
@@ -96,11 +96,17 @@ describe('desktop filesystem facade', () => {
     await expect(desktopGitRoot('/home/user/project')).resolves.toBe('/remote')
     await expect(desktopDefaultCwd()).resolves.toEqual({ cwd: '/backend/project', branch: 'main' })
 
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fhome%2Fuser%2Fproject' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/git-root?path=%2Fhome%2Fuser%2Fproject' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fhome%2Fuser%2Fproject', profile: 'coder' })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-text?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt',
+      profile: 'coder'
+    })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt',
+      profile: 'coder'
+    })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/git-root?path=%2Fhome%2Fuser%2Fproject', profile: 'coder' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'coder' })
     expect(readDir).not.toHaveBeenCalled()
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()

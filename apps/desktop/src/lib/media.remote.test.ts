@@ -86,15 +86,37 @@ describe('gatewayMediaDataUrl', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    $connection.set(null)
   })
 
-  it('requests the encoded gateway path and returns the data URL', async () => {
+  it('requests the encoded gateway path against the active remote profile', async () => {
+    $connection.set({ mode: 'remote', profile: 'coder' } as never)
+
     const url = await gatewayMediaDataUrl('/home/u/.hermes/images/a b.png')
 
     expect(url).toBe('data:image/png;base64,ZHVtbXk=')
     expect(api).toHaveBeenCalledWith({
       path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png',
-      profile: null
+      profile: 'coder'
+    })
+  })
+
+  it('lets artifact-owned profiles override the active gateway profile', async () => {
+    $connection.set({ mode: 'remote', profile: 'default' } as never)
+
+    await gatewayMediaDataUrl('/home/u/.hermes/images/a b.png', 'remote-art')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png',
+      profile: 'remote-art'
+    })
+  })
+
+  it('omits profile when no active gateway profile is known', async () => {
+    await gatewayMediaDataUrl('/home/u/.hermes/images/a b.png')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png'
     })
   })
 })

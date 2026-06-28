@@ -385,6 +385,8 @@ Primary files:
 Required behavior:
 
 - Remote artifact image cards fetch gateway-local images through the authenticated REST bridge and include the owning profile when present.
+- Transcript `MEDIA:` / `#media:` image previews fetch gateway-local images through the active remote profile instead of falling back to the primary/default backend.
+- Remote filesystem preview/read-data-url calls include the active remote profile so image/file open-download paths follow the same backend as the live chat.
 - Opening a gateway-local artifact in remote OAuth mode asks Electron main to download it through the OAuth session partition, write a local temp copy, and open/reveal it via the OS.
 - Token-mode remote artifacts keep using the existing token-authenticated path.
 - Browser-native `http(s)` and `data:` artifacts remain normal external links/previews.
@@ -398,6 +400,7 @@ node --check apps/desktop/electron/main.cjs
 node --check apps/desktop/electron/preload.cjs
 cd apps/desktop && npx vitest run --environment jsdom \
   src/lib/media.remote.test.ts \
+  src/lib/media.test.ts \
   src/lib/desktop-fs.test.ts \
   src/app/artifacts/index.test.ts
 cd apps/desktop && npm run typecheck

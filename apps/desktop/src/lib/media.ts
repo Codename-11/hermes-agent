@@ -119,16 +119,21 @@ export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
+function activeGatewayProfile(): null | string {
+  return $connection.get()?.profile || null
+}
+
 // Fetch a gateway-local image as a data URL via the authenticated REST bridge.
 // Used in remote mode where readFileDataUrl (which reads THIS machine's disk)
 // can't see files the agent wrote on the gateway. Requires the gateway to
 // expose GET /api/media (hermes_cli/web_server.py).
 export async function gatewayMediaDataUrl(path: string, profile?: null | string): Promise<string> {
   const file = filePathFromMediaPath(path)
+  const scopedProfile = profile === undefined ? activeGatewayProfile() : profile
 
   const result = await window.hermesDesktop!.api<{ data_url: string }>({
     path: `/api/media?path=${encodeURIComponent(file)}`,
-    profile: profile ?? null
+    ...(scopedProfile ? { profile: scopedProfile } : {})
   })
 
   return result.data_url
