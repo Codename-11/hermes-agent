@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 # opening dozens of sockets at once.
 _MAX_REFERENCE_WORKERS = 8
 
+# Providers whose auxiliary path is more than a raw OpenAI-compatible endpoint.
+# Passing resolve_runtime_provider's base_url/api_key for these makes
+# _resolve_task_provider_model force provider="custom", bypassing provider-owned
+# auth headers, OAuth token handling, and request-shape adapters. Keep the named
+# provider and let auxiliary_client resolve the concrete client exactly like a
+# direct Hermes chat turn would.
+_PRESERVE_PROVIDER_IDENTITY = frozenset({"anthropic", "openai-codex", "xai-oauth"})
+
 
 def _slot_label(slot: dict[str, str]) -> str:
     return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
@@ -60,7 +68,7 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
         # adapter-backed providers whose provider branch adds auth headers and
         # request-shape adapters. Keep those providers identified by name.
-        if resolved_provider in {"openai-codex", "xai-oauth"}:
+        if resolved_provider in _PRESERVE_PROVIDER_IDENTITY:
             return out
         # Pass the resolved endpoint through so call_llm builds the request for
         # the provider's actual API surface instead of auto-detecting. base_url
