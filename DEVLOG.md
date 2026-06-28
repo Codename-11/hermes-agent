@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-06-27 — Preserve Anthropic provider identity in MoA slots
+
+### Summary
+
+Fixed MoA reference/aggregator slot runtime resolution so Anthropic slots keep `provider=anthropic` instead of being downgraded to `custom` when `resolve_runtime_provider()` supplies `https://api.anthropic.com` plus credentials. The downgrade bypassed the native Anthropic auxiliary/OAuth request-shape path even though direct Hermes Claude chat worked.
+
+### What changed
+
+- Added `anthropic` to MoA's provider-identity preservation set alongside `openai-codex` and `xai-oauth`.
+- Added a regression test proving Anthropic MoA slots return only `{provider, model}` and let `agent.auxiliary_client` resolve the native provider branch.
+- Updated `FORK.md` so the deploy-branch contract protects OAuth/adapter-backed MoA slot identity and includes MoA tests in the required validation block.
+
+### Verification
+
+- Regression was red before the fix: `tests/run_agent/test_moa_loop_mode.py::test_moa_anthropic_slot_preserves_provider_identity` failed because `base_url`/`api_key` leaked into the slot runtime.
+- `python -m py_compile agent/moa_loop.py tests/run_agent/test_moa_loop_mode.py` → OK.
+- `python -m pytest -q -o addopts='' tests/run_agent/test_moa_loop_mode.py::test_moa_anthropic_slot_preserves_provider_identity tests/run_agent/test_moa_loop_mode.py::test_moa_codex_slot_preserves_provider_identity tests/run_agent/test_moa_loop_mode.py tests/agent/test_auxiliary_main_first.py tests/hermes_cli/test_moa_config.py tests/gateway/test_moa_one_shot_restore.py` → 52 passed, 2 warnings.
+- Live smoke `hermes chat --provider moa --model default ...` returned `MOA ANTHROPIC ROUTE OK`; logs showed `Auxiliary moa_reference: using anthropic (claude-opus-4-8)` and `Auxiliary moa_aggregator: using openai-codex (gpt-5.5)`.
+
 ## 2026-06-27 — Accept gateway reconnect flag in A2A and Forge plugins
 
 ### Summary
