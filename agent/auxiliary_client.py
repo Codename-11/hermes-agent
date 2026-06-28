@@ -2365,6 +2365,7 @@ def _get_provider_chain() -> List[tuple]:
     a caller explicitly requests it with a model.
     """
     return [
+        ("openrouter", _try_openrouter),
         ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint),
         ("api-key", _resolve_api_key_provider),
