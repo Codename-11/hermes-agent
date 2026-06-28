@@ -38,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+from hermes_constants import get_default_hermes_root, get_hermes_home, set_hermes_home_override, reset_hermes_home_override
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -367,9 +367,8 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored."""
-    hermes_home = _get_hermes_home()
-    lock_dir = hermes_home / "cron"
+    """Resolve cron lock paths for the shared root cron store."""
+    lock_dir = get_default_hermes_root().resolve() / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -1545,13 +1544,13 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, *, hermes_home: Optional[Path] = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    Scripts must reside within the owning Hermes home's scripts/ directory.
+    Both relative and absolute paths are resolved and validated against this
+    directory to prevent arbitrary script execution via path traversal or
+    absolute path injection.
 
     Supported interpreters (chosen by file extension):
 
@@ -1569,14 +1568,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Args:
         script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            against the owning Hermes home's scripts/.  Absolute and
+            ~-prefixed paths are also validated to ensure they stay within
+            that scripts dir.
+        hermes_home: Optional owner Hermes home. Defaults to the active
+            scheduler Hermes home for backward compatibility.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
+    owner_home = (hermes_home or _get_hermes_home()).resolve()
+    scripts_dir = owner_home / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -1632,7 +1635,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         env = _sanitize_subprocess_env(os.environ.copy())
-        env["HERMES_HOME"] = str(_get_hermes_home())
+        env["HERMES_HOME"] = str(owner_home)
         result = subprocess.run(
             argv,
             capture_output=True,
@@ -1977,6 +1980,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+    from cron.jobs import resolve_profile_home
+    _job_profile = str(job.get("owner_profile") or job.get("profile") or "default").strip() or "default"
+    _profile_home = resolve_profile_home(_job_profile)
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -2016,7 +2022,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, hermes_home=_profile_home)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2105,7 +2111,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script(script_path, hermes_home=_profile_home)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -2232,10 +2238,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # by any child subprocess the agent spawns). tick() routes profile-scoped
     # jobs to the single-worker sequential pool, so mutating os.environ here is
     # safe — they never overlap. Restored in the finally block.
-    from cron.jobs import resolve_profile_home
     from hermes_constants import set_hermes_home_override
-    _job_profile = (job.get("profile") or "default").strip() or "default"
-    _profile_home = resolve_profile_home(_job_profile)
     _prior_hermes_home = os.environ.get("HERMES_HOME", "_UNSET_")
     _hermes_home_token = None
     if _profile_home is not None and _profile_home != _get_hermes_home().resolve():

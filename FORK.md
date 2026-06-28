@@ -218,6 +218,7 @@ Protected behavior:
 - Anthropic OAuth must preserve the Claude Code subscription billing lane: OAuth tool names use `mcp__*` on the wire, concrete `tool_choice` names are encoded the same way, and the large Hermes system prompt is relocated out of Anthropic `system[]` for OAuth requests.
 - OpenAI Codex, xAI OAuth, and Nous routed model discovery remains compatible with Axiom's local model-router/proxy expectations.
 - Codex chat completion translation remains intact.
+- MoA provider slots for OAuth/adapter-backed providers (`anthropic`, `openai-codex`, `xai-oauth`) preserve the named provider identity instead of passing resolved `base_url`/`api_key` through `call_llm`, which would downgrade the slot to `custom` and bypass the provider-owned auth/request-shape path.
 - Synthetic/fallback model inventory must not advertise stale or non-chat model IDs to downstream routers.
 - Local provider/model config values may be dict-shaped and must not crash model resolution.
 
@@ -226,6 +227,7 @@ Known references:
 - `DEVLOG.md` 2026-05-19: routed proxy model inventory and `gpt-5.5` advertisement.
 - `DEVLOG.md` 2026-04-23: Anthropic OAuth shim cleanup while preserving Model Router/plugin-command seams.
 - `DEVLOG.md` 2026-06-17: Claude OAuth billing-lane candidate stack (#47723 + #23361 + #47738) and live `claudetest` smoke.
+- `cc430e8c3 fix(moa): preserve anthropic slot identity` and `109fce4ee fix(moa): sync virtual provider runtime handling`.
 
 Primary files:
 
@@ -234,8 +236,12 @@ hermes_cli/proxy/*
 agent/anthropic_adapter.py
 gateway/builtin_hooks/boot_md.py
 hermes_cli/runtime_provider.py
+agent/moa_loop.py
+agent/auxiliary_client.py
 tests/hermes_cli/test_proxy.py
 tests/agent/test_anthropic_adapter.py
+tests/run_agent/test_moa_loop_mode.py
+tests/agent/test_auxiliary_main_first.py
 ```
 
 ### 6. Update / deploy branch behavior
@@ -661,7 +667,9 @@ python -m py_compile \
   hermes_cli/web_server.py \
   tui_gateway/server.py \
   model_tools.py \
-  agent/runtime_tool_policy.py
+  agent/runtime_tool_policy.py \
+  agent/moa_loop.py \
+  agent/auxiliary_client.py
 ```
 
 Focused test suite:
@@ -683,6 +691,10 @@ python -m pytest -q -o addopts='' \
   tests/gateway/test_discord_send.py \
   tests/hermes_cli/test_proxy.py \
   tests/agent/test_anthropic_adapter.py \
+  tests/run_agent/test_moa_loop_mode.py \
+  tests/agent/test_auxiliary_main_first.py \
+  tests/hermes_cli/test_moa_config.py \
+  tests/gateway/test_moa_one_shot_restore.py \
   tests/hermes_cli/test_plugins.py \
   tests/tui_gateway/test_protocol.py \
   tests/hermes_cli/test_update_check.py \
