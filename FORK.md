@@ -378,6 +378,8 @@ Primary files:
 - `apps/desktop/electron/preload.cjs`
 - `apps/desktop/src/global.d.ts`
 - `apps/desktop/src/app/artifacts/index.tsx`
+- `apps/desktop/src/lib/desktop-fs.ts`
+- `apps/desktop/src/lib/desktop-fs.test.ts`
 - `apps/desktop/src/lib/media.ts`
 - `apps/desktop/src/lib/media.remote.test.ts`
 - `apps/desktop/src/app/artifacts/index.test.ts`
@@ -391,7 +393,12 @@ Required behavior:
 - Token-mode remote artifacts keep using the existing token-authenticated path.
 - Browser-native `http(s)` and `data:` artifacts remain normal external links/previews.
 
-Retire this carry when upstream handles remote-gateway artifact previews and file opening through the active authenticated Desktop session for both token and OAuth/dashboard auth modes, including profile-scoped remote sessions.
+Upstream watch / retirement criteria:
+
+- Watch upstream Desktop/API work touching remote media/artifacts/profile-scoped filesystem reads, especially commits/PRs mentioning `remote media`, `remote-gateway artifacts`, `OAuth`, `dashboard auth`, `MEDIA:`, `/api/media`, `/api/fs/read-data-url`, `openRemoteFile`, or profile-scoped Desktop REST calls.
+- Do **not** drop this carry just because upstream has token-mode remote media support. Upstream must cover the Axiom default path: Desktop shell connected to a remote gateway using OAuth/dashboard-session auth, with artifacts/files living on the gateway host.
+- Equivalent upstream behavior must satisfy every required behavior above, including transcript `MEDIA:` / `#media:` image previews, Artifacts-page previews, file open/download, active-profile routing, explicit artifact-owned profile routing, token-mode compatibility, and ordinary `http(s)` / `data:` passthrough.
+- Before retiring, compare upstream against these files and run the focused checks below. Remove this section only after upstream passes the checks without the fork-only hunks.
 
 Focused checks:
 
