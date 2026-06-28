@@ -55,7 +55,6 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
-from hermes_cli import _subprocess_compat
 
 logger = logging.getLogger(__name__)
 
@@ -960,7 +959,7 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         try:
-            result = _subprocess_compat.run(
+            result = subprocess.run(
                 [
                     "gh",
                     "pr",
