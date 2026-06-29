@@ -862,6 +862,7 @@ export interface Translations {
     nameHint: string
     title: string
     count: (count: number) => string
+    search: string
     loading: string
     newProfile: string
     allProfiles: string
@@ -934,6 +935,8 @@ export interface Translations {
 
   cron: {
     close: string
+    title: string
+    count: (count: number) => string
     search: string
     loading: string
     states: Record<string, string>
@@ -1555,6 +1558,10 @@ export interface Translations {
     loadingTree: string
     loadingFiles: string
     terminalHide: string
+    terminalsAria: string
+    terminalNew: string
+    terminalCloseOthers: string
+    terminalCloseAll: string
     addToChat: string
   }
 
@@ -1733,6 +1740,7 @@ export interface Translations {
         reading: string
         opened: string
         opening: string
+        failedToOpen: string
         searched: string
         searching: string
         ran: string
