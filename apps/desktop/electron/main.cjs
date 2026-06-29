@@ -4813,7 +4813,7 @@ async function freshGatewayWsUrl(profile) {
   const connection = await ensureBackend(profile)
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl)
-    return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+    return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket, connection.remoteProfile)
   }
   // Local/token: the cached wsUrl already carries the (long-lived) token.
   return connection.wsUrl
@@ -4868,6 +4868,10 @@ function sanitizeConnectionProfiles(raw) {
       cleaned.url = url
     }
     cleaned.authMode = normAuthMode(entry.authMode)
+    const remoteProfile = String(entry.remoteProfile || '').trim()
+    if (remoteProfile && (remoteProfile === 'default' || PROFILE_NAME_RE.test(remoteProfile))) {
+      cleaned.remoteProfile = remoteProfile
+    }
     if (entry.token && typeof entry.token === 'object') {
       cleaned.token = entry.token
     }
@@ -4997,6 +5001,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     profile: key,
     remoteAuthMode: authMode,
     remoteOauthConnected,
+    remoteProfile: block.remoteProfile ? String(block.remoteProfile) : null,
     remoteUrl,
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
@@ -5059,8 +5064,9 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
 // and is shared by the per-profile, env, and global resolution paths. `token`
 // is the DECRYPTED static token (or null in OAuth mode). `source` is a label
 // for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(rawUrl, authMode, token, source) {
+async function buildRemoteConnection(rawUrl, authMode, token, source, remoteProfile) {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const targetProfile = remoteProfile ? normalizeRemoteProfileName(remoteProfile) : null
 
   if (authMode === 'oauth') {
     // OAuth gateway: auth comes from the session cookies in the OAuth
@@ -5096,10 +5102,11 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
       baseUrl,
       mode: 'remote',
       source,
+      remoteProfile: targetProfile,
       authMode: 'oauth',
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
-      wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
+      wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket, targetProfile)
     }
   }
 
@@ -5114,10 +5121,20 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     baseUrl,
     mode: 'remote',
     source,
+    remoteProfile: targetProfile,
     authMode: 'token',
     token,
-    wsUrl: buildGatewayWsUrl(baseUrl, token)
+    wsUrl: buildGatewayWsUrl(baseUrl, token, targetProfile)
   }
+}
+
+function normalizeRemoteProfileName(value, fallback = 'default') {
+  const raw = String(value ?? '').trim()
+  const candidate = raw || fallback
+  if (!candidate || candidate === 'default' || PROFILE_NAME_RE.test(candidate)) {
+    return candidate || 'default'
+  }
+  throw new Error(`Invalid remote profile name: ${candidate}`)
 }
 
 // Resolve the remote backend for a given profile, or null when that profile
@@ -5136,7 +5153,7 @@ async function resolveRemoteBackend(profile) {
   const override = profileRemoteOverride(config, profile)
   if (override) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
-    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+    return buildRemoteConnection(override.url, override.authMode, token, 'profile', override.remoteProfile)
   }
 
   // 2. Env override (global, token-auth only).
@@ -5190,9 +5207,22 @@ async function fetchJsonForProfile(profile, path) {
 }
 
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
+function pathWithRemoteProfileOverride(path, remoteProfile) {
+  const targetProfile = String(remoteProfile || '').trim()
+  if (!targetProfile) return path
+
+  const parsed = new URL(path, 'http://hermes.local')
+  if (!parsed.searchParams.has('profile')) {
+    parsed.searchParams.set('profile', targetProfile)
+  }
+
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
 async function requestJsonForProfile(profile, path, method, body) {
   const conn = await ensureBackend(profile)
-  const url = `${conn.baseUrl}${path}`
+  const routePath = pathWithRemoteProfileOverride(path, conn.remoteProfile)
+  const url = `${conn.baseUrl}${routePath}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
   return conn.authMode === 'oauth' ? fetchJsonViaOauthSession(url, opts) : fetchJson(url, conn.token, opts)
 }
@@ -5369,7 +5399,7 @@ async function listDesktopRemoteProfiles(input = {}) {
 function pinRemoteProfileConnection(input = {}) {
   const target = connectionScopeKey(input.targetProfile)
   if (!target || target === 'default' || !PROFILE_NAME_RE.test(target)) {
-    throw new Error('Choose a named local profile to pin to this remote gateway.')
+    throw new Error('Choose a named local profile handle to pin to this remote gateway.')
   }
 
   const existing = readDesktopConnectionConfig()
@@ -5379,13 +5409,14 @@ function pinRemoteProfileConnection(input = {}) {
   const authMode = resolveAuthMode(input.remoteAuthMode, sourceBlock.authMode)
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
   const token = incomingToken ? encryptDesktopSecret(incomingToken) : sourceBlock.token
+  const remoteProfile = normalizeRemoteProfileName(input.remoteProfile, target)
 
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required before pinning a profile.')
   }
 
   const profiles = { ...(existing.profiles || {}) }
-  profiles[target] = { mode: 'remote', url: normalizeRemoteBaseUrl(remoteUrl), authMode, token }
+  profiles[target] = { mode: 'remote', url: normalizeRemoteBaseUrl(remoteUrl), authMode, token, remoteProfile }
   const next = { mode: existing.mode === 'remote' ? 'remote' : 'local', remote: existing.remote || {}, profiles }
   writeDesktopConnectionConfig(next)
   stopPoolBackend(target)

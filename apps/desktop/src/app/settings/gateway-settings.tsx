@@ -39,6 +39,42 @@ const EMPTY_STATE: GatewaySettingsState = {
   remoteUrl: ''
 }
 
+const PROFILE_HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+export function normalizeRemoteProfileHandle(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+function slugSegment(value: string): string {
+  return normalizeRemoteProfileHandle(value).replace(/_/g, '-')
+}
+
+export function suggestRemoteProfileHandle(profileName: string, baseUrl: string, existingNames: Set<string>): string {
+  const remote = normalizeRemoteProfileHandle(profileName) || 'default'
+  let host = ''
+
+  try {
+    host = slugSegment(new URL(baseUrl).hostname.split('.')[0] ?? '')
+  } catch {
+    host = ''
+  }
+
+  const base = remote === 'default' ? [host || 'remote', 'default'].join('-') : remote
+  let candidate = base
+  let suffix = 2
+
+  while (existingNames.has(candidate)) {
+    candidate = `${base}-${suffix}`
+    suffix += 1
+  }
+
+  return candidate
+}
+
+function isValidProfileHandle(value: string): boolean {
+  return PROFILE_HANDLE_RE.test(value)
+}
+
 function ModeCard({
   active,
   description,
@@ -107,6 +143,7 @@ export function GatewaySettings() {
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
   const [remoteProfiles, setRemoteProfiles] = useState<ProfileInfo[] | null>(null)
+  const [remoteProfileHandles, setRemoteProfileHandles] = useState<Record<string, string>>({})
   const [remoteProfilesBaseUrl, setRemoteProfilesBaseUrl] = useState('')
   const [remoteProfilesLoading, setRemoteProfilesLoading] = useState(false)
   const [pinningProfile, setPinningProfile] = useState<null | string>(null)
@@ -144,6 +181,7 @@ export function GatewaySettings() {
     setRemoteToken('')
     setLastTest(null)
     setRemoteProfiles(null)
+    setRemoteProfileHandles({})
     setRemoteProfilesBaseUrl('')
 
     desktop
@@ -441,6 +479,18 @@ export function GatewaySettings() {
       const result = await window.hermesDesktop.listRemoteProfilesForConnection(payload())
       setRemoteProfiles(result.profiles)
       setRemoteProfilesBaseUrl(result.baseUrl)
+      setRemoteProfileHandles(() => {
+        const used = new Set(localProfileNames)
+        const next: Record<string, string> = {}
+
+        for (const profile of result.profiles) {
+          const suggested = suggestRemoteProfileHandle(profile.name, result.baseUrl, used)
+          used.add(suggested)
+          next[profile.name] = suggested
+        }
+
+        return next
+      })
       notify({
         kind: 'success',
         title: g.remoteProfilesLoadedTitle,
@@ -454,8 +504,10 @@ export function GatewaySettings() {
   }
 
   const pinRemoteProfile = async (profile: ProfileInfo) => {
-    if (profile.is_default || profile.name === 'default') {
-      notify({ kind: 'warning', title: g.remoteProfileDefaultTitle, message: g.remoteProfileDefaultDesc })
+    const handle = normalizeRemoteProfileHandle(remoteProfileHandles[profile.name] ?? '')
+
+    if (!isValidProfileHandle(handle) || handle === 'default') {
+      notify({ kind: 'warning', title: g.remoteProfileHandleInvalidTitle, message: g.remoteProfileHandleInvalidDesc })
 
       return
     }
@@ -463,17 +515,22 @@ export function GatewaySettings() {
     setPinningProfile(profile.name)
 
     try {
-      if (!localProfileNames.has(profile.name)) {
-        await createProfile({ name: profile.name, no_skills: true })
+      if (!localProfileNames.has(handle)) {
+        await createProfile({ name: handle, no_skills: true })
       }
 
       await window.hermesDesktop.pinRemoteProfileConnection({
         ...payload(),
+        remoteProfile: profile.name,
         sourceProfile: scope ?? undefined,
-        targetProfile: profile.name
+        targetProfile: handle
       })
       await refreshActiveProfile()
-      notify({ kind: 'success', title: g.remoteProfilePinnedTitle, message: g.remoteProfilePinned(profile.name) })
+      notify({
+        kind: 'success',
+        title: g.remoteProfilePinnedTitle,
+        message: g.remoteProfilePinned(profile.name, handle)
+      })
     } catch (err) {
       notifyError(err, g.remoteProfilePinFailed(profile.name))
     } finally {
@@ -695,19 +752,23 @@ export function GatewaySettings() {
                 </div>
               ) : (
                 remoteProfiles.map(profile => {
-                  const exists = localProfileNames.has(profile.name)
+                  const handle = remoteProfileHandles[profile.name] ?? ''
+                  const normalizedHandle = normalizeRemoteProfileHandle(handle)
+                  const exists = localProfileNames.has(normalizedHandle)
                   const isDefault = profile.is_default || profile.name === 'default'
                   const busy = pinningProfile === profile.name
+                  const validHandle = isValidProfileHandle(normalizedHandle) && normalizedHandle !== 'default'
 
                   return (
                     <div
-                      className="flex flex-wrap items-center gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2"
+                      className="grid gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)_auto] sm:items-center"
                       key={profile.name}
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">
-                          {profile.name}
-                          {isDefault ? <span className="ml-2 text-(--ui-text-tertiary)">({g.remoteProfileDefault})</span> : null}
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] font-medium">
+                          <span className="truncate">{profile.name}</span>
+                          <Pill>{g.remoteProfileRemote}</Pill>
+                          {isDefault ? <Pill tone="primary">{g.remoteProfileDefault}</Pill> : null}
                         </div>
                         <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                           {profile.provider && profile.model
@@ -715,16 +776,34 @@ export function GatewaySettings() {
                             : g.remoteProfileNoModel}
                         </div>
                       </div>
-                      {exists ? <Pill tone="primary">{g.remoteProfileLocal}</Pill> : null}
-                      <Button
-                        disabled={busy || isDefault}
-                        onClick={() => void pinRemoteProfile(profile)}
-                        size="sm"
-                        variant={exists ? 'textStrong' : 'outline'}
-                      >
-                        {busy ? <Loader2 className="animate-spin" /> : null}
-                        {exists ? g.pinRemoteProfileExisting : g.pinRemoteProfileNew}
-                      </Button>
+                      <div className="grid gap-1">
+                        <label className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
+                          {g.remoteProfileHandleLabel}
+                        </label>
+                        <Input
+                          className={cn('h-8 font-mono', CONTROL_TEXT, !validHandle && 'border-destructive/50')}
+                          onChange={event => {
+                            const next = normalizeRemoteProfileHandle(event.target.value)
+                            setRemoteProfileHandles(current => ({ ...current, [profile.name]: next }))
+                          }}
+                          value={handle}
+                        />
+                        <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {g.remoteProfileHandleHint(profile.name)}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {exists ? <Pill tone="primary">{g.remoteProfileLocal}</Pill> : null}
+                        <Button
+                          disabled={busy || !validHandle}
+                          onClick={() => void pinRemoteProfile(profile)}
+                          size="sm"
+                          variant={exists ? 'textStrong' : 'outline'}
+                        >
+                          {busy ? <Loader2 className="animate-spin" /> : null}
+                          {exists ? g.pinRemoteProfileExisting : g.pinRemoteProfileNew}
+                        </Button>
+                      </div>
                     </div>
                   )
                 })

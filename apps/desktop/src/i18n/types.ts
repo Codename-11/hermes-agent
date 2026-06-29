@@ -485,14 +485,17 @@ export interface Translations {
       remoteProfilesLoaded: (count: number, baseUrl: string) => string
       remoteProfilesFailed: string
       remoteProfileDefault: string
+      remoteProfileRemote: string
       remoteProfileNoModel: string
       remoteProfileLocal: string
-      remoteProfileDefaultTitle: string
-      remoteProfileDefaultDesc: string
+      remoteProfileHandleLabel: string
+      remoteProfileHandleHint: (remoteProfile: string) => string
+      remoteProfileHandleInvalidTitle: string
+      remoteProfileHandleInvalidDesc: string
       pinRemoteProfileNew: string
       pinRemoteProfileExisting: string
       remoteProfilePinnedTitle: string
-      remoteProfilePinned: (name: string) => string
+      remoteProfilePinned: (remoteProfile: string, localHandle: string) => string
       remoteProfilePinFailed: (name: string) => string
       signedOutTitle: string
       signedOutMessage: string

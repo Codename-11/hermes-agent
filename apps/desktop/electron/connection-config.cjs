@@ -62,20 +62,32 @@ function normalizeRemoteBaseUrl(rawUrl) {
   return parsed.toString().replace(/\/+$/, '')
 }
 
-function buildGatewayWsUrl(baseUrl, token) {
-  const parsed = new URL(baseUrl)
-  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
-  const prefix = parsed.pathname.replace(/\/+$/, '')
+function withOptionalProfileParam(url, profile) {
+  const remoteProfile = String(profile || '').trim()
+  if (!remoteProfile) return url
 
-  return `${wsScheme}://${parsed.host}${prefix}/api/ws?token=${encodeURIComponent(token)}`
+  const parsed = new URL(url)
+  if (!parsed.searchParams.has('profile')) {
+    parsed.searchParams.set('profile', remoteProfile)
+  }
+
+  return parsed.toString()
 }
 
-function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
+function buildGatewayWsUrl(baseUrl, token, profile) {
   const parsed = new URL(baseUrl)
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
   const prefix = parsed.pathname.replace(/\/+$/, '')
 
-  return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
+  return withOptionalProfileParam(`${wsScheme}://${parsed.host}${prefix}/api/ws?token=${encodeURIComponent(token)}`, profile)
+}
+
+function buildGatewayWsUrlWithTicket(baseUrl, ticket, profile) {
+  const parsed = new URL(baseUrl)
+  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+
+  return withOptionalProfileParam(`${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`, profile)
 }
 
 /**
@@ -163,7 +175,13 @@ function profileRemoteOverride(config, profile) {
     return null
   }
 
-  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+  const remoteProfile = String(entry.remoteProfile || '').trim()
+  return {
+    url,
+    authMode: normAuthMode(entry.authMode),
+    token: entry.token,
+    ...(remoteProfile ? { remoteProfile } : {})
+  }
 }
 
 /**

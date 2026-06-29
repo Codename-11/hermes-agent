@@ -386,8 +386,8 @@ Required behavior:
 
 - Settings -> Gateway Connection shows a Remote profiles panel when the selected scope is remote.
 - The panel can call the selected remote gateway's `/api/profiles` endpoint using the saved token/OAuth connection path.
-- A named remote profile can be added as a local profile handle, then pinned to that remote gateway as a per-profile remote override.
-- Selecting that handle from the existing profile rail routes future Desktop traffic to the remote profile; switching back to a local profile uses the local backend.
+- A remote profile can be added as a distinct local profile handle, then pinned to that remote gateway as a per-profile remote override. The local handle no longer has to match the remote profile name, so a remote `default` / Atlas can coexist with the local `default` / Atlas.
+- Selecting that handle from the existing profile rail routes future Desktop traffic to the remote gateway; switching back to a local profile uses the local backend.
 
 Retirement criteria:
 
