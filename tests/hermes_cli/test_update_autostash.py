@@ -1795,6 +1795,35 @@ def test_tgi_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     assert kwargs["capture_output"] is True
 
 
+def test_conflict_marker_scan_ignores_decorative_equals_separators(tmp_path):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    worktree = tmp_path / "worktree"
+    jobs = worktree / "cron" / "jobs.py"
+    cli = worktree / "cli.py"
+    jobs.parent.mkdir(parents=True)
+    jobs.write_text(
+        "# =============================================================================\n"
+        "# Configuration\n"
+        "# =============================================================================\n",
+        encoding="utf-8",
+    )
+    cli.write_text(
+        "print('ok')\n"
+        "# =============================================================================\n",
+        encoding="utf-8",
+    )
+
+    assert hermes_fork_update._scan_conflict_markers(
+        worktree, ["cron/jobs.py", "cli.py"]
+    ) == []
+
+    cli.write_text("<<<<<<< ours\nold\n=======\nnew\n>>>>>>> theirs\n", encoding="utf-8")
+    assert hermes_fork_update._scan_conflict_markers(
+        worktree, ["cron/jobs.py", "cli.py"]
+    ) == ["cli.py"]
+
+
 def test_tgi_deploy_handoff_resolve_suppresses_child_success_before_validation(
     monkeypatch, tmp_path, capsys
 ):
