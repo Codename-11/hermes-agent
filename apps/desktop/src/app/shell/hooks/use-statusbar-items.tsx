@@ -118,7 +118,6 @@ interface StatusbarItemsOptions {
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
-  gatewayLogLines: readonly string[]
   gatewayState: string
   inferenceStatus: RuntimeReadinessResult | null
   openAgents: () => void
@@ -135,7 +134,6 @@ export function useStatusbarItems({
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
-  gatewayLogLines,
   gatewayState,
   inferenceStatus,
   openAgents,
@@ -206,16 +204,16 @@ export function useStatusbarItems({
   const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
 
   const gatewayMenuContent = useMemo(
-    () => (
+    () => (close: () => void) => (
       <GatewayMenuPanel
         gatewayState={gatewayState}
         inferenceStatus={inferenceStatus}
-        logLines={gatewayLogLines}
+        onClose={close}
         onOpenSystem={() => openCommandCenterSection('system')}
         statusSnapshot={statusSnapshot}
       />
     ),
-    [gatewayLogLines, gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
+    [gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
   )
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
@@ -311,6 +309,7 @@ export function useStatusbarItems({
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
     const base = copy.backendLabel(backendVersion ?? copy.unknown)
+
     const behindHint =
       !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
     const updateBreakdown = backendUpdateLabel(backendUpdateStatus)

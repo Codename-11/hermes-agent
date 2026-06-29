@@ -234,7 +234,11 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.showFiles': 'Show file browser',
-      'view.showTerminal': 'Show terminal',
+      'view.showTerminal': 'Toggle terminal',
+      'view.newTerminal': 'New terminal',
+      'view.nextTerminal': 'Next terminal',
+      'view.prevTerminal': 'Previous terminal',
+      'view.closeTerminal': 'Close terminal',
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',
@@ -1069,6 +1073,7 @@ export const en: Translations = {
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
     title: 'Profiles',
     count: count => `${count} ${count === 1 ? 'profile' : 'profiles'}`,
+    search: 'Search profiles...',
     loading: 'Loading profiles...',
     newProfile: 'New profile',
     allProfiles: 'All profiles',
@@ -1141,6 +1146,8 @@ export const en: Translations = {
 
   cron: {
     close: 'Close cron',
+    title: 'Scheduled jobs',
+    count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     search: 'Search cron jobs...',
     loading: 'Loading cron jobs...',
     states: {
@@ -1902,6 +1909,10 @@ export const en: Translations = {
     terminalFocus: 'Focus terminal view',
     terminalSplit: 'Return to split view',
     terminalHide: 'Hide terminal',
+    terminalsAria: 'Terminals',
+    terminalNew: 'New terminal',
+    terminalCloseOthers: 'Close others',
+    terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
   },
 
