@@ -91,6 +91,20 @@ test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride(null, 'coder'), null)
 })
 
+test('profileRemoteOverride preserves the target remote profile metadata', () => {
+  const config = {
+    profiles: {
+      'tgi-atlas': { mode: 'remote', url: 'https://x', authMode: 'oauth', remoteProfile: 'default' }
+    }
+  }
+  assert.deepEqual(profileRemoteOverride(config, 'tgi-atlas'), {
+    url: 'https://x',
+    authMode: 'oauth',
+    token: undefined,
+    remoteProfile: 'default'
+  })
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -207,6 +221,17 @@ test('buildGatewayWsUrlWithTicket uses ?ticket= not ?token=', () => {
   const url = buildGatewayWsUrlWithTicket('https://gw.example.com/hermes', 'tkt-9')
   assert.equal(url, 'wss://gw.example.com/hermes/api/ws?ticket=tkt-9')
   assert.ok(!url.includes('token='))
+})
+
+test('buildGatewayWsUrl appends an optional remote profile alias target', () => {
+  assert.equal(buildGatewayWsUrl('http://127.0.0.1:9119', 'tok', 'default'), 'ws://127.0.0.1:9119/api/ws?token=tok&profile=default')
+})
+
+test('buildGatewayWsUrlWithTicket appends an optional remote profile alias target', () => {
+  assert.equal(
+    buildGatewayWsUrlWithTicket('https://example.com/hermes', 'ticket', 'server-atlas'),
+    'wss://example.com/hermes/api/ws?ticket=ticket&profile=server-atlas'
+  )
 })
 
 test('buildGatewayWsUrlWithTicket url-encodes the ticket', () => {

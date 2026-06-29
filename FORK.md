@@ -358,13 +358,42 @@ Primary files:
 - `apps/desktop/src/i18n/*.ts`
 - `docs/refs/2026-06-desktop-remote-profile-handles.md`
 
-Retire this carry when upstream provides an equivalent Desktop workflow for remote gateway profile discovery, local handle creation, persisted per-profile remote routing, and safe local -> remote -> local switching.
+Why Axiom needs it:
+
+- Upstream Desktop can save per-profile remote gateway overrides, but operators still have to create local stubs and copy connection settings by hand before remote profiles are visible in the profile rail.
+- Axiom/TGI need a low-friction way to load named profiles from a remote gateway and pin them as local Desktop profile handles so the existing profile rail/sidebar becomes the local/remote agent switcher.
+- The local handle must be independent from the remote profile name: for example, a remote `default` / Atlas can be pinned locally as `tgi-atlas` without colliding with the local `default` / Atlas.
+- The closest upstream design, draft PR #39337, is broad and stale; this patch intentionally ports only the narrow discover-and-pin workflow.
+
+Required behavior:
+
+- Settings -> Gateway Connection shows a Remote profiles panel when the selected scope is remote.
+- The panel can call the selected remote gateway's `/api/profiles` endpoint using the saved token/OAuth connection path.
+- A remote profile can be added as a distinct local profile handle, then pinned to that remote gateway as a per-profile remote override while preserving `remoteProfile` metadata through sanitized config, REST routing, and WebSocket URL generation.
+- Selecting that handle from the existing profile rail routes future Desktop traffic to the target remote profile; switching back to a local profile uses the local backend.
+
+Retirement criteria:
+
+- Upstream provides an equivalent or better Desktop workflow for discovering remote profiles/gateways, showing them beside local profiles, and switching without manual stub creation or token copying.
+- Upstream routes chat/session/profile-scoped settings to the selected backend correctly and handles dead remotes visibly.
+- Once upstream covers those outcomes, remove this IPC/UI/string patch and keep the upstream implementation.
+
+Watch upstream for:
+
+- PR #39337 or successor peer-gateway/profile selector work.
+- Desktop changes mentioning peer gateways, remote profile discovery, connection registry, gateway selector, per-profile routing, profile switch races, or model/session refresh on profile swap.
+
+Reference:
+
+- `docs/refs/2026-06-desktop-remote-profile-handles.md`
 
 Focused checks:
 
 ```bash
 node --check apps/desktop/electron/main.cjs
 node --check apps/desktop/electron/preload.cjs
+node --test apps/desktop/electron/connection-config.test.cjs
+cd apps/desktop && npx vitest run --environment jsdom src/app/settings/gateway-settings.remote-profiles.test.ts
 cd apps/desktop && npm run typecheck
 ```
 
