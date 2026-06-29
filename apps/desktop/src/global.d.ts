@@ -1,4 +1,5 @@
 import type { ProfileInfo } from '@/types/hermes'
+
 import type {
   PetOverlayBounds,
   PetOverlayControl,
@@ -415,6 +416,7 @@ export interface DesktopConnectionConfig {
   profile: null | string
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
+  remoteProfile?: null | string
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
   remoteUrl: string
@@ -431,6 +433,7 @@ export interface DesktopConnectionConfigInput {
 }
 
 export interface DesktopPinRemoteProfileInput extends DesktopConnectionConfigInput {
+  remoteProfile?: null | string
   sourceProfile?: null | string
   targetProfile: string
 }

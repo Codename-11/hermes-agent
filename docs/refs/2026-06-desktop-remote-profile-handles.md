@@ -17,22 +17,30 @@ The panel:
 
 1. Calls the selected remote gateway's `/api/profiles` endpoint using the same auth mode as the gateway connection.
 2. Shows the remote gateway's named profiles in the settings UI.
-3. Lets an operator add or update a local profile handle for a named remote profile.
-4. Pins that local handle to the selected remote gateway as a per-profile remote override.
+3. Lets an operator add or update a distinct local profile handle for a remote profile.
+4. Pins that local handle to the selected remote gateway as a per-profile remote override, including the special remote `default` profile.
 5. Leaves the existing profile rail/sidebar and keyboard shortcuts as the switching surface.
+
+This specifically supports Axiom/TGI Desktop cases where the local machine and a remote server both expose a `default` profile/persona. The remote Atlas/default profile can be pinned as a local handle such as `tgi-atlas` while the local Atlas/default remains `default`.
 
 The implementation intentionally does **not** port upstream draft PR #39337 wholesale. That draft is broad and stale relative to current `main`; this patch keeps the fork delta narrow and retire-able.
 
 ## Files owned by this patch
 
+- `apps/desktop/electron/connection-config.cjs`
+  - Preserves the pinned remote profile name (`remoteProfile`) through sanitized per-profile remote config and WebSocket URL generation.
+- `apps/desktop/electron/connection-config.test.cjs`
+  - Covers remote-profile metadata and profile query routing.
 - `apps/desktop/electron/main.cjs`
-  - Adds IPC handlers to list remote profiles and pin a named local profile to a remote gateway.
+  - Adds IPC handlers to list remote profiles and pin a named local profile handle to a specific remote profile.
 - `apps/desktop/electron/preload.cjs`
   - Exposes the new IPC methods to the renderer.
 - `apps/desktop/src/global.d.ts`
   - Types the new Desktop bridge methods/results.
 - `apps/desktop/src/app/settings/gateway-settings.tsx`
-  - Adds the Remote profiles panel and pin/add workflow.
+  - Adds the Remote profiles panel, editable local-handle input, and pin/add workflow.
+- `apps/desktop/src/app/settings/gateway-settings.remote-profiles.test.ts`
+  - Covers profile-safe handle normalization and remote/default handle suggestions.
 - `apps/desktop/src/i18n/*.ts`
   - Adds user-facing strings for the panel.
 - `FORK.md`
@@ -83,8 +91,8 @@ Manual smoke test:
 2. Configure All profiles or a named profile as Remote gateway.
 3. Authenticate/test the remote.
 4. Click **Load remote profiles**.
-5. Add or pin a named remote profile.
-6. Select that profile from the profile rail; verify chat/session traffic lands on the remote backend.
+5. Add or pin a remote profile. For remote `default`, use a distinct local handle such as `tgi-atlas`; do not reuse local `default`.
+6. Select that handle from the profile rail; verify chat/session traffic lands on the remote backend.
 7. Switch back to a local profile; verify traffic returns to the local backend.
 8. Restart Desktop and confirm the pinned remote profile remains available.
 
