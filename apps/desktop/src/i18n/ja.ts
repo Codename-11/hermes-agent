@@ -1191,6 +1191,7 @@ export const ja = defineLocale({
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',
     title: 'プロファイル',
     count: count => `${count} プロファイル`,
+    search: 'プロファイルを検索...',
     loading: 'プロファイルを読み込み中...',
     newProfile: '新しいプロファイル',
     allProfiles: 'すべてのプロファイル',
@@ -1264,6 +1265,8 @@ export const ja = defineLocale({
 
   cron: {
     close: 'Cron を閉じる',
+    title: 'スケジュール済みジョブ',
+    count: count => `${count} 件のジョブ`,
     search: 'Cron ジョブを検索...',
     loading: 'Cron ジョブを読み込み中...',
     states: {
@@ -2024,6 +2027,10 @@ export const ja = defineLocale({
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
     terminalHide: 'ターミナルを非表示',
+    terminalsAria: 'ターミナル',
+    terminalNew: '新しいターミナル',
+    terminalCloseOthers: '他を閉じる',
+    terminalCloseAll: 'すべて閉じる',
     addToChat: 'チャットに追加'
   },
 
@@ -2209,6 +2216,7 @@ export const ja = defineLocale({
         reading: '読み取り中',
         opened: 'オープン済み',
         opening: 'オープン中',
+        failedToOpen: 'オープン失敗',
         searched: '検索完了',
         searching: '検索中',
         ran: '実行完了',
