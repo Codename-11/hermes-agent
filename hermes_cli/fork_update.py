@@ -129,6 +129,31 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "python -m pytest -o addopts= -q tests/agent/test_live_tool_schema_refresh.py tests/tools/test_mcp_tool.py::TestMCPServerTask::test_refresh_tools_replaces_schema_for_unchanged_tool_name",
         ),
     },
+    {
+        "name": "Webhook route-level toolsets",
+        "paths": (
+            "gateway/platforms/webhook.py",
+            "gateway/run.py",
+            "hermes_cli/webhook.py",
+            "tests/gateway/test_webhook_adapter.py",
+            "tests/hermes_cli/test_webhook_cli.py",
+        ),
+        "checks": (
+            "python -m pytest -o addopts= -q tests/gateway/test_webhook_adapter.py tests/hermes_cli/test_webhook_cli.py",
+        ),
+    },
+    {
+        "name": "A2A inter-agent communication",
+        "paths": (
+            "plugins/platforms/a2a/",
+            "tests/plugins/test_a2a_plugin.py",
+            "hermes_cli/tools_config.py",
+        ),
+        "checks": (
+            "python -m py_compile plugins/platforms/a2a/adapter.py plugins/platforms/a2a/tools.py plugins/platforms/a2a/protocol.py",
+            "python -m pytest -o addopts= -q tests/plugins/test_a2a_plugin.py",
+        ),
+    },
 )
 
 
@@ -866,7 +891,7 @@ def _scan_conflict_markers(worktree: Path, paths: list[str]) -> list[str]:
             text = candidate.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if any(marker in text for marker in ("<<<<<<< ", "=======\n", ">>>>>>> ")):
+        if any(line.startswith(("<<<<<<< ", "=======", ">>>>>>> ")) for line in text.splitlines()):
             offenders.append(rel)
     return offenders
 
