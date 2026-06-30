@@ -9494,6 +9494,68 @@ def _cmd_update_pip(args):
     print("✓ Update complete! Restart hermes to use the new version.")
 
 
+def _print_update_brief(
+    git_cmd: list[str],
+    repo: Path,
+    pre_update_head: str,
+    *,
+    branch: str,
+    gateway_mode: bool,
+) -> None:
+    """Print the categorized update brief for a successful git update.
+
+    ``hermes version`` already previews pending commits through
+    ``compute_pending_digest``. After a real update succeeds, mirror that UX by
+    diffing the pre-update HEAD against the current HEAD and printing the same
+    feature/fix/test/etc. breakdown. In gateway mode, also write the prompt
+    injection marker so the originating chat gets a natural-language summary.
+
+    Best-effort by design: a brief failure must never turn a completed update
+    into a failed update.
+    """
+    if not pre_update_head:
+        return
+    try:
+        post_update_head = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if not post_update_head or post_update_head == pre_update_head:
+            return
+
+        from hermes_cli.update_ui import (
+            write_brief_prompt_inject,
+            write_update_brief,
+        )
+
+        brief = write_update_brief(
+            repo,
+            pre_update_head,
+            post_update_head,
+            git_cmd=git_cmd,
+            branch=branch,
+        )
+        if brief is None:
+            return
+
+        print(brief.digest)
+        print(f"  Full brief: {brief.path}")
+        print(f"  Latest:     {brief.latest}")
+        print()
+        if gateway_mode:
+            inject_path = write_brief_prompt_inject(brief)
+            if inject_path is not None:
+                print(
+                    "  ✓ Hermes will post a natural-language "
+                    "summary in this channel shortly."
+                )
+    except Exception as exc:
+        logger.debug("update brief generation failed: %s", exc)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -9505,6 +9567,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     assume_yes = bool(getattr(args, "yes", False))
     pre_update_snapshot_id = None
+    pre_update_head = ""
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -9861,6 +9924,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 and not assume_yes
                 and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
             )
+
+            try:
+                pre_update_head = subprocess.run(
+                    git_cmd + ["rev-parse", "HEAD"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+            except Exception:
+                pre_update_head = ""
 
             # Check if there are updates
             result = subprocess.run(
@@ -10411,6 +10485,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as exc:
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
+
+        _print_update_brief(
+            git_cmd,
+            PROJECT_ROOT,
+            pre_update_head,
+            branch=current_branch if is_deploy_branch else branch,
+            gateway_mode=gateway_mode,
+        )
 
         print()
         print("✓ Update complete!")

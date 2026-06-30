@@ -1,4 +1,5 @@
 import { isDesktopFsRemoteMode, readDesktopFileText } from '@/lib/desktop-fs'
+import { gatewayFileUrl } from '@/lib/media'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -104,7 +105,7 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     // binary/large files when readFileText/readFileDataUrl returns metadata.
     previewKind: isHtml ? 'html' : isImage ? 'image' : 'text',
     source: raw,
-    url: pathToFileUrl(path)
+    url: isDesktopFsRemoteMode() ? gatewayFileUrl(path) : pathToFileUrl(path)
   }
 }
 
@@ -133,6 +134,10 @@ export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
 ): Promise<PreviewTarget | null> {
+  if (isDesktopFsRemoteMode() && !/^https?:\/\//i.test(rawTarget.trim())) {
+    return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 

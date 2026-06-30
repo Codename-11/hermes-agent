@@ -462,6 +462,63 @@ cd apps/desktop && npx vitest run --environment jsdom \
 cd apps/desktop && npm run typecheck
 ```
 
+### 9. Desktop remote gateway file previews
+
+Commit:
+
+- This commit — `fix(desktop): preview remote gateway files through backend`
+
+Primary files:
+
+- `apps/desktop/electron/main.cjs`
+- `apps/desktop/src/lib/media.ts`
+- `apps/desktop/src/lib/local-preview.ts`
+- `apps/desktop/src/components/assistant-ui/markdown-text.tsx`
+- `apps/desktop/src/lib/local-preview.test.ts`
+- `apps/desktop/src/lib/media.remote.test.ts`
+- `hermes_cli/web_server.py`
+- `tests/hermes_cli/test_web_server_fs.py`
+- `tests/hermes_cli/test_web_server_files.py`
+
+Why TGI needs it:
+
+- Desktop may run on Bailey's local PC while Atlas runs on `tgi-http` through a remote gateway. Backend-local paths such as `/home/tgi/.../report.html` are valid on the gateway host but invalid on the Desktop client.
+- Upstream remote filesystem support covers source/data-url reads, but live HTML previews and some media/open paths could still become local `file://` URLs and fail with Electron `ERR_FILE_NOT_FOUND`.
+- Operators expect generated HTML reports, preview links, file-browser previews, and media fallback opens to behave like a local gateway session: the app should read from the active backend, not from the client PC.
+
+Required behavior:
+
+- In remote mode, renderer-side preview target fallback skips Electron-local normalization for backend-local file paths.
+- Backend-local preview targets use the `hermes-remote-file://<desktop-profile>/<absolute-path>` protocol for in-app live previews. Electron main resolves that protocol by fetching `/api/fs/preview` from the selected remote backend with the active token/OAuth session.
+- Relative assets referenced by remote HTML remain under the same custom-protocol host/path so CSS/JS/images are fetched from the same backend directory.
+- `/api/fs/preview` streams regular files inline with the same auth/path hardening as the existing remote filesystem API; query-token auth is allowed only for this browser-openable stream endpoint and `/api/files/download`.
+- Remote media fallback/open behavior must not fall back to local `file://`; it should use the remote preview bridge or authenticated `/api/fs/preview` URLs.
+- File-browser/manual source previews continue to use `/api/fs/read-text` and `/api/fs/read-data-url`; remote file watching stays disabled because the client cannot watch the backend filesystem directly.
+
+Retirement criteria:
+
+- Upstream Desktop supports authenticated remote-gateway live file previews, including HTML with relative assets, OAuth/dashboard auth, profile-routed remote sessions, source/data-url previews, and remote media/open fallback paths without local `file://` leakage.
+- Once upstream covers those outcomes, remove this TGI protocol/API patch and keep the upstream implementation.
+
+Watch upstream for:
+
+- PRs/issues mentioning remote gateway previews, `ERR_FILE_NOT_FOUND`, Desktop file browser, `/api/fs/preview`, `file://` conversion, `openPreviewInBrowser`, chat/media fallback downloads, or OAuth remote artifact opening.
+- Current adjacent upstream work includes #44326, #44538, #46663, and #46895; keep checking whether their final landed form covers this whole behavior class.
+
+Focused checks:
+
+```bash
+node --check apps/desktop/electron/main.cjs
+cd apps/desktop && npx vitest run --environment jsdom \
+  src/lib/local-preview.test.ts \
+  src/lib/media.remote.test.ts \
+  src/lib/desktop-fs.test.ts \
+  src/store/preview.test.ts \
+  src/lib/preview-targets.test.ts
+venv/bin/python -m pytest -o 'addopts=' -q tests/hermes_cli/test_web_server_fs.py tests/hermes_cli/test_web_server_files.py
+cd apps/desktop && npm run typecheck
+```
+
 ## Current known update/build pitfalls
 
 ### 7. Anthropic Claude OAuth billing-lane fixes

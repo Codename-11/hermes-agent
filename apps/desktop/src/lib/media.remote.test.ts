@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { filePathFromMediaPath, gatewayMediaDataUrl, isGatewayLocalMediaPath, isRemoteGateway, mediaExternalUrl } from './media'
+import {
+  filePathFromMediaPath,
+  gatewayFileUrl,
+  gatewayMediaDataUrl,
+  isGatewayLocalMediaPath,
+  isRemoteGateway,
+  mediaExternalUrl,
+  openMediaExternal
+} from './media'
 
 describe('isRemoteGateway', () => {
   afterEach(() => {
@@ -60,19 +68,73 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
   })
 
-  it('rewrites gateway-local paths to an authenticated download URL', () => {
+  it('rewrites gateway-local paths to an authenticated inline preview URL', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
     expect(mediaExternalUrl('file:///tmp/a b.png')).toBe(
-      'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
+      'https://gw/api/fs/preview?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
     )
     expect(mediaExternalUrl('/tmp/a b.png')).toBe(
-      'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
+      'https://gw/api/fs/preview?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
     )
   })
 
-  it('falls back to file:// when remote connection lacks a token', () => {
-    $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
-    expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
+  it('uses the remote preview endpoint instead of local file:// when remote connection lacks a token', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', authMode: 'oauth' } as never)
+    expect(mediaExternalUrl('/tmp/a.png')).toBe('https://gw/api/fs/preview?path=%2Ftmp%2Fa.png')
+  })
+})
+
+describe('gatewayFileUrl', () => {
+  afterEach(() => {
+    $connection.set(null)
+  })
+
+  it('encodes the active desktop profile in the host so relative assets keep profile routing', () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    expect(gatewayFileUrl('/home/u/report dir/index.html')).toBe(
+      'hermes-remote-file://remote-docker/home/u/report%20dir/index.html'
+    )
+  })
+
+  it('uses a primary-profile sentinel when no desktop profile is selected', () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    expect(gatewayFileUrl('file:///tmp/a%20b.html')).toBe('hermes-remote-file://_/tmp/a%20b.html')
+  })
+})
+
+describe('openMediaExternal', () => {
+  const openExternal = vi.fn(async () => undefined)
+  const openPreviewInBrowser = vi.fn(async () => undefined)
+
+  beforeEach(() => {
+    openExternal.mockClear()
+    openPreviewInBrowser.mockClear()
+    vi.stubGlobal('window', { hermesDesktop: { openExternal, openPreviewInBrowser } })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  it('opens remote gateway-local files through the remote preview bridge', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await openMediaExternal('/home/u/report.html')
+
+    expect(openPreviewInBrowser).toHaveBeenCalledWith('hermes-remote-file://remote-docker/home/u/report.html')
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('keeps local files on the local openExternal path', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await openMediaExternal('/tmp/local.txt')
+
+    expect(openExternal).toHaveBeenCalledWith('file:///tmp/local.txt')
+    expect(openPreviewInBrowser).not.toHaveBeenCalled()
   })
 })
 

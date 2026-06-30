@@ -56,6 +56,29 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+const REMOTE_FILE_PROTOCOL = 'hermes-remote-file'
+
+function encodePathname(path: string): string {
+  const normalized = filePathFromMediaPath(path)
+
+  return normalized
+    .split('/')
+    .map((part, index) => (index === 0 && part === '' ? '' : encodeURIComponent(part)))
+    .join('/')
+}
+
+// URL for gateway-local files rendered inside Desktop. The Electron main
+// process handles this protocol by fetching bytes from the selected remote
+// gateway with the active auth session, so Chromium never tries to read the
+// backend path from the user's local disk. The profile lives in the hostname so
+// relative HTML assets keep routing to the same backend profile.
+export function gatewayFileUrl(path: string, profile?: null | string): string {
+  const owner = encodeURIComponent(profile || $connection.get()?.profile || '_')
+  const pathname = encodePathname(path)
+
+  return `${REMOTE_FILE_PROTOCOL}://${owner}${pathname.startsWith('/') ? pathname : `/${pathname}`}`
+}
+
 export function isGatewayLocalMediaPath(path: string): boolean {
   return !/^(?:https?:|data:)/i.test(path) && (path.startsWith('file:') || path.startsWith('/'))
 }
@@ -71,14 +94,25 @@ export function mediaExternalUrl(path: string): string {
   if (isRemoteGateway()) {
     const conn = $connection.get()
 
-    if (conn?.baseUrl && conn.token) {
+    if (conn?.baseUrl && isGatewayLocalMediaPath(path)) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
+      const token = conn.token ? `&token=${encodeURIComponent(conn.token)}` : ''
 
-      return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
+      return `${conn.baseUrl}/api/fs/preview?path=${file}${token}`
     }
   }
 
   return /^file:/i.test(path) ? path : `file://${path}`
+}
+
+export async function openMediaExternal(path: string): Promise<void> {
+  if (isRemoteGateway() && isGatewayLocalMediaPath(path)) {
+    await window.hermesDesktop?.openPreviewInBrowser?.(gatewayFileUrl(path))
+
+    return
+  }
+
+  await window.hermesDesktop?.openExternal(mediaExternalUrl(path))
 }
 
 // Custom Electron scheme (registered in electron/main.cjs) that streams a local

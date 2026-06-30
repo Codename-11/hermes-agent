@@ -330,7 +330,7 @@ def _has_valid_session_token(request: Request) -> bool:
 # Routes that may also authenticate via a ``?token=`` query param, for download
 # links opened by the OS shell or a new browser tab where the session header
 # can't be set. Kept narrow — same query-token tradeoff as the /api/pty WS.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
+_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download", "/api/fs/preview"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
@@ -1892,6 +1892,29 @@ async def fs_read_data_url(path: str):
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
+
+
+@app.get("/api/fs/preview")
+async def fs_preview(path: str):
+    """Stream a backend-local file inline for Desktop remote previews.
+
+    Remote Desktop clients cannot load ``file:///home/...`` from the gateway
+    host. This endpoint uses the same authenticated filesystem boundary as the
+    source/data-url preview routes, but returns an inline FileResponse so HTML
+    documents and their relative CSS/JS/image assets can be rendered by the
+    desktop app without copying paths to the local PC.
+    """
+    target, st = _fs_regular_file(_fs_path(path))
+    if st.st_size > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    return FileResponse(
+        path=str(target),
+        media_type=_fs_mime_type(target),
+        filename=target.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 @app.get("/api/fs/git-root")

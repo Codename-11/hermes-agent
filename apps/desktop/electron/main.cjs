@@ -709,6 +709,7 @@ app.setAboutPanelOptions({
 // handler removes the size cap and gives the <video> element seekable,
 // range-aware playback. Must be registered before the app is ready.
 const MEDIA_PROTOCOL = 'hermes-media'
+const REMOTE_FILE_PROTOCOL = 'hermes-remote-file'
 // Only audio/video may be streamed. Without this the handler would read any
 // non-blocklisted local file (no size cap) for any `fetch(hermes-media://…)`.
 const STREAMABLE_MEDIA_EXTS = new Set([
@@ -728,6 +729,15 @@ const STREAMABLE_MEDIA_EXTS = new Set([
 protocol.registerSchemesAsPrivileged([
   {
     scheme: MEDIA_PROTOCOL,
+    privileges: {
+      secure: true,
+      standard: true,
+      stream: true,
+      supportFetchAPI: true
+    }
+  },
+  {
+    scheme: REMOTE_FILE_PROTOCOL,
     privileges: {
       secure: true,
       standard: true,
@@ -759,6 +769,64 @@ function registerMediaProtocol() {
       bypassCustomProtocolHandlers: true,
       headers: request.headers
     })
+  })
+}
+
+function parseRemoteFileUrl(rawUrl) {
+  const url = new URL(String(rawUrl || ''))
+  if (url.protocol !== `${REMOTE_FILE_PROTOCOL}:`) {
+    throw new Error('Not a remote Hermes file URL')
+  }
+  const profileHost = decodeURIComponent(url.hostname || '_')
+  const profile = profileHost && profileHost !== '_' ? profileHost : null
+  const remotePath = decodeURIComponent(url.pathname || '')
+  if (!remotePath) {
+    throw new Error('Remote file path is required')
+  }
+  return { profile, remotePath }
+}
+
+function remotePreviewRoute(remotePath, remoteProfile, includeToken) {
+  const route = pathWithRemoteProfileOverride(`/api/fs/preview?path=${encodeURIComponent(remotePath)}`, remoteProfile)
+  if (!includeToken) {
+    return route
+  }
+  const parsed = new URL(route, 'http://hermes.local')
+  parsed.searchParams.set('token', includeToken)
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
+async function fetchRemotePreviewFile(profile, remotePath) {
+  const conn = await ensureBackend(profile)
+  if (conn.mode !== 'remote') {
+    throw new Error('Remote preview requires a remote gateway connection')
+  }
+  const route = remotePreviewRoute(remotePath, conn.remoteProfile)
+  const url = `${conn.baseUrl}${route}`
+
+  return conn.authMode === 'oauth'
+    ? fetchBinaryViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+    : fetchBinary(url, conn.token, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+}
+
+function registerRemoteFileProtocol() {
+  protocol.handle(REMOTE_FILE_PROTOCOL, async request => {
+    try {
+      const { profile, remotePath } = parseRemoteFileUrl(request.url)
+      const download = await fetchRemotePreviewFile(profile, remotePath)
+      const contentType = headerValue(download.headers, 'content-type') || mimeTypeForPath(remotePath)
+
+      return new Response(download.buffer, {
+        headers: {
+          'cache-control': 'no-store, no-cache, must-revalidate',
+          'content-type': contentType
+        }
+      })
+    } catch (error) {
+      rememberLog(`[preview] remote file protocol failed: ${error.message}`)
+
+      return new Response('Remote file not found', { status: error.statusCode || 404 })
+    }
   })
 }
 
@@ -1100,6 +1168,23 @@ async function openPreviewInBrowser(rawUrl) {
     parsed = new URL(raw)
   } catch {
     return false
+  }
+
+  if (parsed.protocol === `${REMOTE_FILE_PROTOCOL}:`) {
+    try {
+      const { profile, remotePath } = parseRemoteFileUrl(raw)
+      const conn = await ensureBackend(profile)
+      if (conn.mode !== 'remote') return false
+      const route = remotePreviewRoute(
+        remotePath,
+        conn.remoteProfile,
+        conn.authMode === 'oauth' ? '' : conn.token
+      )
+
+      return openExternalUrl(`${conn.baseUrl}${route}`)
+    } catch {
+      return false
+    }
   }
 
   if (parsed.protocol === 'file:') {
@@ -7862,6 +7947,7 @@ app.whenReady().then(() => {
   }
   installMediaPermissions()
   registerMediaProtocol()
+  registerRemoteFileProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()

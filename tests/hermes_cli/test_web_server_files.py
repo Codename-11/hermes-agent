@@ -305,8 +305,8 @@ def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
 
     del client.headers[web_server._SESSION_HEADER_NAME]
 
-    # The query-token escape hatch is scoped to /api/files/download only; it must
-    # not unlock the rest of the API surface.
+    # The query-token escape hatch is scoped to browser/shell-opened file
+    # streams; it must not unlock the JSON file-management API surface.
     leaked = client.get(
         "/api/files/read",
         params={"path": str(file_path), "token": web_server._SESSION_TOKEN},

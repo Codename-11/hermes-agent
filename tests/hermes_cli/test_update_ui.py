@@ -54,3 +54,23 @@ def test_status_line_preserves_scrollback_and_uses_no_raw_tty_control(monkeypatc
     assert "\r" not in wrapped_output
     assert "\033" not in wrapped_output
     assert not any(frame in wrapped_output for frame in update_ui._SPINNER_FRAMES)
+
+
+def test_digest_header_can_include_commit_sha_range():
+    commits = [
+        ("abcdef123456", "feat(update): add digest range", "Bailey", "feat"),
+        ("123456abcdef", "fix(update): wire final summary", "Bailey", "fix"),
+    ]
+    buckets = update_ui._bucket_commits(commits)
+
+    digest = update_ui._render_digest(
+        commits,
+        buckets,
+        "2 files changed",
+        title="Upstream changes since last update",
+        range_label="abcdef1234..123456abcd",
+    )
+
+    assert "━━ Upstream changes since last update (abcdef1234..123456abcd) ━━" in digest
+    assert "Features (1):" in digest
+    assert "Fixes (1):" in digest
