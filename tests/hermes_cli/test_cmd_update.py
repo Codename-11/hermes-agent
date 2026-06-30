@@ -164,8 +164,124 @@ class TestCmdUpdateTermuxUvBootstrap:
         mock_run.assert_not_called()
 
 
+class TestCmdUpdateBrief:
+    @patch("subprocess.run")
+    def test_print_update_brief_emits_digest_paths_and_gateway_prompt(
+        self, mock_run, capsys
+    ):
+        from hermes_cli import main as hm
+
+        brief = SimpleNamespace(
+            digest=(
+                "\n━━ Upstream changes since last update (oldsha..newsha) ━━\n"
+                "  2 commits\n"
+                "\n"
+                "  Features (1):\n"
+                "    • feat(update): add update brief\n"
+                "\n"
+                "  Fixes (1):\n"
+                "    • fix(update): wire brief output\n"
+            ),
+            path="/tmp/brief.md",
+            latest="/tmp/last-update-brief.md",
+        )
+        mock_run.return_value = subprocess.CompletedProcess(
+            ["git", "rev-parse", "HEAD"],
+            0,
+            stdout="newsha\n",
+            stderr="",
+        )
+
+        with patch(
+            "hermes_cli.update_ui.write_update_brief",
+            return_value=brief,
+        ) as mock_write, patch(
+            "hermes_cli.update_ui.write_brief_prompt_inject",
+            return_value="/tmp/.update_brief_prompt.json",
+        ) as mock_inject:
+            hm._print_update_brief(
+                ["git"],
+                PROJECT_ROOT,
+                "oldsha",
+                branch="tgi",
+                gateway_mode=True,
+            )
+
+        out = capsys.readouterr().out
+        assert "Upstream changes since last update (oldsha..newsha)" in out
+        assert "Features (1):" in out
+        assert "Fixes (1):" in out
+        assert "Full brief: /tmp/brief.md" in out
+        assert "Latest:     /tmp/last-update-brief.md" in out
+        assert "natural-language summary" in out
+
+        mock_write.assert_called_once_with(
+            PROJECT_ROOT,
+            "oldsha",
+            "newsha",
+            git_cmd=["git"],
+            branch="tgi",
+        )
+        mock_inject.assert_called_once_with(brief)
+
+    @patch("subprocess.run")
+    def test_print_update_brief_skips_when_head_did_not_change(
+        self, mock_run, capsys
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            ["git", "rev-parse", "HEAD"],
+            0,
+            stdout="same\n",
+            stderr="",
+        )
+
+        with patch("hermes_cli.update_ui.write_update_brief") as mock_write:
+            hm._print_update_brief(
+                ["git"],
+                PROJECT_ROOT,
+                "same",
+                branch="tgi",
+                gateway_mode=False,
+            )
+
+        assert capsys.readouterr().out == ""
+        mock_write.assert_not_called()
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_prints_categorized_brief_after_successful_git_update(
+        self, mock_run, _mock_which, mock_args
+    ):
+        from hermes_cli import main as hm
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="oldsha\n", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        with patch.object(hm, "_print_update_brief") as mock_brief:
+            cmd_update(mock_args)
+
+        mock_brief.assert_called_once_with(
+            _expected_git_cmd(),
+            PROJECT_ROOT,
+            "oldsha",
+            branch="main",
+            gateway_mode=False,
+        )
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

@@ -372,7 +372,13 @@ def _summary_parts(buckets):
 
 
 def _render_digest(
-    commits, buckets, stat: str, *, title: str, cap: int = 10,
+    commits,
+    buckets,
+    stat: str,
+    *,
+    title: str,
+    cap: int = 10,
+    range_label: str = "",
 ) -> str:
     """Shared digest renderer — summary line + top *cap* commits per category.
 
@@ -381,9 +387,10 @@ def _render_digest(
     two views look identical and are maintained in one place.
     """
     summary_text = ", ".join(_summary_parts(buckets)) or "no categorized commits"
+    header = f"{title} ({range_label})" if range_label else title
     lines: list[str] = []
     lines.append("")
-    lines.append(f"━━ {title} ━━")
+    lines.append(f"━━ {header} ━━")
     lines.append(f"  {len(commits)} commits" + (f" · {stat}" if stat else ""))
     lines.append(f"  {summary_text}")
     lines.append("")
@@ -488,8 +495,12 @@ def write_update_brief(
 
     # Compact digest for inline printing — shared with the version-preview path.
     digest = _render_digest(
-        commits, buckets, stat,
-        title="Upstream changes since last update", cap=10,
+        commits,
+        buckets,
+        stat,
+        title="Upstream changes since last update",
+        cap=10,
+        range_label=f"{old_sha[:10]}..{new_sha[:10]}",
     )
     summary_text = ", ".join(summary_parts) if summary_parts else "no categorized commits"
 
