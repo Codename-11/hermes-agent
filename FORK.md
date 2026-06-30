@@ -489,10 +489,10 @@ Why TGI needs it:
 Required behavior:
 
 - In remote mode, renderer-side preview target fallback skips Electron-local normalization for backend-local file paths.
-- Backend-local preview targets use the `hermes-remote-file://<desktop-profile>/<absolute-path>` protocol for in-app live previews. Electron main resolves that protocol by fetching `/api/fs/preview` from the selected remote backend with the active token/OAuth session.
+- Backend-local preview targets use the `hermes-remote-file://<desktop-profile>/<absolute-path>` protocol for in-app live previews. Electron main resolves that protocol by fetching `/api/fs/preview` from the selected remote backend with the active token/OAuth session, and registers the handler for both the default Electron session and the `persist:hermes-preview` webview partition.
 - Relative assets referenced by remote HTML remain under the same custom-protocol host/path so CSS/JS/images are fetched from the same backend directory.
 - `/api/fs/preview` streams regular files inline with the same auth/path hardening as the existing remote filesystem API; query-token auth is allowed only for this browser-openable stream endpoint and `/api/files/download`.
-- Remote media fallback/open behavior must not fall back to local `file://`; it should use the remote preview bridge or authenticated `/api/fs/preview` URLs.
+- Remote media fallback/open behavior must not fall back to local `file://`; it should use the remote preview bridge or an Electron-authenticated local temp open rather than sending OAuth-only backend URLs to the system browser.
 - File-browser/manual source previews continue to use `/api/fs/read-text` and `/api/fs/read-data-url`; remote file watching stays disabled because the client cannot watch the backend filesystem directly.
 
 Retirement criteria:

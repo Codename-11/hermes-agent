@@ -710,6 +710,7 @@ app.setAboutPanelOptions({
 // range-aware playback. Must be registered before the app is ready.
 const MEDIA_PROTOCOL = 'hermes-media'
 const REMOTE_FILE_PROTOCOL = 'hermes-remote-file'
+const PREVIEW_SESSION_PARTITION = 'persist:hermes-preview'
 // Only audio/video may be streamed. Without this the handler would read any
 // non-blocklisted local file (no size cap) for any `fetch(hermes-media://…)`.
 const STREAMABLE_MEDIA_EXTS = new Set([
@@ -809,25 +810,38 @@ async function fetchRemotePreviewFile(profile, remotePath) {
     : fetchBinary(url, conn.token, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
 }
 
+async function handleRemoteFileProtocolRequest(request) {
+  try {
+    const { profile, remotePath } = parseRemoteFileUrl(request.url)
+    const download = await fetchRemotePreviewFile(profile, remotePath)
+    const contentType = headerValue(download.headers, 'content-type') || mimeTypeForPath(remotePath)
+
+    return new Response(download.buffer, {
+      headers: {
+        'cache-control': 'no-store, no-cache, must-revalidate',
+        'content-type': contentType
+      }
+    })
+  } catch (error) {
+    rememberLog(`[preview] remote file protocol failed: ${error.message}`)
+
+    return new Response('Remote file not found', { status: error.statusCode || 404 })
+  }
+}
+
 function registerRemoteFileProtocol() {
-  protocol.handle(REMOTE_FILE_PROTOCOL, async request => {
-    try {
-      const { profile, remotePath } = parseRemoteFileUrl(request.url)
-      const download = await fetchRemotePreviewFile(profile, remotePath)
-      const contentType = headerValue(download.headers, 'content-type') || mimeTypeForPath(remotePath)
+  const handler = request => handleRemoteFileProtocolRequest(request)
+  protocol.handle(REMOTE_FILE_PROTOCOL, handler)
 
-      return new Response(download.buffer, {
-        headers: {
-          'cache-control': 'no-store, no-cache, must-revalidate',
-          'content-type': contentType
-        }
-      })
-    } catch (error) {
-      rememberLog(`[preview] remote file protocol failed: ${error.message}`)
-
-      return new Response('Remote file not found', { status: error.statusCode || 404 })
-    }
-  })
+  try {
+    // The preview pane renders inside its own persisted webview partition.
+    // Electron's module-level protocol handler only covers the default session;
+    // without registering against the webview partition too, Windows treats
+    // hermes-remote-file:// as an external OS protocol and opens the Store.
+    session.fromPartition(PREVIEW_SESSION_PARTITION).protocol.handle(REMOTE_FILE_PROTOCOL, handler)
+  } catch (error) {
+    rememberLog(`[preview] failed to register remote file protocol for preview partition: ${error.message}`)
+  }
 }
 
 let mainWindow = null
@@ -1173,16 +1187,12 @@ async function openPreviewInBrowser(rawUrl) {
   if (parsed.protocol === `${REMOTE_FILE_PROTOCOL}:`) {
     try {
       const { profile, remotePath } = parseRemoteFileUrl(raw)
-      const conn = await ensureBackend(profile)
-      if (conn.mode !== 'remote') return false
-      const route = remotePreviewRoute(
-        remotePath,
-        conn.remoteProfile,
-        conn.authMode === 'oauth' ? '' : conn.token
-      )
+      const download = await fetchRemotePreviewFile(profile, remotePath)
+      await openDownloadedFile(download.buffer, remotePath, download.headers)
 
-      return openExternalUrl(`${conn.baseUrl}${route}`)
-    } catch {
+      return true
+    } catch (error) {
+      rememberLog(`[preview] failed to open remote preview externally: ${error.message}`)
       return false
     }
   }
