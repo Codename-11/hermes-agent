@@ -128,6 +128,47 @@ def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     assert response.status_code == 413
 
 
+def test_fs_preview_streams_inline_file(client, tmp_path):
+    target = tmp_path / "report.html"
+    target.write_text("<h1>ok</h1>", encoding="utf-8")
+
+    response = client.get("/api/fs/preview", params={"path": str(target)})
+
+    assert response.status_code == 200
+    assert response.content == b"<h1>ok</h1>"
+    assert response.headers["content-type"].startswith("text/html")
+    assert "inline" in response.headers["content-disposition"]
+    assert "no-store" in response.headers["cache-control"]
+
+
+def test_fs_preview_rejects_over_cap(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 3)
+    target = tmp_path / "large.html"
+    target.write_text("1234")
+
+    response = client.get("/api/fs/preview", params={"path": str(target)})
+
+    assert response.status_code == 413
+
+
+def test_fs_preview_authenticates_via_query_token(tmp_path):
+    client = TestClient(web_server.app)
+    target = tmp_path / "report.html"
+    target.write_text("<h1>ok</h1>", encoding="utf-8")
+
+    ok = client.get(
+        "/api/fs/preview",
+        params={"path": str(target), "token": web_server._SESSION_TOKEN},
+    )
+    assert ok.status_code == 200
+    assert ok.content == b"<h1>ok</h1>"
+
+    assert client.get(
+        "/api/fs/preview", params={"path": str(target), "token": "nope"}
+    ).status_code == 401
+    assert client.get("/api/fs/preview", params={"path": str(target)}).status_code == 401
+
+
 def test_fs_git_root_for_nested_file(client, tmp_path):
     (tmp_path / ".git").mkdir()
     nested = tmp_path / "pkg" / "mod"

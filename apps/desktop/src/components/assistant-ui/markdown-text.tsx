@@ -23,18 +23,20 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { normalizeExternalUrl, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   filePathFromMediaPath,
+  gatewayFileUrl,
   gatewayMediaDataUrl,
   isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  mediaStreamUrl
+  mediaStreamUrl,
+  openMediaExternal
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
@@ -110,16 +112,18 @@ async function mediaSrc(path: string): Promise<string> {
     return path
   }
 
-  // Stream audio/video through the custom protocol: data URLs are capped and
-  // load the whole file into memory, which broke playback for larger videos.
-  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return mediaStreamUrl(path)
+  // Remote gateway: the file lives on the gateway machine, so read it over the
+  // authenticated API/protocol bridge rather than this machine's disk. Images
+  // stay as data URLs; audio/video use the remote-file protocol so media
+  // elements never try a local file:// path.
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return mediaKind(path) === 'image' ? gatewayMediaDataUrl(path) : gatewayFileUrl(path)
   }
 
-  // Remote gateway: the image lives on the gateway machine, so read it over the
-  // authenticated API rather than this machine's disk.
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+  // Stream local audio/video through the custom protocol: data URLs are capped
+  // and load the whole file into memory, which broke playback for larger videos.
+  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
+    return mediaStreamUrl(path)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -133,7 +137,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   return (
     <button
       className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
-      onClick={() => void window.hermesDesktop?.openExternal(mediaExternalUrl(path))}
+      onClick={() => void openMediaExternal(path)}
       type="button"
     >
       Open {kind} file
@@ -219,7 +223,7 @@ function MediaAttachment({ path }: { path: string }) {
       href="#"
       onClick={event => {
         event.preventDefault()
-        openExternalLink(mediaExternalUrl(path))
+        void openMediaExternal(path)
       }}
     >
       {failed ? `Open ${name}` : `Loading ${name}...`}
