@@ -70,7 +70,23 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "Full details saved in cron output."
         )
 
-    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+    provider_timeout = "readtimeout" in lower or "timed out" in lower or "timeout" in lower
+    script_failure = "script exited with code" in lower or "traceback" in lower
+    provider_context = any(
+        marker in lower
+        for marker in (
+            "provider",
+            "fallback chain",
+            "chat.completions",
+            "responses stream",
+            "openai",
+            "anthropic",
+            "openrouter",
+            "codex auxiliary",
+            "llm",
+        )
+    )
+    if provider_timeout and (provider_context or not script_failure):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
             "Fallback chain was exhausted or unavailable. "

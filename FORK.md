@@ -519,6 +519,35 @@ venv/bin/python -m pytest -o 'addopts=' -q tests/hermes_cli/test_web_server_fs.p
 cd apps/desktop && npm run typecheck
 ```
 
+### 10. Cron failure delivery classifier for script tracebacks
+
+Commit:
+
+- This commit — `fix(cron): avoid mislabeling script tracebacks as provider timeout`
+
+Primary files:
+
+- `cron/scheduler.py`
+- `tests/cron/test_scheduler.py`
+
+Why TGI needs it:
+
+- TGI runs deterministic script-only cron jobs for operational bridges such as the Lead-Time Board capacity email import.
+- A script traceback can contain ordinary source text such as `urlopen(req, timeout=20)`. The prior delivery summarizer matched the word `timeout` anywhere in the traceback and reported `provider timeout`, hiding the real script/API failure from Slack.
+
+Required behavior:
+
+- Provider timeout summaries still apply to actual provider/fallback-chain timeout errors.
+- Script failures with tracebacks are summarized as script failures unless provider context is present.
+- Full details remain in cron output; Slack gets a compact but non-misleading alert.
+
+Focused checks:
+
+```bash
+venv/bin/python -m py_compile cron/scheduler.py
+venv/bin/python -m pytest -o 'addopts=' -q tests/cron/test_scheduler.py::TestCronFailureSummary
+```
+
 ## Current known update/build pitfalls
 
 ### 7. Anthropic Claude OAuth billing-lane fixes

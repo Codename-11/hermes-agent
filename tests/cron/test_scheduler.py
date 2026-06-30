@@ -7,9 +7,33 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _summarize_cron_failure_for_delivery
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestCronFailureSummary:
+    def test_provider_timeout_summary_for_provider_errors(self):
+        msg = _summarize_cron_failure_for_delivery(
+            {"name": "daily"},
+            "RuntimeError: Codex auxiliary Responses stream exceeded 120.0s total timeout",
+        )
+
+        assert "provider timeout" in msg
+        assert "Fallback chain" in msg
+
+    def test_script_traceback_timeout_argument_is_not_provider_timeout(self):
+        error = """
+Script exited with code 1
+Traceback (most recent call last):
+  File "<string>", line 27, in <module>
+    with urllib.request.urlopen(req, timeout=20) as r:
+urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+"""
+        msg = _summarize_cron_failure_for_delivery({"name": "capacity"}, error)
+
+        assert "provider timeout" not in msg
+        assert "Script exited with code 1" in msg
 
 
 class TestPerJobToolsetMcpMerge:
