@@ -101,7 +101,7 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "tests/gateway/test_slack",
         ),
         "checks": (
-            "python -m pytest -o addopts= -q tests/gateway/test_slack.py tests/gateway/test_slack_mention.py tests/gateway/test_slack_channel_session_scope.py tests/gateway/test_slack_session_model.py",
+            "python -m pytest -o addopts= -q tests/gateway/test_slack.py tests/gateway/test_slack_mention.py tests/gateway/test_slack_channel_session_scope.py",
         ),
     },
     {
@@ -995,6 +995,8 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         cwd=worktree,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         capture_output=True,
     )

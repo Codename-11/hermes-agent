@@ -972,6 +972,26 @@ def test_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     assert kwargs["cwd"] == tmp_path
     assert kwargs["env"]["HERMES_UPDATE_RESOLVE"] == "1"
     assert kwargs["capture_output"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
+def test_slack_focused_checks_reference_existing_files():
+    from pathlib import Path
+
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = Path(__file__).resolve().parents[2]
+    checks = hermes_axiom_update._focused_checks_for_paths(
+        ["gateway/platforms/slack.py"],
+        {},
+    )
+
+    assert checks
+    for check in checks:
+        for token in check.split():
+            if token.startswith("tests/") and token.endswith(".py"):
+                assert (repo / token).exists(), token
 
 
 def test_conflict_marker_scan_ignores_decorative_equals_separators(tmp_path):
