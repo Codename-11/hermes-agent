@@ -904,7 +904,7 @@ def build_anthropic_client(
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            "user-agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
         }
     else:
@@ -1132,7 +1132,7 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
             data=data,
             headers={
                 "Content-Type": content_type,
-                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                "User-Agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
             },
             method="POST",
         )
@@ -1174,6 +1174,11 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     has already produced a valid token, adopt it and skip the POST entirely.
     Only fall back to refreshing ourselves when no fresh credential is found.
     """
+    caller_refresh_token = creds.get("refreshToken", "")
+    if not caller_refresh_token:
+        logger.debug("No refresh token available — cannot refresh")
+        return None
+
     # Claude Code may have already refreshed — adopt its token rather than
     # racing it with our (possibly already-rotated) refresh token. Only adopt
     # when the live re-read produced a DIFFERENT token with a real future
@@ -1181,7 +1186,13 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     # no-op, and a 0/absent ``expiresAt`` means "managed key / unknown expiry"
     # (see is_claude_code_token_valid) which must NOT be treated as a fresh
     # refresh here.
-    current = read_claude_code_credentials()
+    #
+    # Restrict this live re-read to credentials that came from Claude Code's
+    # credential sources (``source`` is attached by read_claude_code_credentials)
+    # or refresh-only stale callers. Otherwise a unit/integration caller that
+    # passes an arbitrary expired token can accidentally adopt the operator's
+    # unrelated host-local Claude credential and mask refresh failures.
+    current = read_claude_code_credentials() if (creds.get("source") or not creds.get("accessToken")) else None
     if current:
         current_token = current.get("accessToken", "")
         current_exp = current.get("expiresAt", 0) or 0
@@ -1194,10 +1205,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             logger.debug("Adopted Claude Code's already-refreshed OAuth token")
             return current_token
 
-    refresh_token = (current or {}).get("refreshToken", "") or creds.get("refreshToken", "")
-    if not refresh_token:
-        logger.debug("No refresh token available — cannot refresh")
-        return None
+    refresh_token = (current or {}).get("refreshToken", "") or caller_refresh_token
 
     try:
         refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
@@ -1578,6 +1586,8 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         # Anthropic migrated the OAuth token endpoint to platform.claude.com;
         # console.anthropic.com now 404s. Try the new host first, then fall
         # back to console for older deployments (mirrors the refresh path).
+        # Use the claude-code/ UA prefix: Anthropic blocks claude-cli/ on the
+        # OAuth token endpoint (returns 404 for all versions).
         result = None
         last_error = None
         for endpoint in _OAUTH_TOKEN_URLS:
@@ -1586,7 +1596,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
                 data=exchange_data,
                 headers={
                     "Content-Type": "application/json",
-                    "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                    "User-Agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
                 },
                 method="POST",
             )
@@ -1991,6 +2001,18 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _apply_assistant_cache_control_to_last_cacheable_block(
+    blocks: List[Dict[str, Any]],
+    cache_control: Any,
+) -> None:
+    if not isinstance(cache_control, dict):
+        return
+    for block in reversed(blocks):
+        if isinstance(block, dict) and block.get("type") in {"text", "tool_use"}:
+            block.setdefault("cache_control", dict(cache_control))
+            break
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
@@ -2045,6 +2067,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                     clean["input"] = redacted
             replayed.append(clean)
         if replayed:
+            _apply_assistant_cache_control_to_last_cacheable_block(
+                replayed, m.get("cache_control")
+            )
             return {"role": "assistant", "content": replayed}
 
     blocks = _extract_preserved_thinking_blocks(m)
@@ -2070,6 +2095,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name", ""),
             "input": parsed_args,
         })
+    _apply_assistant_cache_control_to_last_cacheable_block(
+        blocks, m.get("cache_control")
+    )
     # Kimi's /coding endpoint (Anthropic protocol) requires assistant
     # tool-call messages to carry reasoning_content when thinking is
     # enabled server-side.  Preserve it as a thinking block so Kimi
@@ -2185,7 +2213,9 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> set[int]:
     """Strip tool_use blocks with no matching tool_result, and vice versa.
 
     Context compression or session truncation can remove either side of a
-    tool-call pair.  Anthropic rejects both orphans with HTTP 400.
+    tool-call pair, or insert messages between a tool_use and its result.
+    Anthropic requires each tool_use to have a matching tool_result in the
+    IMMEDIATELY FOLLOWING user message — a global ID match is not enough.
 
     Mutates ``result`` in place and returns assistant-message indices whose
     content was mutated, because thinking signatures on those messages are no
@@ -2193,53 +2223,78 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> set[int]:
     """
     mutated_assistant_indices: set[int] = set()
 
-    # Strip orphaned tool_use blocks (no matching tool_result follows)
-    tool_result_ids = set()
-    for m in result:
-        if m["role"] == "user" and isinstance(m["content"], list):
-            for block in m["content"]:
-                if block.get("type") == "tool_result":
-                    tool_result_ids.add(block.get("tool_use_id"))
-    for idx, m in enumerate(result):
-        if m["role"] == "assistant" and isinstance(m["content"], list):
-            kept = [
-                b
-                for b in m["content"]
-                if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
-            ]
-            # Stripping an orphaned tool_use mutates the assistant turn. Any
-            # signed thinking block on that turn was computed against the
-            # original content and must be demoted before replay. Preserve the
-            # older mutation-index contract too so generic signature handling
-            # remains conservative for non-Anthropic-compatible endpoints.
-            if len(kept) != len(m["content"]):
-                mutated_assistant_indices.add(idx)
-                if any(
-                    isinstance(b, dict)
-                    and b.get("type") in {"thinking", "redacted_thinking"}
-                    for b in m["content"]
-                ):
-                    m["_thinking_signature_invalidated"] = True
-            m["content"] = kept
-            if not m["content"]:
-                m["content"] = [{"type": "text", "text": "(tool call removed)"}]
+    # Pass 1: For each assistant message with tool_use blocks, check that
+    # EACH tool_use ID has a matching tool_result in the immediately following
+    # user message.  Strip tool_use blocks that lack an adjacent result —
+    # Anthropic rejects non-adjacent pairs with HTTP 400 even when the IDs
+    # match somewhere later in the conversation.
+    for i, m in enumerate(result):
+        if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+            continue
+        tool_use_ids_in_turn = {
+            b.get("id")
+            for b in m["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        }
+        if not tool_use_ids_in_turn:
+            continue
 
-    # Strip orphaned tool_result blocks (no matching tool_use precedes them)
-    tool_use_ids = set()
-    for m in result:
-        if m["role"] == "assistant" and isinstance(m["content"], list):
-            for block in m["content"]:
-                if block.get("type") == "tool_use":
-                    tool_use_ids.add(block.get("id"))
-    for m in result:
-        if m["role"] == "user" and isinstance(m["content"], list):
-            m["content"] = [
-                b
+        # Collect result IDs from the immediately following user message only.
+        adjacent_result_ids: set = set()
+        if i + 1 < len(result):
+            nxt = result[i + 1]
+            if nxt.get("role") == "user" and isinstance(nxt.get("content"), list):
+                for block in nxt["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        adjacent_result_ids.add(block.get("tool_use_id"))
+
+        orphaned = tool_use_ids_in_turn - adjacent_result_ids
+        if not orphaned:
+            continue
+
+        kept = [
+            b
+            for b in m["content"]
+            if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in orphaned)
+        ]
+        # If stripping an orphaned tool_use mutated a turn that also carries a
+        # signed thinking block, that block's Anthropic signature was computed
+        # against the ORIGINAL (un-stripped) turn content and is now invalid.
+        # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
+        # the latest assistant message cannot be modified".  Flag the turn so
+        # _manage_thinking_signatures can demote the dead signature instead of
+        # replaying it verbatim.  See hermes-agent: extended-thinking + parallel
+        # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
+        if len(kept) != len(m["content"]):
+            mutated_assistant_indices.add(i)
+            if any(
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
                 for b in m["content"]
-                if b.get("type") != "tool_result" or b.get("tool_use_id") in tool_use_ids
-            ]
-            if not m["content"]:
-                m["content"] = [{"type": "text", "text": "(tool result removed)"}]
+            ):
+                m["_thinking_signature_invalidated"] = True
+        m["content"] = kept if kept else [{"type": "text", "text": "(tool call removed)"}]
+
+    # Pass 2: Rebuild the set of tool_use IDs that survived pass 1, then
+    # strip tool_result blocks that no longer have any matching tool_use
+    # anywhere in the conversation.
+    surviving_tool_use_ids: set = set()
+    for m in result:
+        if m.get("role") == "assistant" and isinstance(m.get("content"), list):
+            for block in m["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    surviving_tool_use_ids.add(block.get("id"))
+
+    for m in result:
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        new_content = [
+            b
+            for b in m["content"]
+            if not (isinstance(b, dict) and b.get("type") == "tool_result")
+            or b.get("tool_use_id") in surviving_tool_use_ids
+        ]
+        if len(new_content) != len(m["content"]):
+            m["content"] = new_content if new_content else [{"type": "text", "text": "(tool result removed)"}]
 
     return mutated_assistant_indices
 
