@@ -108,9 +108,20 @@ class A2AAdapter(BasePlatformAdapter):
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _request_base_url(self) -> str:
+                """Best-effort public base URL from the inbound card request."""
+                def first(header: str) -> str:
+                    return (self.headers.get(header) or "").split(",")[0].strip()
+
+                host = first("X-Forwarded-Host") or first("Host")
+                if not host:
+                    return ""
+                scheme = first("X-Forwarded-Proto") or "http"
+                return f"{scheme}://{host}/"
+
             def do_GET(self):  # noqa: N802
                 if self.path.rstrip("/") in ("/.well-known/agent.json", "/.well-known/agent-card.json"):
-                    self._json(200, adapter._build_card())
+                    self._json(200, adapter._build_card(self._request_base_url()))
                     return
                 if self.path.rstrip("/") in ("", "/health"):
                     self._json(200, {"status": "ok", "agent": adapter.agent_name})
@@ -185,16 +196,18 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Agent Card ────────────────────────────────────────────────────────
 
-    def _build_card(self) -> dict:
+    def _build_card(self, request_base_url: str = "") -> dict:
         toolsets = []
         try:
             extra = getattr(self.config, "extra", {}) or {}
             toolsets = list(extra.get("advertised_toolsets") or [])
         except Exception:
             pass
+        public_url = (os.getenv("A2A_PUBLIC_URL", "").strip() or request_base_url or f"http://{self.host}:{self.port}/")
+        public_url = public_url.rstrip("/") + "/"
         return protocol.build_agent_card(
             name=self.agent_name,
-            url=f"http://{self.host}:{self.port}/",
+            url=public_url,
             description=os.getenv(
                 "A2A_AGENT_DESCRIPTION",
                 "Hermes Agent — a general-purpose agent reachable over A2A.",
@@ -214,7 +227,11 @@ class A2AAdapter(BasePlatformAdapter):
         """
         text = protocol.extract_text(params)
         peer = str(params.get("peer") or (params.get("message", {}) or {}).get("from") or "remote-agent")
-        context_id = (params.get("message", {}) or {}).get("contextId") or protocol.new_context_id()
+        context_id = (
+            params.get("contextId")
+            or (params.get("message", {}) or {}).get("contextId")
+            or protocol.new_context_id()
+        )
         task_id = protocol.new_task_id()
 
         if not text:
@@ -269,25 +286,6 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Sending (the agent's reply path) ──────────────────────────────────
 
-    @staticmethod
-    def _is_gateway_notice(content: str) -> bool:
-        """Return True for gateway/runtime notices that are not agent replies.
-
-        The A2A adapter turns the gateway's async send path into a synchronous
-        JSON-RPC response by resolving the pending Future on ``send()``. Generic
-        gateway notices (home-channel onboarding, runtime advisories, etc.) can
-        be emitted before the model's actual answer; returning those to the peer
-        makes a valid A2A task look completed with the wrong content.
-        """
-        text = (content or "").strip()
-        if not text:
-            return False
-        notice_prefixes = (
-            "📬 No home channel is set for ",
-            "ℹ Codex gpt-5.5 caps context ",
-        )
-        return any(text.startswith(prefix) for prefix in notice_prefixes)
-
     async def send(
         self,
         chat_id: str,
@@ -304,12 +302,16 @@ class A2AAdapter(BasePlatformAdapter):
         """
         with self._pending_lock:
             fut = self._pending_replies.get(chat_id)
-        if fut is not None and not fut.done():
-            if self._is_gateway_notice(content or ""):
-                logger.debug("A2A: ignored gateway notice for context %s", chat_id)
+            if fut is not None and not fut.done():
+                # Gateway final/user-visible replies are marked notify=True.
+                # Interim status/editable sends, onboarding notices, and other
+                # local runtime chatter must not complete the blocked JSON-RPC
+                # request before the actual answer is ready.
+                if not (metadata or {}).get("notify"):
+                    logger.debug("A2A: ignored non-final send for context %s", chat_id)
+                    return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+                fut.set_result(content or "")
                 return SendResult(success=True, message_id=str(int(time.time() * 1000)))
-            fut.set_result(content or "")
-            return SendResult(success=True, message_id=str(int(time.time() * 1000)))
         # No waiter (e.g. a late streamed chunk or out-of-band send) — drop it.
         logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))

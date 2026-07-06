@@ -40,6 +40,10 @@ optional_env:
     description: "Inbound A2A server port (default 9900)."
     prompt: "A2A port (default 9900)"
     password: false
+  - name: A2A_PUBLIC_URL
+    description: "Optional public URL advertised in the Agent Card when A2A_HOST is a bind address such as 0.0.0.0 or when served behind a proxy."
+    prompt: "A2A public URL (optional)"
+    password: false
   - name: A2A_AGENT_NAME
     description: "Name advertised on this agent's Agent Card (default: hostname-derived)."
     prompt: "A2A agent name"

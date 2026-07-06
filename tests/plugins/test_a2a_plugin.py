@@ -89,6 +89,15 @@ class TestInjectionFilter:
         assert "peer-x" in wrapped
         assert "do the thing" in wrapped
 
+    def test_wrap_inbound_passes_slash_command_through(self):
+        assert security.wrap_inbound("peer-x", "/sethome") == "/sethome"
+        assert security.wrap_inbound("peer-x", "  /help  ") == "/help"
+
+    def test_wrap_inbound_wraps_mid_text_slash(self):
+        wrapped = security.wrap_inbound("peer-x", "type /help for info")
+        assert "A2A inbound" in wrapped
+        assert "type /help for info" in wrapped
+
 
 class TestOutboundRedaction:
     def test_openai_key_redacted(self):
@@ -336,6 +345,24 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
+    def test_agent_card_public_url_override(self, monkeypatch):
+        monkeypatch.setenv("A2A_PUBLIC_URL", "https://victor.example/a2a")
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        card = adapter._build_card("http://127.0.0.1:9900/")
+        assert card["url"] == "https://victor.example/a2a/"
+
+    def test_agent_card_uses_request_base_url_when_no_override(self, monkeypatch):
+        monkeypatch.delenv("A2A_PUBLIC_URL", raising=False)
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        card = adapter._build_card("https://proxy.example/hermes/")
+        assert card["url"] == "https://proxy.example/hermes/"
+
     def test_live_server_card_and_message_send(self, monkeypatch):
         """Start the real adapter server, hit the Agent Card, then send a task
         and verify the mocked agent's reply comes back as an A2A Task."""
@@ -360,7 +387,7 @@ class TestInboundRoundTrip:
         # by resolving the pending future via the real send() path.
         async def fake_handle_message(event):
             # The reply path the gateway would normally drive.
-            await adapter.send(event.source.chat_id, "ECHO: " + event.text)
+            await adapter.send(event.source.chat_id, "ECHO: " + event.text, metadata={"notify": True})
 
         adapter.handle_message = fake_handle_message  # type: ignore
         adapter._message_handler = object()  # non-None so dispatch proceeds
@@ -383,7 +410,10 @@ class TestInboundRoundTrip:
             # 2) message/send
             body = {
                 "jsonrpc": "2.0", "id": "1", "method": "message/send",
-                "params": {"message": protocol.text_message("user", "hello agent")},
+                "params": {
+                    "contextId": "ctx-top-level",
+                    "message": protocol.text_message("user", "hello agent"),
+                },
             }
 
             def _post():
@@ -399,6 +429,7 @@ class TestInboundRoundTrip:
             assert resp["id"] == "1"
             task = resp["result"]
             assert task["status"]["state"] == "completed"
+            assert task["contextId"] == "ctx-top-level"
             reply = protocol.extract_text(task["artifacts"][0])
             assert "ECHO:" in reply
             assert "hello agent" in reply  # framed text still contains the task
@@ -431,7 +462,8 @@ class TestInboundRoundTrip:
 
         async def fake_handle_message(event):
             await adapter.send(event.source.chat_id, "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised")
-            await adapter.send(event.source.chat_id, "REAL_REPLY")
+            await adapter.send(event.source.chat_id, "INTERIM_STATUS")
+            await adapter.send(event.source.chat_id, "REAL_REPLY", metadata={"notify": True})
 
         adapter.handle_message = fake_handle_message  # type: ignore
         adapter._message_handler = object()

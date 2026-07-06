@@ -126,8 +126,19 @@ PRIVACY_PREFIX = (
 
 
 def wrap_inbound(peer: str, text: str) -> str:
-    """Filter + frame inbound task text for safe injection into the agent."""
-    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound(text)
+    """Filter + frame inbound task text for safe injection into the agent.
+
+    Slash commands (text whose first non-whitespace character is ``/``) must
+    pass through unwrapped so the gateway command processor can see commands
+    such as ``/sethome``. This intentionally bypasses PRIVACY_PREFIX and
+    filter_inbound for slash commands only; bearer auth / localhost bind safety
+    is the trust boundary for command-capable A2A peers, and unknown commands
+    are rejected by the gateway command registry.
+    """
+    stripped = (text or "").strip()
+    if stripped.startswith("/"):
+        return stripped
+    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound(stripped)
 
 
 # --------------------------------------------------------------------------

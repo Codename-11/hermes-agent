@@ -62,6 +62,7 @@ reply is returned over A2A.
 | `A2A_BEARER_TOKEN` | _(unset)_ | Required on inbound calls. Unset ⇒ localhost-only. |
 | `A2A_HOST` | `127.0.0.1` | Bind host. Only widens with a token set. |
 | `A2A_PORT` | `9900` | Inbound port. |
+| `A2A_PUBLIC_URL` | _(unset)_ | Optional URL advertised in the Agent Card when bound to `0.0.0.0` or behind a proxy. |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card. |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 
