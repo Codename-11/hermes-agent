@@ -52,9 +52,11 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, profile?: string | null): Promise<T> {
+  const scopedProfile = profile === undefined ? desktopFsProfile() : profile || undefined
+
   return bridge().api<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
+    body ? { body, method: 'POST', path, profile: scopedProfile } : { path, profile: scopedProfile }
   )
 }
 
@@ -94,12 +96,12 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
+export async function readDesktopFileDataUrl(path: string, profile?: string | null): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readFileDataUrl(path)
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path), undefined, profile)
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }
@@ -179,7 +181,7 @@ export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Pr
   }
 
   if (!options?.directories) {
-    return []
+    return desktop.selectPaths(options)
   }
 
   return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []

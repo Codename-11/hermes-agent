@@ -30,7 +30,6 @@ function StatusbarProbe({ remote = false }: { remote?: boolean }) {
     extraLeftItems: [],
     extraRightItems: [],
     freshDraftReady: false,
-    gatewayLogLines: [],
     gatewayState: 'open',
     inferenceStatus: null,
     openAgents: () => {},

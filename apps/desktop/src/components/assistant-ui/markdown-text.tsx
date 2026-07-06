@@ -188,6 +188,15 @@ function MediaAttachment({ path }: { path: string }) {
 
     setFailed(false)
     setSrc('')
+
+    if (kind === 'file') {
+      setFailed(true)
+
+      return () => {
+        cancelled = true
+      }
+    }
+
     void mediaSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {
@@ -213,7 +222,7 @@ function MediaAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [path])
+  }, [kind, path])
 
   if (kind === 'image' && src) {
     return (

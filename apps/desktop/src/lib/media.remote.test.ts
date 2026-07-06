@@ -1,8 +1,16 @@
+// @vitest-environment jsdom
+// downloadGatewayMediaFile drives an <a download> click, so these need a DOM.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { filePathFromMediaPath, gatewayMediaDataUrl, isGatewayLocalMediaPath, isRemoteGateway, mediaExternalUrl } from './media'
+import {
+  downloadGatewayMediaFile,
+  filePathFromMediaPath,
+  gatewayMediaDataUrl,
+  isRemoteGateway,
+  mediaExternalUrl
+} from './media'
 
 describe('isRemoteGateway', () => {
   afterEach(() => {
@@ -32,15 +40,6 @@ describe('filePathFromMediaPath', () => {
 
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
-  })
-})
-
-describe('isGatewayLocalMediaPath', () => {
-  it('matches gateway-local file paths and excludes browser-native URLs', () => {
-    expect(isGatewayLocalMediaPath('/home/u/out.pdf')).toBe(true)
-    expect(isGatewayLocalMediaPath('file:///home/u/out.pdf')).toBe(true)
-    expect(isGatewayLocalMediaPath('https://example.com/out.pdf')).toBe(false)
-    expect(isGatewayLocalMediaPath('data:image/png;base64,abc')).toBe(false)
   })
 })
 
@@ -77,11 +76,18 @@ describe('mediaExternalUrl', () => {
 })
 
 describe('gatewayMediaDataUrl', () => {
-  const api = vi.fn(async () => ({ data_url: 'data:image/png;base64,ZHVtbXk=' }))
+  const api = vi.fn(async ({ path }: { path: string }) => {
+    if (path.startsWith('/api/fs/read-data-url?')) {
+      return { dataUrl: 'data:image/png;base64,ZHVtbXk=' }
+    }
+
+    throw new Error(`unexpected path ${path}`)
+  })
 
   beforeEach(() => {
     api.mockClear()
     vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote' } as never)
   })
 
   afterEach(() => {
@@ -89,34 +95,82 @@ describe('gatewayMediaDataUrl', () => {
     $connection.set(null)
   })
 
-  it('requests the encoded gateway path against the active remote profile', async () => {
-    $connection.set({ mode: 'remote', profile: 'coder' } as never)
-
-    const url = await gatewayMediaDataUrl('/home/u/.hermes/images/a b.png')
+  it('reads gateway media through the desktop fs bridge instead of /api/media roots', async () => {
+    const url = await gatewayMediaDataUrl('/home/u/.hermes/skills/demo/images/a b.png')
 
     expect(url).toBe('data:image/png;base64,ZHVtbXk=')
     expect(api).toHaveBeenCalledWith({
-      path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png',
+      path: '/api/fs/read-data-url?path=%2Fhome%2Fu%2F.hermes%2Fskills%2Fdemo%2Fimages%2Fa%20b.png'
+    })
+  })
+
+  it('uses the active remote profile for gateway media fs reads', async () => {
+    $connection.set({ mode: 'remote', profile: 'coder' } as never)
+
+    await gatewayMediaDataUrl('/home/u/.hermes/skills/demo/images/a b.png')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=%2Fhome%2Fu%2F.hermes%2Fskills%2Fdemo%2Fimages%2Fa%20b.png',
       profile: 'coder'
     })
   })
 
-  it('lets artifact-owned profiles override the active gateway profile', async () => {
+  it('lets artifact-owned profiles override the active gateway profile for fs reads', async () => {
     $connection.set({ mode: 'remote', profile: 'default' } as never)
 
-    await gatewayMediaDataUrl('/home/u/.hermes/images/a b.png', 'remote-art')
+    await gatewayMediaDataUrl('/home/u/.hermes/skills/demo/images/a b.png', 'remote-art')
 
     expect(api).toHaveBeenCalledWith({
-      path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png',
+      path: '/api/fs/read-data-url?path=%2Fhome%2Fu%2F.hermes%2Fskills%2Fdemo%2Fimages%2Fa%20b.png',
       profile: 'remote-art'
     })
   })
+})
 
-  it('omits profile when no active gateway profile is known', async () => {
-    await gatewayMediaDataUrl('/home/u/.hermes/images/a b.png')
+describe('downloadGatewayMediaFile', () => {
+  const api = vi.fn(async ({ path }: { path: string }) => {
+    if (path.startsWith('/api/fs/read-data-url?')) {
+      return { dataUrl: 'data:text/markdown;base64,IyByZXBvcnQ=' }
+    }
+
+    throw new Error(`unexpected path ${path}`)
+  })
+
+  let clickSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    api.mockClear()
+    vi.stubGlobal('window', { hermesDesktop: { api }, setTimeout: vi.fn() })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob(['# report'], { type: 'text/markdown' }) }))
+    )
+    URL.createObjectURL = vi.fn(() => 'blob:remote-artifact')
+    URL.revokeObjectURL = vi.fn()
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    $connection.set({ mode: 'remote' } as never)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    clickSpy.mockRestore()
+    $connection.set(null)
+  })
+
+  it('downloads gateway files through the desktop fs bridge', async () => {
+    await downloadGatewayMediaFile('file:///Users/me/project/report.md')
 
     expect(api).toHaveBeenCalledWith({
-      path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png'
+      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Freport.md'
     })
+    expect(clickSpy).toHaveBeenCalledOnce()
+  })
+
+  it('rejects when the gateway refuses the file read', async () => {
+    api.mockRejectedValueOnce(new Error('403 File is not readable'))
+
+    await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow('403')
+    expect(clickSpy).not.toHaveBeenCalled()
   })
 })

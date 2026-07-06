@@ -10,6 +10,8 @@
  * header is a small regex.
  */
 
+import { capitalize } from '@/lib/text'
+
 export type CommitGroupId = 'new' | 'fixed' | 'faster' | 'improved' | 'other'
 export const COMMIT_CHANGELOG_DEFAULT_MAX_TOTAL = 40
 
@@ -111,7 +113,7 @@ function tidySubject(subject: string): string {
     return cleaned
   }
 
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+  return capitalize(cleaned)
 }
 
 /**
