@@ -1470,9 +1470,14 @@ class PluginManager:
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
 
-            # Explicit disable always wins (matches on key or on legacy
-            # bare name for back-compat with existing user configs).
-            if lookup_key in disabled or manifest.name in disabled:
+            # Explicit disable always wins. Match on the manifest key, legacy
+            # manifest name, and the path-style key used by older CLI plugin
+            # enable/disable code for bundled platform plugins (e.g.
+            # ``platforms/a2a`` for manifest key ``a2a-platform``).
+            aliases = {lookup_key, manifest.name}
+            if manifest.source == "bundled" and manifest.kind == "platform" and manifest.path:
+                aliases.add(f"platforms/{Path(manifest.path).name}")
+            if aliases & disabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = "disabled via config"
                 self._plugins[lookup_key] = loaded
@@ -1517,6 +1522,15 @@ class PluginManager:
                 self._load_plugin(manifest)
                 continue
 
+            # Everything else (standalone, user-installed backends,
+            # entry-point plugins) is opt-in via plugins.enabled.
+            # Accept both the path-derived key and the legacy bare name
+            # so existing configs keep working. We compute this before the
+            # bundled-platform path because a platform plugin may also expose
+            # tools (A2A does); if the operator explicitly enables that plugin,
+            # load it eagerly so its tools register and appear in `hermes tools`.
+            is_enabled = enabled is not None and bool(aliases & enabled)
+
             # Bundled platform plugins (gateway adapters: telegram, discord,
             # feishu, teams, ...) are registered LAZILY. Their modules import
             # heavy, platform-specific SDKs at module level (lark_oapi,
@@ -1528,18 +1542,14 @@ class PluginManager:
             # is imported only when the gateway / cron / setup / send_message
             # path actually asks for that platform. Every platform Hermes ships
             # remains available out of the box — it just loads on first use.
+            # Explicitly enabled bundled platform plugins are loaded eagerly so
+            # any plugin-provided tools/hooks are available to sessions.
             if manifest.source == "bundled" and manifest.kind == "platform":
-                self._register_deferred_platform(manifest)
+                if is_enabled:
+                    self._load_plugin(manifest)
+                else:
+                    self._register_deferred_platform(manifest)
                 continue
-
-            # Everything else (standalone, user-installed backends,
-            # entry-point plugins) is opt-in via plugins.enabled.
-            # Accept both the path-derived key and the legacy bare name
-            # so existing configs keep working.
-            is_enabled = (
-                enabled is not None
-                and (lookup_key in enabled or manifest.name in enabled)
-            )
             if not is_enabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = (

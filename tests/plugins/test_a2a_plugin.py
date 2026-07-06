@@ -20,6 +20,41 @@ from plugins.platforms.a2a import protocol, security, tools
 
 
 # --------------------------------------------------------------------------
+# Plugin discovery / toolset exposure
+# --------------------------------------------------------------------------
+
+class TestPluginDiscovery:
+    def test_explicitly_enabled_platform_plugin_registers_outbound_tools(self, tmp_path, monkeypatch):
+        """`hermes plugins enable a2a-platform` writes the path-style key.
+
+        Bundled platform plugins normally load lazily for gateway startup speed,
+        but A2A also exposes client tools. An explicit enable must therefore
+        eager-load the plugin so `hermes tools enable a2a` has something to find.
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - platforms/a2a\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli.plugins import PluginManager
+        from tools.registry import registry
+
+        mgr = PluginManager()
+        mgr.discover_and_load(force=True)
+
+        loaded = mgr._plugins["a2a-platform"]
+        assert loaded.enabled is True
+        assert loaded.deferred is False
+        assert {"a2a_discover", "a2a_call", "a2a_list"} <= set(loaded.tools_registered)
+        entry = registry.get_entry("a2a_discover")
+        assert entry is not None
+        assert entry.toolset == "a2a"
+
+
+# --------------------------------------------------------------------------
 # Security
 # --------------------------------------------------------------------------
 

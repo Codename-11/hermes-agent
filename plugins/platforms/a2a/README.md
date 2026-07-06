@@ -7,8 +7,12 @@ Talk to other agents, and let other agents talk to you, over the open
 
 ## Enable
 
+A2A is a bundled platform plugin that also exposes outbound client tools. Enable the plugin first; otherwise the `a2a` toolset will not appear in `hermes tools list`.
+
 ```bash
-hermes gateway setup      # pick A2A, or:
+hermes plugins enable a2a-platform
+hermes tools enable a2a          # outbound client tools: a2a_discover/a2a_call/a2a_list
+hermes gateway setup             # pick A2A for inbound, or edit config directly:
 ```
 
 ```yaml
