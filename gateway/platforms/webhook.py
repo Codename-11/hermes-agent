@@ -1193,25 +1193,37 @@ class WebhookAdapter(BasePlatformAdapter):
         self, platform_name: str, content: str, delivery: dict
     ) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
-        if not self.gateway_runner:
+        target = self.resolve_cross_platform_delivery_target(platform_name, delivery)
+        if not target:
             return SendResult(
-                success=False,
-                error="No gateway runner for cross-platform delivery",
+                success=False, error=f"Unable to resolve delivery target for {platform_name}"
             )
+
+        adapter = target["adapter"]
+        chat_id = target["chat_id"]
+        metadata = target["metadata"]
+        return await adapter.send(chat_id, content, metadata=metadata)
+
+    def resolve_cross_platform_delivery_target(
+        self, platform_name: str, delivery: dict
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a webhook delivery route to the target platform adapter.
+
+        Text and post-stream media must both use the same destination.  Keep
+        the resolver shared so streaming ``MEDIA:`` attachments do not fall
+        back to the origin webhook adapter, which cannot upload native media.
+        """
+        if not self.gateway_runner:
+            return None
 
         try:
             target_platform = Platform(platform_name)
         except ValueError:
-            return SendResult(
-                success=False, error=f"Unknown platform: {platform_name}"
-            )
+            return None
 
         adapter = self.gateway_runner.adapters.get(target_platform)
         if not adapter:
-            return SendResult(
-                success=False,
-                error=f"Platform {platform_name} not connected",
-            )
+            return None
 
         # Use home channel if no specific chat_id in deliver_extra
         extra = delivery.get("deliver_extra", {})
@@ -1221,10 +1233,7 @@ class WebhookAdapter(BasePlatformAdapter):
             if home:
                 chat_id = home.chat_id
             else:
-                return SendResult(
-                    success=False,
-                    error=f"No chat_id or home channel for {platform_name}",
-                )
+                return None
 
         # Pass thread_id from deliver_extra so Telegram forum topics work
         metadata = None
@@ -1232,4 +1241,17 @@ class WebhookAdapter(BasePlatformAdapter):
         if thread_id:
             metadata = {"thread_id": thread_id}
 
-        return await adapter.send(chat_id, content, metadata=metadata)
+        return {
+            "adapter": adapter,
+            "chat_id": chat_id,
+            "metadata": metadata,
+            "platform": target_platform,
+        }
+
+    def resolve_media_delivery_target(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        """Return the cross-platform target for media attached to a webhook reply."""
+        delivery = self._delivery_info.get(chat_id, {})
+        deliver_type = delivery.get("deliver", "log")
+        if deliver_type in {"log", "github_comment"}:
+            return None
+        return self.resolve_cross_platform_delivery_target(deliver_type, delivery)
