@@ -1,3 +1,5 @@
+import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -84,8 +86,8 @@ export function isGatewayLocalMediaPath(path: string): boolean {
 }
 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
-// gateway-local paths to an authenticated /api/files/download URL (the file
-// lives on the gateway, not this disk); local mode keeps the file:// form.
+// gateway-local paths to an authenticated preview URL (the file lives on the
+// gateway, not this disk); local mode keeps the file:// form.
 export function mediaExternalUrl(path: string): string {
   if (/^https?:/i.test(path)) {
     return path
@@ -105,9 +107,15 @@ export function mediaExternalUrl(path: string): string {
   return /^file:/i.test(path) ? path : `file://${path}`
 }
 
-export async function openMediaExternal(path: string): Promise<void> {
+export async function openMediaExternal(path: string, profile?: null | string): Promise<void> {
   if (isRemoteGateway() && isGatewayLocalMediaPath(path)) {
-    await window.hermesDesktop?.openPreviewInBrowser?.(gatewayFileUrl(path))
+    if (window.hermesDesktop?.openPreviewInBrowser) {
+      await window.hermesDesktop.openPreviewInBrowser(gatewayFileUrl(path, profile))
+
+      return
+    }
+
+    await window.hermesDesktop?.openExternal(mediaExternalUrl(path))
 
     return
   }
@@ -152,24 +160,60 @@ export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-// Fetch a gateway-local image as a data URL via the authenticated REST bridge.
-// Used in remote mode where readFileDataUrl (which reads THIS machine's disk)
-// can't see files the agent wrote on the gateway. Requires the gateway to
-// expose GET /api/media (hermes_cli/web_server.py).
+async function readGatewayFileDataUrl(path: string, profile?: null | string): Promise<string> {
+  const activeProfile = profile ?? $connection.get()?.profile ?? undefined
+  const request: { path: string; profile?: string } = {
+    path: `/api/fs/read-data-url?path=${encodeURIComponent(path)}`
+  }
+
+  if (activeProfile) {
+    request.profile = activeProfile
+  }
+
+  const result = await window.hermesDesktop!.api<string | { dataUrl?: string }>(request)
+
+  return typeof result === 'string' ? result : result.dataUrl || ''
+}
+
+// Fetch gateway-local media as a data URL via the authenticated desktop FS
+// bridge. Remote Desktop artifacts can live anywhere the gateway can read
+// (workspace, skills, ~/.hermes/cache, etc.); /api/media is intentionally
+// narrower and rejects non-images plus images outside its media roots.
 export async function gatewayMediaDataUrl(path: string, profile?: null | string): Promise<string> {
   const file = filePathFromMediaPath(path)
 
-  const result = await window.hermesDesktop!.api<{ data_url: string }>({
-    path: `/api/media?path=${encodeURIComponent(file)}`,
-    profile: profile ?? null
-  })
+  if (isRemoteGateway()) {
+    return readGatewayFileDataUrl(file, profile)
+  }
 
-  return result.data_url
+  return readDesktopFileDataUrl(file)
+}
+
+// Remote-mode replacement for opening gateway-local file paths with file://.
+// The file lives on the gateway, so fetch it over the authenticated fs bridge
+// and hand the bytes to the local browser shell as a download.
+export async function downloadGatewayMediaFile(path: string, profile?: null | string): Promise<void> {
+  const dataUrl = await gatewayMediaDataUrl(path, profile)
+
+  if (!dataUrl) {
+    throw new Error('Gateway returned no file data')
+  }
+
+  const response = await fetch(dataUrl)
+  const blobUrl = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = blobUrl
+  anchor.download = mediaName(path)
+  anchor.rel = 'noopener noreferrer'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
 }
 
 export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)
 
-  return `${kind[0].toUpperCase()}${kind.slice(1)}: ${escaped}`
+  return `${capitalize(kind)}: ${escaped}`
 }
