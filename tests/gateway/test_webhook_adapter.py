@@ -28,13 +28,15 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
     _normalize_route_toolsets,
     check_webhook_requirements,
 )
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +1210,71 @@ class TestDeliverCrossPlatformThreadId:
         await adapter._deliver_cross_platform("telegram", "hello", delivery)
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata=None
+        )
+
+    def test_resolve_media_delivery_target_matches_text_delivery(self):
+        """MEDIA attachments resolve to the same adapter/chat/thread as text."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        chat_id = "webhook:test:d-xyz"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "12345", "thread_id": "999"},
+        }
+
+        target = adapter.resolve_media_delivery_target(chat_id)
+
+        assert target is not None
+        assert target["adapter"] is mock_target
+        assert target["chat_id"] == "12345"
+        assert target["metadata"] == {"thread_id": "999"}
+        assert target["platform"] == Platform("telegram")
+
+
+class TestWebhookCrossPlatformMediaDelivery:
+    @pytest.mark.asyncio
+    async def test_post_stream_video_uses_cross_platform_target_adapter(self, tmp_path):
+        """A webhook route delivered to Discord sends MEDIA files via Discord, not webhook."""
+        media = tmp_path / "release.mp4"
+        media.write_bytes(b"fake-video")
+
+        webhook_adapter = _make_adapter()
+        webhook_adapter.send_video = AsyncMock()
+
+        discord_adapter = AsyncMock()
+        discord_adapter.name = "discord"
+        discord_adapter.send_video = AsyncMock(return_value=SendResult(success=True))
+
+        mock_runner_for_webhook = MagicMock()
+        mock_runner_for_webhook.adapters = {Platform("discord"): discord_adapter}
+        mock_runner_for_webhook.config.get_home_channel.return_value = None
+        webhook_adapter.gateway_runner = mock_runner_for_webhook
+
+        chat_id = "webhook:release:d-123"
+        webhook_adapter._delivery_info[chat_id] = {
+            "deliver": "discord",
+            "deliver_extra": {"chat_id": "discord-channel", "thread_id": "discord-thread"},
+        }
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._thread_metadata_for_source = MagicMock(return_value={"thread_id": "origin-thread"})
+        runner._reply_anchor_for_event = MagicMock(return_value=None)
+        event = MessageEvent(
+            text="",
+            source=SessionSource(platform=Platform("webhook"), chat_id=chat_id),
+        )
+
+        await GatewayRunner._deliver_media_from_response(
+            runner,
+            f"MEDIA:{media}",
+            event,
+            webhook_adapter,
+        )
+
+        webhook_adapter.send_video.assert_not_awaited()
+        discord_adapter.send_video.assert_awaited_once_with(
+            chat_id="discord-channel",
+            video_path=str(media.resolve()),
+            metadata={"thread_id": "discord-thread"},
         )
 
 

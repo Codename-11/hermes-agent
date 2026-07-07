@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-07-07 — Route webhook cross-platform media to delivery target
+
+### Summary
+
+Fixed webhook routes that deliver responses to another platform (for example `deliver: discord`) so post-stream `MEDIA:` attachments use the same destination adapter as the text response instead of falling back to the origin webhook adapter.
+
+### What changed
+
+- Split webhook cross-platform delivery target resolution into a reusable resolver shared by text and media delivery.
+- Added a webhook media-target resolver that returns the target adapter, chat ID, thread metadata, and platform.
+- Updated post-stream media dispatch to send image batches, videos, voice/audio, and documents through the resolved target adapter while preserving delivery-target thread metadata.
+- Added regressions proving webhook media follows the configured cross-platform target and does not call the webhook adapter's medialess sender.
+
+### Verification
+
+- `python -m py_compile gateway/platforms/webhook.py gateway/run.py tests/gateway/test_webhook_adapter.py` → OK.
+- `python -m pytest -q -o addopts='' tests/gateway/test_webhook_adapter.py::TestDeliverCrossPlatformThreadId tests/gateway/test_webhook_adapter.py::TestWebhookCrossPlatformMediaDelivery --tb=short` → 5 passed.
+- `python -m pytest -q -o addopts='' tests/gateway/test_webhook_adapter.py --tb=short` → 83 passed.
+
 ## 2026-06-27 — Preserve Anthropic provider identity in MoA slots
 
 ### Summary
