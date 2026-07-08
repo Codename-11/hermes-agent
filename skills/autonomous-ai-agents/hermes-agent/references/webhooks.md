@@ -70,6 +70,22 @@ Returns the webhook URL and HMAC secret. The user configures their service to PO
 
 `--toolsets` is optional and route-scoped. If omitted, webhook runs use `platform_toolsets.webhook` or the safe `hermes-webhook` default. Use route-level elevation only for trusted HMAC-signed automation where the caller and blast radius are controlled (for example, an owned GitHub Action that creates a bot branch/PR). Public PR/comment/issue webhook routes should usually omit it.
 
+### Filter or transform payloads before the agent runs
+
+Two mechanisms narrow broad event streams (e.g. Todoist/GitHub fire on every update) so only relevant payloads wake the agent:
+
+- **Declarative `filters`** (config.yaml routes only): list of conditions on payload fields, event type, or headers — operators `equals`, `not_equals`, `contains`, `exists`, `missing`, `in`, `in_file`, `regex`, with `all`/`any`/`not` grouping. Non-matching events are ignored with HTTP 200.
+- **Route scripts** (`--script` on subscribe, or `script:` on a config route): a script under `~/.hermes/scripts/` receives the payload as JSON on stdin. JSON stdout replaces the payload before prompt templating; empty stdout, `[SILENT]`, or a nonzero exit ignores the webhook. `.sh`/`.bash` run with bash, everything else with Python. Scripts cannot live outside `~/.hermes/scripts/` (path traversal is blocked).
+
+```bash
+hermes webhook subscribe todoist-hermes \
+  --prompt "Task changed: {payload.content}" \
+  --script "todoist-hermes-label.py" \
+  --deliver telegram --deliver-chat-id "12345"
+```
+
+Full filter syntax: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks#payload-filters
+
 ### List subscriptions
 ```bash
 hermes webhook list
