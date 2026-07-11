@@ -99,7 +99,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         await requestGateway('config.set', {
           session_id: liveSessionId,
           key: 'model',
-          value: `${selection.model} --provider ${selection.provider}`
+          value: `${selection.model} --provider ${selection.provider} --session`
         })
 
         void queryClient.invalidateQueries({ queryKey: ['model-options', liveSessionId] })
