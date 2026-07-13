@@ -112,12 +112,36 @@ class TestDetectDangerousRm:
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()
         linked_temp = tmp_path / "linked-temp"
-        linked_temp.symlink_to(real_temp, target_is_directory=True)
+        try:
+            linked_temp.symlink_to(real_temp, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
         basename = "hermes-verify-example.py"
 
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
             assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
             assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
+
+    def test_windows_msys_raw_temp_spelling_is_exempt(self):
+        basename = "hermes-verify-example.py"
+
+        def canonicalize(value):
+            if value == "/tmp":
+                return "/canonical/tmp"
+            if value == f"/tmp/{basename}":
+                return f"/canonical/tmp/{basename}"
+            return value
+
+        with (
+            mock_patch("tempfile.gettempdir", return_value="/tmp"),
+            mock_patch("tools.approval.os.name", "nt"),
+            mock_patch("tools.approval.os.path.realpath", side_effect=canonicalize),
+        ):
+            assert detect_dangerous_command(f"rm -f /tmp/{basename}") == (
                 False,
                 None,
                 None,
