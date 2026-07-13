@@ -81,11 +81,40 @@ async def test_send_appends_message_via_forge_mcp_tool() -> None:
     adapter = module.ForgeAdapter(_config())
     adapter._call_tool = Mock(return_value={"id": "msg-1"})
 
-    result = await adapter.send("thread-1", "hello forge")
+    result = await adapter.send("thread-1", "hello forge", reply_to="user-message-1")
 
     assert result.success is True
     assert result.message_id == "msg-1"
     adapter._call_tool.assert_called_once_with(
         "chat.appendMessage",
-        {"threadId": "thread-1", "body": "hello forge"},
+        {
+            "threadId": "thread-1",
+            "body": "hello forge",
+            "replyToMessageId": "user-message-1",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_draft_binds_to_exact_inbound_message_from_metadata() -> None:
+    module = _load_adapter_module()
+    adapter = module.ForgeAdapter(_config())
+    adapter._call_tool = Mock(
+        side_effect=[{"draftId": "draft-1"}, {"ok": True}]
+    )
+
+    result = await adapter.send_draft(
+        "thread-1",
+        7,
+        "partial",
+        metadata={"reply_to_message_id": "user-message-1"},
+    )
+
+    assert result.success is True
+    assert adapter._call_tool.call_args_list[0].args == (
+        "chat.startDraft",
+        {
+            "threadId": "thread-1",
+            "replyToMessageId": "user-message-1",
+        },
     )

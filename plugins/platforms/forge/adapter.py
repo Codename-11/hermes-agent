@@ -135,17 +135,27 @@ class ForgeAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Missing Forge thread id")
         key = (thread_id, int(draft_id))
         state = self._drafts.get(key)
+        reply_to_message_id = str(
+            (metadata or {}).get("reply_to_message_id") or ""
+        ).strip()
 
         try:
             if state is None:
                 # First chunk for this (chat, draft_id) — open the draft.
-                start = await asyncio.to_thread(self._call_tool, "chat.startDraft", {
-                    "threadId": thread_id,
-                })
+                start_args = {"threadId": thread_id}
+                if reply_to_message_id:
+                    start_args["replyToMessageId"] = reply_to_message_id
+                start = await asyncio.to_thread(
+                    self._call_tool, "chat.startDraft", start_args
+                )
                 if not isinstance(start, dict) or not start.get("draftId"):
                     raise RuntimeError(f"chat.startDraft returned no draftId: {start!r}")
                 forge_draft_id = str(start["draftId"])
-                state = {"forge_draft_id": forge_draft_id, "last_body": ""}
+                state = {
+                    "forge_draft_id": forge_draft_id,
+                    "last_body": "",
+                    "reply_to_message_id": reply_to_message_id,
+                }
                 self._drafts[key] = state
             # appendDraftChunk wants the *delta* — compute against last_body so
             # repeated send_draft calls with growing content animate naturally.
@@ -201,10 +211,18 @@ class ForgeAdapter(BasePlatformAdapter):
                 logger.exception("[Forge] chat.finalizeDraft failed; falling back to appendMessage")
 
         try:
-            result = await asyncio.to_thread(self._call_tool, "chat.appendMessage", {
+            append_args = {
                 "threadId": thread_id,
                 "body": body,
-            })
+            }
+            reply_to_message_id = str(
+                reply_to or (metadata or {}).get("reply_to_message_id") or ""
+            ).strip()
+            if reply_to_message_id:
+                append_args["replyToMessageId"] = reply_to_message_id
+            result = await asyncio.to_thread(
+                self._call_tool, "chat.appendMessage", append_args
+            )
         except Exception as exc:
             logger.exception("[Forge] Failed to append chat message to thread %s", thread_id)
             return SendResult(success=False, error=str(exc))

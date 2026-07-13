@@ -783,12 +783,19 @@ class WebhookAdapter(BasePlatformAdapter):
         )
         if profile and isinstance(profile, str):
             source.profile = profile
+        event_message_id = delivery_id
+        if route_config.get("deliver") == "forge" and isinstance(payload, dict):
+            forge_payload = payload.get("payload")
+            if isinstance(forge_payload, dict):
+                candidate = forge_payload.get("messageId")
+                if isinstance(candidate, str) and candidate.strip():
+                    event_message_id = candidate.strip()
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=payload,
-            message_id=delivery_id,
+            message_id=event_message_id,
             enabled_toolsets=_normalize_route_toolsets(route_config.get("toolsets")),
         )
 
