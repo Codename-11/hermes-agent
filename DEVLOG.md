@@ -1,5 +1,27 @@
 # Hermes Agent — Dev Log
 
+## 2026-07-13 — Add provider-pluggable music generation plugin
+
+### Summary
+
+Installed a standalone default-profile `generate-music` plugin that exposes one stable `generate_music` tool while keeping MiniMax behind a replaceable provider adapter.
+
+### What changed
+
+- Added the filesystem-local plugin under `~/.hermes/plugins/generate-music/` with a provider protocol/registry, MiniMax `music-2.6-free` adapter, bounded JSON/SSE/raw-audio handling, profile-scoped artifacts, safe filenames/extensions, and `MEDIA:/absolute/path` responses.
+- Kept credentials out of plugin config: the MiniMax adapter reads `MINIMAX_API_KEY`; nonsecret provider/model/output/timeout/size settings live in the plugin's `config.yaml`.
+- Removed the generic tool's MiniMax-specific environment gate so future provider adapters can substitute without changing the model-facing tool contract.
+- Enabled `generate-music` and the `music_generation` toolset for Victor's CLI and Discord surfaces; no Hermes core source change was required.
+- Added plugin README/extension guidance and updated canonical Obsidian Hermes inventory/project notes.
+
+### Verification
+
+- `python -m pytest -q -o addopts='' ~/.hermes/plugins/generate-music/tests` → 8 passed.
+- `python -m py_compile` across plugin modules → OK.
+- Fresh-process plugin discovery registered `generate_music`; `get_tool_definitions(["music_generation"])` exposed exactly that tool and a terminal-only toolset did not expose it.
+- `hermes config check` passed and detected `MINIMAX_API_KEY` without printing its value.
+- Real `music-2.6-free` request reached MiniMax but returned status `2061` (`current token plan not support model`), so live audio/file/ffprobe verification remains blocked on a regular API key entitled to the free model. No paid-model fallback was used.
+
 ## 2026-07-07 — Route webhook cross-platform media to delivery target
 
 ### Summary
