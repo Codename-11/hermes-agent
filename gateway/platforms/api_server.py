@@ -45,6 +45,7 @@ import re
 import sqlite3
 import time
 import uuid
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -4361,6 +4362,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        open_tool_calls = defaultdict(deque)
+
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
@@ -4378,19 +4381,27 @@ class APIServerAdapter(BasePlatformAdapter):
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
             if event_type == "tool.started":
+                call_id = str(kwargs.get("tool_call_id") or f"call_{uuid.uuid4().hex}")
+                open_tool_calls[str(tool_name or "tool")].append(call_id)
                 _push({
                     "event": "tool.started",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
+                    "call_id": call_id,
                     "preview": preview,
                 })
             elif event_type == "tool.completed":
+                pending = open_tool_calls.get(str(tool_name or "tool"))
+                call_id = pending.popleft() if pending else str(
+                    kwargs.get("tool_call_id") or f"call_{uuid.uuid4().hex}"
+                )
                 _push({
                     "event": "tool.completed",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
+                    "call_id": call_id,
                     "duration": round(kwargs.get("duration", 0), 3),
                     "error": kwargs.get("is_error", False),
                 })
@@ -4431,6 +4442,35 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
+
+        # A gateway process is profile-scoped: its config, tools, credentials,
+        # memory, and filesystem policy all come from the active HERMES_HOME.
+        # Silently accepting another profile name would run the request as the
+        # wrong agent. Accept matching selectors for explicit clients, but
+        # fail closed on mismatches until a caller targets that profile's own
+        # gateway endpoint.
+        active_profile = "default"
+        requested_profile = str(
+            body.get("profile_key") or body.get("profile") or ""
+        ).strip()
+        try:
+            from hermes_cli.profiles import get_active_profile_name, normalize_profile_name
+
+            active_profile = get_active_profile_name() or "default"
+            if requested_profile:
+                requested_profile = normalize_profile_name(requested_profile)
+                if requested_profile != active_profile:
+                    return web.json_response(
+                        _openai_error(
+                            f"Gateway serves profile '{active_profile}', not '{requested_profile}'",
+                            code="profile_mismatch",
+                        ),
+                        status=409,
+                    )
+        except ValueError as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="invalid_profile"), status=400
+            )
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
@@ -4546,6 +4586,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "queued",
             created_at=created_at,
             session_id=session_id,
+            profile=active_profile,
             model=body.get("model", self._model_name),
             engagement_mode=body.get("engagement_mode"),
             forge_contract_version=body.get("forge_contract_version"),
