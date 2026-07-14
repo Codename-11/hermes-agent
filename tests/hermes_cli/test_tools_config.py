@@ -25,6 +25,7 @@ from hermes_cli.tools_config import (
     gui_toolset_label,
     _visible_providers,
     tools_command,
+    enabled_mcp_server_names,
 )
 
 
@@ -491,6 +492,78 @@ def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
     assert "exa" in enabled
     assert "web-search-prime" in enabled
     assert "disabled-server" not in enabled
+
+
+def test_enabled_mcp_servers_honor_platform_exposure_scope():
+    config = {
+        "mcp_servers": {
+            "forge": {
+                "url": "https://forge.example/mcp",
+                "expose_on": ["webhook"],
+            },
+            "shared": {"url": "https://shared.example/mcp"},
+        }
+    }
+
+    assert enabled_mcp_server_names(config, platform="discord") == {"shared"}
+    assert enabled_mcp_server_names(config, platform="webhook") == {"forge", "shared"}
+    # Platform-less callers retain the legacy connectivity view.
+    assert enabled_mcp_server_names(config) == {"forge", "shared"}
+
+
+def test_get_platform_tools_allows_explicit_direct_profile_without_default_catalog_alias():
+    config = {
+        "platform_toolsets": {"webhook": ["web", "forge-direct"]},
+        "mcp_servers": {
+            "forge": {"url": "https://forge.example/mcp", "exposure": "catalog"},
+            "other": {"url": "https://other.example/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "webhook")
+
+    assert "forge-direct" in enabled
+    # Direct profiles include the catalog bridge plus the deferred operations.
+    assert "forge" in enabled
+    assert "other" not in enabled
+
+    narrow_enabled = _get_platform_tools(
+        config, "webhook", include_default_mcp_servers=False
+    )
+    assert {"forge", "forge-direct"}.issubset(narrow_enabled)
+    assert "other" not in narrow_enabled
+
+
+def test_get_platform_tools_no_mcp_blocks_direct_profiles_too():
+    config = {
+        "platform_toolsets": {"discord": ["web", "forge-direct", "no_mcp"]},
+        "mcp_servers": {
+            "forge": {"url": "https://forge.example/mcp", "exposure": "catalog"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord")
+
+    assert "forge" not in enabled
+    assert "forge-direct" not in enabled
+
+
+def test_explicit_direct_profile_cannot_bypass_expose_on_scope():
+    config = {
+        "platform_toolsets": {"discord": ["web", "forge-direct"]},
+        "mcp_servers": {
+            "forge": {
+                "url": "https://forge.example/mcp",
+                "exposure": "catalog",
+                "expose_on": ["webhook"],
+            },
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord")
+
+    assert "forge" not in enabled
+    assert "forge-direct" not in enabled
 
 
 def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
