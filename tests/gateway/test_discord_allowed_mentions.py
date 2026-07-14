@@ -8,7 +8,7 @@ in when an operator explicitly wants a different policy.
 
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -81,7 +81,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import _build_allowed_mentions  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter, _build_allowed_mentions  # noqa: E402
 from gateway.platforms.base import _thread_metadata_for_source  # noqa: E402
 from gateway.config import Platform  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
@@ -185,3 +185,29 @@ def test_gateway_runner_discord_bot_metadata_suppresses_reply_pings_without_thre
     runner = GatewayRunner.__new__(GatewayRunner)
 
     assert runner._thread_metadata_for_source(source) == {"suppress_reply_mentions": True}
+
+
+@pytest.mark.asyncio
+async def test_discord_send_forwards_reply_mention_suppression():
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=123)),
+        fetch_message=AsyncMock(),
+    )
+    adapter = DiscordAdapter.__new__(DiscordAdapter)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(return_value=channel),
+    )
+    adapter._reply_to_mode = "off"
+    adapter._nonconversational_messages = SimpleNamespace(mark_many=lambda _ids: None)
+    adapter._last_self_message_id = {}
+
+    result = await adapter.send(
+        "456",
+        "hello",
+        metadata={"suppress_reply_mentions": True},
+    )
+
+    assert result.success is True
+    allowed_mentions = channel.send.await_args.kwargs["allowed_mentions"]
+    assert allowed_mentions.replied_user is False
