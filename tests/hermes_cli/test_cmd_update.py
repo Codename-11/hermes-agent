@@ -57,7 +57,7 @@ def mock_args():
 # setup stays deterministic without per-test changes.
 @pytest.fixture(autouse=True)
 def _patch_managed_dependency_resolvers(request):
-    """Make managed uv/node helpers follow shutil.which mocking in tests."""
+    """Keep cmd_update unit tests isolated from host-specific update helpers."""
     import shutil
 
     def _fake_resolve_uv():
@@ -72,10 +72,16 @@ def _patch_managed_dependency_resolvers(request):
     def _fake_find_node_executable(command: str):
         return shutil.which(command)
 
-    with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
-         patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
-         patch("hermes_constants.find_node_executable", side_effect=_fake_find_node_executable):
+    with (
+        patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv),
+        patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv),
+        patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv),
+        patch("hermes_constants.find_node_executable", side_effect=_fake_find_node_executable),
+        patch("hermes_cli.main._detect_concurrent_hermes_instances", return_value=[]),
+        patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None),
+        patch("hermes_cli.main._resume_windows_gateways_after_update"),
+        patch("hermes_cli.main._detect_venv_python_processes", return_value=[]),
+    ):
         yield
 
 
