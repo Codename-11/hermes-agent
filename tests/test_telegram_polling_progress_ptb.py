@@ -1,9 +1,12 @@
 """Integration coverage for polling progress against the installed PTB runtime."""
 
 import asyncio
+from unittest.mock import Mock
 
 import pytest
-pytest.importorskip("telegram", reason="python-telegram-bot not installed")
+telegram = pytest.importorskip("telegram", reason="python-telegram-bot not installed")
+if isinstance(telegram, Mock) or not isinstance(getattr(telegram, "__file__", None), str):
+    pytest.skip("python-telegram-bot not installed", allow_module_level=True)
 from telegram.error import Conflict, TelegramError
 from telegram.request import BaseRequest
 
