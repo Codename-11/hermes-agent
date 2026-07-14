@@ -1,5 +1,28 @@
 # Hermes Agent — Dev Log
 
+## 2026-07-14 — Restore generic named-profile cron execution
+
+### Summary
+
+Removed the deployment-specific `victor`→`default` cron owner alias and restored Axiom's generic owner-home execution carry after an upstream merge regressed the shared-registry contract.
+
+### What changed
+
+- Cron owner normalization now aliases only missing/`root` ownership to `default`; every valid named profile, including `victor`, remains distinct.
+- Restored the shared-root tick lock for Axiom's single cross-profile registry.
+- Restored owner-profile script resolution and `HERMES_HOME` propagation for script-only, pre-run-script, and agent cron jobs.
+- Serialized owner-home environment overrides with the existing scheduler environment lock and restored the prior environment after each run.
+- Added regression coverage proving a profile literally named `victor` resolves to `profiles/victor`.
+- Migrated Docker-Server's eight Victor cron rows from `default` to `victor` and added the missing Victor-local weekly-backup launcher.
+
+### Verification
+
+- Named-Victor regression was red before the fix (`default != victor`) and green after it.
+- `tests/cron/test_cron_profile_storage.py`, `test_cron_profile_isolation.py`, and `test_cron_script.py` → 55 passed.
+- Profile tests plus multiplex secret-scope regression → 56 passed.
+- Full `tests/cron` with an isolated temporary `HERMES_HOME` after rebasing onto the latest `origin/axiom` → 702 passed, 2 warnings.
+- Live checks: the shared registry remained stable at 8 Victor / 9 Sentinel rows across a full scheduler minute after all six profile gateways reloaded; Victor sees exactly its eight jobs and explicit default sees zero. The weekly-backup job ran through Victor's profile-local launcher and created a 3.5 GB archive; the Relay watcher ran silently without a script-resolution failure.
+
 ## 2026-07-13 — Add provider-pluggable music generation plugin
 
 ### Summary
