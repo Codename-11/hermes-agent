@@ -39,7 +39,12 @@ from typing import Any, List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
@@ -553,9 +558,8 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored."""
-    hermes_home = _get_hermes_home()
-    lock_dir = hermes_home / "cron"
+    """Resolve lock paths for Axiom's shared root cron store."""
+    lock_dir = get_default_hermes_root().resolve() / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -1976,6 +1980,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
 
 def _get_script_timeout() -> int:
@@ -2011,7 +2016,9 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str, *, hermes_home: Optional[Path] = None
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2034,15 +2041,17 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     (SECURITY.md §2.3), matching terminal and MCP child processes.
 
     Args:
-        script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+        script_path: Path to the script. Relative paths are resolved against
+            the owning Hermes home's scripts directory.
+        hermes_home: Optional owner Hermes home. Defaults to the active
+            scheduler Hermes home for backward compatibility.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
+    owner_home = (hermes_home or _get_hermes_home()).resolve()
+    scripts_dir = owner_home / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -2097,13 +2106,15 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        env = _sanitize_subprocess_env(os.environ.copy())
+        env["HERMES_HOME"] = str(owner_home)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            env=env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -2133,6 +2144,76 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
+
+
+def _run_job_script_with_claim_heartbeat(
+    job: dict, script_path: str, *, hermes_home: Optional[Path] = None
+) -> tuple[bool, str]:
+    """Run a cron script while keeping its owned one-shot claim fresh.
+
+    Script execution is synchronous and may legitimately outlive the stale
+    claim TTL.  Without a concurrent heartbeat, another scheduler process can
+    mistake the live run for a dead owner and dispatch the same one-shot again.
+    Recurring jobs and unclaimed/manual runs have no durable one-shot claim and
+    therefore use the ordinary script path without starting a thread.
+
+    The claim owner is captured from the dispatched job and never re-read from
+    storage.  ``heartbeat_run_claim`` compares that stable owner before every
+    refresh, so a stale runner cannot extend a replacement owner's claim.
+    """
+    def _run_script() -> tuple[bool, str]:
+        if hermes_home is None:
+            return _run_job_script(script_path)
+        return _run_job_script(script_path, hermes_home=hermes_home)
+
+    schedule = job.get("schedule")
+    claim = job.get("run_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    if not (
+        isinstance(schedule, dict)
+        and schedule.get("kind") == "once"
+        and owner
+    ):
+        return _run_script()
+
+    job_id = str(job.get("id") or "")
+    stop = threading.Event()
+    heartbeat_context = contextvars.copy_context()
+
+    def _heartbeat_loop() -> None:
+        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            try:
+                heartbeat_run_claim(job_id, expected_owner=owner)
+            except Exception:
+                logger.debug(
+                    "Job '%s': script run_claim heartbeat failed",
+                    job_id,
+                    exc_info=True,
+                )
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_context.run,
+        args=(_heartbeat_loop,),
+        name="cron-script-claim-heartbeat",
+        daemon=True,
+    )
+    try:
+        heartbeat_thread.start()
+    except Exception:
+        logger.debug(
+            "Job '%s': could not start script run_claim heartbeat",
+            job_id,
+            exc_info=True,
+        )
+        return _run_script()
+
+    try:
+        return _run_script()
+    finally:
+        stop.set()
+        # Event.wait() wakes immediately.  Keep completion bounded if the
+        # heartbeat is already waiting on another process's jobs-file lock.
+        heartbeat_thread.join(timeout=1.0)
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -2503,6 +2584,16 @@ def run_job(
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+    from cron.jobs import resolve_profile_home
+
+    _raw_job_profile = job.get("owner_profile") or job.get("profile")
+    _job_profile = str(_raw_job_profile or "default").strip() or "default"
+    _profile_home = (
+        resolve_profile_home(_job_profile)
+        if _raw_job_profile is not None and str(_raw_job_profile).strip()
+        else None
+    )
+    _script_profile_home = _profile_home if _job_profile != "default" else None
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -2542,7 +2633,9 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script_with_claim_heartbeat(
+                job, script_path, hermes_home=_script_profile_home
+            )
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2689,7 +2782,9 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job, script_path, hermes_home=_script_profile_home
+        )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -2814,8 +2909,16 @@ def run_job(
     # override inside the try.  This read can't leak the lock (it precedes the
     # acquire) and is a no-op for workdir-less jobs (they never mutate the env).
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    _prior_hermes_home = os.environ.get("HERMES_HOME", "_UNSET_")
+    _hermes_home_token = None
+    _profile_override_needed = (
+        _profile_home is not None
+        and _profile_home.resolve() != _get_hermes_home().resolve()
+    )
 
-    _holds_cwd_write = _job_workdir is not None
+    # Both TERMINAL_CWD and HERMES_HOME are process-global. A profile-scoped
+    # job therefore takes the writer lane even without a workdir.
+    _holds_cwd_write = _job_workdir is not None or _profile_override_needed
     if _holds_cwd_write:
         _terminal_cwd_lock.acquire_write()
     else:
@@ -2827,6 +2930,9 @@ def run_job(
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
     try:
+        if _profile_override_needed:
+            _hermes_home_token = set_hermes_home_override(_profile_home)
+            os.environ["HERMES_HOME"] = str(_profile_home)
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -3171,7 +3277,6 @@ def run_job(
         _run_claim_owner = (
             str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
         )
-        _CLAIM_HEARTBEAT_SECONDS = 60.0
         _last_claim_heartbeat = time.monotonic()
 
         def _heartbeat_run_claim_if_due():
@@ -3179,7 +3284,7 @@ def run_job(
             if not _is_oneshot or not _run_claim_owner:
                 return
             _mono = time.monotonic()
-            if _mono - _last_claim_heartbeat < _CLAIM_HEARTBEAT_SECONDS:
+            if _mono - _last_claim_heartbeat < _RUN_CLAIM_HEARTBEAT_SECONDS:
                 return
             _last_claim_heartbeat = _mono
             try:
@@ -3381,6 +3486,13 @@ def run_job(
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        if _hermes_home_token is not None:
+            reset_hermes_home_override(_hermes_home_token)
+        if _profile_override_needed:
+            if _prior_hermes_home == "_UNSET_":
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = _prior_hermes_home
         # Release the cwd lock now that the env is restored, so a waiting
         # workdir job (or queued reader) can proceed without seeing the override.
         if _holds_cwd_write:
@@ -3712,14 +3824,20 @@ def tick(
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
-        # they queue on the single-thread sequential pool to run one at a time.
-        # That alone only keeps workdir jobs from overlapping EACH OTHER;
-        # run_job's _terminal_cwd_lock is what additionally stops a concurrently
-        # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition jobs that mutate process-global execution context. Workdir
+        # jobs set TERMINAL_CWD; named-profile jobs set HERMES_HOME. Both must
+        # use the single-worker lane, while the reader/writer lock also keeps
+        # parallel default-profile jobs from observing either override.
+        def _mutates_process_env(job: dict) -> bool:
+            if (job.get("workdir") or "").strip():
+                return True
+            profile = str(
+                job.get("owner_profile") or job.get("profile") or "default"
+            ).strip() or "default"
+            return profile != "default"
+
+        sequential_jobs = [j for j in due_jobs if _mutates_process_env(j)]
+        parallel_jobs = [j for j in due_jobs if not _mutates_process_env(j)]
 
         _results: list = []
         _all_futures: list = []
