@@ -38,6 +38,27 @@ Operational note: as of 2026-06-17, the `agent/anthropic_adapter.py` / `agent/sy
 5. **If a feature is obsolete because upstream now provides equivalent behavior, mark it retired in this file and add verification evidence.**
 6. **Do not resume the daily sync cron until conflict alerts are deduped and the contract tests cover the protected Axiom behavior.**
 
+## Axiom shared cron registry and generic profile ownership
+
+Axiom keeps one inspectable cron registry at the platform root (`<root>/cron/jobs.json`) while every profile-scoped row carries `owner_profile` / `profile` metadata. This is a storage and management carry only; execution must remain generic:
+
+- root or missing ownership normalizes to the synthetic `default` profile;
+- every valid named owner—including a profile literally named `victor`—remains that named profile;
+- scripts resolve under the owner's `<profile-home>/scripts/` and receive that home as `HERMES_HOME`;
+- agent jobs load the owner profile's runtime home when the dispatching ticker differs;
+- the shared tick lock remains under the platform root so multiple profile gateways cannot race the same registry.
+
+Do not add agent-name aliases to `cron/jobs.py`; deployment-specific profile names belong in host state, not core normalization. Protected files: `cron/jobs.py`, `cron/scheduler.py`, `tests/cron/test_cron_profile_storage.py`, and `tests/cron/test_cron_profile_isolation.py`. Focused verification:
+
+```bash
+python -m pytest -q -o addopts='' \
+  tests/cron/test_cron_profile_storage.py \
+  tests/cron/test_cron_profile_isolation.py \
+  tests/cron/test_cron_script.py
+```
+
+Drop condition: upstream provides a cross-profile shared registry with equivalent owner isolation, owner-home script execution, and a root-shared tick lock.
+
 ## Fork footprint reduction — extracted modules
 
 To honor rule #4 ("port Axiom behavior into upstream's new split/module rather

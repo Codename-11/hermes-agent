@@ -264,9 +264,15 @@ def test_resolve_profile_home_maps_names(tmp_path, monkeypatch):
     import cron.jobs as jobs
     importlib.reload(jobs)
     try:
+        victor_home = root / "profiles" / "victor"
+        victor_home.mkdir(parents=True)
         assert jobs.resolve_profile_home("default").resolve() == root.resolve()
         assert jobs.resolve_profile_home("").resolve() == root.resolve()
         assert jobs.resolve_profile_home("donna").resolve() == donna_home.resolve()
+        assert jobs._normalize_owner_profile("victor") == "victor"
+        resolved_victor = jobs.resolve_profile_home("victor")
+        assert resolved_victor is not None
+        assert resolved_victor.resolve() == victor_home.resolve()
         assert jobs.resolve_profile_home("ghost") is None
     finally:
         monkeypatch.undo()

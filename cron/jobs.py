@@ -189,7 +189,7 @@ _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 def _normalize_owner_profile(value: Optional[Any]) -> str:
     text = str(value or "").strip().lower()
-    if not text or text in {"root", "victor"}:
+    if not text or text == "root":
         return _DEFAULT_OWNER_PROFILE
     return text if _PROFILE_ID_RE.match(text) else _DEFAULT_OWNER_PROFILE
 
