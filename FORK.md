@@ -59,6 +59,20 @@ python -m pytest -q -o addopts='' \
 
 Drop condition: upstream provides a cross-profile shared registry with equivalent owner isolation, owner-home script execution, and a root-shared tick lock.
 
+## Dashboard chat profile-scoped PTY attachments
+
+Dashboard Chat must never reattach a selected named profile to a PTY spawned under another profile. The frontend's keep-alive attachment token is therefore scoped by the profile selector (`current`, `victor`, etc.); the backend registry intentionally treats attachment tokens as opaque and cannot repair a cross-profile collision after the fact.
+
+Protected files: `web/src/pages/ChatPage.tsx`, `web/src/lib/pty-attach-token.ts`, and `web/src/lib/pty-attach-token.test.ts`. Focused verification:
+
+```bash
+cd web
+npm test -- --run src/lib/pty-attach-token.test.ts
+npm run typecheck
+```
+
+Drop condition: upstream scopes dashboard PTY keep-alive identity by profile, or the backend binds and validates every attachment token against immutable profile metadata.
+
 ## Fork footprint reduction — extracted modules
 
 To honor rule #4 ("port Axiom behavior into upstream's new split/module rather
