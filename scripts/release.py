@@ -45,6 +45,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "neo@neodeMac-mini.local": "neo-claw-bot",  # PR #58465 salvage (moa: drop empty user turns from advisory view)
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)
@@ -327,6 +328,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "theoldwizard123@pm.me": "unsupportedpastels",
     "johnmlussier@gmail.com": "John-Lussier",
     "chenkun_lws@126.com": "bytesnail",  # PR #60360 salvage (--yolo startup ordering; #60328)
     "iamgexin@qq.com": "nullptr0807",  # PR #60956 salvage (gateway hygiene in-place compaction; #60947)
