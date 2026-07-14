@@ -4938,6 +4938,9 @@ def _existing_tool_names() -> List[str]:
     return names
 
 
+_AUTO_CATALOG_MIN_TOOLS = 20
+
+
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
     """Register tools from an already-connected server into the registry.
 
@@ -4954,6 +4957,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
+    direct_toolset_name = f"{toolset_name}-direct"
 
     # Selective tool loading: honour include/exclude lists from config.
     # Rules (matching issue #690 spec):
@@ -4972,10 +4976,34 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             return tool_name not in exclude_set
         return True
 
-    for mcp_tool in server._tools:
-        if not _should_register(mcp_tool.name):
-            logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name)
-            continue
+    selected_tools = [tool for tool in server._tools if _should_register(tool.name)]
+    catalog_names = {"catalog.search", "catalog.describe", "catalog.call"}
+    selected_names = {tool.name for tool in selected_tools}
+    exposure = str(config.get("exposure", "auto") or "auto").strip().lower()
+    if exposure not in {"auto", "catalog", "direct", "off"}:
+        logger.warning(
+            "MCP server '%s': unknown exposure %r; using backward-compatible direct exposure",
+            name,
+            exposure,
+        )
+        exposure = "direct"
+    if exposure == "auto":
+        # Large servers with a complete catalog bridge default to three small
+        # discovery/invocation schemas. Small and non-catalog servers preserve
+        # the historical direct behavior.
+        exposure = (
+            "catalog"
+            if (
+                catalog_names.issubset(selected_names)
+                and len(selected_tools) >= _AUTO_CATALOG_MIN_TOOLS
+            )
+            else "direct"
+        )
+    if exposure == "off":
+        logger.info("MCP server '%s': connected with schema exposure disabled", name)
+        return []
+
+    for mcp_tool in selected_tools:
 
         # Scan tool description for prompt injection patterns
         _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
@@ -4993,9 +5021,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             )
             continue
 
+        registration_toolset = toolset_name
+        if exposure == "catalog" and mcp_tool.name not in catalog_names:
+            registration_toolset = direct_toolset_name
         registry.register(
             name=tool_name_prefixed,
-            toolset=toolset_name,
+            toolset=registration_toolset,
             schema=schema,
             handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout),
             check_fn=_make_check_fn(name),
@@ -5014,7 +5045,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         "get_prompt": _make_get_prompt_handler,
     }
     check_fn = _make_check_fn(name)
-    for entry in _select_utility_schemas(name, server, config):
+    utility_entries = [] if exposure == "catalog" else _select_utility_schemas(name, server, config)
+    for entry in utility_entries:
         schema = entry["schema"]
         handler_key = entry["handler_key"]
         handler = _handler_factories[handler_key](name, server.tool_timeout)
@@ -5044,6 +5076,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
+        if exposure == "catalog" and registry.get_tool_names_for_toolset(direct_toolset_name):
+            registry.register_toolset_alias(f"{name}-direct", direct_toolset_name)
 
     return registered_names
 

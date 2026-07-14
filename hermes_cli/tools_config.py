@@ -1603,22 +1603,36 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
-def enabled_mcp_server_names(config: dict) -> Set[str]:
+def enabled_mcp_server_names(config: dict, platform: Optional[str] = None) -> Set[str]:
     """Names of MCP servers globally enabled in config.yaml.
 
     Shared by the gateway/CLI platform resolver (``_get_platform_tools``) and
     the cron per-job toolset resolver (``cron.scheduler``) so every path agrees
     on MCP membership. A server is enabled unless its config sets an explicitly
     falsey ``enabled`` (per ``_parse_enabled_flag``: false/0/no/off) — a missing
-    flag or an unrecognized value is treated as enabled.
+    flag or an unrecognized value is treated as enabled. When ``platform`` is
+    provided, an optional per-server ``expose_on`` string/list limits schema
+    exposure without disconnecting or de-authenticating the server.
     """
     mcp_servers = (config or {}).get("mcp_servers") or {}
-    return {
-        str(name)
-        for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict)
-        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
-    }
+    enabled = set()
+    for name, server_cfg in mcp_servers.items():
+        if not isinstance(server_cfg, dict):
+            continue
+        if not _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
+            continue
+        expose_on = server_cfg.get("expose_on")
+        if platform is not None and expose_on is not None:
+            if isinstance(expose_on, str):
+                allowed_platforms = {expose_on}
+            elif isinstance(expose_on, (list, tuple, set)):
+                allowed_platforms = {str(value) for value in expose_on}
+            else:
+                allowed_platforms = set()
+            if platform not in allowed_platforms:
+                continue
+        enabled.add(str(name))
+    return enabled
 
 
 def _exempt_explicit_platform_native(
@@ -1885,14 +1899,23 @@ def _get_platform_tools(
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
-    enabled_mcp_servers = enabled_mcp_server_names(config)
+    configured_mcp_servers = enabled_mcp_server_names(config)
+    enabled_mcp_servers = enabled_mcp_server_names(config, platform=platform)
+    # Catalog-capable servers may register non-catalog operations in a separate,
+    # opt-in ``<server>-direct`` profile. Treat both aliases as MCP so explicit
+    # allowlists and the no_mcp sentinel remain fail-closed.
+    allowed_direct_profiles = {f"{name}-direct" for name in enabled_mcp_servers}
+    allowed_mcp_profiles = enabled_mcp_servers | allowed_direct_profiles
+    configured_mcp_profiles = configured_mcp_servers | {
+        f"{name}-direct" for name in configured_mcp_servers
+    }
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
+        enabled_toolsets.update(explicit_passthrough - configured_mcp_profiles - {"no_mcp"})
     else:
-        explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
+        explicit_mcp_servers = explicit_passthrough & allowed_mcp_profiles
+        enabled_toolsets.update(explicit_passthrough - configured_mcp_profiles)
     if include_default_mcp_servers:
         if explicit_mcp_servers or "no_mcp" in toolset_names:
             enabled_toolsets.update(explicit_mcp_servers)
@@ -1900,6 +1923,14 @@ def _get_platform_tools(
             enabled_toolsets.update(enabled_mcp_servers)
     else:
         enabled_toolsets.update(explicit_mcp_servers)
+    # Direct profiles hold deferred operations; the base profile holds the
+    # catalog bridge and must accompany them for a complete surface. Apply this
+    # even when default MCP servers are disabled for a narrow caller.
+    enabled_toolsets.update(
+        profile.removesuffix("-direct")
+        for profile in explicit_mcp_servers
+        if profile.endswith("-direct")
+    )
 
     # Honor agent.disabled_toolsets from config.yaml — allows users to
     # globally suppress specific toolsets (e.g. "memory") across all

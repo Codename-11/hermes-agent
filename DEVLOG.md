@@ -22,6 +22,31 @@ Removed the deployment-specific `victor`→`default` cron owner alias and restor
 - Profile tests plus multiplex secret-scope regression → 56 passed.
 - Full `tests/cron` with an isolated temporary `HERMES_HOME` after rebasing onto the latest `origin/axiom` → 702 passed, 2 warnings.
 - Live checks: the shared registry remained stable at 8 Victor / 9 Sentinel rows across a full scheduler minute after all six profile gateways reloaded; Victor sees exactly its eight jobs and explicit default sees zero. The weekly-backup job ran through Victor's profile-local launcher and created a 3.5 GB archive; the Relay watcher ran silently without a script-resolution failure.
+## 2026-07-14 — Isolate large MCP schemas behind catalog profiles
+
+### Summary
+
+Separated MCP connectivity from model-visible schema exposure so large
+catalog-capable integrations no longer inject their full workflow vocabulary
+into ordinary sessions by default.
+
+### What changed
+
+- Added `mcp_servers.<name>.exposure` (`auto`, `catalog`, `direct`, `off`) and
+  optional platform scoping through `expose_on`.
+- Large servers with a complete three-operation catalog bridge now expose only
+  that bridge by default; deferred operations live in an explicit
+  `<server>-direct` session/tool profile.
+- Hardened platform MCP allowlists and `no_mcp` so direct profiles cannot
+  bypass platform scope or accidentally pull in unrelated servers.
+- Added provider-facing schema-size/vocabulary regression coverage and
+  operator configuration documentation.
+
+### Verification
+
+- See AXI-103 PR verification for focused MCP/platform tests and the real
+  provider-facing tool-list before/after measurement.
+
 
 ## 2026-07-13 — Add provider-pluggable music generation plugin
 
