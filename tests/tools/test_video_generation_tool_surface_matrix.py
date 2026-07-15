@@ -351,6 +351,7 @@ def test_xai_video_extend_via_tool_surface(matrix_env):
     assert payload["model"] == "grok-imagine-video"
     assert payload["video"] == {"url": "https://example.com/source.mp4"}
     assert payload["duration"] == 10
+    assert "resolution" not in payload
 
 
 def test_xai_video_edit_rejects_bare_file_id_via_tool_surface(matrix_env):

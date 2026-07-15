@@ -105,7 +105,8 @@ XAI_VIDEO_EXTEND_SCHEMA: Dict[str, Any] = {
         "Extend an existing video with xAI Imagine. This is separate from "
         "`video_generate` because video extension is provider-specific. "
         "`video_url` must be the public HTTPS MP4 URL from a prior Imagine "
-        "result (`video` or `public_url` on files-cdn)."
+        "result (`video` or `public_url` on files-cdn). Extension output "
+        "inherits the input resolution and is capped by xAI at 720p."
     ),
     "parameters": {
         "type": "object",
@@ -166,6 +167,7 @@ def _handle_xai_video_extend(args: Dict[str, Any], **_kw: Any) -> str:
     video_url = _normalize_public_video_url(args.get("video_url"))
     model = _clean_string(args.get("model"))
     duration = _coerce_int(args.get("duration"))
+    requested_resolution = _clean_string(args.get("resolution"))
 
     if not prompt:
         return tool_error("prompt is required for xAI video extend")
@@ -173,6 +175,11 @@ def _handle_xai_video_extend(args: Dict[str, Any], **_kw: Any) -> str:
         return tool_error(
             "video_url must be a public HTTPS MP4 URL (the `video`/`public_url` "
             "from a prior Imagine result)"
+        )
+    if requested_resolution:
+        return tool_error(
+            "xAI video extension does not support a custom resolution; output "
+            "inherits the input resolution and is capped by xAI at 720p"
         )
     if not _configured_for_xai_video():
         return _provider_not_configured_error()

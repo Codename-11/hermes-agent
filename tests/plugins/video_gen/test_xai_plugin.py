@@ -69,6 +69,36 @@ def test_xai_capabilities_keep_generate_surface_only():
     assert caps["modalities"] == ["text", "image"]
     assert "operations" not in caps
     assert caps["max_reference_images"] == 7
+    assert "1080p" in caps["resolutions"]
+
+
+def test_xai_extension_rejects_custom_1080p_instead_of_silently_downscaling(
+    monkeypatch,
+):
+    import json
+    import tools.xai_video_tools as xai_video_tools
+
+    called = False
+
+    def _unexpected_extend(**_kwargs):
+        nonlocal called
+        called = True
+        return {"success": True}
+
+    monkeypatch.setattr(xai_video_tools, "run_xai_video_extend", _unexpected_extend)
+    result = json.loads(
+        xai_video_tools._handle_xai_video_extend(
+            {
+                "prompt": "continue",
+                "video_url": "https://example.com/source.mp4",
+                "resolution": "1080p",
+            }
+        )
+    )
+
+    assert result.get("success") is not True
+    assert "720p" in result["error"]
+    assert called is False
 
 
 def test_xai_unavailable_without_key(monkeypatch):

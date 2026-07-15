@@ -1,5 +1,25 @@
 # Hermes Agent — Dev Log
 
+## 2026-07-14 — Expose mode-safe xAI 1080p image-to-video
+
+### Summary
+
+Added native `1080p` requests for fresh `grok-imagine-video-1.5` image-to-video generation while keeping xAI extension and unproven model/modality paths fail-closed at their documented limits.
+
+### What changed
+
+- Added `1080p` to the xAI provider capability surface.
+- Accepts it only for exact-model fresh image-to-video requests using `grok-imagine-video-1.5`.
+- Rejects 1080p text-to-video, reference-to-video, legacy/alias models, and extension requests before network submission.
+- Clarified that video extension inherits source resolution and remains capped at 720p.
+- Added provider, integration, and tool-surface regression coverage while preserving existing 480p/720p behavior.
+
+### Verification
+
+- Focused video-provider/tool suite after rebasing onto current `origin/axiom`: 101 passed.
+- Python compilation and `git diff --check`: clean.
+- No media request, gateway restart, service reload, commit push, or production generation was performed during verification.
+
 ## 2026-07-14 — Restore generic named-profile cron execution
 
 ### Summary
