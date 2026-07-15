@@ -1400,6 +1400,7 @@ export interface Translations {
       needsInput: string
       waitingForAnswer: string
       finishedUnread: string
+      backgroundRunning: string
       handoffOrigin: (platform: string) => string
       renamed: string
       renameFailed: string
