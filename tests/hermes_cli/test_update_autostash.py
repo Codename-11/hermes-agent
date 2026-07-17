@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli import axiom_update as hermes_axiom_update
 from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
@@ -1085,8 +1086,9 @@ def test_deploy_handoff_resolve_suppresses_child_success_before_validation(
     assert "cron/jobs.py" in out
 
 
+@pytest.mark.parametrize("managed_default", [False, True])
 def test_deploy_branch_update_consume_only_does_not_merge_upstream(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, capsys, managed_default
 ):
     calls = []
 
@@ -1107,9 +1109,18 @@ def test_deploy_branch_update_consume_only_does_not_merge_upstream(
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_is_managed_windows_deploy_consumer",
+        lambda repo: managed_default,
+    )
 
     changed = hermes_main._run_deploy_branch_update(
-        ["git"], tmp_path, "axiom", "oldhead", consume_only=True
+        ["git"],
+        tmp_path,
+        "axiom",
+        "oldhead",
+        consume_only=not managed_default,
     )
 
     assert changed == 0
@@ -1118,6 +1129,7 @@ def test_deploy_branch_update_consume_only_does_not_merge_upstream(
     assert ["git", "merge", "--no-edit", "upstream/main"] not in commands
     out = capsys.readouterr().out
     assert "consume-only" in out
+    assert ("Managed Windows deploy install" in out) is managed_default
 
 
 # ---------------------------------------------------------------------------

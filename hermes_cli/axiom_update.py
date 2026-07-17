@@ -1440,6 +1440,27 @@ def _remove_update_worktree(
     shutil.rmtree(parent, ignore_errors=True)
 
 
+def _is_managed_windows_deploy_consumer(repo: Path) -> bool:
+    """Return whether *repo* is the native Windows managed Hermes checkout.
+
+    Docker-Server is the merge authority for Axiom's deploy branch. The native
+    Windows checkout under ``%LOCALAPPDATA%\\hermes\\hermes-agent`` is a
+    consumer: bare ``hermes update`` should install the already-reviewed
+    ``origin/<deploy>`` head rather than race a fresh upstream merge. Arbitrary
+    Windows clones and retained update worktrees remain author-capable.
+    """
+    if sys.platform != "win32":
+        return False
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        return False
+    try:
+        managed = (Path(local_appdata) / "hermes" / "hermes-agent").resolve()
+        return repo.resolve() == managed
+    except (OSError, RuntimeError):
+        return False
+
+
 def _run_deploy_branch_update(
     git_cmd: list[str],
     repo: Path,
@@ -1478,6 +1499,16 @@ def _run_deploy_branch_update(
                 print(f"✓ {note or 'update complete'}")
 
     remote_ref = f"origin/{branch}"
+    if (
+        not consume_only
+        and not auto_resolve
+        and _is_managed_windows_deploy_consumer(repo)
+    ):
+        consume_only = True
+        print(
+            f"→ Managed Windows deploy install: consuming {remote_ref} "
+            "(--resolve retains merge-authority mode)."
+        )
     _pipe = Pipeline(["fetch upstream", "merge upstream", f"sync {branch}"])
     _pipe.start("fetch upstream")
 
