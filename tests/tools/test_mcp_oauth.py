@@ -236,21 +236,31 @@ class TestUtilities:
         assert _can_open_browser() is False
 
     def test_can_open_browser_false_without_display(self, monkeypatch):
-        monkeypatch.delenv("SSH_CLIENT", raising=False)
-        monkeypatch.delenv("SSH_TTY", raising=False)
-        monkeypatch.delenv("DISPLAY", raising=False)
-        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        # Mock os.name and uname for non-macOS, non-Windows
-        monkeypatch.setattr(os, "name", "posix")
-        monkeypatch.setattr(os, "uname", lambda: type("", (), {"sysname": "Linux"})())
-        assert _can_open_browser() is False
+        # Restore os.name before pytest regains control: leaving it as "posix"
+        # through report generation makes pathlib instantiate PosixPath on
+        # Windows and crashes pytest itself.
+        with monkeypatch.context() as m:
+            m.delenv("SSH_CLIENT", raising=False)
+            m.delenv("SSH_TTY", raising=False)
+            m.delenv("DISPLAY", raising=False)
+            m.delenv("WAYLAND_DISPLAY", raising=False)
+            # Mock os.name and uname for non-macOS, non-Windows
+            m.setattr(os, "name", "posix")
+            m.setattr(
+                os,
+                "uname",
+                lambda: type("", (), {"sysname": "Linux"})(),
+                raising=False,
+            )
+            assert _can_open_browser() is False
 
     def test_can_open_browser_true_with_display(self, monkeypatch):
-        monkeypatch.delenv("SSH_CLIENT", raising=False)
-        monkeypatch.delenv("SSH_TTY", raising=False)
-        monkeypatch.setenv("DISPLAY", ":0")
-        monkeypatch.setattr(os, "name", "posix")
-        assert _can_open_browser() is True
+        with monkeypatch.context() as m:
+            m.delenv("SSH_CLIENT", raising=False)
+            m.delenv("SSH_TTY", raising=False)
+            m.setenv("DISPLAY", ":0")
+            m.setattr(os, "name", "posix")
+            assert _can_open_browser() is True
 
 
 class TestRedirectHandlerSshHint:
@@ -1112,6 +1122,30 @@ def test_configure_callback_port_reuses_cached_client_redirect_port(tmp_path, mo
 
     assert port == 57727
     assert cfg["_resolved_port"] == 57727
+
+
+def test_configure_callback_reuses_cached_https_redirect_uri(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+    )
+
+    storage = HermesTokenStorage("hosted")
+    storage._client_info_path().parent.mkdir(parents=True)
+    storage._client_info_path().write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["https://agent.example/api/mcp/oauth/callback/hosted"],
+    }))
+
+    cfg: dict = {}
+    _configure_callback_port(cfg, storage)
+    metadata = _build_client_metadata(cfg)
+
+    assert str(metadata.redirect_uris[0]) == (
+        "https://agent.example/api/mcp/oauth/callback/hosted"
+    )
 
 
 def test_configure_callback_port_explicit_overrides_cached_client_port(tmp_path, monkeypatch):
