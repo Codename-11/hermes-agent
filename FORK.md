@@ -360,6 +360,28 @@ tests/agent/test_context_compressor.py
 tests/plugins/memory/test_mempalace_provider.py
 ```
 
+### 9. MCP OAuth stream concurrency
+
+Protected behavior:
+
+- Cached OAuth credentials and refresh-token exchanges remain serialized, but the OAuth provider does not hold the SDK's task-owned lock across long-lived MCP Streamable-HTTP/SSE application responses.
+- Concurrent authenticated RPCs such as `initialize` followed by `tools/list` must not deadlock when the first response stream remains open.
+- First-time authorization and HTTP 401 recovery continue to use the SDK's complete OAuth discovery flow.
+
+Primary files:
+
+```text
+tools/mcp_oauth_manager.py
+tests/tools/test_mcp_oauth_bidirectional.py
+```
+
+Verification:
+
+- `pytest -q tests/tools/test_mcp_oauth_bidirectional.py tests/tools/test_mcp_oauth_manager.py -o 'addopts='`
+- Live OAuth MCP smoke against TREK: initialize, discover tools, and call read-only `list_trips`.
+
+Drop condition: remove the carry when the MCP Python SDK releases its OAuth context lock before yielding Streamable-HTTP application requests, or Hermes adopts an equivalent upstream workaround with concurrent-stream regression coverage.
+
 ## Temporary upstream PR carries
 
 Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` from a dedicated `carry/upstream-pr-<number>-<topic>` branch so the carry can be reverted as a unit when upstream merges or replaces the feature.
