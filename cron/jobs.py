@@ -103,12 +103,40 @@ _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
 )
 
 
+# Import-time snapshot of the compatibility constants, so deliberate
+# re-pointing of the module surface (monkeypatched CRON_DIR/JOBS_FILE/
+# OUTPUT_DIR — the documented escape hatch existing tests/embedders use)
+# is distinguishable from the constants merely being stale.
+_IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+
+
 def _current_cron_store() -> _CronStorePaths:
-    """Return paths pinned to this execution context's profile."""
+    """Return paths pinned to Axiom's shared-root cron registry.
+
+    Precedence, most explicit first:
+
+    1. an active use_cron_store() override (ContextVar);
+    2. deliberately re-pointed module constants — if CRON_DIR/JOBS_FILE/
+       OUTPUT_DIR no longer match their import-time values, someone chose
+       the documented process-wide compatibility surface; honor it;
+    3. the active installation root, resolved fresh via
+       get_default_hermes_root() — so a test or embedder that re-points
+       HERMES_HOME after this module was imported reads/writes its own shared
+       root store, while a named profile still maps to <root>/cron/jobs.json;
+    4. the import-time constants (root unchanged since import — the common
+       path, returned unchanged).
+    """
     override = _cron_store_override.get()
     if override is not None:
         return override
-    return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    if live_constants != _IMPORT_STORE:
+        return live_constants
+    root = get_default_hermes_root().resolve()
+    if root == HERMES_DIR:
+        return live_constants
+    cron_dir = root / "cron"
+    return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 
 @contextlib.contextmanager
