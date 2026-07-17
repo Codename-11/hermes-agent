@@ -31,13 +31,15 @@ import {
 } from './utils'
 
 interface SubmitPromptDeps {
-  activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  getRoutedStoredSessionId: () => null | string
+  getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
   requestGateway: GatewayRequest
+  resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   syncAttachmentsForSubmit: (
     sessionId: string,
@@ -74,13 +76,15 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
 /** The prompt submit pipeline, extracted from usePromptActions. */
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
   const {
-    activeSessionId,
     activeSessionIdRef,
     busyRef,
     copy,
     createBackendSessionForSend,
+    getRoutedStoredSessionId,
+    getRuntimeIdForStoredSession,
     getRouteToken,
     requestGateway,
+    resumeStoredSession,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
     updateSessionState,
@@ -143,12 +147,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // not const — because a new-chat submit legitimately re-homes to the
       // session it creates (see the re-pin after createBackendSessionForSend).
       const startingActiveSessionId = activeSessionIdRef.current
-      let startingStoredSessionId = selectedStoredSessionIdRef.current
+      const selectedStoredSessionId = selectedStoredSessionIdRef.current
+      const routedStoredSessionId = getRoutedStoredSessionId()
+
+      const routedRuntimeId = routedStoredSessionId ? getRuntimeIdForStoredSession(routedStoredSessionId) : null
+
+      const routedSessionNeedsResume = Boolean(
+        routedStoredSessionId &&
+        (selectedStoredSessionId !== routedStoredSessionId ||
+          !startingActiveSessionId ||
+          startingActiveSessionId !== routedRuntimeId)
+      )
+
+      let startingStoredSessionId = routedSessionNeedsResume
+        ? routedStoredSessionId
+        : (selectedStoredSessionId ?? routedStoredSessionId)
+
       let startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+        selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -250,12 +268,49 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       scope.setAwaitingResponse(true)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      // A route whose selected/runtime binding is incomplete or cross-wired
+      // outranks any stale render-time runtime id (often from the previous
+      // profile). Force the full routed resume path below in that case.
+      let sessionId: null | string = routedSessionNeedsResume ? null : activeSessionIdRef.current
 
       if (sessionId) {
         seedOptimistic(sessionId)
       } else {
         scope.setMessages(current => [...current, buildUserMessage()])
+      }
+
+      if (!sessionId && routedStoredSessionId && routedSessionNeedsResume) {
+        // The URL still names a durable conversation, but a profile
+        // swap/reconnect left its volatile session binding incomplete or
+        // cross-wired. Run the full profile-aware resume path. Creating here
+        // would fork a contextless chat against whichever profile is active.
+        try {
+          await resumeStoredSession(routedStoredSessionId)
+        } catch {
+          return abortForSessionSwitch(null)
+        }
+
+        if (sessionContextDrifted()) {
+          return abortForSessionSwitch(null)
+        }
+
+        const recoveredRuntimeId = activeSessionIdRef.current
+        const validatedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
+
+        // Recovery only succeeded when both sides of the cache agree that the
+        // live runtime belongs to the durable routed session. A failed profile
+        // swap may leave the previous profile's runtime active, while a recycled
+        // runtime id may leave a cross-wired stored-session mapping.
+        if (
+          !recoveredRuntimeId ||
+          recoveredRuntimeId !== validatedRuntimeId ||
+          selectedStoredSessionIdRef.current !== routedStoredSessionId
+        ) {
+          return abortForSessionSwitch(null)
+        }
+
+        sessionId = recoveredRuntimeId
+        seedOptimistic(sessionId)
       }
 
       if (!sessionId && startingStoredSessionId) {
@@ -280,18 +335,21 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             activeSessionIdRef.current = sessionId
           }
         } catch {
-          // Resume failed (session gone from state.db, gateway hiccup) —
-          // fall through to creating a fresh session rather than dead-ending
-          // the user's message.
+          // A selected stored conversation is not a new-chat draft. If its
+          // runtime cannot be rebound, stop here rather than silently replacing
+          // it with a contextless session.
+          return abortForSessionSwitch(null)
         }
 
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(sessionId)
         }
 
-        if (sessionId) {
-          seedOptimistic(sessionId)
+        if (!sessionId) {
+          return abortForSessionSwitch(null)
         }
+
+        seedOptimistic(sessionId)
       }
 
       if (!sessionId) {
@@ -366,10 +424,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
-          if (
-            (isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) &&
-            startingStoredSessionId
-          ) {
+          if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && startingStoredSessionId) {
             // Re-register the session in the gateway and get a fresh live ID.
             // Timeouts recover the same way as "session not found": a starved
             // backend loop (#55578 symptom d) rejects the submit even though
@@ -454,13 +509,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
     },
     [
-      activeSessionId,
       activeSessionIdRef,
       busyRef,
       copy,
       createBackendSessionForSend,
+      getRoutedStoredSessionId,
+      getRuntimeIdForStoredSession,
       getRouteToken,
       requestGateway,
+      resumeStoredSession,
       scope,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
