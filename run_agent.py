@@ -148,6 +148,7 @@ from tools.browser_tool import cleanup_browser
 from agent.memory_manager import sanitize_context
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
+from agent.message_content import flatten_message_text
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
@@ -1199,6 +1200,7 @@ class AIAgent:
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+            "auth_mode": getattr(self, "auth_mode", "") or "",
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -4822,12 +4824,15 @@ class AIAgent:
         response can contain both commentary and a partial/final-answer message
         while tools are still pending; treating top-level content as progress
         in that shape leaks the answer before the tool call runs.
+
+        Content may be a string or a structured parts list (e.g. after vision
+        turns or context compaction), so flatten it before stripping reasoning.
         """
         visible = self._extract_codex_interim_visible_text(assistant_msg)
         if visible:
             return visible
         content = assistant_msg.get("content")
-        return self._strip_think_blocks(content or "").strip()
+        return self._strip_think_blocks(flatten_message_text(content)).strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:
         normalized = self._normalize_interim_visible_text(text)
@@ -6201,21 +6206,28 @@ class AIAgent:
         acct_token = set_accounting_context(
             getattr(self, "_session_db", None), getattr(self, "session_id", None)
         )
-        try:
-            return run_conversation(
-                self,
-                user_message,
-                system_message,
-                conversation_history,
-                task_id,
-                stream_callback,
-                persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                moa_config=moa_config,
-            )
-        finally:
-            reset_accounting_context(acct_token)
-            reset_conversation_context(token)
+        from agent.auxiliary_client import scoped_runtime_main
+
+        # The outer token restores the caller's Context even though turn setup
+        # replaces the value with the live runtime after fallback restoration.
+        # Keep the scope local instead of storing ContextVar tokens on the agent,
+        # which may be observed from another thread.
+        with scoped_runtime_main({}):
+            try:
+                return run_conversation(
+                    self,
+                    user_message,
+                    system_message,
+                    conversation_history,
+                    task_id,
+                    stream_callback,
+                    persist_user_message,
+                    persist_user_timestamp=persist_user_timestamp,
+                    moa_config=moa_config,
+                )
+            finally:
+                reset_accounting_context(acct_token)
+                reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

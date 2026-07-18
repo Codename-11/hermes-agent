@@ -48,13 +48,11 @@ def _install_example_plugin(_isolate_hermes_home):
     requests this fixture so the plugin appears only for that test's
     isolated ``HERMES_HOME``.
 
-    The user-plugin source is preferred over a transient
-    ``HERMES_BUNDLED_PLUGINS`` override because the bundled dir is
-    resolved per-call (other tests in the suite implicitly rely on the
-    real bundled plugins — kanban, hermes-achievements, model providers
-    — being available, and globally swapping that root would yank them
-    all). User plugins are first in the discovery search order, so
-    laying down the fixture here is enough.
+    The fixture uses the user-plugin source instead of a transient
+    ``HERMES_BUNDLED_PLUGINS`` override because other tests implicitly rely
+    on the real bundled plugins (kanban, hermes-achievements, model providers)
+    remaining available. No bundled plugin uses the ``example`` name, so the
+    user fixture is discovered without weakening bundled-first precedence.
     """
     from hermes_constants import get_hermes_home
     from hermes_cli import web_server
@@ -6129,6 +6127,29 @@ class TestDiscoverUserThemes:
         assert "bad" not in names  # malformed YAML
         assert len(results) == 1  # only the valid one
 
+    def test_ignores_transient_profile_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        themes_dir = tmp_path / "dashboard-themes"
+        themes_dir.mkdir()
+        (themes_dir / "mine.yaml").write_text("name: mine\n")
+
+        other = tmp_path / "other-profile"
+        other.mkdir()
+
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli import web_server
+
+        token = set_hermes_home_override(str(other))
+        try:
+            results = web_server._discover_user_themes()
+        finally:
+            reset_hermes_home_override(token)
+
+        assert [r["name"] for r in results] == ["mine"]
+
 
 class TestThemeBootstrapCSS:
     """Tests for _render_active_theme_bootstrap_css() and its injection
@@ -6918,6 +6939,34 @@ class TestDashboardPluginManifestExtensions:
         assert entry["tab"]["hidden"] is True
         assert entry["slots"] == ["sidebar", "header-left"]
 
+    def test_user_plugins_ignore_profile_home_override(self, tmp_path, monkeypatch):
+        """Regression: user dashboard extensions are a dashboard-owned asset
+        (like theme YAML), so they must stay visible after a context-local
+        HERMES_HOME override scopes a request to another profile."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        launch_home = tmp_path / "launch"
+        launch_home.mkdir()
+        self._write_plugin(launch_home, "skin-home", {
+            "name": "skin-home",
+            "label": "Skin Home",
+            "tab": {"path": "/skin-home"},
+            "entry": "dist/index.js",
+        })
+        other = tmp_path / "other-profile"
+        other.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(launch_home))
+        from hermes_cli import web_server
+        token = set_hermes_home_override(str(other))
+        try:
+            plugins = web_server._discover_dashboard_plugins()
+        finally:
+            reset_hermes_home_override(token)
+        assert any(p["name"] == "skin-home" for p in plugins)
+
     def test_override_requires_leading_slash(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self._write_plugin(tmp_path, "bad-override", {
@@ -6982,13 +7031,40 @@ class TestDashboardPluginManifestExtensions:
         })
 
         from hermes_cli import web_server
-        monkeypatch.setattr(web_server, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(tmp_path / "plugins"))
         web_server._dashboard_plugins_cache = None
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
         names = {p["name"] for p in plugins}
 
         assert "example" not in names
         assert "useful" in names
+
+    def test_bundled_plugin_wins_user_name_collision(self, tmp_path, monkeypatch):
+        """User plugins cannot shadow trusted bundled dashboard routes."""
+        hermes_home = tmp_path / "home"
+        bundled_home = tmp_path / "bundled"
+        hermes_home.mkdir()
+        bundled_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_home / "plugins"))
+        self._write_plugin(bundled_home, "trusted", {
+            "name": "collision",
+            "label": "Bundled",
+            "entry": "dist/index.js",
+        })
+        self._write_plugin(hermes_home, "untrusted", {
+            "name": "collision",
+            "label": "User",
+            "entry": "dist/index.js",
+        })
+
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "collision")
+
+        assert entry["source"] == "bundled"
+        assert entry["label"] == "Bundled"
 
     def test_page_scoped_slots_preserved(self, tmp_path, monkeypatch):
         """Page-scoped slot names (e.g. ``sessions:top``) round-trip through
@@ -7120,6 +7196,106 @@ class TestPtyWebSocket:
         _argv, _cwd, env = self.ws_module._resolve_chat_argv()
 
         assert env["COLORTERM"] == "24bit"
+
+    def test_resolve_chat_argv_sets_tui_python_environment(self, monkeypatch):
+        """Dashboard chat gives the Node TUI the same Python env as CLI launches."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_PYTHON_SRC_ROOT", raising=False)
+        monkeypatch.delenv("HERMES_PYTHON", raising=False)
+        monkeypatch.delenv("HERMES_CWD", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON_SRC_ROOT"] == str(main_mod.PROJECT_ROOT)
+        assert env["HERMES_PYTHON"] == sys.executable
+        assert env["HERMES_CWD"] == os.getcwd()
+
+    def test_resolve_chat_argv_replaces_invalid_tui_python_environment(self, monkeypatch):
+        """Dashboard chat does not preserve unusable inherited TUI Python env."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setenv("HERMES_PYTHON_SRC_ROOT", "/definitely/missing/hermes-src")
+        monkeypatch.setenv("HERMES_PYTHON", "/definitely/missing/python")
+        monkeypatch.setenv("HERMES_CWD", "/definitely/missing/cwd")
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON_SRC_ROOT"] == str(main_mod.PROJECT_ROOT)
+        assert env["HERMES_PYTHON"] == sys.executable
+        assert env["HERMES_CWD"] == os.getcwd()
+
+    def test_resolve_chat_argv_keeps_relative_python_under_tui_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        """Relative Python paths are resolved from the TUI child's cwd."""
+        import hermes_cli.main as main_mod
+
+        relative_python = Path(".review-venv") / "bin" / Path(sys.executable).name
+        python_path = tmp_path / relative_python
+        python_path.parent.mkdir(parents=True)
+        os.link(sys.executable, python_path)
+        monkeypatch.setenv("HERMES_CWD", str(tmp_path))
+        monkeypatch.setenv("HERMES_PYTHON", str(relative_python))
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON"] == str(relative_python)
+
+    def test_tui_python_command_uses_child_path(self, tmp_path):
+        """Bare Python commands are resolved from the TUI child's PATH."""
+        import hermes_cli.main as main_mod
+
+        command = f"hermes-review-python{Path(sys.executable).suffix}"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        executable = bin_dir / command
+        os.link(sys.executable, executable)
+        env = {
+            "HERMES_CWD": str(tmp_path),
+            "HERMES_PYTHON": command,
+            "PATH": str(bin_dir),
+        }
+
+        main_mod._apply_tui_python_env(env)
+
+        assert env["HERMES_PYTHON"] == command
+
+    def test_resolve_chat_argv_falls_back_when_getcwd_is_missing(self, monkeypatch, tmp_path):
+        """Dashboard chat still starts if the service cwd was deleted."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_CWD", raising=False)
+        monkeypatch.setenv("PWD", str(tmp_path))
+        monkeypatch.setattr(main_mod.os, "getcwd", lambda: (_ for _ in ()).throw(FileNotFoundError()))
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_CWD"] == str(tmp_path)
 
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
