@@ -2060,9 +2060,13 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
                 task_count=1,
             )
 
+        disabled = MockAgent.call_args[1]["disabled_toolsets"]
         self.assertEqual(
-            MockAgent.call_args[1]["disabled_toolsets"],
+            disabled[:4],
             ["terminal", "file", "code_execution", "desktop"],
+        )
+        self.assertTrue(
+            {"clarify", "cronjob", "delegation", "memory"}.issubset(disabled)
         )
 
 

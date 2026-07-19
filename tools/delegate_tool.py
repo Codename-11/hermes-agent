@@ -1399,7 +1399,6 @@ def _build_child_agent(
         ),
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
-        disabled_toolsets=getattr(parent_agent, "disabled_toolsets", None),
         iteration_budget=None,  # fresh budget per subagent
         **child_optional_kwargs,
     )

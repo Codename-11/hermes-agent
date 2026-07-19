@@ -2413,22 +2413,15 @@ def _manage_thinking_signatures(
     Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
     Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
     and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
-    endpoints speak the Anthropic protocol upstream but require unsigned
-    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
-    replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
-    hermes-agent#16748 (DeepSeek).
+    endpoints speak the Anthropic protocol upstream. Kimi accepts thinking
+    blocks as-is, while DeepSeek requires unsigned thinking blocks
+    (synthesised from ``reasoning_content``) on replayed assistant tool-call
+    messages. See hermes-agent#13848 (Kimi) and hermes-agent#16748 (DeepSeek).
 
     Mutates ``result`` in place.
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
-    # (neither upstream can validate Anthropic signatures), preserve unsigned
-    # ones synthesised from reasoning_content.  See #13848, #16748.
-    _preserve_unsigned_thinking = (
-        _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
-    )
     _mutated_assistant_indices = set(mutated_assistant_indices or set())
 
     last_assistant_idx = None
@@ -2442,12 +2435,12 @@ def _manage_thinking_signatures(
             continue
 
         _is_mutated = idx in _mutated_assistant_indices
-        if _preserve_unsigned_thinking:
-            # Kimi's /coding and DeepSeek's /anthropic endpoints both enable
-            # thinking server-side and require unsigned thinking blocks on
-            # replayed assistant tool-call messages. Strip signed Anthropic
-            # blocks (neither upstream can validate Anthropic signatures) but
-            # preserve the unsigned ones we synthesised from reasoning_content.
+        if _is_kimi_family_endpoint(base_url, model):
+            # Kimi does not enforce thinking signatures — replay as-is
+            # (shared cleanup below still strips cache markers + the internal flag).
+            pass
+        elif _is_deepseek_anthropic_endpoint(base_url):
+            # DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
