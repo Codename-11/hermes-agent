@@ -301,6 +301,8 @@ Required behavior:
 
 - Native Slack assistant status is used when available.
 - Fallback status is controlled and not noisy.
+- Native and fallback status state remains workspace-scoped when one gateway
+  serves multiple Slack workspaces or Slack Connect channel IDs overlap.
 - `reply_in_thread: false` final replies remain in channel while status/progress anchoring stays operationally useful.
 
 Retirement criteria:

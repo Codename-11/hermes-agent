@@ -492,8 +492,9 @@ class SlackAdapter(BasePlatformAdapter):
         # per visible DM thread instead of on every reply.
         self._titled_assistant_threads: set = set()
         self._TITLED_ASSISTANT_THREADS_MAX = 5000
-        # Editable fallback status for apps lacking the native Assistant API.
-        self._active_status_messages: Dict[Tuple[str, str], str] = {}
+        # Editable fallback status for apps lacking the native Assistant API,
+        # scoped by workspace so Slack Connect channel/thread IDs cannot collide.
+        self._active_status_messages: Dict[Tuple[str, str, str], str] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -1655,43 +1656,49 @@ class SlackAdapter(BasePlatformAdapter):
                 "thread_ts": str(thread_ts),
                 "team_id": str(team_id) if team_id else "",
             }
+        # Per-event progress text is the most specific signal. Fall back to the
+        # configured channel/platform text only when the event did not provide
+        # one, preserving TGI's dynamic tool-progress statuses.
+        resolved_status = status
+        if resolved_status == "is thinking...":
+            resolved_status = (
+                getattr(self, "_status_text", {}).get(str(chat_id))
+                or getattr(self.config, "typing_status_text", None)
+                or resolved_status
+            )
         try:
-            # Per-event progress text is the most specific signal. Fall back to
-            # the configured channel/platform text only when the event did not
-            # provide one, preserving TGI's dynamic tool-progress statuses.
-            _status = status
-            if _status == "is thinking...":
-                _status = (
-                    getattr(self, "_status_text", {}).get(str(chat_id))
-                    or getattr(self.config, "typing_status_text", None)
-                    or _status
-                )
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
-                status=_status[:100],
+                status=resolved_status[:100],
             )
         except Exception as e:
             # Workspaces may lack assistant:write/chat:write scope or may not
             # be assistant-enabled.  Keep the failure quiet in chat but provide
             # the same operator signal through one edited thread message.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
-            await self._upsert_status_fallback(chat_id, thread_ts, _status)
+            await self._upsert_status_fallback(
+                chat_id,
+                thread_ts,
+                resolved_status,
+                team_id=team_id,
+            )
 
     async def _upsert_status_fallback(
         self,
         chat_id: str,
         thread_ts: str,
         status: str,
+        team_id: str = "",
     ) -> None:
         """Create or edit the single fallback Slack status message."""
-        key = (chat_id, thread_ts)
+        key = (str(team_id or ""), str(chat_id), str(thread_ts))
         text = f"_Status:_ {status}"
         text = text[:300]
         try:
             msg_id = self._active_status_messages.get(key)
             if msg_id:
-                await self._get_client(chat_id).chat_update(
+                await self._get_client(chat_id, team_id=team_id).chat_update(
                     channel=chat_id,
                     ts=msg_id,
                     text=text,
@@ -1699,7 +1706,9 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-            result = await self._get_client(chat_id).chat_postMessage(
+            result = await self._get_client(
+                chat_id, team_id=team_id
+            ).chat_postMessage(
                 channel=chat_id,
                 thread_ts=thread_ts,
                 text=text,
@@ -1788,11 +1797,11 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
 
-        key = (chat_id, thread_ts)
+        key = (str(team_id or ""), str(chat_id), str(thread_ts))
         msg_id = self._active_status_messages.pop(key, None)
         if msg_id:
             try:
-                await self._get_client(chat_id).chat_update(
+                await self._get_client(chat_id, team_id=team_id).chat_update(
                     channel=chat_id,
                     ts=msg_id,
                     text="_Status:_ done.",

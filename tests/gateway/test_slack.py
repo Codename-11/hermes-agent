@@ -2630,6 +2630,61 @@ class TestSendTyping:
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_status_fallback_is_scoped_to_workspace_client(self, adapter):
+        team_client = AsyncMock()
+        team_client.assistant_threads_setStatus = AsyncMock(
+            side_effect=Exception("missing_scope")
+        )
+        team_client.chat_postMessage = AsyncMock(return_value={"ts": "fallback_ts"})
+        adapter._team_clients["T_OTHER"] = team_client
+
+        metadata = {"thread_id": "parent_ts", "slack_team_id": "T_OTHER"}
+        await adapter.send_typing("D123", metadata=metadata)
+        await adapter.stop_typing("D123", metadata=metadata)
+
+        team_client.chat_postMessage.assert_awaited_once_with(
+            channel="D123",
+            thread_ts="parent_ts",
+            text="_Status:_ is thinking...",
+            mrkdwn=True,
+        )
+        team_client.chat_update.assert_awaited_once_with(
+            channel="D123",
+            ts="fallback_ts",
+            text="_Status:_ done.",
+            mrkdwn=True,
+        )
+        assert ("T_OTHER", "D123", "parent_ts") not in adapter._active_status_messages
+        adapter._app.client.chat_postMessage.assert_not_called()
+        adapter._app.client.chat_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_status_fallbacks_do_not_collide_across_workspaces(self, adapter):
+        one, two = AsyncMock(), AsyncMock()
+        for client, message_ts in ((one, "one_fallback"), (two, "two_fallback")):
+            client.assistant_threads_setStatus = AsyncMock(
+                side_effect=Exception("missing_scope")
+            )
+            client.chat_postMessage = AsyncMock(return_value={"ts": message_ts})
+        adapter._team_clients.update({"T_ONE": one, "T_TWO": two})
+
+        for team_id in ("T_ONE", "T_TWO"):
+            await adapter.send_typing(
+                "D_SHARED",
+                metadata={"thread_id": "171.000", "slack_team_id": team_id},
+            )
+
+        await adapter.stop_typing(
+            "D_SHARED",
+            metadata={"thread_id": "171.000", "slack_team_id": "T_ONE"},
+        )
+
+        one.chat_update.assert_awaited_once()
+        two.chat_update.assert_not_called()
+        assert ("T_ONE", "D_SHARED", "171.000") not in adapter._active_status_messages
+        assert adapter._active_status_messages[("T_TWO", "D_SHARED", "171.000")] == "two_fallback"
+
+    @pytest.mark.asyncio
     async def test_status_accepts_slack_team_metadata_key(self, adapter):
         team_client = AsyncMock()
         adapter._team_clients["T_OTHER"] = team_client
