@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
   testConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:test', payload),
+  sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
+  sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
   listRemoteProfilesForConnection: payload => ipcRenderer.invoke('hermes:connection-config:list-remote-profiles', payload),
   pinRemoteProfileConnection: payload => ipcRenderer.invoke('hermes:connection-config:pin-remote-profile', payload),
