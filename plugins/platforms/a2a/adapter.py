@@ -85,7 +85,7 @@ class A2AAdapter(BasePlatformAdapter):
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Capture the running gateway loop so the HTTP thread can marshal
         # events onto it via run_coroutine_threadsafe.
         try:
