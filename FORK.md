@@ -158,7 +158,7 @@ Commits:
 
 Primary files:
 
-- `apps/desktop/electron/main.cjs`
+- `apps/desktop/electron/main.ts`
 - `apps/desktop/src/global.d.ts`
 - `apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx`
 - `apps/desktop/src/app/settings/about-settings.tsx`
@@ -181,7 +181,6 @@ Retirement criteria:
 Focused checks:
 
 ```bash
-node --check apps/desktop/electron/main.cjs
 cd apps/desktop && npm run typecheck
 ```
 
@@ -371,8 +370,8 @@ Commit:
 
 Primary files:
 
-- `apps/desktop/electron/main.cjs`
-- `apps/desktop/electron/preload.cjs`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/preload.ts`
 - `apps/desktop/src/global.d.ts`
 - `apps/desktop/src/app/settings/gateway-settings.tsx`
 - `apps/desktop/src/i18n/*.ts`
@@ -409,8 +408,6 @@ Reference:
 Focused checks:
 
 ```bash
-node --check apps/desktop/electron/main.cjs
-node --check apps/desktop/electron/preload.cjs
 cd apps/desktop && npm run typecheck
 ```
 
@@ -422,8 +419,8 @@ Commit:
 
 Primary files:
 
-- `apps/desktop/electron/main.cjs`
-- `apps/desktop/electron/preload.cjs`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/preload.ts`
 - `apps/desktop/src/global.d.ts`
 - `apps/desktop/src/app/artifacts/index.tsx`
 - `apps/desktop/src/lib/media.ts`
@@ -455,8 +452,6 @@ Watch upstream for:
 Focused checks:
 
 ```bash
-node --check apps/desktop/electron/main.cjs
-node --check apps/desktop/electron/preload.cjs
 cd apps/desktop && npx vitest run --environment jsdom \
   src/lib/media.remote.test.ts \
   src/lib/desktop-fs.test.ts \
@@ -472,7 +467,7 @@ Commit:
 
 Primary files:
 
-- `apps/desktop/electron/main.cjs`
+- `apps/desktop/electron/main.ts`
 - `apps/desktop/src/lib/media.ts`
 - `apps/desktop/src/lib/local-preview.ts`
 - `apps/desktop/src/components/assistant-ui/markdown-text.tsx`
@@ -510,7 +505,6 @@ Watch upstream for:
 Focused checks:
 
 ```bash
-node --check apps/desktop/electron/main.cjs
 cd apps/desktop && npx vitest run --environment jsdom \
   src/lib/local-preview.test.ts \
   src/lib/media.remote.test.ts \
@@ -549,6 +543,42 @@ Focused checks:
 venv/bin/python -m py_compile cron/scheduler.py
 venv/bin/python -m pytest -o 'addopts=' -q tests/cron/test_scheduler.py::TestCronFailureSummary
 ```
+
+### 11. A2A reconnect contract
+
+Commit:
+
+- `fbe2a6c38d` — `fix(a2a): restore reconnect adapter contract`
+
+Primary file:
+
+- `plugins/platforms/a2a/adapter.py`
+
+Why TGI needs it:
+
+- The gateway reconnect watcher calls every platform adapter with `connect(is_reconnect=...)`.
+- A later A2A plugin rewrite regressed to a bare `connect(self)` signature, leaving Atlas/default A2A disconnected after the 2026-07-21 update.
+
+Required behavior:
+
+- `A2AAdapter.connect` accepts the keyword-only `is_reconnect: bool = False` contract and otherwise keeps the same cold-start/server behavior.
+- The static adapter contract test must include A2A so future plugin rewrites cannot silently drop the parameter.
+
+Retirement criteria:
+
+- Upstream's A2A plugin ships the same reconnect-compatible signature and contract coverage.
+
+Focused checks:
+
+```bash
+venv/bin/python -m pytest -o 'addopts=' -q \
+  tests/gateway/test_adapter_connect_is_reconnect_contract.py \
+  tests/plugins/test_a2a_plugin.py
+```
+
+Live verification:
+
+- Default/Atlas gateway logs `✓ a2a connected` and listens in authenticated remote mode on `100.84.156.70:9900`.
 
 ## Current known update/build pitfalls
 
