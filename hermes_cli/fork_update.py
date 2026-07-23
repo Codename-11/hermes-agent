@@ -1424,6 +1424,20 @@ def _remove_update_worktree(
     shutil.rmtree(parent, ignore_errors=True)
 
 
+def _resolve_deploy_update_modes(args: object) -> tuple[bool, bool]:
+    """Return ``(resolve_handoff, consume_only)`` for a deploy update.
+
+    Deploy branches are tested release artifacts. Runtime hosts consume
+    ``origin/<deploy>`` by default; only explicit ``--resolve`` grants upstream
+    integration authority.
+    """
+    resolve_handoff = bool(getattr(args, "resolve", False))
+    consume_requested = bool(getattr(args, "consume", False))
+    if resolve_handoff and consume_requested:
+        raise ValueError("--resolve and --consume are mutually exclusive for deploy branches.")
+    return resolve_handoff, consume_requested or not resolve_handoff
+
+
 def _run_deploy_branch_update(
     git_cmd: list[str],
     repo: Path,
@@ -1478,6 +1492,33 @@ def _run_deploy_branch_update(
             repo=repo,
             branch=branch,
             error=(fetch_upstream.stderr or "").strip(),
+            git_cmd=git_cmd,
+        )
+        return None
+
+    # Refresh the tested deploy artifact before comparing refs. Otherwise a
+    # client with a stale remote-tracking ref can falsely report origin current
+    # and strand itself on an old deploy commit after another host resolved and
+    # pushed the integration.
+    fetch_deploy = subprocess.run(
+        git_cmd
+        + [
+            "fetch",
+            "origin",
+            f"{branch}:refs/remotes/origin/{branch}",
+            "--quiet",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_deploy.returncode != 0:
+        _pipe.fail(note=f"cannot refresh origin/{branch}")
+        _print_deploy_branch_handoff(
+            reason=f"cannot fetch origin/{branch}.",
+            repo=repo,
+            branch=branch,
+            error=(fetch_deploy.stderr or "").strip(),
             git_cmd=git_cmd,
         )
         return None

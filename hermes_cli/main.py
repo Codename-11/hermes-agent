@@ -475,6 +475,7 @@ from hermes_cli.fork_update import (  # noqa: E402  (fork seam)
     _record_deploy_handoff,
     _remove_update_worktree,
     _resolve_deploy_handoff,
+    _resolve_deploy_update_modes,
     _run_deploy_branch_update,
     _short_git_ref,
     _sync_deploy_main_to_upstream,
@@ -11169,10 +11170,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
             )
 
-            resolve_handoff = bool(getattr(args, "resolve", False))
-            consume_only = bool(getattr(args, "consume", False))
-            if resolve_handoff and consume_only:
-                print("✗ --resolve and --consume are mutually exclusive for deploy branches.")
+            try:
+                resolve_handoff, consume_only = _resolve_deploy_update_modes(args)
+            except ValueError as exc:
+                print(f"✗ {exc}")
                 return
 
             if resolve_handoff and _deploy_handoff_exists_for(PROJECT_ROOT, current_branch):
