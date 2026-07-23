@@ -1514,7 +1514,7 @@ def test_tgi_deploy_handoff_resolve_suppresses_child_success_before_validation(
     assert "cron/jobs.py" in out
 
 
-def test_tgi_deploy_branch_update_consume_only_does_not_merge_upstream(
+def test_tgi_deploy_branch_update_consume_only_does_not_sync_or_merge_upstream(
     monkeypatch, tmp_path, capsys
 ):
     calls = []
@@ -1523,10 +1523,6 @@ def test_tgi_deploy_branch_update_consume_only_does_not_merge_upstream(
         calls.append((cmd, kwargs))
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "HEAD..origin/tgi"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "origin/tgi..HEAD"]:

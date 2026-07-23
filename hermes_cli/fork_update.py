@@ -1482,7 +1482,7 @@ def _run_deploy_branch_update(
         )
         return None
 
-    if not _sync_deploy_main_to_upstream(git_cmd, repo):
+    if not consume_only and not _sync_deploy_main_to_upstream(git_cmd, repo):
         _pipe.fail(note="cannot sync local main")
         _print_deploy_branch_handoff(
             reason="local main cannot be synchronized with upstream/main.",
