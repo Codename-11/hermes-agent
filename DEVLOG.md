@@ -23,7 +23,9 @@ Merged 286 upstream commits into the `axiom` deploy branch, preserved Axiom fork
 - Desktop full suite: 2,631 passed, 3 skipped.
 - TUI `npm run check`: build, typecheck, and 1,347 tests passed, 1 skipped.
 - Desktop TypeScript typecheck and Electron native-auth/OAuth focused tests passed.
-- Live TUI/update/gateway verification is recorded after deploy below.
+- Live deploy verification: `HEAD == origin/axiom` at `b8df9603ca4c`, `upstream/main` is contained with zero commits pending, the checkout is clean, all five profile gateways are active, API health is `ok`, dashboard redirects normally to auth, and Hermes Proxy `/v1/models` returns HTTP 200.
+- Interactive `hermes` rendered the TUI successfully under a bounded PTY smoke with no traceback or startup error; the timeout terminated the intentionally interactive process after rendering.
+- The stale profile-scoped handoff marker and its retained merge worktree were removed only after the ancestry/live-origin checks passed.
 
 ## 2026-07-14 — Expose mode-safe xAI 1080p image-to-video
 
