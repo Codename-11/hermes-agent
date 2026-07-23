@@ -529,10 +529,31 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
-def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_message_id: Any) -> Optional[str]:
-    """Return thread/root ID that progress/status bubbles should target."""
+def _resolve_progress_thread_id(
+    platform: Any,
+    source_thread_id: Any,
+    event_message_id: Any,
+    *,
+    reply_in_thread: bool = True,
+) -> Optional[str]:
+    """Return thread/root ID that progress/status bubbles should target.
+
+    ``reply_in_thread=False`` (Slack ``platforms.slack.extra.reply_in_thread``)
+    disables the synthetic-thread fallback: progress messages must not create
+    a thread the final flat reply would then inherit. A source.thread_id equal
+    to the event's own message id is the adapter's synthetic session-keying
+    thread, not a real thread — treat it as "no thread" too (#18859).
+    """
     platform_value = getattr(platform, "value", platform)
     platform_key = str(platform_value or "").lower()
+    if not reply_in_thread:
+        if (
+            source_thread_id
+            and event_message_id
+            and str(source_thread_id) == str(event_message_id)
+        ):
+            return None
+        return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
     if platform_key in {"slack", "mattermost"} and event_message_id:
@@ -1951,6 +1972,7 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
+    build_channel_continuity_note,
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
@@ -6942,19 +6964,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # run as a self-restart loop guard and the gateway stays stopped.
             watcher_env.pop("_HERMES_GATEWAY", None)
             project_root = Path(__file__).resolve().parent.parent
+            # The watcher runs sys.executable (console python) under the
+            # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
+            # console, inherited by the `hermes gateway restart` child, so
+            # nothing flashes. Do NOT swap in GUI-subsystem pythonw.exe —
+            # a console-less watcher forces every console-subsystem
+            # descendant to allocate a visible conhost (#54220/#56747).
             watcher_python = sys.executable
-            try:
-                # Prefer a real GUI-subsystem interpreter for the watcher
-                # itself.  With uv venvs, ``python.exe`` can re-exec the base
-                # console interpreter and flash even when the Popen carries
-                # CREATE_NO_WINDOW; pythonw.exe avoids console allocation.
-                from hermes_cli.gateway_windows import _resolve_detached_python
-
-                watcher_python, _watcher_venv_dir, _watcher_site_packages = (
-                    _resolve_detached_python(sys.executable)
-                )
-            except Exception:
-                watcher_python = sys.executable
             venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
             site_packages = venv_dir / "Lib" / "site-packages"
             if site_packages.exists():
@@ -12572,6 +12588,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+            # Slack/Discord channels/threads are long-lived: point the agent at
+            # the specific prior same-channel session so it recalls that context
+            # via session_search instead of an unrelated recent session.  Returns
+            # None (appends nothing) for other platforms or when there's no prior
+            # activity to recall.  Deterministic — no extra API/DB calls (#36220).
+            try:
+                continuity_note = build_channel_continuity_note(session_entry, source)
+            except Exception:
+                continuity_note = None
+            if continuity_note:
+                context_note = context_note + "\n\n" + continuity_note
             turn_sidecar_notes.append(context_note)
 
             # Send a user-facing notification explaining the reset, unless:
@@ -16816,6 +16843,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata["direct_messages_topic_id"] = tid
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+        if platform == Platform.SLACK and reply_to_message_id is not None:
+            # Slack's reply_in_thread=false path uses message_id to distinguish
+            # real existing threads from synthetic top-level session keys.
+            metadata["message_id"] = str(reply_to_message_id)
         return metadata
 
     @staticmethod
@@ -18340,6 +18371,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
 
                 # --- Normal text-only notification ---
+                # Skip when the agent already consumed this completion via
+                # wait/log (#65379): process(wait) returned the exit code and
+                # output inline, so the raw "[Background process ... finished
+                # with exit code ...]" message would be a duplicate delivery
+                # of the same completion. The agent_notify branch above
+                # already honors _completion_consumed; without this check its
+                # skip FALLS THROUGH to this block and re-delivers the output
+                # the agent is actively summarizing. poll() is read-only and
+                # intentionally does not mark consumed (#10156), so a status
+                # check never suppresses this message.
+                if _pr_check.is_completion_consumed(session_id):
+                    logger.debug(
+                        "Process watcher: completion for %s already consumed "
+                        "via wait/log — skipping raw notification (#65379)",
+                        session_id,
+                    )
+                    break
                 # Decide whether to notify based on mode
                 should_notify = (
                     notify_mode in {"all", "result"}
@@ -19178,6 +19226,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "1" if src.message_id else "0",
             )
 
+        # Slack renders a capability-aware platform note gated on
+        # _slack_tools_loaded() — the gate state must appear in the key
+        # (same parity contract as the Discord gate above) so a config /
+        # MCP-registration flip re-renders once instead of serving a
+        # stale pinned note for the rest of the session.
+        slack_tools = ""
+        if src.platform == Platform.SLACK:
+            from gateway.session import _slack_tools_loaded
+
+            slack_tools = "1" if _slack_tools_loaded() else "0"
+
         try:
             from hermes_constants import display_hermes_home
 
@@ -19198,6 +19257,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             bool(context.shared_multi_user_session),
             discord_ids,
             discord_tools,
+            slack_tools,
             tuple(p.value for p in context.connected_platforms),
             tuple(
                 (
@@ -20581,13 +20641,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
+        #
+        # Slack honours platforms.slack.extra.reply_in_thread=false: if the
+        # user has opted out of threaded replies, don't synthesise a thread
+        # for progress messages either — the very first progress message
+        # would otherwise create a thread that all subsequent replies
+        # (including the final answer) would inherit (#18859).
+        _progress_reply_in_thread = True
+        if source.platform == Platform.SLACK:
+            _slack_adapter_for_progress = self._adapter_for_source(source)
+            if _slack_adapter_for_progress is not None:
+                try:
+                    _progress_reply_in_thread = bool(
+                        _slack_adapter_for_progress.config.extra.get(
+                            "reply_in_thread", True
+                        )
+                    )
+                except Exception:
+                    _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id,
+            reply_in_thread=_progress_reply_in_thread,
         )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
-            else {"thread_id": _progress_thread_id}
+            else self._thread_metadata_for_target(
+                source.platform,
+                source.chat_id,
+                _progress_thread_id,
+                chat_type=getattr(source, "chat_type", None),
+                reply_to_message_id=event_message_id,
+            )
         ) if _progress_thread_id else None
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
         _progress_reply_to = (
@@ -20787,8 +20872,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             async def _roll_progress_overflow_if_needed() -> bool:
                 """Start fresh editable progress bubbles before a bubble exceeds limit.
 
-                Returns True when it delivered/split the current buffer and the
-                caller should skip the normal send/edit path for this tick.
+                Returns True when it delivered/split the current buffer, or when
+                a transient edit failure left the buffer and message identity
+                intact for a later retry.  In either case the caller should skip
+                the normal send/edit path for this tick.
                 """
                 nonlocal progress_msg_id, progress_lines, can_edit
                 if not progress_lines or not can_edit:
@@ -20801,6 +20888,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if progress_msg_id is not None:
                     result = await _edit_progress_message(progress_msg_id, first_text)
                     if not result.success:
+                        if getattr(result, "retryable", False):
+                            logger.debug(
+                                "[%s] Transient overflow edit failure — keeping can_edit=True",
+                                adapter.name,
+                            )
+                            return True
                         can_edit = False
                         # Fall back to the existing non-edit behavior below.
                         return False
@@ -21070,7 +21163,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            _status_thread_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if _progress_thread_id == source.thread_id
+                else self._thread_metadata_for_target(
+                    source.platform,
+                    source.chat_id,
+                    _progress_thread_id,
+                    chat_type=getattr(source, "chat_type", None),
+                    reply_to_message_id=event_message_id,
+                )
+            ) if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

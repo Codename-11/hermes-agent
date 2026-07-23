@@ -101,6 +101,33 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(
     r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
 )
 
+# Cap on how many thread-root images are downloaded and delivered when the
+# bot is mentioned mid-thread (cold-start hydrate). Prior thread messages'
+# attachments are surfaced as text markers only — the root is special
+# because it is very often the artifact the mention is about ("@bot what's
+# in this chart?" posted as a reply under an image).
+_THREAD_ROOT_IMAGE_MAX = 4
+
+
+def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
+    """Render a compact text marker for a Slack file attachment.
+
+    Used by :meth:`SlackAdapter._render_message_text` so thread-context and
+    parent-text rendering surface that a message carried images/files even
+    though the context fetch is text-only. Name is sanitized (newlines and
+    brackets stripped) so a hostile filename can't fake context structure.
+    """
+    name = str(file_obj.get("name") or file_obj.get("title") or file_obj.get("id") or "file")
+    name = re.sub(r"[\r\n\[\]]+", " ", name).strip() or "file"
+    mimetype = str(file_obj.get("mimetype") or "")
+    if mimetype.startswith("image/"):
+        return f"[image: {name}]"
+    if mimetype.startswith("video/"):
+        return f"[video: {name}]"
+    if mimetype.startswith("audio/"):
+        return f"[audio: {name}]"
+    return f"[file: {name} ({mimetype})]" if mimetype else f"[file: {name}]"
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -788,6 +815,14 @@ class SlackAdapter(BasePlatformAdapter):
         # cache bridges lifecycle and message delivery ordering.
         self._agent_view_contexts: Dict[Tuple[str, str], Dict[str, str]] = {}
         self._AGENT_VIEW_CONTEXTS_MAX = 5000
+        # Status-bubble dedup (issue #30045, extended to Slack): remember the
+        # message ts of the last status bubble per (channel, thread, status
+        # key) so repeated progress callbacks (compression retries, fallback
+        # switches, ...) edit ONE message in place instead of appending a new
+        # bubble per event — long retry loops used to spam threads with
+        # dozens of out-of-order status messages.
+        self._status_message_ids: Dict[Tuple[str, str, str], str] = {}
+        self._STATUS_MESSAGE_IDS_MAX = 2000
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         # Cache for _fetch_channel_context results: cache_key → _ThreadContextCache
@@ -812,7 +847,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Entries are popped when the status clears, but statuses abandoned
         # by an error path would accumulate — bound with oldest-thread-first
         # eviction (key[2] is the thread ts).
-        self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+        self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self._ACTIVE_STATUS_THREADS_MAX = 1000
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
@@ -1630,6 +1665,13 @@ class SlackAdapter(BasePlatformAdapter):
         tokens_file = get_hermes_home() / "slack_tokens.json"
         if tokens_file.exists():
             try:
+                # Warn if the token file is world- or group-readable — it
+                # contains plaintext bot tokens for all saved workspaces.
+                from utils import warn_if_credential_file_broadly_readable
+
+                warn_if_credential_file_broadly_readable(
+                    tokens_file, label="[Slack]", log=logger
+                )
                 saved = json.loads(tokens_file.read_text(encoding="utf-8"))
                 for team_id, entry in saved.items():
                     tok = entry.get("token", "") if isinstance(entry, dict) else ""
@@ -1793,6 +1835,46 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say, body):
                 await self._handle_assistant_thread_lifecycle_event(event, body)
 
+            # Catch-all no-op ack for any other subscribed event type that
+            # Hermes has no listener for (e.g. user_change,
+            # user_huddle_changed, member_joined_channel, channel_archive,
+            # pin_added, etc.).
+            #
+            # Two reasons this must exist (issues #6572 and the Event
+            # Subscriptions auto-disable failure mode):
+            #   1. Correctness at scale: without a matching listener,
+            #      slack-bolt returns HTTP 404 for every unhandled event
+            #      envelope and never sends the Socket Mode ack. When the app
+            #      is subscribed to high-volume events (user_change fires on
+            #      every presence/status change for the whole org), the flood
+            #      of un-acked 404s pushes Slack's failure rate past its
+            #      95%/60-min threshold and Slack auto-disables the app's
+            #      Event Subscriptions — silently killing ALL inbound
+            #      delivery until manually re-enabled.
+            #   2. Noise: each unhandled envelope also logs a slack_bolt
+            #      "Unhandled request" WARNING, flooding gateway logs in
+            #      busy channels.
+            #
+            # Registered AFTER every named handler: bolt dispatches to the
+            # first matching listener, so the named handlers above always
+            # win and this only fires for truly unhandled types. The
+            # envelope is acked with 200, keeping the failure rate near 0%
+            # regardless of which events the Slack app manifest subscribes
+            # to. A debug line preserves visibility into unknown event
+            # types without per-message WARNING noise.
+            @self._app.event(re.compile(r".*"))
+            async def handle_unhandled_event(event, body, logger):
+                logger.debug(
+                    "[Slack] Ignoring unhandled event type=%s (no listener "
+                    "registered; subscribed events not handled by Hermes can "
+                    "be removed from the Slack app manifest via "
+                    "`hermes slack manifest`)",
+                    (event or {}).get(
+                        "type",
+                        (body or {}).get("event", {}).get("type", "unknown"),
+                    ),
+                )
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -1934,6 +2016,39 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Socket Mode connected (%d workspace(s))",
                 len(self._team_clients),
             )
+
+            # Bot-event interop diagnostic. When the user has opted into
+            # bot messages via ``slack.allow_bots`` / ``SLACK_ALLOW_BOTS``,
+            # surface the additional plumbing they almost certainly also
+            # need so bot-to-bot interop doesn't silently fail.
+            #
+            # See #30091: a user reported that with ``allow_bots: all``
+            # configured, bot messages in shared threads were still
+            # dropped. Two things upstream of this code can swallow them:
+            #   1. The Slack app's event subscriptions in the manifest —
+            #      Socket Mode does not deliver events the app hasn't
+            #      subscribed to (``message.channels`` for public
+            #      channels, ``message.groups`` for private channels,
+            #      ``message.im`` for DMs).
+            #   2. The SLACK_ALLOWED_USERS / GATEWAY_ALLOWED_USERS
+            #      per-user allowlists — the other bot's user id must be
+            #      present (or GATEWAY_ALLOW_ALL_USERS=true).
+            #
+            # Logging once at INFO keeps the startup line discoverable
+            # without requiring DEBUG to enable.
+            _allow_bots_cfg = self._slack_allow_bots()
+            if _allow_bots_cfg != "none":
+                logger.info(
+                    "[Slack] allow_bots=%s — for bot-to-bot interop also ensure: "
+                    "(a) the Slack app manifest subscribes to message.channels / "
+                    "message.groups / message.im as appropriate (run "
+                    "'hermes slack manifest' if unsure), and (b) the other bot's "
+                    "Slack user id is in SLACK_ALLOWED_USERS or "
+                    "GATEWAY_ALLOW_ALL_USERS=true. Without these, bot events are "
+                    "silently dropped upstream of the allow_bots gate.",
+                    _allow_bots_cfg,
+                )
+
             return True
 
         except Exception as e:  # pragma: no cover - defensive logging
@@ -2088,6 +2203,26 @@ class SlackAdapter(BasePlatformAdapter):
             )
         return chat_id
 
+    async def _clear_thread_status_quietly(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Best-effort assistant-status clear for send() paths that bypass
+        the normal post-delivery clear.
+
+        Issue #24117: the assistant thread can stay stuck "is thinking..."
+        when a turn ends through a path that never reaches the regular
+        ``if thread_ts: stop_typing`` clear — an empty final response, a
+        slash-command ephemeral reply, or an exception raised before
+        ``thread_ts`` was resolved. ``stop_typing`` is already idempotent
+        (clearing an unset status is a no-op on Slack's side), so this just
+        guarantees it runs without letting a cleanup error mask the caller's
+        SendResult.
+        """
+        try:
+            await self.stop_typing(chat_id, metadata=metadata)
+        except Exception as e:  # pragma: no cover - defensive cleanup
+            logger.debug("[Slack] status cleanup failed: %s", e)
+
     async def send(
         self,
         chat_id: str,
@@ -2116,6 +2251,11 @@ class SlackAdapter(BasePlatformAdapter):
                     content,
                 )
                 if ephemeral_result.success:
+                    # Ephemeral replies do not count as thread replies, so
+                    # Slack never auto-clears the Assistant status for them.
+                    # Clear it explicitly or a command run inside an
+                    # assistant thread leaves "is thinking..." forever.
+                    await self._clear_thread_status_quietly(chat_id, metadata)
                     return ephemeral_result
                 # response_url delivery failed (#19688): fall back to
                 # chat.postEphemeral — an independent API path that keeps
@@ -2134,6 +2274,7 @@ class SlackAdapter(BasePlatformAdapter):
                     content,
                 )
                 if fallback_result.success:
+                    await self._clear_thread_status_quietly(chat_id, metadata)
                     return fallback_result
                 # Both ephemeral paths failed — surface the failure instead
                 # of leaking the reply publicly. The user still has the
@@ -2153,6 +2294,11 @@ class SlackAdapter(BasePlatformAdapter):
             # Guard against empty/whitespace-only messages — Slack API
             # returns ``no_text`` for chat.postMessage with blank text.
             if not formatted or not formatted.strip():
+                # This is still the end of a delivery attempt: if the turn
+                # produced no visible text (e.g. "(empty)" final responses
+                # are filtered upstream), the assistant thread status must
+                # not stay stuck on "is thinking..." (#24117).
+                await self._clear_thread_status_quietly(chat_id, metadata)
                 return SendResult(success=True)
 
             # Split long messages, preserving code block boundaries
@@ -2225,8 +2371,12 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         except Exception as e:  # pragma: no cover - defensive logging
-            if thread_ts:
-                await self.stop_typing(chat_id, metadata=metadata)
+            # Clear the assistant status even when the failure happened
+            # BEFORE thread_ts was resolved (formatting, slash-context, DM
+            # resolution): stop_typing falls back to metadata / the uniquely
+            # tracked status for this channel, so a failed turn cannot leave
+            # "is thinking..." visible (#24117).
+            await self._clear_thread_status_quietly(chat_id, metadata)
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             _retryable = self._is_retryable_upload_error(e)
             _retry_after = None
@@ -2284,6 +2434,49 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Ephemeral send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a status message, or edit the previous one with the same key.
+
+        Issue #30045 (Telegram) extended to Slack: progress/status callbacks
+        (context-pressure, compression retries, model fallback, lifecycle)
+        used to append a fresh bubble on every call, spamming threads during
+        long retry loops. The first call posts and the message ts is
+        remembered; subsequent calls with the same (channel, thread,
+        status_key) edit that message in place via ``chat.update``. If the
+        edit fails (message deleted, too old, ...) the cached ts is dropped
+        and a fresh message is sent.
+        """
+        thread_ts = self._resolve_thread_ts(None, metadata) or ""
+        key = (str(chat_id), str(thread_ts), str(status_key))
+        cached_id = self._status_message_ids.get(key)
+        if cached_id is not None:
+            result = await self.edit_message(
+                chat_id, cached_id, content, finalize=False, metadata=metadata,
+            )
+            if result.success:
+                if result.message_id:
+                    self._status_message_ids[key] = str(result.message_id)
+                return result
+            # Edit failed — clear the cached ts and fall through to a fresh send.
+            self._status_message_ids.pop(key, None)
+        result = await self.send(chat_id, content, metadata=metadata)
+        if result.success and result.message_id:
+            if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
+                # Simple FIFO trim: drop the oldest half to bound memory.
+                for stale in list(self._status_message_ids)[
+                    : self._STATUS_MESSAGE_IDS_MAX // 2
+                ]:
+                    self._status_message_ids.pop(stale, None)
+            self._status_message_ids[key] = str(result.message_id)
+        return result
+
     async def edit_message(
         self,
         chat_id: str,
@@ -2338,11 +2531,48 @@ class SlackAdapter(BasePlatformAdapter):
                 else:
                     raise
             if finalize:
-                await self.stop_typing(chat_id, metadata=metadata)
+                await self._clear_thread_status_quietly(chat_id, metadata)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             if finalize:
-                await self.stop_typing(chat_id, metadata=metadata)
+                await self._clear_thread_status_quietly(chat_id, metadata)
+            aiohttp_module = globals().get("aiohttp")
+            connection_error_type = getattr(
+                aiohttp_module, "ClientConnectionError", None
+            )
+            permanent_tls_error_types = tuple(
+                error_type
+                for error_type in (
+                    getattr(aiohttp_module, "ClientSSLError", None),
+                    getattr(aiohttp_module, "ServerFingerprintMismatch", None),
+                )
+                if isinstance(error_type, type)
+            )
+            is_permanent_tls_error = bool(permanent_tls_error_types) and isinstance(
+                e, permanent_tls_error_types
+            )
+            is_transient_transport_error = isinstance(e, TimeoutError) or (
+                isinstance(connection_error_type, type)
+                and isinstance(e, connection_error_type)
+                and not is_permanent_tls_error
+            )
+            if is_transient_transport_error:
+                # chat.update is idempotent: keep this message ID after a
+                # transport failure so a later edit can catch up. Treating the
+                # failure as permanent makes every later tool update a new post.
+                logger.error(
+                    "[Slack] transient chat.update failure on message %s in channel %s: %s",
+                    message_id,
+                    chat_id,
+                    e,
+                    exc_info=True,
+                )
+                return SendResult(
+                    success=False,
+                    error=str(e),
+                    retryable=True,
+                    error_kind="transient",
+                )
             logger.error(
                 "[Slack] Failed to edit message %s in channel %s: %s",
                 message_id,
@@ -2351,6 +2581,34 @@ class SlackAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a Slack message previously sent by this bot.
+
+        Used by gateway progress cleanup so temporary "Working"/tool-progress
+        bubbles do not remain after a successful final response.
+        """
+        if not self._app:
+            return False
+        try:
+            response = await self._get_client(chat_id).chat_delete(channel=chat_id, ts=message_id)
+            if hasattr(response, "get") and response.get("ok") is False:
+                logger.debug(
+                    "[Slack] chat.delete returned ok=false for message %s in channel %s: %s",
+                    message_id,
+                    chat_id,
+                    response.get("error", "unknown"),
+                )
+                return False
+            return True
+        except Exception as e:  # pragma: no cover - best-effort cleanup
+            logger.debug(
+                "[Slack] Failed to delete message %s in channel %s: %s",
+                message_id,
+                chat_id,
+                e,
+            )
+            return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show native Slack Assistant status, with an editable fallback.
@@ -2363,18 +2621,21 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         thread_ts = None
-        status = "is thinking..."
+        status = ""
         if metadata:
-            thread_ts = (
-                metadata.get("status_thread_id")
-                or metadata.get("thread_id")
-                or metadata.get("thread_ts")
+            # ``status_thread_id`` is a dedicated Assistant-status anchor used
+            # when final replies intentionally remain top-level. Otherwise use
+            # the same synthetic-thread guard as message sending so a top-level
+            # event is not accidentally promoted to a Slack Assistant thread.
+            thread_ts = metadata.get("status_thread_id") or self._resolve_thread_ts(
+                reply_to=metadata.get("message_id"),
+                metadata=metadata,
             )
             status = str(
                 metadata.get("status")
                 or metadata.get("status_text")
-                or status
-            ).strip() or status
+                or ""
+            ).strip()
 
         if not thread_ts:
             return  # Can only set status in a thread context
@@ -2384,10 +2645,24 @@ class SlackAdapter(BasePlatformAdapter):
             team_id = self._channel_team.get(chat_id, "")
 
         status_key = self._workspace_thread_key(team_id, chat_id, str(thread_ts))
+        _status_started: Optional[float] = None
         if status_key:
+            # Heartbeat (#45702): preserve the first refresh's start time
+            # across _keep_typing refreshes so a long turn surfaces elapsed
+            # time ("still working… (2m03s)") instead of a static
+            # "is thinking..." that reads as stuck — which is what provokes
+            # mid-turn "you there?" pings. Stored inside the tracked status
+            # entry so it shares the existing bounds/eviction and is dropped
+            # by stop_typing with the rest of the status state.
+            _prev_entry = self._active_status_threads.get(status_key)
+            if isinstance(_prev_entry, dict):
+                _status_started = _prev_entry.get("started")
+            if not isinstance(_status_started, (int, float)):
+                _status_started = time.monotonic()
             self._active_status_threads[status_key] = {
                 "thread_ts": str(thread_ts),
                 "team_id": str(team_id) if team_id else "",
+                "started": _status_started,
             }
             if len(self._active_status_threads) > self._ACTIVE_STATUS_THREADS_MAX:
                 # Evict abandoned statuses oldest-thread-first (key[2] is the
@@ -2406,12 +2681,27 @@ class SlackAdapter(BasePlatformAdapter):
         # configured channel/platform text only when the event did not provide
         # one, preserving TGI's dynamic tool-progress statuses.
         resolved_status = status
-        if resolved_status == "is thinking...":
+        if not resolved_status or resolved_status == "is thinking...":
             resolved_status = (
                 getattr(self, "_status_text", {}).get(str(chat_id))
                 or getattr(self.config, "typing_status_text", None)
-                or resolved_status
             )
+            if not resolved_status:
+                # Heartbeat (#45702): once a turn has run for 30s+, replace
+                # the static default with visible elapsed progress. Only the
+                # fallback label changes — explicit live-status phrases and
+                # configured typing_status_text always win.
+                _elapsed = (
+                    int(time.monotonic() - _status_started)
+                    if _status_started is not None
+                    else 0
+                )
+                if _elapsed >= 30:
+                    _mins, _secs = divmod(_elapsed, 60)
+                    _human = f"{_mins}m{_secs:02d}s" if _mins else f"{_secs}s"
+                    resolved_status = f"still working… ({_human})"
+                else:
+                    resolved_status = "is thinking..."
         try:
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -2786,9 +3076,12 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, team_id=self._metadata_team_id(metadata)
         )
         try:
-            import httpx as _httpx
             from urllib.parse import unquote as _unquote
-            from tools.url_safety import is_safe_url as _is_safe_url
+            from gateway.platforms.base import _ssrf_redirect_guard
+            from tools.url_safety import (
+                create_ssrf_safe_async_client,
+                is_safe_url as _is_safe_url,
+            )
         except Exception:
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
@@ -2805,7 +3098,7 @@ class SlackAdapter(BasePlatformAdapter):
             file_uploads: List[Dict[str, Any]] = []
             initial_comment_parts: List[str] = []
             try:
-                async with _httpx.AsyncClient(
+                async with create_ssrf_safe_async_client(
                     timeout=30.0,
                     follow_redirects=True,
                     event_hooks={"response": [_ssrf_redirect_guard]},
@@ -3434,7 +3727,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
 
         if not is_safe_url(image_url):
             logger.warning("[Slack] Blocked unsafe image URL (SSRF protection)")
@@ -3443,8 +3736,6 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         try:
-            import httpx
-
             async def _ssrf_redirect_guard(response):
                 """Re-check redirect targets so public URLs cannot bounce into private IPs."""
                 from tools.url_safety import redirect_target_from_response
@@ -3453,7 +3744,7 @@ class SlackAdapter(BasePlatformAdapter):
                     raise ValueError("Blocked redirect to private/internal address")
 
             # Download the image first
-            async with httpx.AsyncClient(
+            async with create_ssrf_safe_async_client(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
@@ -4338,6 +4629,28 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
         """Handle an incoming Slack message event."""
+        # DEBUG entry log — fires BEFORE any filtering so users debugging
+        # bot-to-bot interop, allow_bots config, or SLACK_ALLOWED_USERS
+        # drops can confirm whether the event actually arrived from Slack
+        # (vs. being silently filtered upstream by the app's event
+        # subscriptions — Socket Mode will not deliver events the app
+        # manifest hasn't subscribed to). See #30091. Metadata only — never
+        # the message text.
+        if logger.isEnabledFor(logging.DEBUG):
+            _bot_profile = event.get("bot_profile") or {}
+            _bot_name = (_bot_profile.get("name") if isinstance(_bot_profile, dict) else "") or ""
+            logger.debug(
+                "[Slack] event received type=%s subtype=%s user=%s bot_id=%s bot_name=%s "
+                "channel=%s ts=%s thread_ts=%s",
+                event.get("type"),
+                event.get("subtype"),
+                event.get("user", "") or "",
+                event.get("bot_id", "") or "",
+                _bot_name,
+                event.get("channel", ""),
+                event.get("ts", ""),
+                event.get("thread_ts", ""),
+            )
         if event.get("subtype") == "message_changed":
             updated_message = event.get("message")
             if not isinstance(updated_message, dict):
@@ -4463,8 +4776,8 @@ class SlackAdapter(BasePlatformAdapter):
                 if stripped_blocks and stripped_blocks not in text.strip():
                     logger.debug(
                         "Slack: extracted additional text from blocks "
-                        "(likely quoted/forwarded content): %s",
-                        stripped_blocks[:300],
+                        "(likely quoted/forwarded content; chars=%d)",
+                        len(stripped_blocks),
                     )
                     text = (text.strip() + "\n" + stripped_blocks).strip()
 
@@ -4827,6 +5140,15 @@ class SlackAdapter(BasePlatformAdapter):
         # command routing can misclassify it as conversational text.
         # ``channel_context`` is prepended only after command dispatch.
         channel_context = None
+        # Thread-root images recovered on the cold-start hydrate: when the
+        # bot is mentioned mid-thread for the first time, the thread root is
+        # very often the artifact the mention is about ("@bot what's in this
+        # chart?" replying under an image post) — deliver its images with
+        # this first turn. One-time by construction: the cold-start path is
+        # guarded by _has_active_session_for_thread, so subsequent turns in
+        # the same session never re-deliver (adapted from #69185).
+        thread_root_media_urls: List[str] = []
+        thread_root_media_types: List[str] = []
         has_active_thread_session = is_thread_reply and self._has_active_session_for_thread(
             channel_id=channel_id,
             thread_ts=event_thread_ts,
@@ -4843,6 +5165,17 @@ class SlackAdapter(BasePlatformAdapter):
             )
             if thread_context:
                 channel_context = thread_context
+            # Deliver the thread root's images with this first turn. The
+            # root is always a PRIOR message here (is_thread_reply implies
+            # thread_ts != ts); the trigger's own files ride event["files"].
+            (
+                thread_root_media_urls,
+                thread_root_media_types,
+            ) = await self._collect_thread_root_images(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                team_id=team_id,
+            )
             # Record the trigger ts as the consumption watermark: everything
             # up to and including this turn is now (or will be) in session
             # history, so a later explicit-mention refresh only needs newer
@@ -4963,9 +5296,10 @@ class SlackAdapter(BasePlatformAdapter):
         # the gateway dispatcher; do not prepend fetched thread context or
         # block/attachment rendering before the leading slash.
 
-        # Handle file attachments
-        media_urls = []
-        media_types = []
+        # Handle file attachments. Thread-root images recovered above are
+        # delivered ahead of the trigger message's own files.
+        media_urls = list(thread_root_media_urls)
+        media_types = list(thread_root_media_types)
         attachment_notices: List[str] = []
         files = event.get("files", [])
         for f in files:
@@ -5105,7 +5439,9 @@ class SlackAdapter(BasePlatformAdapter):
                     )
                     cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
                     media_urls.append(cached_path)
-                    media_types.append(SUPPORTED_VIDEO_TYPES.get(ext, mimetype))
+                    media_types.append(
+                        SUPPORTED_VIDEO_TYPES.get(ext, mimetype or "video/mp4")
+                    )
                     logger.debug("[Slack] Cached user video: %s", cached_path)
                 except Exception as e:  # pragma: no cover - defensive logging
                     detail = self._describe_slack_download_failure(e, file_obj=f)
@@ -6122,9 +6458,16 @@ class SlackAdapter(BasePlatformAdapter):
                 channel_id, msg_ts, original_text,
                 f"✅ {user_name}: {resolved_text}",
             )
+            # Privacy: keep the chosen option text out of INFO-level logs
+            # (clarify choices can carry user/session context). Metadata at
+            # INFO; full choice text only at DEBUG.
             logger.info(
-                "Slack button resolved clarify (id=%s, choice=%r, user=%s)",
-                clarify_id, resolved_text, user_name,
+                "Slack button resolved clarify (id=%s, choice_index=%d, user=%s)",
+                clarify_id, idx, user_name,
+            )
+            logger.debug(
+                "Slack clarify choice text (id=%s): %.100r",
+                clarify_id, resolved_text,
             )
         else:
             # Entry evicted / gateway restarted — surface expiry instead of a
@@ -6185,6 +6528,20 @@ class SlackAdapter(BasePlatformAdapter):
             new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
             if new_urls:
                 extras.append("URLs: " + ", ".join(new_urls))
+        # Surface file/image attachments as compact text markers. The
+        # thread-context fetch is text-only, so without this the agent has
+        # no idea prior messages carried images/files at all (#69185,
+        # #32315): "@bot what do you think of the chart above?" reads as a
+        # question about nothing. Markers keep context bounded — the agent
+        # can ask for a re-share (or the caller may separately deliver the
+        # thread root's image, see _collect_thread_root_images).
+        files = msg.get("files")
+        if isinstance(files, list):
+            markers = [
+                _slack_file_marker(f) for f in files if isinstance(f, dict)
+            ]
+            if markers:
+                extras.append(" ".join(markers))
         if extras:
             addendum = "\n".join(extras)
             msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum
@@ -6473,6 +6830,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         Returns ``(content, parent_text)``.
         """
+        # Local import (matches the SessionSource/build_session_key usage
+        # elsewhere in this adapter) so we don't force gateway.session at load.
+        from gateway.session import neutralize_untrusted_inline_text
+
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         context_parts = []
         parent_text = ""
@@ -6562,7 +6923,23 @@ class SlackAdapter(BasePlatformAdapter):
                 name = await self._resolve_user_name(
                     display_user, chat_id=channel_id, team_id=team_id
                 )
-                context_parts.append(f"{prefix}{trust_tag}{name}: {msg_text}")
+                # ``name`` (resolved display name) and ``msg_text`` are both
+                # attacker-influenceable — any thread participant sets their own
+                # Slack display name and message text. context_parts are joined
+                # with newlines into the block prepended raw into the model turn
+                # (``text = thread_context + text`` at the call site), so an
+                # embedded newline lets a thread message break out of its
+                # ``name: text`` line and pose as a fresh markdown section (a
+                # fake "## SYSTEM" / "## Override" heading) — the same indirect-
+                # prompt-injection vector the sender-name prefix, reply quote,
+                # and relay channel-context already neutralize. Collapse each to
+                # a single inert line; ``max_chars=0`` keeps the body untruncated
+                # (thread context caps the message *count*, not per-message
+                # length). The trusted ``prefix``/``trust_tag`` we add ourselves
+                # stay outside the neutralized fields.
+                safe_name = neutralize_untrusted_inline_text(name)
+                safe_text = neutralize_untrusted_inline_text(msg_text, max_chars=0)
+                context_parts.append(f"{prefix}{trust_tag}{safe_name}: {safe_text}")
 
         content = ""
         if context_parts:
@@ -6644,6 +7021,97 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
+
+    async def _collect_thread_root_images(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str = "",
+    ) -> Tuple[List[str], List[str]]:
+        """Download and cache the thread-root message's image attachments.
+
+        Called only on the cold-start hydrate path (first turn of a new
+        thread session), so images are delivered exactly once per session —
+        after that the session history carries the turn. The root message
+        is read from the thread-context cache populated by the immediately
+        preceding :meth:`_fetch_thread_context` call, so this normally costs
+        zero extra Slack API calls; Slack Connect stub files
+        (``file_access="check_file_info"``) are resolved via ``files.info``.
+
+        Only ``image/*`` attachments are downloaded (bounded by
+        ``_THREAD_ROOT_IMAGE_MAX``); other root attachments stay text-only
+        markers in the thread context. Failures are best-effort — the
+        markers from :meth:`_render_message_text` already tell the agent the
+        image exists, so a failed download degrades to "ask for a re-share",
+        never to an error turn.
+
+        Returns ``(media_urls, media_types)`` of cached local paths.
+        """
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        try:
+            cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+            cached = self._thread_context_cache.get(cache_key)
+            root: Optional[Dict[str, Any]] = None
+            if cached:
+                root = next(
+                    (
+                        m
+                        for m in cached.messages
+                        if m.get("ts", "") == thread_ts
+                    ),
+                    None,
+                )
+            if not root:
+                return media_urls, media_types
+
+            files = root.get("files")
+            if not isinstance(files, list):
+                return media_urls, media_types
+
+            for f in files:
+                if len(media_urls) >= _THREAD_ROOT_IMAGE_MAX:
+                    break
+                if not isinstance(f, dict):
+                    continue
+                # Slack Connect stubs carry no URL fields until files.info.
+                if f.get("file_access") == "check_file_info":
+                    file_id = f.get("id")
+                    if not file_id:
+                        continue
+                    try:
+                        info_resp = await self._get_client(
+                            channel_id, team_id=team_id
+                        ).files_info(file=file_id)
+                        if not info_resp.get("ok"):
+                            continue
+                        f = info_resp["file"]
+                    except Exception:
+                        continue
+                mimetype = str(f.get("mimetype") or "")
+                url = f.get("url_private_download") or f.get("url_private", "")
+                if not mimetype.startswith("image/") or not url:
+                    continue
+                try:
+                    ext = "." + mimetype.split("/")[-1].split(";")[0]
+                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                        ext = ".jpg"
+                    cached_path = await self._download_slack_file(
+                        url, ext, team_id=team_id
+                    )
+                    media_urls.append(cached_path)
+                    media_types.append(mimetype)
+                except Exception as exc:
+                    logger.warning(
+                        "[Slack] Failed to cache thread-root image %s: %s",
+                        f.get("id") or f.get("name") or "unknown",
+                        exc,
+                    )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[Slack] Thread-root image recovery failed: %s", exc
+            )
+        return media_urls, media_types
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.
@@ -7026,11 +7494,64 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:
             return False
 
+    # Hostname suffixes Slack serves file content from. ``url_private`` /
+    # ``url_private_download`` values in file objects always point at the
+    # Slack CDN (``files.slack.com``, Enterprise Grid variants under
+    # ``*.slack.com``, and the legacy public-share ``*.slack-files.com``).
+    # The download helpers below attach the bot token as a Bearer header, so
+    # a forged file object from a malicious workspace app or a compromised
+    # event stream could otherwise exfiltrate the token to ANY public host —
+    # a hole the generic private-IP SSRF check cannot close.
+    _SLACK_CDN_HOST_SUFFIXES = (".slack.com", ".slack-files.com")
+    _SLACK_CDN_EXACT_HOSTS = frozenset({"slack.com", "slack-files.com"})
+
+    @classmethod
+    def _is_slack_cdn_url(cls, url: str) -> bool:
+        """Return True when *url* is an https URL on a Slack CDN host."""
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return False
+        if parsed.scheme != "https":
+            return False
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            return False
+        return host in cls._SLACK_CDN_EXACT_HOSTS or host.endswith(
+            cls._SLACK_CDN_HOST_SUFFIXES
+        )
+
     async def _download_slack_file(
         self, url: str, ext: str, audio: bool = False, team_id: str = ""
     ) -> str:
         """Download a Slack file using the bot token for auth, with retry."""
         import httpx
+        from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
+        # SSRF guard: the download attaches the bot token, so a URL that
+        # resolves to (or 3xx-redirects into) a private/internal address would
+        # both leak the token and let the server reach internal services
+        # (CWE-918). The outbound send_image() path is already guarded; this
+        # is the inbound sibling that was missing the same protection.
+        if not is_safe_url(url):
+            raise ValueError(
+                f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}"
+            )
+
+        # Tighter than the generic SSRF check: these URLs come from Slack file
+        # objects (``url_private`` / ``url_private_download``) and legitimately
+        # only ever point at the Slack CDN. Refusing everything else stops a
+        # forged file object from steering the Bearer-token download at an
+        # arbitrary public host (token exfiltration), which the private-IP
+        # check alone cannot prevent.
+        if not self._is_slack_cdn_url(url):
+            raise ValueError(
+                "Blocked non-Slack-CDN file URL (token-exfiltration protection): "
+                f"{safe_url_for_log(url)}"
+            )
 
         bot_token = (
             self._team_clients[team_id].token
@@ -7038,7 +7559,14 @@ class SlackAdapter(BasePlatformAdapter):
             else self.config.token
         )
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # DNS-pinned client: resolve + validate once, dial the vetted IP
+        # (closes the DNS-rebinding TOCTOU window between is_safe_url and
+        # TCP connect — the redirect hook still re-validates every hop).
+        async with create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             for attempt in range(3):
                 try:
                     response = await client.get(
@@ -7087,6 +7615,23 @@ class SlackAdapter(BasePlatformAdapter):
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
         import httpx
+        from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
+        # SSRF guard (CWE-918): see _download_slack_file. This sibling path
+        # also attaches the bot token and must validate the destination plus
+        # every redirect hop.
+        if not is_safe_url(url):
+            raise ValueError(
+                f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}"
+            )
+
+        # Slack-CDN allowlist — see _download_slack_file for the rationale.
+        if not self._is_slack_cdn_url(url):
+            raise ValueError(
+                "Blocked non-Slack-CDN file URL (token-exfiltration protection): "
+                f"{safe_url_for_log(url)}"
+            )
 
         bot_token = (
             self._team_clients[team_id].token
@@ -7094,7 +7639,14 @@ class SlackAdapter(BasePlatformAdapter):
             else self.config.token
         )
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # DNS-pinned client: resolve + validate once, dial the vetted IP
+        # (closes the DNS-rebinding TOCTOU window between is_safe_url and
+        # TCP connect — the redirect hook still re-validates every hop).
+        async with create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             for attempt in range(3):
                 try:
                     response = await client.get(
