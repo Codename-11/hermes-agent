@@ -2563,6 +2563,24 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
                 ]
 
 
+def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
+    """Anthropic requires messages[0] to have role=user.
+
+    After a second context compaction on the auto path the summary can be
+    emitted as role=assistant with nothing in front of it (the system prompt
+    lives outside messages[] or is extracted into the separate ``system``
+    param), so messages[0] ends up assistant and the Messages API rejects
+    the request with HTTP 400 — often masked by a misleading
+    "tool_use ids were found without tool_result blocks" error (#52160).
+
+    Mirror the Bedrock Converse adapter, which unconditionally prepends a
+    minimal user turn when the first message is not user
+    (convert_messages_to_converse).
+    """
+    if result and result[0].get("role") != "user":
+        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -2623,6 +2641,14 @@ def convert_messages_to_anthropic(
     result, _mutated_assistant_indices = _merge_consecutive_roles(
         result, _mutated_assistant_indices
     )
+    _leading_user_inserted = bool(result and result[0].get("role") != "user")
+    _ensure_leading_user_turn(result)
+    if _leading_user_inserted:
+        # The synthetic leading user turn shifts every assistant index by one.
+        # Keep signature-invalidation bookkeeping aligned with the mutated list.
+        _mutated_assistant_indices = {
+            index + 1 for index in _mutated_assistant_indices
+        }
     _manage_thinking_signatures(
         result, base_url, model, _mutated_assistant_indices
     )

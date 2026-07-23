@@ -90,13 +90,14 @@ functions"*). The fork carried **+1623/−537** lines there, so nearly every
 upstream merge collided. Measured fork divergence at extraction time: 309
 fork-only commits; `main.py` touched by 31 of them.
 
-**What moved:** 17 imported seam helpers plus internal support functions (≈950 lines), all in the
+**What moved:** 18 imported seam helpers plus internal support functions (≈950 lines), all in the
 deploy-branch update domain — none exist upstream, so they carry with zero
 `main.py` merge surface:
 
 ```text
 _run_deploy_branch_update            _sync_deploy_main_to_upstream
-_validate_update_after_pull          _completed_deploy_handoff_requires_post_update
+_resolve_deploy_update_modes         _validate_update_after_pull
+_completed_deploy_handoff_requires_post_update
 _record_deploy_handoff               _deploy_handoff_marker_path
 _deploy_handoff_exists_for           _resolve_deploy_handoff
 _count_changed_from_pre_update       _print_deploy_branch_handoff
@@ -108,7 +109,7 @@ _detect_windows_gateway_launcher_instances
 
 Plus fork-only update metadata constants such as `DEPLOY_HANDOFF_FILE`, `UPDATE_REVIEW_DIR`, and `FORK_WATCH_AREAS`.
 
-**Conflict-review / resolve carry:** deploy-branch merge conflicts automatically generate a visible operator review and full markdown report under `~/.hermes/update-reports/`. The LLM summary is best-effort/advisory only; if auxiliary LLM review fails, the updater prints and writes a deterministic brief, keeps the retained conflict worktree, and stops without mutating the live checkout. If the operator passes `hermes update --resolve`, the updater treats that as explicit authorization to run a non-interactive Hermes resolver in the retained worktree, validate no unmerged files/conflict markers remain, run matched focused checks, commit/push `HEAD:<deploy>`, fast-forward the live checkout, clear `.update_handoff.json`, and continue the normal install/restart phase. `hermes update --consume` is the opposite: consume only `origin/<deploy>` and refuse to merge `upstream/main` from that host.
+**Conflict-review / resolve carry:** deploy-branch merge conflicts automatically generate a visible operator review and full markdown report under `~/.hermes/update-reports/`. The LLM summary is best-effort/advisory only; if auxiliary LLM review fails, the updater prints and writes a deterministic brief, keeps the retained conflict worktree, and stops without mutating the live checkout. If the operator passes `hermes update --resolve`, the updater treats that as explicit authorization to run a non-interactive Hermes resolver in the retained worktree, validate no unmerged files/conflict markers remain, run matched focused checks, commit/push `HEAD:<deploy>`, fast-forward the live checkout, clear `.update_handoff.json`, and continue the normal install/restart phase. Plain `hermes update` is intentionally consume-only on deploy branches; explicit `hermes update --consume` is the self-documenting equivalent. Both consume `origin/<deploy>` without merging `upstream/main`, so routine runtime updates cannot become surprise integration sessions.
 
 **Seam contract:**
 - `main.py` imports the public seam helpers from `hermes_cli.axiom_update` at module load

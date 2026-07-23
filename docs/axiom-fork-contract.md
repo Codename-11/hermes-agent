@@ -8,10 +8,9 @@ This repository is Bailey/Axiom's deploy fork of `NousResearch/hermes-agent`.
 - Axiom deploy branch: `origin/axiom` (`https://github.com/Codename-11/hermes-agent.git`).
 - Axiom-Desktop install path: `%LOCALAPPDATA%\hermes\hermes-agent`.
 - Axiom-Desktop tracks `origin/axiom`; do not silently switch it back to upstream `main`.
-- Bare `hermes update`, `hermes update --check`, and `hermes --version` are intentionally deploy-branch-aware on `axiom`; operators should not need a special Desktop-only update command.
+- Bare `hermes update`, `hermes update --check`, and `hermes --version` are intentionally deploy-branch-aware on `axiom`; operators should not need a special Desktop-only update command. On a deploy branch, plain `hermes update` consumes the tested `origin/<deploy>` artifact and never performs upstream integration implicitly.
 - Desktop's update UI should distinguish deploy-branch freshness from upstream disparity: it checks `HEAD..origin/axiom` for update availability and also surfaces `upstream/main` ahead/behind counts so Axiom can see carried fork delta without treating it as an update blocker.
-- If upstream has new commits but `origin/axiom` has not moved, Desktop's **client** update UI may show upstream disparity, but it should not present that as an installable Desktop-client update.
-- Desktop's **backend** update UI is different: it should prompt when `hermes update` would do useful work, including upstream commits not yet merged into `origin/axiom`. Show the count breakdown (`HEAD..origin/axiom` plus `origin/axiom..upstream/main`) so the operator sees why the backend update is actionable.
+- If upstream has new commits but `origin/axiom` has not moved, Desktop's **client** or backend runtime update may show upstream disparity, but it should not present that as an installable update or start a merge. Upstream integration requires `hermes update --resolve` on an intentional merge-authority host or the dedicated sync job.
 
 ## Status and source-of-truth contract
 
@@ -45,7 +44,7 @@ The `axiom` branch is expected to:
 6. Do not rely only on merge conflicts to retire fork patches. Conflicts catch same-line overlap, but upstream can land a better adjacent/architectural fix that merges cleanly. During each upstream merge, review the carried Desktop patch layer and drop local fixes only after verifying upstream has an equivalent or better behavior.
 7. Keep fork-only code that has clean boundaries in **fork-owned modules**, not inline in upstream hotspot files. The deploy-branch update flow lives in `hermes_cli/axiom_update.py` (extracted from `main.py` on 2026-06-21; expanded with resolve/consume helpers on 2026-06-25) with a thin import seam back into `main.py`. Upstream never edits a filename it does not ship, so these carry with ~zero merge surface. See FORK.md → "Fork footprint reduction" for the seam contract and the lazy-import rule that avoids the circular import. When adding new fork-only update/deploy logic, put it in `axiom_update.py`, not back in `main.py`.
 8. `hermes update --resolve` is explicit authorization for autonomous deploy-handoff resolution. It may run a Hermes resolver in the retained temp worktree, validate no unmerged files/conflict markers remain, run matched focused checks, commit/push `HEAD:<deploy>`, fast-forward the live checkout, and then continue the normal install/restart phase. It must hard-stop on sensitive paths or ambiguous git state.
-9. `hermes update --consume` is the Desktop/client-safe path: consume only `origin/<deploy>` and do not merge `upstream/main` from that host. Use `--resolve` when the current host is intentionally acting as merge authority.
+9. Plain `hermes update` and explicit `hermes update --consume` are the runtime-safe path on every deploy branch: consume only `origin/<deploy>` and do not merge `upstream/main` from that host. Use `--resolve` when the current host is intentionally acting as merge authority.
 
 Suggested focused verification for Desktop patch work:
 

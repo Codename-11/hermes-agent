@@ -1,5 +1,30 @@
 # Hermes Agent — Dev Log
 
+## 2026-07-22 — Merge upstream and separate runtime deploys from integration
+
+### Summary
+
+Merged 286 upstream commits into the `axiom` deploy branch, preserved Axiom fork contracts across six conflict files, and changed plain deploy-branch `hermes update` into a consume-only runtime operation. Upstream integration now requires explicit `hermes update --resolve` authority or the dedicated sync workflow, so a routine update cannot unexpectedly become a semantic merge session.
+
+### What changed
+
+- Resolved upstream conflicts in the Anthropic adapter, secret scoping, Desktop Electron startup/auth, gateway transport base, CLI update/restart flow, and web-server download/voice routes.
+- Preserved Axiom's assistant-message mutation tracking while incorporating upstream's required leading user turn; shifted mutation indices when that synthetic turn is inserted.
+- Preserved all Axiom gateway/dashboard service discovery while adopting upstream's bounded per-unit restart helper.
+- Retained both Axiom's native-auth Desktop path and upstream's binary download behavior.
+- Fixed the carried Desktop model-controls regression test to use the new profile-aware model-options query key and removed its stale unused local.
+- Added `_resolve_deploy_update_modes()` in the fork-owned `hermes_cli/axiom_update.py` seam plus regression tests: plain updates consume, `--resolve` grants merge authority, and `--resolve --consume` is rejected.
+- Updated `FORK.md`, `docs/axiom-fork-contract.md`, and the canonical Obsidian Axiom sync/overview notes for the authority split.
+
+### Verification
+
+- Python focused update/CLI suite: 203 passed.
+- Python adapter/secret/gateway/web-server suite: 920 passed, 9 deprecation warnings.
+- Desktop full suite: 2,631 passed, 3 skipped.
+- TUI `npm run check`: build, typecheck, and 1,347 tests passed, 1 skipped.
+- Desktop TypeScript typecheck and Electron native-auth/OAuth focused tests passed.
+- Live TUI/update/gateway verification is recorded after deploy below.
+
 ## 2026-07-14 — Expose mode-safe xAI 1080p image-to-video
 
 ### Summary

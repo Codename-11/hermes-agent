@@ -1461,6 +1461,24 @@ def _is_managed_windows_deploy_consumer(repo: Path) -> bool:
         return False
 
 
+def _resolve_deploy_update_modes(args: object) -> tuple[bool, bool]:
+    """Return ``(resolve_handoff, consume_only)`` for a deploy update.
+
+    Deploy branches are tested release artifacts, not integration workspaces.
+    A plain runtime update therefore consumes ``origin/<deploy>``.  Merging and
+    publishing ``upstream/main`` requires explicit ``--resolve`` authority (or
+    the dedicated sync job). ``--consume`` remains a self-documenting spelling
+    of the safe default, and cannot be combined with ``--resolve``.
+    """
+    resolve_handoff = bool(getattr(args, "resolve", False))
+    consume_requested = bool(getattr(args, "consume", False))
+    if resolve_handoff and consume_requested:
+        raise ValueError(
+            "--resolve and --consume are mutually exclusive for deploy branches."
+        )
+    return resolve_handoff, consume_requested or not resolve_handoff
+
+
 def _run_deploy_branch_update(
     git_cmd: list[str],
     repo: Path,

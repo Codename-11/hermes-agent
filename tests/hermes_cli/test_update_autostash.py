@@ -1132,6 +1132,29 @@ def test_deploy_branch_update_consume_only_does_not_merge_upstream(
     assert ("Managed Windows deploy install" in out) is managed_default
 
 
+def test_plain_deploy_update_defaults_to_consume_only():
+    resolve, consume = hermes_axiom_update._resolve_deploy_update_modes(
+        SimpleNamespace(resolve=False, consume=False)
+    )
+    assert resolve is False
+    assert consume is True
+
+
+def test_resolve_is_explicit_merge_authority():
+    resolve, consume = hermes_axiom_update._resolve_deploy_update_modes(
+        SimpleNamespace(resolve=True, consume=False)
+    )
+    assert resolve is True
+    assert consume is False
+
+
+def test_resolve_and_consume_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        hermes_axiom_update._resolve_deploy_update_modes(
+            SimpleNamespace(resolve=True, consume=True)
+        )
+
+
 # ---------------------------------------------------------------------------
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------
@@ -1656,3 +1679,53 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
         ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
     ).stdout
     assert ".hermes-bootstrap-complete" not in status
+
+
+def test_install_method_marker_not_autostashed_by_update(tmp_path):
+    """#66189: the installer ``.install_method`` stamp must be git-ignored so
+    ``hermes update``'s ``git stash push --include-untracked`` does not sweep it
+    into an autostash on every run.
+
+    ``scripts/install.sh`` writes ``$INSTALL_DIR/.install_method`` as runtime
+    metadata; it is a sibling of ``.hermes-bootstrap-complete`` /
+    ``.update-incomplete`` and must be ignored the same way. Behavioral +
+    hermetic: adopt the project's real ``.gitignore`` (the contract under test),
+    drop the marker, and confirm the exact stash invocation the updater uses
+    leaves it untouched.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    repo_gitignore = Path(hermes_main.__file__).resolve().parents[1] / ".gitignore"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text())
+    (tmp_path / "tracked.txt").write_text("x\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    marker = tmp_path / ".install_method"
+    marker.write_text("managed\n")
+
+    # Exact flags used by hermes update (hermes_cli/main.py).
+    git("stash", "push", "--include-untracked", "-m", "hermes-update-autostash")
+
+    assert marker.exists(), (
+        ".install_method was swept into the update autostash — it must be listed "
+        "in .gitignore so `git stash -u` skips it (#66189)."
+    )
+    # It must not even register as a dirty/untracked change.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+    ).stdout
+    assert ".install_method" not in status
