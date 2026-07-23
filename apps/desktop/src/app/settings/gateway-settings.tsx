@@ -29,7 +29,7 @@ import { $profiles, refreshActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
-import { EmptyState, ListRow, LoadingState, Pill, SettingsContent } from './primitives'
+import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
@@ -1112,7 +1112,14 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   if (loading) {
-    return <LoadingState label={g.loading} />
+    return (
+      <SettingsSkeleton
+        sections={[
+          { heading: true, rows: 3 },
+          { heading: true, rows: 3 }
+        ]}
+      />
+    )
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {

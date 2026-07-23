@@ -85,6 +85,30 @@ export function isGatewayLocalMediaPath(path: string): boolean {
   return !/^(?:https?:|data:)/i.test(path) && (path.startsWith('file:') || path.startsWith('/'))
 }
 
+export function isInlineMediaSrc(path: string): boolean {
+  return /^(?:https?|data):/i.test(path)
+}
+
+function isFileMediaPath(path: string): boolean {
+  return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
+}
+
+export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+  if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
+    return path
+  }
+
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
+  }
+
+  if (!window.hermesDesktop?.readFileDataUrl) {
+    return mediaExternalUrl(path)
+  }
+
+  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+}
+
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated preview URL (the file lives on the
 // gateway, not this disk); local mode keeps the file:// form.
