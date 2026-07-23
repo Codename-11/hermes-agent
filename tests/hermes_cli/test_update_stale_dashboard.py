@@ -24,8 +24,6 @@ from hermes_cli.main import (
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
     _restart_managed_dashboard_service,
-    _restart_systemd_dashboard_services,
-    _systemd_dashboard_services_for_pids,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -51,8 +49,6 @@ def _refresh_bindings_against_live_module():
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
     global _restart_managed_dashboard_service
-    global _restart_systemd_dashboard_services
-    global _systemd_dashboard_services_for_pids
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
@@ -62,8 +58,6 @@ def _refresh_bindings_against_live_module():
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
     _restart_managed_dashboard_service = live._restart_managed_dashboard_service
-    _restart_systemd_dashboard_services = live._restart_systemd_dashboard_services
-    _systemd_dashboard_services_for_pids = live._systemd_dashboard_services_for_pids
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -235,123 +229,6 @@ class TestFindStaleDashboardPids:
             )
             pids = _find_stale_dashboard_pids(exclude_pids={12345})
         assert pids == []
-
-
-class TestServiceManagedDashboard:
-    """Systemd-managed dashboards should be restarted, not left stopped."""
-
-    def test_detects_matching_user_systemd_unit_main_pid(self):
-        def fake_run(args, *a, **kw):
-            if args[:2] == ["systemctl", "--user"] and "list-units" in args:
-                return MagicMock(
-                    returncode=0,
-                    stdout="hermes-dashboard.service loaded active running Hermes dashboard\n",
-                    stderr="",
-                )
-            if args[:2] == ["systemctl", "--user"] and "show" in args:
-                return MagicMock(
-                    returncode=0,
-                    stdout=(
-                        "MainPID=12345\n"
-                        "ExecStart={ path=/home/tgi/.hermes/hermes-agent/venv/bin/python ; "
-                        "argv[]=/home/tgi/.hermes/hermes-agent/venv/bin/python "
-                        "-m hermes_cli.main dashboard --port 9119 ; }\n"
-                        "FragmentPath=/home/tgi/.config/systemd/user/hermes-dashboard.service\n"
-                    ),
-                    stderr="",
-                )
-            if args[:1] == ["systemctl"] and "list-units" in args:
-                return MagicMock(returncode=1, stdout="", stderr="system scope unavailable")
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("subprocess.run", side_effect=fake_run):
-            services = _systemd_dashboard_services_for_pids({12345, 99999})
-
-        assert services == {("systemctl", "--user", "hermes-dashboard"): {12345}}
-
-    def test_detection_ignores_non_dashboard_service_with_matching_pid(self):
-        def fake_run(args, *a, **kw):
-            if args[:2] == ["systemctl", "--user"] and "list-units" in args:
-                return MagicMock(returncode=0, stdout="other.service loaded active running Other\n", stderr="")
-            if args[:2] == ["systemctl", "--user"] and "show" in args:
-                return MagicMock(
-                    returncode=0,
-                    stdout=(
-                        "MainPID=12345\n"
-                        "ExecStart={ path=/usr/bin/python ; argv[]=/usr/bin/python -m something_else ; }\n"
-                        "FragmentPath=/home/tgi/.config/systemd/user/other.service\n"
-                    ),
-                    stderr="",
-                )
-            return MagicMock(returncode=1, stdout="", stderr="")
-
-        with patch("subprocess.run", side_effect=fake_run):
-            assert _systemd_dashboard_services_for_pids({12345}) == {}
-
-    def test_restart_systemd_dashboard_service_and_reports_handled_pid(self, capsys):
-        calls: list[list[str]] = []
-
-        def fake_run(args, *a, **kw):
-            calls.append(list(args))
-            if args[:2] == ["systemctl", "--user"] and "list-units" in args:
-                return MagicMock(returncode=0, stdout="hermes-dashboard.service loaded active running Hermes\n", stderr="")
-            if args[:2] == ["systemctl", "--user"] and "show" in args:
-                return MagicMock(
-                    returncode=0,
-                    stdout=(
-                        "MainPID=12345\n"
-                        "ExecStart={ argv[]=/home/tgi/.hermes/hermes-agent/venv/bin/python "
-                        "-m hermes_cli.main dashboard --no-open --port 9119 ; }\n"
-                        "FragmentPath=/home/tgi/.config/systemd/user/hermes-dashboard.service\n"
-                    ),
-                    stderr="",
-                )
-            if args == ["systemctl", "--user", "restart", "hermes-dashboard"]:
-                return MagicMock(returncode=0, stdout="", stderr="")
-            if args == ["systemctl", "--user", "is-active", "hermes-dashboard"]:
-                return MagicMock(returncode=0, stdout="active\n", stderr="")
-            if args == ["systemctl", "--user", "reset-failed", "hermes-dashboard"]:
-                return MagicMock(returncode=0, stdout="", stderr="")
-            return MagicMock(returncode=1, stdout="", stderr="")
-
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
-            handled = _restart_systemd_dashboard_services({12345})
-
-        assert handled == {12345}
-        assert ["systemctl", "--user", "restart", "hermes-dashboard"] in calls
-        out = capsys.readouterr().out
-        assert "Restarting 1 service-managed dashboard" in out
-        assert "✓ restarted hermes-dashboard" in out
-
-    def test_update_path_restarts_service_pid_and_does_not_raw_kill_it(self, capsys):
-        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]), \
-             patch("hermes_cli.main._restart_systemd_dashboard_services", return_value={12345}), \
-             patch("os.kill") as mock_kill:
-            _kill_stale_dashboard_processes(restart_services=True)
-
-        mock_kill.assert_not_called()
-        assert "Stopping" not in capsys.readouterr().out
-
-    def test_update_path_still_kills_unmanaged_pids(self, capsys):
-        import signal as _signal
-
-        sent: list[tuple[int, int]] = []
-
-        def fake_kill(pid, sig):
-            sent.append((pid, sig))
-            if sig == 0:
-                raise ProcessLookupError
-
-        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345, 67890]), \
-             patch("hermes_cli.main._restart_systemd_dashboard_services", return_value={12345}), \
-             patch("os.kill", side_effect=fake_kill), \
-             patch("time.sleep"):
-            _kill_stale_dashboard_processes(restart_services=True)
-
-        assert (_signal.SIGTERM in [sig for _, sig in sent])
-        assert (12345, _signal.SIGTERM) not in sent
-        assert (67890, _signal.SIGTERM) in sent
-        assert "Stopping 1 dashboard" in capsys.readouterr().out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")

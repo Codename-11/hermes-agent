@@ -8,6 +8,7 @@ import {
   downloadGatewayMediaFile,
   filePathFromMediaPath,
   gatewayMediaDataUrl,
+  isGatewayLocalMediaPath,
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
@@ -55,6 +56,11 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('https://example.com/a.png')).toBe('https://example.com/a.png')
   })
 
+  it('passes through data URLs untouched', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
+    expect(mediaExternalUrl('data:image/png;base64,ZHVtbXk=')).toBe('data:image/png;base64,ZHVtbXk=')
+  })
+
   it('keeps file:// form in local mode', () => {
     $connection.set({ mode: 'local' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
@@ -74,6 +80,16 @@ describe('mediaExternalUrl', () => {
   it('omits the query token when the remote connection lacks one', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('https://gw/api/fs/preview?path=%2Ftmp%2Fa.png')
+  })
+
+  it('treats Windows, UNC, and home-relative paths as gateway-local', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
+
+    for (const path of ['C:\\Users\\me\\a.png', '\\\\server\\share\\a.png', '~/images/a.png']) {
+      expect(isGatewayLocalMediaPath(path)).toBe(true)
+      expect(mediaExternalUrl(path)).toContain('https://gw/api/fs/preview?path=')
+      expect(mediaExternalUrl(path)).not.toMatch(/^file:/)
+    }
   })
 })
 

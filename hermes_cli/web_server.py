@@ -4350,7 +4350,7 @@ async def check_hermes_update(force: bool = False):
         behind = None
 
     deploy_breakdown: Dict[str, Any] = {}
-    if install_method in ("git", "pip"):
+    if install_method == "git":
         deploy_breakdown = await asyncio.to_thread(_backend_deploy_update_breakdown)
 
     if deploy_breakdown:

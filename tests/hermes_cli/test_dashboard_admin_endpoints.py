@@ -1070,8 +1070,24 @@ class TestUpdateCheckEndpoint:
         assert body["install_method"] == "git"
         assert body["behind"] == 5
         assert body["update_available"] is True
-        # git/pip installs can apply the update in place from the dashboard.
+        # Git checkouts can apply the update in place from the dashboard.
         assert body["can_apply"] is True
+
+    def test_pip_install_does_not_run_deploy_branch_breakdown(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "pip")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 1)
+        monkeypatch.setattr(
+            ws,
+            "_backend_deploy_update_breakdown",
+            lambda: pytest.fail("pip installs must not inspect git deploy branches"),
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["install_method"] == "pip"
+        assert body["can_apply"] is False
 
     def test_up_to_date(self, monkeypatch):
         import hermes_cli.web_server as ws

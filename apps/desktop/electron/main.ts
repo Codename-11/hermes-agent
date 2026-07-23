@@ -5963,22 +5963,25 @@ function fetchJsonViaOauthSession(url, options: any = {}): Promise<any> {
   })
 }
 
-function fetchBinaryViaOauthSession(url, options: any = {}): Promise<any> {
+async function fetchBinaryViaOauthSession(url, options: any = {}): Promise<any> {
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch (error) {
+    throw new Error(`Invalid URL: ${error.message}`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`)
+  }
+
+  // Native PKCE is cookieless. Prefer its bearer token when available while
+  // retaining the OAuth partition cookies as the compatibility fallback.
+  const nativeAccessToken = await ensureNativeAccessToken(parsed.origin).catch(() => null)
+
   return new Promise((resolve, reject) => {
     const sess = getOauthSession()
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
-      return
-    }
-    let parsed
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-      return
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
       return
     }
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
@@ -5989,6 +5992,9 @@ function fetchBinaryViaOauthSession(url, options: any = {}): Promise<any> {
       useSessionCookies: true,
       redirect: 'follow'
     })
+    if (nativeAccessToken) {
+      request.setHeader('Authorization', `Bearer ${nativeAccessToken}`)
+    }
 
     let timedOut = false
     const timer = setTimeout(() => {

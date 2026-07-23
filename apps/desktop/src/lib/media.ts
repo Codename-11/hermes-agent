@@ -82,7 +82,7 @@ export function gatewayFileUrl(path: string, profile?: null | string): string {
 }
 
 export function isGatewayLocalMediaPath(path: string): boolean {
-  return !/^(?:https?:|data:)/i.test(path) && (path.startsWith('file:') || path.startsWith('/'))
+  return !isInlineMediaSrc(path) && isFileMediaPath(path)
 }
 
 export function isInlineMediaSrc(path: string): boolean {
@@ -113,7 +113,7 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
 // gateway-local paths to an authenticated preview URL (the file lives on the
 // gateway, not this disk); local mode keeps the file:// form.
 export function mediaExternalUrl(path: string): string {
-  if (/^https?:/i.test(path)) {
+  if (isInlineMediaSrc(path)) {
     return path
   }
 

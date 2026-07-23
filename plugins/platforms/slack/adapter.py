@@ -2475,7 +2475,10 @@ class SlackAdapter(BasePlatformAdapter):
         requested_thread_ts = ""
         if metadata:
             requested_thread_ts = str(
-                metadata.get("thread_id") or metadata.get("thread_ts") or ""
+                metadata.get("status_thread_id")
+                or metadata.get("thread_id")
+                or metadata.get("thread_ts")
+                or ""
             )
         requested_team_id = self._metadata_team_id(metadata)
         active = None
@@ -6362,7 +6365,7 @@ class SlackAdapter(BasePlatformAdapter):
             return cached.content
 
         try:
-            client = self._get_client(channel_id)
+            client = self._get_client(channel_id, team_id=team_id)
             result = None
             for attempt in range(3):
                 try:
@@ -6416,17 +6419,16 @@ class SlackAdapter(BasePlatformAdapter):
                 if is_bot and self_bot_uid and msg_user == self_bot_uid:
                     continue
 
-                msg_text = str(msg.get("text") or "").strip()
-                if not msg_text and msg.get("blocks"):
-                    msg_text = _extract_text_from_slack_blocks(msg.get("blocks") or []).strip()
+                msg_text = self._render_message_text(msg, bot_uid=bot_uid or "").strip()
                 if not msg_text:
                     continue
 
-                if bot_uid:
-                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
-
                 display_user = msg_user or msg.get("username") or "unknown"
-                name = await self._resolve_user_name(display_user, chat_id=channel_id)
+                name = await self._resolve_user_name(
+                    display_user,
+                    chat_id=channel_id,
+                    team_id=team_id,
+                )
                 context_parts.append(f"{name}: {msg_text}")
 
             content = ""
@@ -6442,6 +6444,10 @@ class SlackAdapter(BasePlatformAdapter):
                 content=content,
                 fetched_at=now,
                 message_count=len(context_parts),
+            )
+            self._trim_oldest_dict_entries(
+                self._channel_context_cache,
+                self._THREAD_CACHE_MAX,
             )
             return content
 

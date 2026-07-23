@@ -6447,149 +6447,6 @@ def _find_stale_dashboard_pids(
     return dashboard_pids
 
 
-def _systemd_dashboard_services_for_pids(pids: set[int]) -> dict[tuple[str, ...], set[int]]:
-    """Return active systemd services whose main PID is one of *pids*.
-
-    ``hermes update`` needs to refresh long-lived dashboard backends after the
-    code/web bundle changes. Most ad-hoc ``hermes dashboard`` processes are
-    unmanaged, so killing them and printing a relaunch hint is still the right
-    fallback. Some installs, however, run the dashboard under a persistent
-    systemd unit. For those, sending SIGTERM directly defeats the service
-    manager: with ``Restart=on-failure`` systemd treats SIGTERM as an
-    intentional clean stop and leaves the dashboard down.
-    """
-    if not pids or sys.platform == "win32":
-        return {}
-
-    services: dict[tuple[str, ...], set[int]] = {}
-    scopes = [("systemctl", "--user"), ("systemctl",)]
-    for scope_cmd in scopes:
-        try:
-            result = subprocess.run(
-                list(scope_cmd)
-                + [
-                    "list-units",
-                    "--type=service",
-                    "--state=running",
-                    "--all",
-                    "--no-legend",
-                    "--no-pager",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            continue
-        if result.returncode != 0:
-            continue
-
-        for line in (result.stdout or "").splitlines():
-            parts = line.split(None, 1)
-            if not parts or not parts[0].endswith(".service"):
-                continue
-            unit = parts[0]
-            try:
-                show = subprocess.run(
-                    list(scope_cmd)
-                    + [
-                        "show",
-                        unit,
-                        "--property=MainPID,ExecStart,FragmentPath",
-                        "--no-pager",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                continue
-            if show.returncode != 0:
-                continue
-
-            props: dict[str, str] = {}
-            for prop_line in (show.stdout or "").splitlines():
-                if "=" in prop_line:
-                    key, value = prop_line.split("=", 1)
-                    props[key] = value
-            try:
-                main_pid = int(props.get("MainPID") or "0")
-            except ValueError:
-                continue
-            if main_pid not in pids:
-                continue
-
-            exec_start = props.get("ExecStart", "")
-            fragment = props.get("FragmentPath", "")
-            descriptor = f"{unit} {exec_start} {fragment}"
-            if not (
-                "dashboard" in descriptor
-                and ("hermes" in descriptor or "hermes_cli.main" in descriptor)
-            ):
-                continue
-
-            services.setdefault(scope_cmd + (unit.removesuffix(".service"),), set()).add(main_pid)
-    return services
-
-
-def _restart_systemd_dashboard_services(pids: set[int]) -> set[int]:
-    """Restart service-managed dashboard PIDs and return handled PIDs."""
-    services = _systemd_dashboard_services_for_pids(pids)
-    if not services:
-        return set()
-
-    handled: set[int] = set()
-    print()
-    print(f"⟲ Restarting {len(services)} service-managed dashboard backend(s)")
-    for service_cmd, service_pids in services.items():
-        scope_cmd = list(service_cmd[:-1])
-        svc_name = service_cmd[-1]
-        try:
-            subprocess.run(
-                scope_cmd + ["reset-failed", svc_name],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            restart = subprocess.run(
-                scope_cmd + ["restart", svc_name],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-            print(f"    ✗ failed to restart {svc_name}: {exc}")
-            continue
-        if restart.returncode != 0:
-            err = (restart.stderr or restart.stdout or "").strip()
-            print(f"    ✗ failed to restart {svc_name}: {err}")
-            continue
-
-        active = False
-        import time as _time
-        for _ in range(20):
-            try:
-                check = subprocess.run(
-                    scope_cmd + ["is-active", svc_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                break
-            if (check.stdout or "").strip() == "active":
-                active = True
-                break
-            _time.sleep(0.5)
-
-        if active:
-            handled.update(service_pids)
-            print(f"    ✓ restarted {svc_name}")
-        else:
-            print(f"    ✗ {svc_name} did not become active after restart")
-    return handled
-
-
 def _print_curator_first_run_notice() -> None:
     """Print a short heads-up about the skill curator after `hermes update`.
 
@@ -6945,7 +6802,6 @@ def _restart_managed_dashboard_service(
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
     *,
-    restart_services: bool = False,
     restart_managed: bool = False,
 ) -> None:
     """Kill or restart running ``hermes dashboard`` processes.
@@ -6963,9 +6819,8 @@ def _kill_stale_dashboard_processes(
 
     When ``restart_managed`` is true (the ``hermes update`` path), a detected
     ``hermes-dashboard.service`` is restarted through systemd instead of
-    raw-killing its main PID. ``restart_services`` retains the fork's broader
-    service-PID mapping fallback for compatibility. Manually-started dashboards
-    are not auto-restarted because their original launch arguments are unknown.
+    raw-killing its main PID. Manually-started dashboards are not auto-restarted
+    because their original launch arguments are unknown.
     """
     if restart_managed and _restart_managed_dashboard_service(reason):
         return
@@ -6993,12 +6848,6 @@ def _kill_stale_dashboard_processes(
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
         return
-
-    if restart_services:
-        handled = _restart_systemd_dashboard_services(set(pids))
-        pids = [pid for pid in pids if pid not in handled]
-        if not pids:
-            return
 
     print()
     print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
@@ -10539,67 +10388,6 @@ def cmd_update(args):
         _cmd_update_impl(args, gateway_mode=gateway_mode)
     finally:
         _finalize_update_output(_update_io_state)
-
-
-def _cmd_update_pip(args):
-    """Update Hermes via pip (for PyPI installs)."""
-    from hermes_cli import __version__
-    from hermes_cli.config import is_uv_tool_install
-
-    print(f"→ Current version: {__version__}")
-    print("→ Checking PyPI for updates...")
-
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-
-    # Keep managed uv current before using it.
-    update_managed_uv()
-
-    uv = ensure_uv()
-    in_venv = sys.prefix != sys.base_prefix
-    # pipx-managed installs live under .../pipx/venvs/<name>/...
-    pipx_managed = "pipx" in sys.prefix.split(os.sep)
-    pipx = shutil.which("pipx") if pipx_managed else None
-
-    # Only the ``uv pip install`` path inside a venv needs VIRTUAL_ENV
-    # exported (uv refuses to install without it when the launcher shim
-    # didn't activate the venv). ``uv tool upgrade`` / ``pipx upgrade``
-    # operate on a named environment and ignore VIRTUAL_ENV, so we don't
-    # set it for them.
-    export_virtualenv = False
-
-    if is_uv_tool_install():
-        if not uv:
-            print("✗ Detected a uv-tool install but managed uv install failed.")
-            print("  Install uv manually: https://docs.astral.sh/uv/getting-started/installation/")
-            sys.exit(1)
-        cmd = [uv, "tool", "upgrade", "hermes-agent"]
-    elif pipx_managed and pipx:
-        # pipx owns its own venv; ``pipx upgrade`` is the only correct path.
-        # Matches scripts/auto-update.sh, which already uses pipx upgrade.
-        cmd = [pipx, "upgrade", "hermes-agent"]
-    elif uv:
-        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
-        if in_venv:
-            # Launcher shim runs the venv interpreter but doesn't export
-            # VIRTUAL_ENV; without it uv errors "No virtual environment found".
-            export_virtualenv = True
-        else:
-            # Outside any venv, ``--system`` lets uv target the active
-            # interpreter, matching pip's default behaviour.
-            cmd.insert(3, "--system")
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
-
-    print(f"→ Running: {' '.join(cmd)}")
-    run_kwargs = {}
-    if export_virtualenv:
-        run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
-    result = subprocess.run(cmd, **run_kwargs)
-    if result.returncode != 0:
-        print("✗ Update failed")
-        sys.exit(1)
-
-    print("✓ Update complete! Restart hermes to use the new version.")
 
 
 def _print_update_brief(

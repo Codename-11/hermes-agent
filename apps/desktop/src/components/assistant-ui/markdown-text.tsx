@@ -19,12 +19,9 @@ import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
-  filePathFromMediaPath,
   gatewayFileUrl,
-  gatewayMediaDataUrl,
   isInlineMediaSrc,
   isRemoteGateway,
-  mediaExternalUrl,
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
@@ -63,16 +60,15 @@ function preprocessWithTailRepair(text: string): string {
 }
 
 async function mediaSrc(path: string): Promise<string> {
-  if (/^(?:https?|data):/i.test(path)) {
+  if (isInlineMediaSrc(path)) {
     return path
   }
 
-  // Remote gateway: the file lives on the gateway machine, so read it over the
-  // authenticated API/protocol bridge rather than this machine's disk. Images
-  // stay as data URLs; audio/video use the remote-file protocol so media
-  // elements never try a local file:// path.
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return mediaKind(path) === 'image' ? gatewayMediaDataUrl(path) : gatewayFileUrl(path)
+  // Remote audio/video need the authenticated protocol bridge and range
+  // support. Images and ordinary sources flow through the centralized display
+  // resolver below.
+  if (window.hermesDesktop && isRemoteGateway() && ['audio', 'video'].includes(mediaKind(path))) {
+    return gatewayFileUrl(path)
   }
 
   // Stream local audio/video through the custom protocol: data URLs are capped
@@ -81,11 +77,7 @@ async function mediaSrc(path: string): Promise<string> {
     return mediaStreamUrl(path)
   }
 
-  if (!window.hermesDesktop?.readFileDataUrl) {
-    return mediaExternalUrl(path)
-  }
-
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  return resolveMediaDisplaySrc(path)
 }
 
 function useOpenMediaFile(path: string) {

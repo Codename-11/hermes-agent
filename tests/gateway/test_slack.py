@@ -3132,6 +3132,44 @@ class TestMessageRouting:
         assert msg_event.channel_context == "[Channel context]\nAlice: prior note"
 
     @pytest.mark.asyncio
+    async def test_channel_context_is_workspace_scoped_and_bounded(self, adapter):
+        team_client = MagicMock()
+        team_client.conversations_history = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "100.000",
+                        "team": "T_OTHER",
+                        "user": "U_ALICE",
+                        "text": "<@U_OTHER_BOT> prior note",
+                    }
+                ]
+            }
+        )
+        adapter._team_clients["T_OTHER"] = team_client
+        adapter._team_bot_user_ids["T_OTHER"] = "U_OTHER_BOT"
+        adapter._app.client.conversations_history = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Alice")
+        adapter._THREAD_CACHE_MAX = 2
+
+        for current_ts in ("101.000", "102.000", "103.000"):
+            content = await adapter._fetch_channel_context(
+                channel_id="C_SHARED",
+                current_ts=current_ts,
+                team_id="T_OTHER",
+            )
+            assert "Alice: prior note" in content
+
+        assert team_client.conversations_history.await_count == 3
+        adapter._app.client.conversations_history.assert_not_awaited()
+        assert all(
+            call_args.kwargs["team_id"] == "T_OTHER"
+            for call_args in adapter._resolve_user_name.await_args_list
+        )
+        assert len(adapter._channel_context_cache) <= adapter._THREAD_CACHE_MAX
+        assert "C_SHARED:103.000:T_OTHER" in adapter._channel_context_cache
+
+    @pytest.mark.asyncio
     async def test_free_response_top_level_channel_message_skips_channel_context_fetch(self, adapter):
         """Free-response channels already dispatch every message, so no backfill."""
         adapter.config.extra["free_response_channels"] = "C123"
@@ -3487,6 +3525,21 @@ class TestSendTyping:
             status="",
         )
         assert ("", "C123", "parent_ts") not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_uses_status_thread_anchor(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        metadata = {"status_thread_id": "status_ts"}
+
+        await adapter.send_typing("C123", metadata=metadata)
+        await adapter.stop_typing("C123", metadata=metadata)
+
+        assert adapter._app.client.assistant_threads_setStatus.call_args_list[1] == call(
+            channel_id="C123",
+            thread_ts="status_ts",
+            status="",
+        )
+        assert ("", "C123", "status_ts") not in adapter._active_status_threads
 
     @pytest.mark.asyncio
     async def test_stop_typing_noop_without_tracked_thread(self, adapter):
