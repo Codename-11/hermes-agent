@@ -1547,6 +1547,35 @@ def _run_deploy_branch_update(
         )
         return None
 
+    # The deploy artifact is published on origin/<branch>. Fetch that ref
+    # explicitly before computing origin_ahead/local_ahead. A checkout can have
+    # a perfectly valid origin fetch refspec while its remote-tracking ref is
+    # stale (for example, an older Windows updater fetched only upstream).
+    # Comparing first would incorrectly report "origin current" and strand the
+    # client on an old deploy commit forever.
+    fetch_deploy = subprocess.run(
+        git_cmd
+        + [
+            "fetch",
+            "origin",
+            f"{branch}:refs/remotes/origin/{branch}",
+            "--quiet",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_deploy.returncode != 0:
+        _pipe.fail(note=f"cannot refresh origin/{branch}")
+        _print_deploy_branch_handoff(
+            reason=f"cannot fetch origin/{branch}.",
+            repo=repo,
+            branch=branch,
+            error=(fetch_deploy.stderr or "").strip(),
+            git_cmd=git_cmd,
+        )
+        return None
+
     if not _sync_deploy_main_to_upstream(git_cmd, repo):
         _pipe.fail(note="cannot sync local main")
         _print_deploy_branch_handoff(

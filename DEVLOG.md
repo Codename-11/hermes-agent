@@ -2,6 +2,12 @@
 
 ## 2026-07-22 — Merge upstream and separate runtime deploys from integration
 
+### Follow-up: refresh deploy artifact before comparison
+
+The first Windows consume verification exposed a second bug: Desktop fetched `upstream` but compared against a stale local `origin/axiom`. GitHub already had the server's resolved deploy artifact, while Desktop still held the old remote-tracking ref and therefore falsely reported “origin current” plus hundreds of upstream commits pending.
+
+`_run_deploy_branch_update()` now explicitly fetches `origin/<deploy>` before computing deploy/upstream counts. A regression test models a stale ref that changes only after this fetch and requires the client to consume the newly discovered deploy commits. Focused update coverage passes with 150 tests.
+
 ### Summary
 
 Merged 286 upstream commits into the `axiom` deploy branch, preserved Axiom fork contracts across six conflict files, and changed plain deploy-branch `hermes update` into a consume-only runtime operation. Upstream integration now requires explicit `hermes update --resolve` authority or the dedicated sync workflow, so a routine update cannot unexpectedly become a semantic merge session.

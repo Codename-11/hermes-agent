@@ -405,6 +405,14 @@ def test_deploy_branch_update_fast_forwards_when_origin_ahead(monkeypatch, tmp_p
         calls.append((cmd, kwargs))
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
@@ -487,6 +495,14 @@ def test_deploy_branch_update_merges_live_ahead_with_origin_then_upstream(monkey
         calls.append((cmd, kwargs))
         cwd = kwargs.get("cwd")
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
@@ -590,6 +606,14 @@ def test_deploy_branch_update_merges_upstream_in_temp_worktree(monkeypatch, tmp_
         cwd = kwargs.get("cwd")
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
@@ -645,6 +669,14 @@ def test_deploy_branch_update_recovers_when_push_reject_remote_already_contains_
         calls.append((cmd, kwargs))
         cwd = kwargs.get("cwd")
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
@@ -707,6 +739,14 @@ def test_deploy_branch_update_retries_push_after_merging_remote_advanced_origin(
         calls.append((cmd, kwargs))
         cwd = kwargs.get("cwd")
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
@@ -793,6 +833,14 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
         calls.append((cmd, kwargs))
         cwd = kwargs.get("cwd")
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
@@ -1096,6 +1144,14 @@ def test_deploy_branch_update_consume_only_does_not_merge_upstream(
         calls.append((cmd, kwargs))
         if cmd == ["git", "fetch", "upstream", "--quiet"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
@@ -1130,6 +1186,63 @@ def test_deploy_branch_update_consume_only_does_not_merge_upstream(
     out = capsys.readouterr().out
     assert "consume-only" in out
     assert ("Managed Windows deploy install" in out) is managed_default
+
+
+def test_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tmp_path):
+    """A client must discover a deploy push even when origin/axiom is stale locally."""
+    calls = []
+    refreshed = {"origin": False}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "origin",
+            "axiom:refs/remotes/origin/axiom",
+            "--quiet",
+        ]:
+            refreshed["origin"] = True
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            # Reproduce the Windows failure: the stale ref looked current until
+            # the deploy branch was fetched explicitly.
+            count = 12 if refreshed["origin"] else 0
+            return SimpleNamespace(stdout=f"{count}\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--ff-only", "origin/axiom"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "oldhead..HEAD"]:
+            return SimpleNamespace(stdout="12\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], tmp_path, "axiom", "oldhead", consume_only=True
+    )
+
+    assert changed == 12
+    deploy_fetch = [
+        "git",
+        "fetch",
+        "origin",
+        "axiom:refs/remotes/origin/axiom",
+        "--quiet",
+    ]
+    compare = ["git", "rev-list", "--count", "HEAD..origin/axiom"]
+    assert calls.index(deploy_fetch) < calls.index(compare)
 
 
 def test_plain_deploy_update_defaults_to_consume_only():
