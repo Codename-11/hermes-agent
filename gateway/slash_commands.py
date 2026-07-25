@@ -4951,33 +4951,10 @@ class GatewaySlashCommandsMixin:
         exit_code_path = _hermes_home / ".update_exit_code"
 
         raw_update_args = (event.get_command_args() or "").strip()
-        update_mode = "normal"
-        update_flags: list[str] = []
         if raw_update_args:
-            try:
-                tokens = [token.lower() for token in shlex.split(raw_update_args)]
-            except ValueError as exc:
-                return f"✗ Could not parse /update arguments: {exc}"
-            for token in tokens:
-                if token in {"normal", "default", "standard"}:
-                    continue
-                if token in {"resolve", "--resolve"}:
-                    if update_mode == "consume":
-                        return "✗ /update resolve and consume modes are mutually exclusive."
-                    update_mode = "resolve"
-                    continue
-                if token in {"consume", "--consume"}:
-                    if update_mode == "resolve":
-                        return "✗ /update resolve and consume modes are mutually exclusive."
-                    update_mode = "consume"
-                    continue
-                return "✗ Unknown /update mode. Use `/update`, `/update resolve`, or `/update consume`."
-            if update_mode == "resolve":
-                update_flags.append("--resolve")
-            elif update_mode == "consume":
-                update_flags.append("--consume")
+            return "✗ `/update` no longer has modes. Run `/update` by itself."
 
-        update_argv = ["update", "--gateway", *update_flags]
+        update_argv = ["update", "--gateway"]
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -4986,7 +4963,6 @@ class GatewaySlashCommandsMixin:
             "user_id": event.source.user_id,
             "session_key": session_key,
             "timestamp": datetime.now().isoformat(),
-            "update_mode": update_mode,
         }
         if event.source.thread_id:
             pending["thread_id"] = event.source.thread_id

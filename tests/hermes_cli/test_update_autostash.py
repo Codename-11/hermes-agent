@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from pathlib import Path
 from subprocess import CalledProcessError
@@ -832,6 +833,12 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
         "_call_llm_update_review",
         lambda review: ("LLM says: pause, resolve in worktree, run focused tests.", ""),
     )
+    resolver_calls = []
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_resolve_deploy_handoff",
+        lambda **kwargs: resolver_calls.append(kwargs) or None,
+    )
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
@@ -883,7 +890,8 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     assert "hermes update: merge into axiom failed." in out
     assert "Worktree:" in out
     assert "hermes_cli/main.py" in out
-    assert "live checkout was left unchanged" in out
+    assert "starting automatic resolution" in out
+    assert resolver_calls
     reports = list((tmp_path / "reports").glob("*-axiom-conflict-review.md"))
     assert len(reports) == 1
     report_text = reports[0].read_text(encoding="utf-8")
@@ -896,6 +904,85 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     assert marker_payload["conflict_files"] == ["hermes_cli/main.py"]
     assert marker_payload["report_path"]
     assert marker_payload["focused_checks"]
+
+
+def test_deploy_update_first_host_publishes_second_host_consumes_real_git(tmp_path):
+    """Resolve/publish happens once across two real deploy checkouts."""
+
+    def git(cwd, *args, capture=False):
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=capture,
+            text=True,
+        )
+
+    upstream_bare = tmp_path / "upstream.git"
+    origin_bare = tmp_path / "origin.git"
+    upstream_work = tmp_path / "upstream-work"
+    host_a = tmp_path / "host-a"
+    host_b = tmp_path / "host-b"
+
+    git(tmp_path, "init", "--bare", str(upstream_bare))
+    git(tmp_path, "init", "--bare", str(origin_bare))
+    git(tmp_path, "init", "-b", "main", str(upstream_work))
+    git(upstream_work, "config", "user.name", "Hermes Test")
+    git(upstream_work, "config", "user.email", "hermes-test@example.invalid")
+    (upstream_work / "shared.txt").write_text("base\n", encoding="utf-8")
+    git(upstream_work, "add", "shared.txt")
+    git(upstream_work, "commit", "-m", "base")
+    git(upstream_work, "remote", "add", "upstream-bare", str(upstream_bare))
+    git(upstream_work, "push", "upstream-bare", "main")
+    git(upstream_work, "remote", "add", "fork", str(origin_bare))
+    git(upstream_work, "push", "fork", "main")
+
+    git(upstream_work, "checkout", "-b", "axiom")
+    (upstream_work / "fork.txt").write_text("axiom\n", encoding="utf-8")
+    git(upstream_work, "add", "fork.txt")
+    git(upstream_work, "commit", "-m", "axiom carry")
+    git(upstream_work, "push", "fork", "axiom")
+
+    for host in (host_a, host_b):
+        git(tmp_path, "clone", "--branch", "axiom", str(origin_bare), str(host))
+        git(host, "config", "user.name", "Hermes Test")
+        git(host, "config", "user.email", "hermes-test@example.invalid")
+        git(host, "remote", "add", "upstream", str(upstream_bare))
+        git(host, "fetch", "upstream", "main")
+        git(host, "branch", "main", "upstream/main")
+
+    host_b_before = git(host_b, "rev-parse", "HEAD", capture=True).stdout.strip()
+
+    git(upstream_work, "checkout", "main")
+    (upstream_work / "shared.txt").write_text("base\nupstream\n", encoding="utf-8")
+    git(upstream_work, "add", "shared.txt")
+    git(upstream_work, "commit", "-m", "upstream feature")
+    git(upstream_work, "push", "upstream-bare", "main")
+
+    host_a_before = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
+    changed_a = hermes_axiom_update._run_deploy_branch_update(
+        ["git"], host_a, "axiom", host_a_before
+    )
+    published = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
+    origin_after_a = git(
+        origin_bare, "rev-parse", "refs/heads/axiom", capture=True
+    ).stdout.strip()
+
+    assert changed_a and changed_a > 0
+    assert published == origin_after_a
+    git(host_a, "merge-base", "--is-ancestor", "upstream/main", "HEAD")
+
+    changed_b = hermes_axiom_update._run_deploy_branch_update(
+        ["git"], host_b, "axiom", host_b_before
+    )
+    host_b_after = git(host_b, "rev-parse", "HEAD", capture=True).stdout.strip()
+    origin_after_b = git(
+        origin_bare, "rev-parse", "refs/heads/axiom", capture=True
+    ).stdout.strip()
+
+    assert changed_b and changed_b > 0
+    assert host_b_after == published
+    assert origin_after_b == origin_after_a
 
 
 def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
@@ -1138,62 +1225,8 @@ def test_deploy_handoff_resolve_suppresses_child_success_before_validation(
     assert "cron/jobs.py" in out
 
 
-@pytest.mark.parametrize("managed_default", [False, True])
-def test_deploy_branch_update_consume_only_does_not_merge_upstream(
-    monkeypatch, tmp_path, capsys, managed_default
-):
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        if cmd == ["git", "fetch", "upstream", "--quiet"]:
-            return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == [
-            "git",
-            "fetch",
-            "origin",
-            "axiom:refs/remotes/origin/axiom",
-            "--quiet",
-        ]:
-            return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "origin/axiom..HEAD"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
-            return SimpleNamespace(stdout="5\n", stderr="", returncode=0)
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        hermes_axiom_update,
-        "_is_managed_windows_deploy_consumer",
-        lambda repo: managed_default,
-    )
-
-    changed = hermes_main._run_deploy_branch_update(
-        ["git"],
-        tmp_path,
-        "axiom",
-        "oldhead",
-        consume_only=not managed_default,
-    )
-
-    assert changed == 0
-    commands = [cmd for cmd, _ in calls]
-    assert not any(cmd[:2] == ["git", "worktree"] for cmd in commands)
-    assert ["git", "merge", "--no-edit", "upstream/main"] not in commands
-    out = capsys.readouterr().out
-    assert "consume-only" in out
-    assert ("Managed Windows deploy install" in out) is managed_default
-
-
-def test_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tmp_path):
-    """A client must discover a deploy push even when origin/axiom is stale locally."""
+def test_deploy_update_refreshes_stale_origin_ref_before_comparing(monkeypatch, tmp_path):
+    """Any host must discover a deploy push even when origin/axiom is stale locally."""
     calls = []
     refreshed = {"origin": False}
 
@@ -1234,7 +1267,7 @@ def test_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tmp_pa
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
     changed = hermes_main._run_deploy_branch_update(
-        ["git"], tmp_path, "axiom", "oldhead", consume_only=True
+        ["git"], tmp_path, "axiom", "oldhead"
     )
 
     assert changed == 12
@@ -1247,31 +1280,6 @@ def test_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tmp_pa
     ]
     compare = ["git", "rev-list", "--count", "HEAD..origin/axiom"]
     assert calls.index(deploy_fetch) < calls.index(compare)
-
-
-def test_plain_deploy_update_defaults_to_consume_only():
-    resolve, consume = hermes_axiom_update._resolve_deploy_update_modes(
-        SimpleNamespace(resolve=False, consume=False)
-    )
-    assert resolve is False
-    assert consume is True
-
-
-def test_resolve_is_explicit_merge_authority():
-    resolve, consume = hermes_axiom_update._resolve_deploy_update_modes(
-        SimpleNamespace(resolve=True, consume=False)
-    )
-    assert resolve is True
-    assert consume is False
-
-
-def test_resolve_and_consume_are_mutually_exclusive():
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        hermes_axiom_update._resolve_deploy_update_modes(
-            SimpleNamespace(resolve=True, consume=True)
-        )
-
-
 # ---------------------------------------------------------------------------
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------

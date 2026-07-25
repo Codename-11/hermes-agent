@@ -1617,7 +1617,7 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--gateway] [--check] [--resolve] [--consume] [--no-backup] [--backup] [--yes]
+hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
@@ -1628,8 +1628,6 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed 
 |--------|-------------|
 | `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
 | `--check` | Fetch remotes, report whether the install is behind its update target, and exit without pulling, installing, or restarting. Deploy branches include both `origin/<deploy-branch>` and upstream commits not yet merged there. |
-| `--resolve` | Deploy branches only. Resume a retained conflict handoff, or auto-resolve a conflict encountered during this run; validate, commit/push the deploy artifact, fast-forward live, then finish install/restart. |
-| `--consume` | Deploy branches only. Fast-forward from `origin/<deploy-branch>` without merging upstream on this host. Mutually exclusive with `--resolve`. |
 | `--no-backup` | Skip all pre-update backups for this run, regardless of `updates.pre_update_backup`. |
 | `--backup` | Force a full pre-update backup: the quick state snapshot plus a complete zip of `HERMES_HOME`. The default is `quick`; configure `updates.pre_update_backup: quick | full | off`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
@@ -1640,7 +1638,7 @@ Additional behavior:
 - **Local source changes.** For git installs, dirty tracked files and untracked files are auto-stashed before branch checkout or pull (`git stash push --include-untracked`). Interactive terminal updates ask before restoring the stash. Non-interactive updates restore it by default; set `updates.non_interactive_local_changes: discard` only on managed installs where local source edits should be thrown away after a successful pull. If stash restore conflicts or the pull fails, the stash is left in place for manual recovery.
 - **npm lockfile churn.** Before stashing or switching branches, Hermes makes a best-effort cleanup of tracked `package-lock.json` diffs produced by npm install/build steps. Commit or manually stash intentional lockfile edits before running `hermes update`.
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
-- **Fork deploy branches.** When a forked install runs from a configured deploy branch such as `axiom` or `tgi`, `hermes update` treats `origin/<deploy-branch>` as the deploy artifact. It merges new `upstream/main` commits into that branch in a temporary worktree, pushes the merge to origin, then fast-forwards the live checkout. Merge conflicts leave the live checkout untouched and print a handoff block with the retained worktree and conflict list. Pass `--resolve` to authorize an autonomous resolver for that retained handoff or any conflict encountered during the run; pass `--consume` to avoid upstream merging on client-only hosts and only fast-forward from `origin/<deploy-branch>`.
+- **Fork deploy branches.** When a forked install runs from a configured deploy branch such as `axiom` or `tgi`, `hermes update` treats `origin/<deploy-branch>` as the published deploy artifact. The first host to observe new `upstream/main` work merges it in a temporary worktree, autonomously resolves conflicts behind deterministic safety gates, validates and pushes the result, then fast-forwards the live checkout. Later hosts consume that published result unless upstream has advanced again.
 - **Deploy-branch status checks.** `hermes version` and `hermes update --check` use the deploy branch as the baseline, not a stale local `main` branch. They check live `HEAD` against `origin/<deploy-branch>` and then check `upstream/main` against that deploy branch.
 - **Deploy-branch local changes.** Uncommitted local changes are stashed before deploy-branch updates. If code changes, the stash is preserved rather than automatically reapplied, keeping the live checkout aligned with the tested deploy branch.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.

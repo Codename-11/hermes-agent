@@ -1,5 +1,18 @@
 # Hermes Agent — Dev Log
 
+## 2026-07-25 — Collapse deploy updates to one command
+
+### Summary
+
+Removed the deploy-only `--resolve` / `--consume` mode split. Bare `hermes update` now performs the complete fork workflow from either Axiom host: fetch both remotes, reconcile upstream in a temporary worktree, auto-resolve and validate conflicts when required, publish `origin/<deploy>`, fast-forward live, reinstall/restart normally, and print the existing categorized update brief.
+
+### What changed
+
+- Removed the CLI and messaging mode flags; `/update` and `hermes update` now expose one behavior.
+- Kept live checkout isolation, sensitive-path gates, focused checks, push-race recovery, phase-by-phase resolve status, and post-update change briefs.
+- Ignored update recovery markers and removed the accidentally tracked `.lazy-refresh-incomplete` artifact so resolver runs cannot publish transient runtime state again.
+- Reframed deploy ownership around the first host to observe upstream work rather than a permanent server/client authority split.
+
 ## 2026-07-22 — Merge upstream and separate runtime deploys from integration
 
 ### Follow-up: refresh deploy artifact before comparison

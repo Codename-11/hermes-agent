@@ -8,9 +8,9 @@ lived there collided with upstream merges on a near-daily basis.
 These helpers implement Axiom/TGI-style deploy-branch update flows
 (upstream/main -> origin/<deploy> -> live checkout), the update handoff marker,
 managed-worktree cleanup, deploy-branch stash preservation, dashboard-service
-PID discovery, Windows gateway-launcher detection, consume-only client updates,
-and `hermes update --resolve` autonomous handoff resolution. None of them exist
-upstream, so they carry cleanly here with zero merge surface in main.py.
+PID discovery, Windows gateway-launcher detection, and autonomous handoff
+resolution. None of them exist upstream, so they carry cleanly here with zero
+merge surface in main.py.
 
 SEAM CONTRACT (see docs/axiom-fork-contract.md):
   * main.py imports these names at module load and calls them at the original
@@ -1011,10 +1011,10 @@ def _resolve_deploy_handoff(
 ) -> Optional[int]:
     """Autonomously resolve a retained deploy update handoff.
 
-    ``hermes update --resolve`` is an explicit operator authorization for the
-    agent to resolve the retained conflict worktree, run focused checks, push the
-    deploy branch, and let the parent updater continue with install/restart. It
-    still stops on hard safety gates rather than mutating ambiguous state.
+    A deploy-branch ``hermes update`` resolves the retained conflict worktree,
+    runs focused checks, pushes the deploy branch, and lets the parent updater
+    continue with install/restart. It still stops on hard safety gates rather
+    than mutating ambiguous state.
     """
     payload = _read_deploy_handoff_payload(repo, branch)
     if payload is None:
@@ -1222,7 +1222,7 @@ def _print_deploy_branch_handoff(
         if review.get("report_path"):
             print(f"  Full report: {review.get('report_path')}")
         print()
-    print("  ── Pass this to your Hermes agent ─────────────")
+    print("  ── Update recovery context ────────────────────")
     print()
     print("  ┌─ Copy below ─────────────────────────────────")
     print(f"  │ hermes update: {reason}")
@@ -1244,9 +1244,9 @@ def _print_deploy_branch_handoff(
     if error:
         print(f"  │ Error: {error.splitlines()[0]}")
     print("  │ ")
-    print(f"  │ Please merge upstream/main into {branch}, resolve conflicts,")
-    print(f"  │ run focused tests, push HEAD:{branch} to origin, then run")
-    print(f"  │ hermes update again so the live checkout fast-forwards cleanly.")
+    print("  │ Hermes will attempt automatic resolution next. If a safety")
+    print("  │ gate stops it, review this retained worktree, resolve the")
+    print(f"  │ listed issue, and rerun hermes update to publish {branch}.")
     print("  └────────────────────────────────────────────")
     _record_deploy_handoff(
         repo=repo,
@@ -1440,53 +1440,11 @@ def _remove_update_worktree(
     shutil.rmtree(parent, ignore_errors=True)
 
 
-def _is_managed_windows_deploy_consumer(repo: Path) -> bool:
-    """Return whether *repo* is the native Windows managed Hermes checkout.
-
-    Docker-Server is the merge authority for Axiom's deploy branch. The native
-    Windows checkout under ``%LOCALAPPDATA%\\hermes\\hermes-agent`` is a
-    consumer: bare ``hermes update`` should install the already-reviewed
-    ``origin/<deploy>`` head rather than race a fresh upstream merge. Arbitrary
-    Windows clones and retained update worktrees remain author-capable.
-    """
-    if sys.platform != "win32":
-        return False
-    local_appdata = os.environ.get("LOCALAPPDATA")
-    if not local_appdata:
-        return False
-    try:
-        managed = (Path(local_appdata) / "hermes" / "hermes-agent").resolve()
-        return repo.resolve() == managed
-    except (OSError, RuntimeError):
-        return False
-
-
-def _resolve_deploy_update_modes(args: object) -> tuple[bool, bool]:
-    """Return ``(resolve_handoff, consume_only)`` for a deploy update.
-
-    Deploy branches are tested release artifacts, not integration workspaces.
-    A plain runtime update therefore consumes ``origin/<deploy>``.  Merging and
-    publishing ``upstream/main`` requires explicit ``--resolve`` authority (or
-    the dedicated sync job). ``--consume`` remains a self-documenting spelling
-    of the safe default, and cannot be combined with ``--resolve``.
-    """
-    resolve_handoff = bool(getattr(args, "resolve", False))
-    consume_requested = bool(getattr(args, "consume", False))
-    if resolve_handoff and consume_requested:
-        raise ValueError(
-            "--resolve and --consume are mutually exclusive for deploy branches."
-        )
-    return resolve_handoff, consume_requested or not resolve_handoff
-
-
 def _run_deploy_branch_update(
     git_cmd: list[str],
     repo: Path,
     branch: str,
     pre_update_head: str,
-    *,
-    auto_resolve: bool = False,
-    consume_only: bool = False,
 ) -> Optional[int]:
     """Update a merge-based deploy branch without mutating live code on conflicts.
 
@@ -1517,16 +1475,6 @@ def _run_deploy_branch_update(
                 print(f"✓ {note or 'update complete'}")
 
     remote_ref = f"origin/{branch}"
-    if (
-        not consume_only
-        and not auto_resolve
-        and _is_managed_windows_deploy_consumer(repo)
-    ):
-        consume_only = True
-        print(
-            f"→ Managed Windows deploy install: consuming {remote_ref} "
-            "(--resolve retains merge-authority mode)."
-        )
     _pipe = Pipeline(["fetch upstream", "merge upstream", f"sync {branch}"])
     _pipe.start("fetch upstream")
 
@@ -1600,42 +1548,6 @@ def _run_deploy_branch_update(
             git_cmd=git_cmd,
         )
         return None
-
-    if consume_only:
-        if local_ahead > 0:
-            _pipe.fail(note="consume-only blocked by local deploy commits")
-            print(f"✗ --consume cannot run while live {branch} has commits not on {remote_ref}.")
-            print("  Use `hermes update --resolve` or `hermes update` when this host should publish deploy-branch work.")
-            return None
-        if origin_ahead > 0:
-            _pipe.advance(f"sync {branch}")
-            changed = _fast_forward_live_deploy_checkout(
-                git_cmd,
-                repo,
-                branch,
-                pre_update_head,
-                origin_ahead,
-            )
-            if changed is None:
-                _pipe.fail(note=f"cannot fast-forward to {remote_ref}")
-                _print_deploy_branch_handoff(
-                    reason=f"consume-only fast-forward to {remote_ref} failed.",
-                    repo=repo,
-                    branch=branch,
-                    upstream_ahead=upstream_ahead,
-                    origin_ahead=origin_ahead,
-                    git_cmd=git_cmd,
-                )
-                return None
-            note = f"consumed {origin_ahead} origin commit(s)"
-            if upstream_ahead > 0:
-                note += f"; {upstream_ahead} upstream commit(s) still pending on merge authority"
-            _pipe.finish(note=note)
-            return changed
-        if upstream_ahead > 0:
-            _pipe.finish(note=f"consume-only: origin/{branch} current; {upstream_ahead} upstream commit(s) pending merge authority")
-            print(f"  Run `hermes update --resolve` when this host should merge upstream/main into {branch}.")
-            return 0
 
     if upstream_ahead == 0 and local_ahead == 0:
         if origin_ahead == 0:
@@ -1717,16 +1629,15 @@ def _run_deploy_branch_update(
                 error=(merge_origin.stderr or merge_origin.stdout or "").strip(),
                 git_cmd=git_cmd,
             )
-            print("  The live checkout was left unchanged; resolve the retained worktree above.")
-            if auto_resolve:
-                resolved = _resolve_deploy_handoff(
-                    git_cmd=git_cmd,
-                    repo=repo,
-                    branch=branch,
-                    pre_update_head=pre_update_head,
-                )
-                if resolved is not None:
-                    return resolved
+            print("  The live checkout is unchanged; starting automatic resolution.")
+            resolved = _resolve_deploy_handoff(
+                git_cmd=git_cmd,
+                repo=repo,
+                branch=branch,
+                pre_update_head=pre_update_head,
+            )
+            if resolved is not None:
+                return resolved
             return None
 
     if upstream_ahead > 0:
@@ -1755,16 +1666,15 @@ def _run_deploy_branch_update(
                 error=(merge_result.stderr or merge_result.stdout or "").strip(),
                 git_cmd=git_cmd,
             )
-            print("  The live checkout was left unchanged; resolve the retained worktree above.")
-            if auto_resolve:
-                resolved = _resolve_deploy_handoff(
-                    git_cmd=git_cmd,
-                    repo=repo,
-                    branch=branch,
-                    pre_update_head=pre_update_head,
-                )
-                if resolved is not None:
-                    return resolved
+            print("  The live checkout is unchanged; starting automatic resolution.")
+            resolved = _resolve_deploy_handoff(
+                git_cmd=git_cmd,
+                repo=repo,
+                branch=branch,
+                pre_update_head=pre_update_head,
+            )
+            if resolved is not None:
+                return resolved
             return None
 
     push_result = subprocess.run(
@@ -1802,15 +1712,14 @@ def _run_deploy_branch_update(
             git_cmd=git_cmd,
         )
         print("  The live checkout was left unchanged; the merged worktree was retained.")
-        if auto_resolve:
-            resolved = _resolve_deploy_handoff(
-                git_cmd=git_cmd,
-                repo=repo,
-                branch=branch,
-                pre_update_head=pre_update_head,
-            )
-            if resolved is not None:
-                return resolved
+        resolved = _resolve_deploy_handoff(
+            git_cmd=git_cmd,
+            repo=repo,
+            branch=branch,
+            pre_update_head=pre_update_head,
+        )
+        if resolved is not None:
+            return resolved
         return None
 
     _pipe.advance(f"sync {branch}")

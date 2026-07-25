@@ -488,7 +488,6 @@ from hermes_cli.axiom_update import (  # noqa: E402  (fork seam)
     _record_deploy_handoff,
     _remove_update_worktree,
     _resolve_deploy_handoff,
-    _resolve_deploy_update_modes,
     _run_deploy_branch_update,
     _short_git_ref,
     _sync_deploy_main_to_upstream,
@@ -11285,13 +11284,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
             )
 
-            try:
-                resolve_handoff, consume_only = _resolve_deploy_update_modes(args)
-            except ValueError as exc:
-                print(f"✗ {exc}")
-                return
-
-            if resolve_handoff and _deploy_handoff_exists_for(PROJECT_ROOT, current_branch):
+            if _deploy_handoff_exists_for(PROJECT_ROOT, current_branch):
                 deploy_commit_count = _resolve_deploy_handoff(
                     git_cmd=git_cmd,
                     repo=PROJECT_ROOT,
@@ -11304,8 +11297,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     PROJECT_ROOT,
                     current_branch,
                     pre_update_head,
-                    auto_resolve=resolve_handoff,
-                    consume_only=consume_only,
                 )
             if deploy_commit_count is None:
                 if auto_stash_ref is not None:
