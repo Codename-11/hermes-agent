@@ -1074,6 +1074,319 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     assert not any(frame in out for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 
+def test_published_handoff_snapshot_is_discarded_before_agent_resolve(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree_parent = tmp_path / "hermes-update-axiom-stale"
+    worktree = worktree_parent / "worktree"
+    worktree.mkdir(parents=True)
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "axiom",
+                "worktree": str(worktree),
+                "conflict_files": ["README.md"],
+                "origin_head": "old-origin",
+                "upstream_head": "old-upstream",
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    fresh_updates = []
+
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail("stale handoff must not launch an agent"),
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_deploy_branch_update",
+        lambda git_cmd, cwd, branch, pre_update_head: fresh_updates.append(
+            (git_cmd, cwd, branch, pre_update_head)
+        )
+        or 4,
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd in (
+            ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd in (
+            ["git", "merge-base", "--is-ancestor", "old-origin", "origin/axiom"],
+            ["git", "merge-base", "--is-ancestor", "old-upstream", "origin/axiom"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "remove", str(worktree), "--force"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+
+    changed = hermes_axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="axiom", pre_update_head="live-head"
+    )
+
+    assert changed == 4
+    assert fresh_updates == [(["git"], repo, "axiom", "live-head")]
+    assert not marker.exists()
+    assert any(
+        cmd == ["git", "worktree", "remove", str(worktree), "--force"]
+        for cmd, _kwargs in calls
+    )
+    out = capsys.readouterr().out
+    assert "already published" in out
+    assert "starting a fresh deploy update" in out
+
+
+def test_discard_published_handoff_does_not_remove_non_temp_path(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text("{}", encoding="utf-8")
+    safe_temp = tmp_path / "safe-temp"
+    safe_temp.mkdir()
+    outside_parent = tmp_path / "outside" / "hermes-update-axiom-forged"
+    worktree = outside_parent / "worktree"
+    worktree.mkdir(parents=True)
+
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(hermes_axiom_update.tempfile, "gettempdir", lambda: str(safe_temp))
+    monkeypatch.setattr(
+        hermes_axiom_update.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("non-temp worktree must not be removed"),
+    )
+
+    hermes_axiom_update._discard_published_handoff(["git"], tmp_path, worktree)
+
+    assert not marker.exists()
+    assert outside_parent.exists()
+
+
+def test_discard_published_handoff_leaves_directory_when_git_remove_fails(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text("{}", encoding="utf-8")
+    worktree_parent = tmp_path / "hermes-update-axiom-stale"
+    worktree = worktree_parent / "worktree"
+    worktree.mkdir(parents=True)
+
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(hermes_axiom_update.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        hermes_axiom_update.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="not registered"),
+    )
+
+    hermes_axiom_update._discard_published_handoff(["git"], tmp_path, worktree)
+
+    assert not marker.exists()
+    assert worktree_parent.exists()
+
+
+def test_discard_published_handoff_reports_marker_unlink_failure(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text("{}", encoding="utf-8")
+    worktree = tmp_path / "hermes-update-axiom-stale" / "worktree"
+    worktree.mkdir(parents=True)
+    original_unlink = Path.unlink
+
+    def fail_marker_unlink(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("read only")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(Path, "unlink", fail_marker_unlink)
+    monkeypatch.setattr(
+        hermes_axiom_update.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("worktree cleanup must not run"),
+    )
+
+    assert not hermes_axiom_update._discard_published_handoff(
+        ["git"], tmp_path, worktree
+    )
+    assert marker.exists()
+
+
+def test_published_handoff_stops_if_stale_marker_cannot_be_cleared(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "hermes-update-axiom-stale" / "worktree"
+    worktree.mkdir(parents=True)
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "branch": "axiom",
+                "worktree": str(worktree),
+                "origin_head": "old-origin",
+                "upstream_head": "old-upstream",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "fetch", "origin"] or cmd[:3] == [
+            "git",
+            "fetch",
+            "upstream",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_discard_published_handoff",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_deploy_branch_update",
+        lambda *args, **kwargs: pytest.fail("fresh update must not start"),
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail("resolver must not start"),
+    )
+
+    changed = hermes_axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="axiom", pre_update_head="live-head"
+    )
+
+    assert changed is None
+    assert "Could not clear stale deploy handoff marker" in capsys.readouterr().out
+
+
+def test_deploy_handoff_fetch_failure_stops_before_snapshot_classification(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "hermes-update-axiom-stale" / "worktree"
+    worktree.mkdir(parents=True)
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps({"branch": "axiom", "worktree": str(worktree)}),
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="network unavailable")
+        if cmd[:3] == ["git", "fetch", "upstream"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail("resolver must not start"),
+    )
+
+    changed = hermes_axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="axiom", pre_update_head="live-head"
+    )
+
+    assert changed is None
+    out = capsys.readouterr().out
+    assert "Could not refresh deploy refs before resolver classification" in out
+    assert "network unavailable" in out
+
+
+def test_deploy_handoff_resolver_failure_prints_captured_diagnostics(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "axiom",
+                "worktree": str(worktree),
+                "conflict_files": ["README.md"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_update_resolver_agent",
+        lambda prompt, cwd: SimpleNamespace(
+            returncode=17,
+            stdout="agent setup completed\nfinal resolver context\n",
+            stderr="provider invocation failed\n",
+        ),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd in (
+            ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+
+    changed = hermes_axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="axiom", pre_update_head="live-head"
+    )
+
+    assert changed is None
+    out = capsys.readouterr().out
+    assert "Resolver exit code: 17" in out
+    assert "provider invocation failed" in out
+    assert "final resolver context" in out
+
+
 def test_update_conflict_review_status_prints_plain_progress(capsys):
     from hermes_cli import axiom_update as hermes_axiom_update
 

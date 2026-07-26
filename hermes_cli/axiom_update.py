@@ -828,6 +828,81 @@ def _completed_deploy_handoff_requires_post_update(
     return True
 
 
+def _handoff_snapshot_is_published(
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    payload: dict[str, object],
+) -> bool:
+    """Return whether the exact refs captured by a handoff reached origin."""
+    recorded_refs = [
+        str(payload.get("origin_head") or "").strip(),
+        str(payload.get("upstream_head") or "").strip(),
+    ]
+    if not all(recorded_refs):
+        return False
+
+    remote_ref = f"origin/{branch}"
+    for recorded_ref in recorded_refs:
+        published = subprocess.run(
+            git_cmd + ["merge-base", "--is-ancestor", recorded_ref, remote_ref],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if published.returncode != 0:
+            return False
+    return True
+
+
+def _remove_managed_update_worktree(
+    git_cmd: list[str], repo: Path, worktree: Path
+) -> bool:
+    """Ask Git to remove an updater-owned temp worktree; never recurse-delete it."""
+    parent = worktree.parent
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        parent_in_temp = parent.resolve().is_relative_to(temp_root)
+    except OSError:
+        parent_in_temp = False
+    updater_owned = (
+        parent_in_temp
+        and worktree.name == "worktree"
+        and parent.name.startswith("hermes-update-")
+    )
+    if not updater_owned:
+        return False
+
+    removed = subprocess.run(
+        git_cmd + ["worktree", "remove", str(worktree), "--force"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if removed.returncode != 0:
+        return False
+    try:
+        parent.rmdir()
+    except OSError:
+        pass
+    return True
+
+
+def _discard_published_handoff(
+    git_cmd: list[str], repo: Path, worktree: Path
+) -> bool:
+    marker = _deploy_handoff_marker_path()
+    try:
+        marker.unlink()
+    except OSError:
+        logger.debug("Failed to clear published deploy handoff marker", exc_info=True)
+        return False
+
+    _remove_managed_update_worktree(git_cmd, repo, worktree)
+    return True
+
+
 def _read_deploy_handoff_payload(repo: Path, branch: str) -> dict[str, object] | None:
     marker = _deploy_handoff_marker_path()
     if not marker.exists():
@@ -1002,6 +1077,26 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
     )
 
 
+def _resolver_output_tail(value: object, *, max_lines: int = 40, max_chars: int = 6000) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    lines = text.splitlines()[-max_lines:]
+    bounded = "\n".join(lines)[-max_chars:]
+    return bounded.splitlines()
+
+
+def _print_resolver_failure_diagnostics(result: subprocess.CompletedProcess) -> None:
+    print(f"  Resolver exit code: {result.returncode}")
+    for label, value in (("stderr", result.stderr), ("stdout", result.stdout)):
+        lines = _resolver_output_tail(value)
+        if not lines:
+            continue
+        print(f"  Resolver {label} (tail):")
+        for line in lines:
+            print(f"    {line}")
+
+
 def _resolve_deploy_handoff(
     *,
     git_cmd: list[str],
@@ -1039,15 +1134,57 @@ def _resolve_deploy_handoff(
     if worktree_raw:
         print(f"  Worktree: {worktree}")
     status.start("prepare resolve")
+
+    fetches = [
+        (
+            "origin",
+            subprocess.run(
+                git_cmd
+                + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ),
+        ),
+        (
+            "upstream",
+            subprocess.run(
+                git_cmd + ["fetch", "upstream", "main", "--quiet"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ),
+        ),
+    ]
+    failed_fetches = [(name, result) for name, result in fetches if result.returncode != 0]
+    if failed_fetches:
+        status.fail(note="fetch failed")
+        print("✗ Could not refresh deploy refs before resolver classification.")
+        for name, result in failed_fetches:
+            print(f"  {name} fetch exit code: {result.returncode}")
+            details = _resolver_output_tail(result.stderr or result.stdout, max_lines=20, max_chars=3000)
+            for line in details:
+                print(f"    {line}")
+        return None
+
+    if _handoff_snapshot_is_published(git_cmd, repo, branch, payload):
+        if not _discard_published_handoff(git_cmd, repo, worktree):
+            status.fail(note="stale marker cleanup failed")
+            print("✗ Could not clear stale deploy handoff marker; stopping before fresh update.")
+            return None
+        status.finish(note="published snapshot cleared")
+        print(
+            f"→ Retained handoff snapshot is already published on origin/{branch}; "
+            "starting a fresh deploy update."
+        )
+        return _run_deploy_branch_update(git_cmd, repo, branch, pre_update_head)
+
     if not worktree_raw or not worktree.exists():
         status.fail(note="worktree missing")
         print("✗ Deploy handoff worktree is missing; cannot auto-resolve.")
         if _completed_deploy_handoff_requires_post_update(git_cmd, repo, branch):
             return 1
         return None
-
-    subprocess.run(git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"], cwd=repo, capture_output=True, text=True)
-    subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=repo, capture_output=True, text=True)
 
     conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
     blocked = _egregious_handoff_paths(conflict_files)
@@ -1065,6 +1202,7 @@ def _resolve_deploy_handoff(
     if result.returncode != 0:
         status.fail(note="resolver agent failed")
         print("✗ Resolver agent failed; retained worktree was left untouched for manual review.")
+        _print_resolver_failure_diagnostics(result)
         return None
 
     status.advance("validate")
@@ -1134,18 +1272,14 @@ def _resolve_deploy_handoff(
         return None
 
     status.advance("cleanup")
+    marker_cleared = False
     try:
         _deploy_handoff_marker_path().unlink()
+        marker_cleared = True
     except OSError:
         logger.debug("Failed to clear deploy handoff marker", exc_info=True)
-
-    parent = worktree.parent
-    try:
-        subprocess.run(git_cmd + ["worktree", "remove", str(worktree), "--force"], cwd=repo, capture_output=True, text=True)
-        if parent.name.startswith("hermes-update-"):
-            shutil.rmtree(parent, ignore_errors=True)
-    except Exception:
-        logger.debug("Failed to remove resolved deploy handoff worktree", exc_info=True)
+    if marker_cleared:
+        _remove_managed_update_worktree(git_cmd, repo, worktree)
 
     status.finish(note="resolved handoff")
     print(f"✓ Resolved deploy handoff, pushed origin/{branch}, and fast-forwarded live checkout.")
