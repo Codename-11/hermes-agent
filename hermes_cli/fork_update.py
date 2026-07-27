@@ -36,7 +36,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Optional
 
 
 logger = logging.getLogger("hermes_cli.fork_update")
@@ -945,23 +945,79 @@ def _focused_check_env() -> dict[str, str]:
     return env
 
 
-def _handoff_origin_changed(payload: Mapping[str, object], current_origin: str) -> bool:
-    """Return whether a retained handoff was based on a different deploy tip.
-
-    Handoff reports intentionally store abbreviated SHAs while ``rev-parse``
-    returns the full object ID. Treat either value as equivalent when it is an
-    unambiguous Git-style prefix of the other.
-    """
-    handoff_origin = str(payload.get("origin_head") or "").strip()
-    current = current_origin.strip()
-    if not handoff_origin or not current:
+def _handoff_snapshot_is_published(
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    payload: dict[str, object],
+) -> bool:
+    """Return whether both refs captured by a handoff reached origin."""
+    recorded_refs = [
+        str(payload.get("origin_head") or "").strip(),
+        str(payload.get("upstream_head") or "").strip(),
+    ]
+    if not all(recorded_refs):
         return False
-    if min(len(handoff_origin), len(current)) < 7:
-        return handoff_origin != current
-    return not (
-        handoff_origin.startswith(current)
-        or current.startswith(handoff_origin)
+
+    remote_ref = f"origin/{branch}"
+    for recorded_ref in recorded_refs:
+        published = subprocess.run(
+            git_cmd + ["merge-base", "--is-ancestor", recorded_ref, remote_ref],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if published.returncode != 0:
+            return False
+    return True
+
+
+def _remove_managed_update_worktree(
+    git_cmd: list[str], repo: Path, worktree: Path
+) -> bool:
+    """Ask Git to remove an updater-owned temp worktree; never recurse-delete it."""
+    parent = worktree.parent
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        parent_in_temp = parent.resolve().is_relative_to(temp_root)
+    except OSError:
+        parent_in_temp = False
+    updater_owned = (
+        parent_in_temp
+        and worktree.name == "worktree"
+        and parent.name.startswith("hermes-update-")
     )
+    if not updater_owned:
+        return False
+
+    removed = subprocess.run(
+        git_cmd + ["worktree", "remove", str(worktree), "--force"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if removed.returncode != 0:
+        return False
+    try:
+        parent.rmdir()
+    except OSError:
+        pass
+    return True
+
+
+def _discard_published_handoff(
+    git_cmd: list[str], repo: Path, worktree: Path
+) -> bool:
+    marker = _deploy_handoff_marker_path()
+    try:
+        marker.unlink()
+    except OSError:
+        logger.debug("Failed to clear published deploy handoff marker", exc_info=True)
+        return False
+
+    _remove_managed_update_worktree(git_cmd, repo, worktree)
+    return True
 
 
 def _build_deploy_resolver_prompt(payload: dict[str, object], checks: list[str]) -> str:
@@ -997,6 +1053,25 @@ Do not push or run `hermes update` yourself; the parent updater will validate, c
 """
 
 
+def _resolver_cli_bootstrap(worktree: Path) -> str:
+    """Import the clean live CLI while keeping *worktree* as process cwd.
+
+    A merge conflict may leave ``hermes_cli/main.py`` unparsable inside the
+    retained worktree. ``python -m hermes_cli.main`` would import that broken
+    file before the resolver can start. Remove cwd from ``sys.path`` and pin
+    imports to the live checkout that launched the parent updater; the child
+    process still inherits the worktree cwd for terminal/file tools.
+    """
+    live_root = str(Path(__file__).resolve().parents[1])
+    worktree_root = str(worktree.resolve())
+    return (
+        "import sys; "
+        f"sys.path[:] = [{live_root!r}] + "
+        f"[p for p in sys.path if p not in ('', {live_root!r}, {worktree_root!r})]; "
+        "from hermes_cli.main import main; main()"
+    )
+
+
 def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.CompletedProcess:
     """Run a non-interactive Hermes resolver session in the retained worktree.
 
@@ -1007,8 +1082,8 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
     timeout = int(os.environ.get("HERMES_UPDATE_RESOLVE_TIMEOUT", "3600") or "3600")
     cmd = [
         sys.executable,
-        "-m",
-        "hermes_cli.main",
+        "-c",
+        _resolver_cli_bootstrap(worktree),
         "-z",
         prompt,
         "-t",
@@ -1020,6 +1095,8 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         cwd=worktree,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         capture_output=True,
     )
@@ -1034,10 +1111,9 @@ def _resolve_deploy_handoff(
 ) -> Optional[int]:
     """Autonomously resolve a retained deploy update handoff.
 
-    ``hermes update --resolve`` is an explicit operator authorization for the
-    agent to resolve the retained conflict worktree, run focused checks, push the
-    deploy branch, and let the parent updater continue with install/restart. It
-    still stops on hard safety gates rather than mutating ambiguous state.
+    Bare ``hermes update`` resumes the retained conflict worktree, runs focused
+    checks, pushes the deploy branch, and lets the parent updater continue with
+    install/restart. Hard safety gates still stop before ambiguous mutations.
     """
     payload = _read_deploy_handoff_payload(repo, branch)
     if payload is None:
@@ -1062,59 +1138,58 @@ def _resolve_deploy_handoff(
     if worktree_raw:
         print(f"  Worktree: {worktree}")
     status.start("prepare resolve")
+    fetches = [
+        (
+            "origin",
+            subprocess.run(
+                git_cmd
+                + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ),
+        ),
+        (
+            "upstream",
+            subprocess.run(
+                git_cmd + ["fetch", "upstream", "main", "--quiet"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ),
+        ),
+    ]
+    failed_fetches = [(name, result) for name, result in fetches if result.returncode != 0]
+    if failed_fetches:
+        status.fail(note="fetch failed")
+        print("✗ Could not refresh deploy refs before resolver classification.")
+        for name, result in failed_fetches:
+            print(f"  {name} fetch exit code: {result.returncode}")
+            details = str(result.stderr or result.stdout or "").strip().splitlines()[-20:]
+            for line in details:
+                print(f"    {line}")
+        return None
+
+    if _handoff_snapshot_is_published(git_cmd, repo, branch, payload):
+        if not _discard_published_handoff(git_cmd, repo, worktree):
+            status.fail(note="stale marker cleanup failed")
+            print("✗ Could not clear published deploy handoff marker; stopping before fresh update.")
+            return None
+        status.finish(note="published snapshot cleared")
+        print(
+            f"→ Retained handoff snapshot is already published on origin/{branch}; "
+            "starting a fresh deploy update."
+        )
+        return _run_deploy_branch_update(
+            git_cmd, repo, branch, pre_update_head
+        )
+
     if not worktree_raw or not worktree.exists():
         status.fail(note="worktree missing")
         print("✗ Deploy handoff worktree is missing; cannot auto-resolve.")
         if _completed_deploy_handoff_requires_post_update(git_cmd, repo, branch):
             return 1
         return None
-
-    subprocess.run(git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"], cwd=repo, capture_output=True, text=True)
-    subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=repo, capture_output=True, text=True)
-
-    current_origin = _git_output(
-        git_cmd,
-        repo,
-        ["rev-parse", f"origin/{branch}"],
-        limit=1000,
-    )
-    if _handoff_origin_changed(payload, current_origin):
-        handoff_origin = str(payload.get("origin_head") or "").strip()
-        status.fail(note="stale handoff retired")
-        print("⚠ Retained deploy handoff is stale; origin advanced after it was created.")
-        print(f"  Handoff base: {handoff_origin[:12]}")
-        print(f"  Current origin/{branch}: {current_origin[:12]}")
-        marker = _deploy_handoff_marker_path()
-        try:
-            marker.unlink(missing_ok=True)
-        except OSError as exc:
-            print(f"✗ Could not retire stale handoff marker: {exc}")
-            return None
-
-        parent = worktree.parent
-        temp_root = Path(tempfile.gettempdir()).resolve()
-        try:
-            managed_temp = (
-                worktree.name == "worktree"
-                and parent.resolve().parent == temp_root
-                and parent.name.startswith(f"hermes-update-{branch}-")
-            )
-        except OSError:
-            managed_temp = False
-        if managed_temp:
-            _remove_update_worktree(git_cmd, repo, worktree, parent)
-            print("  Retired obsolete managed worktree.")
-        else:
-            print(f"  Left nonstandard worktree untouched for review: {worktree}")
-        print(f"→ Rebuilding merge from current origin/{branch}...")
-        return _run_deploy_branch_update(
-            git_cmd,
-            repo,
-            branch,
-            pre_update_head,
-            auto_resolve=True,
-            consume_only=False,
-        )
 
     conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
     blocked = _egregious_handoff_paths(conflict_files)
@@ -1209,18 +1284,14 @@ def _resolve_deploy_handoff(
         return None
 
     status.advance("cleanup")
+    marker_cleared = False
     try:
         _deploy_handoff_marker_path().unlink()
+        marker_cleared = True
     except OSError:
         logger.debug("Failed to clear deploy handoff marker", exc_info=True)
-
-    parent = worktree.parent
-    try:
-        subprocess.run(git_cmd + ["worktree", "remove", str(worktree), "--force"], cwd=repo, capture_output=True, text=True)
-        if parent.name.startswith("hermes-update-"):
-            shutil.rmtree(parent, ignore_errors=True)
-    except Exception:
-        logger.debug("Failed to remove resolved deploy handoff worktree", exc_info=True)
+    if marker_cleared:
+        _remove_managed_update_worktree(git_cmd, repo, worktree)
 
     status.finish(note="resolved handoff")
     print(f"✓ Resolved deploy handoff, pushed origin/{branch}, and fast-forwarded live checkout.")
@@ -1297,7 +1368,7 @@ def _print_deploy_branch_handoff(
         if review.get("report_path"):
             print(f"  Full report: {review.get('report_path')}")
         print()
-    print("  ── Pass this to your Hermes agent ─────────────")
+    print("  ── Update recovery context ────────────────────")
     print()
     print("  ┌─ Copy below ─────────────────────────────────")
     print(f"  │ hermes update: {reason}")
@@ -1319,9 +1390,9 @@ def _print_deploy_branch_handoff(
     if error:
         print(f"  │ Error: {error.splitlines()[0]}")
     print("  │ ")
-    print(f"  │ Please merge upstream/main into {branch}, resolve conflicts,")
-    print(f"  │ run focused tests, push HEAD:{branch} to origin, then run")
-    print(f"  │ hermes update again so the live checkout fast-forwards cleanly.")
+    print("  │ Hermes will attempt automatic resolution next. If a safety")
+    print("  │ gate stops it, review this retained worktree, resolve the")
+    print(f"  │ listed issue, and rerun hermes update to publish {branch}.")
     print("  └────────────────────────────────────────────")
     _record_deploy_handoff(
         repo=repo,
@@ -1516,28 +1587,11 @@ def _remove_update_worktree(
     shutil.rmtree(parent, ignore_errors=True)
 
 
-def _resolve_deploy_update_modes(args: object) -> tuple[bool, bool]:
-    """Return ``(resolve_handoff, consume_only)`` for a deploy update.
-
-    Deploy branches are tested release artifacts. Runtime hosts consume
-    ``origin/<deploy>`` by default; only explicit ``--resolve`` grants upstream
-    integration authority.
-    """
-    resolve_handoff = bool(getattr(args, "resolve", False))
-    consume_requested = bool(getattr(args, "consume", False))
-    if resolve_handoff and consume_requested:
-        raise ValueError("--resolve and --consume are mutually exclusive for deploy branches.")
-    return resolve_handoff, consume_requested or not resolve_handoff
-
-
 def _run_deploy_branch_update(
     git_cmd: list[str],
     repo: Path,
     branch: str,
     pre_update_head: str,
-    *,
-    auto_resolve: bool = False,
-    consume_only: bool = False,
 ) -> Optional[int]:
     """Update a merge-based deploy branch without mutating live code on conflicts.
 
@@ -1615,7 +1669,7 @@ def _run_deploy_branch_update(
         )
         return None
 
-    if not consume_only and not _sync_deploy_main_to_upstream(git_cmd, repo):
+    if not _sync_deploy_main_to_upstream(git_cmd, repo):
         _pipe.fail(note="cannot sync local main")
         _print_deploy_branch_handoff(
             reason="local main cannot be synchronized with upstream/main.",
@@ -1640,41 +1694,6 @@ def _run_deploy_branch_update(
         )
         return None
 
-    if consume_only:
-        if local_ahead > 0:
-            _pipe.fail(note="consume-only blocked by local deploy commits")
-            print(f"✗ --consume cannot run while live {branch} has commits not on {remote_ref}.")
-            print("  Use `hermes update --resolve` or `hermes update` when this host should publish deploy-branch work.")
-            return None
-        if origin_ahead > 0:
-            _pipe.advance(f"sync {branch}")
-            changed = _fast_forward_live_deploy_checkout(
-                git_cmd,
-                repo,
-                branch,
-                pre_update_head,
-                origin_ahead,
-            )
-            if changed is None:
-                _pipe.fail(note=f"cannot fast-forward to {remote_ref}")
-                _print_deploy_branch_handoff(
-                    reason=f"consume-only fast-forward to {remote_ref} failed.",
-                    repo=repo,
-                    branch=branch,
-                    upstream_ahead=upstream_ahead,
-                    origin_ahead=origin_ahead,
-                    git_cmd=git_cmd,
-                )
-                return None
-            note = f"consumed {origin_ahead} origin commit(s)"
-            if upstream_ahead > 0:
-                note += f"; {upstream_ahead} upstream commit(s) still pending on merge authority"
-            _pipe.finish(note=note)
-            return changed
-        if upstream_ahead > 0:
-            _pipe.finish(note=f"consume-only: origin/{branch} current; {upstream_ahead} upstream commit(s) pending merge authority")
-            print(f"  Run `hermes update --resolve` when this host should merge upstream/main into {branch}.")
-            return 0
 
     if upstream_ahead == 0 and local_ahead == 0:
         if origin_ahead == 0:
@@ -1756,16 +1775,15 @@ def _run_deploy_branch_update(
                 error=(merge_origin.stderr or merge_origin.stdout or "").strip(),
                 git_cmd=git_cmd,
             )
-            print("  The live checkout was left unchanged; resolve the retained worktree above.")
-            if auto_resolve:
-                resolved = _resolve_deploy_handoff(
-                    git_cmd=git_cmd,
-                    repo=repo,
-                    branch=branch,
-                    pre_update_head=pre_update_head,
-                )
-                if resolved is not None:
-                    return resolved
+            print("  The live checkout is unchanged; starting automatic resolution.")
+            resolved = _resolve_deploy_handoff(
+                git_cmd=git_cmd,
+                repo=repo,
+                branch=branch,
+                pre_update_head=pre_update_head,
+            )
+            if resolved is not None:
+                return resolved
             return None
 
     if upstream_ahead > 0:
@@ -1794,16 +1812,15 @@ def _run_deploy_branch_update(
                 error=(merge_result.stderr or merge_result.stdout or "").strip(),
                 git_cmd=git_cmd,
             )
-            print("  The live checkout was left unchanged; resolve the retained worktree above.")
-            if auto_resolve:
-                resolved = _resolve_deploy_handoff(
-                    git_cmd=git_cmd,
-                    repo=repo,
-                    branch=branch,
-                    pre_update_head=pre_update_head,
-                )
-                if resolved is not None:
-                    return resolved
+            print("  The live checkout is unchanged; starting automatic resolution.")
+            resolved = _resolve_deploy_handoff(
+                git_cmd=git_cmd,
+                repo=repo,
+                branch=branch,
+                pre_update_head=pre_update_head,
+            )
+            if resolved is not None:
+                return resolved
             return None
 
     push_result = subprocess.run(
@@ -1840,16 +1857,15 @@ def _run_deploy_branch_update(
             error=(push_result.stderr or "").strip(),
             git_cmd=git_cmd,
         )
-        print("  The live checkout was left unchanged; the merged worktree was retained.")
-        if auto_resolve:
-            resolved = _resolve_deploy_handoff(
-                git_cmd=git_cmd,
-                repo=repo,
-                branch=branch,
-                pre_update_head=pre_update_head,
-            )
-            if resolved is not None:
-                return resolved
+        print("  The live checkout was left unchanged; starting automatic recovery.")
+        resolved = _resolve_deploy_handoff(
+            git_cmd=git_cmd,
+            repo=repo,
+            branch=branch,
+            pre_update_head=pre_update_head,
+        )
+        if resolved is not None:
+            return resolved
         return None
 
     _pipe.advance(f"sync {branch}")

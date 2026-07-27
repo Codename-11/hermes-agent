@@ -651,7 +651,91 @@ def test_deploy_branch_update_merges_upstream_in_temp_worktree(monkeypatch, tmp_
     assert not parent.exists()
 
 
-def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
+def test_tgi_first_host_publishes_second_host_consumes_real_git(tmp_path):
+    """Bare update reconciles once; a later host consumes the published result."""
+    import subprocess
+
+    from hermes_cli import fork_update as hermes_fork_update
+
+    def git(cwd, *args, capture=False):
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=capture,
+            text=True,
+        )
+
+    upstream_bare = tmp_path / "upstream.git"
+    origin_bare = tmp_path / "origin.git"
+    upstream_work = tmp_path / "upstream-work"
+    host_a = tmp_path / "host-a"
+    host_b = tmp_path / "host-b"
+
+    git(tmp_path, "init", "--bare", str(upstream_bare))
+    git(tmp_path, "init", "--bare", str(origin_bare))
+    git(tmp_path, "init", "-b", "main", str(upstream_work))
+    git(upstream_work, "config", "user.name", "Hermes Test")
+    git(upstream_work, "config", "user.email", "hermes-test@example.invalid")
+    (upstream_work / "shared.txt").write_text("base\n", encoding="utf-8")
+    git(upstream_work, "add", "shared.txt")
+    git(upstream_work, "commit", "-m", "base")
+    git(upstream_work, "remote", "add", "upstream-bare", str(upstream_bare))
+    git(upstream_work, "push", "upstream-bare", "main")
+    git(upstream_work, "remote", "add", "fork", str(origin_bare))
+    git(upstream_work, "push", "fork", "main")
+
+    git(upstream_work, "checkout", "-b", "tgi")
+    (upstream_work / "fork.txt").write_text("tgi\n", encoding="utf-8")
+    git(upstream_work, "add", "fork.txt")
+    git(upstream_work, "commit", "-m", "tgi carry")
+    git(upstream_work, "push", "fork", "tgi")
+
+    for host in (host_a, host_b):
+        git(tmp_path, "clone", "--branch", "tgi", str(origin_bare), str(host))
+        git(host, "config", "user.name", "Hermes Test")
+        git(host, "config", "user.email", "hermes-test@example.invalid")
+        git(host, "remote", "add", "upstream", str(upstream_bare))
+        git(host, "fetch", "upstream", "main")
+        git(host, "branch", "main", "upstream/main")
+
+    host_b_before = git(host_b, "rev-parse", "HEAD", capture=True).stdout.strip()
+
+    git(upstream_work, "checkout", "main")
+    (upstream_work / "shared.txt").write_text(
+        "base\nupstream\n", encoding="utf-8"
+    )
+    git(upstream_work, "add", "shared.txt")
+    git(upstream_work, "commit", "-m", "upstream feature")
+    git(upstream_work, "push", "upstream-bare", "main")
+
+    host_a_before = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
+    changed_a = hermes_fork_update._run_deploy_branch_update(
+        ["git"], host_a, "tgi", host_a_before
+    )
+    published = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
+    origin_after_a = git(
+        origin_bare, "rev-parse", "refs/heads/tgi", capture=True
+    ).stdout.strip()
+
+    assert changed_a and changed_a > 0
+    assert published == origin_after_a
+    git(host_a, "merge-base", "--is-ancestor", "upstream/main", "HEAD")
+
+    changed_b = hermes_fork_update._run_deploy_branch_update(
+        ["git"], host_b, "tgi", host_b_before
+    )
+    host_b_after = git(host_b, "rev-parse", "HEAD", capture=True).stdout.strip()
+    origin_after_b = git(
+        origin_bare, "rev-parse", "refs/heads/tgi", capture=True
+    ).stdout.strip()
+
+    assert changed_b and changed_b > 0
+    assert host_b_after == published
+    assert origin_after_b == origin_after_a
+
+
+def test_deploy_branch_update_conflict_prints_handoff_and_starts_resolver(
     monkeypatch, tmp_path, capsys
 ):
     repo = tmp_path / "repo"
@@ -669,6 +753,12 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
         hermes_fork_update,
         "_call_llm_update_review",
         lambda review: ("LLM says: pause, resolve in worktree, run focused tests.", ""),
+    )
+    resolver_calls = []
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_resolve_deploy_handoff",
+        lambda **kwargs: resolver_calls.append(kwargs) or None,
     )
 
     def fake_run(cmd, **kwargs):
@@ -715,7 +805,8 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     assert "hermes update: merge into axiom failed." in out
     assert "Worktree:" in out
     assert "hermes_cli/main.py" in out
-    assert "live checkout was left unchanged" in out
+    assert "starting automatic resolution" in out
+    assert resolver_calls
     reports = list((tmp_path / "reports").glob("*-axiom-conflict-review.md"))
     assert len(reports) == 1
     report_text = reports[0].read_text(encoding="utf-8")
@@ -1425,12 +1516,45 @@ def test_tgi_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
 
     assert result.returncode == 0
     cmd, kwargs = calls[0]
+    assert cmd[:2] == [hermes_fork_update.sys.executable, "-c"]
+    assert "from hermes_cli.main import main" in cmd[2]
     assert "-z" in cmd
     assert "chat" not in cmd
     assert "terminal,file,search,skills" in cmd
     assert kwargs["cwd"] == tmp_path
     assert kwargs["env"]["HERMES_UPDATE_RESOLVE"] == "1"
     assert kwargs["capture_output"] is True
+
+
+def test_tgi_resolver_bootstrap_avoids_conflicted_worktree_main(tmp_path):
+    import subprocess
+
+    from hermes_cli import fork_update as hermes_fork_update
+
+    conflicted_package = tmp_path / "hermes_cli"
+    conflicted_package.mkdir()
+    (conflicted_package / "__init__.py").write_text("", encoding="utf-8")
+    (conflicted_package / "main.py").write_text(
+        "<<<<<<< ours\ninvalid python\n=======\nstill invalid\n>>>>>>> theirs\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            hermes_fork_update.sys.executable,
+            "-c",
+            getattr(hermes_fork_update, "_resolver_cli_bootstrap")(tmp_path),
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Hermes Agent" in result.stdout or "usage:" in result.stdout
+    assert "SyntaxError" not in result.stderr
 
 
 def test_tgi_update_focused_check_env_prioritizes_running_interpreter(monkeypatch):
@@ -1480,97 +1604,77 @@ def test_tgi_update_focused_checks_keep_custom_marker_fallback():
     assert checks == ["./scripts/check-custom-integration"]
 
 
-def test_tgi_update_detects_handoff_whose_origin_base_changed():
-    from hermes_cli import fork_update as hermes_fork_update
-
-    payload = {"origin_head": "d9497729b4"}
-    full_same_sha = "d9497729b4342aa26829cbda1376435c411e9b90\n"
-
-    assert hermes_fork_update._handoff_origin_changed(payload, full_same_sha) is False
-    assert (
-        hermes_fork_update._handoff_origin_changed(
-            {"origin_head": "d9497729b4342aa26829cbda1376435c411e9b90"},
-            "d9497729b4\n",
-        )
-        is False
-    )
-    assert hermes_fork_update._handoff_origin_changed(payload, "a1497729b4342aa2\n") is True
-    assert hermes_fork_update._handoff_origin_changed({}, full_same_sha) is False
-    assert hermes_fork_update._handoff_origin_changed(
-        {"origin_head": "abc"}, "abcdef0\n"
-    ) is True
-
-
-def test_tgi_update_retires_stale_handoff_and_rebuilds_from_current_origin(
-    monkeypatch, tmp_path
+def test_tgi_published_handoff_snapshot_is_discarded_before_agent_resolve(
+    monkeypatch, tmp_path, capsys
 ):
     from hermes_cli import fork_update as hermes_fork_update
 
-    parent = tmp_path / "hermes-update-tgi-stale"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = tmp_path / "hermes-update-tgi-published"
     worktree = parent / "worktree"
     worktree.mkdir(parents=True)
     marker = tmp_path / ".update_handoff.json"
-    marker.write_text("{}", encoding="utf-8")
     payload = {
+        "schema": 2,
+        "repo": str(repo),
         "branch": "tgi",
-        "origin_head": "old-origin-sha",
         "worktree": str(worktree),
+        "conflict_files": ["README.md"],
+        "origin_head": "old-origin",
+        "upstream_head": "old-upstream",
     }
-    removed = []
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    calls = []
     rebuilt = []
 
     monkeypatch.setattr(
-        hermes_fork_update,
-        "_read_deploy_handoff_payload",
-        lambda repo, branch: payload,
+        hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker
     )
     monkeypatch.setattr(
         hermes_fork_update,
-        "_deploy_handoff_marker_path",
-        lambda: marker,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail(
+            "a published handoff must not launch the resolver"
+        ),
     )
     monkeypatch.setattr(
         hermes_fork_update,
-        "_git_output",
-        lambda git_cmd, cwd, args, limit=0: "new-origin-sha\n",
-    )
-    monkeypatch.setattr(
-        hermes_fork_update.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
-    monkeypatch.setattr(hermes_fork_update.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(
-        hermes_fork_update,
-        "_remove_update_worktree",
-        lambda git_cmd, repo, path, root: removed.append((path, root)),
+        "_run_deploy_branch_update",
+        lambda git_cmd, cwd, branch, pre_update_head: rebuilt.append(
+            (git_cmd, cwd, branch, pre_update_head)
+        )
+        or 7,
     )
 
-    def fake_rebuild(git_cmd, repo, branch, pre_update_head, **kwargs):
-        rebuilt.append((git_cmd, repo, branch, pre_update_head, kwargs))
-        return 7
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd in (
+            ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+            ["git", "merge-base", "--is-ancestor", "old-origin", "origin/tgi"],
+            ["git", "merge-base", "--is-ancestor", "old-upstream", "origin/tgi"],
+            ["git", "worktree", "remove", str(worktree), "--force"],
+        ):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr(hermes_fork_update, "_run_deploy_branch_update", fake_rebuild)
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
 
     result = hermes_fork_update._resolve_deploy_handoff(
         git_cmd=["git"],
-        repo=tmp_path,
+        repo=repo,
         branch="tgi",
         pre_update_head="live-head",
     )
 
     assert result == 7
     assert not marker.exists()
-    assert removed == [(worktree, parent)]
-    assert rebuilt == [
-        (
-            ["git"],
-            tmp_path,
-            "tgi",
-            "live-head",
-            {"auto_resolve": True, "consume_only": False},
-        )
-    ]
+    assert rebuilt == [(["git"], repo, "tgi", "live-head")]
+    assert ["git", "worktree", "remove", str(worktree), "--force"] in calls
+    out = capsys.readouterr().out
+    assert "already published" in out
+    assert "starting a fresh deploy update" in out
 
 
 def test_conflict_marker_scan_ignores_decorative_equals_separators(tmp_path):
@@ -1664,40 +1768,25 @@ def test_tgi_deploy_handoff_resolve_suppresses_child_success_before_validation(
     assert "cron/jobs.py" in out
 
 
-def test_tgi_deploy_branch_update_consume_only_does_not_sync_or_merge_upstream(
-    monkeypatch, tmp_path, capsys
-):
-    calls = []
+def test_tgi_update_parser_has_one_deploy_update_mode():
+    import argparse
 
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        if cmd == ["git", "fetch", "upstream", "--quiet"]:
-            return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd[:3] == ["git", "fetch", "origin"] and cmd[-1] == "--quiet":
-            return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "HEAD..origin/tgi"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "origin/tgi..HEAD"]:
-            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "--count", "origin/tgi..upstream/main"]:
-            return SimpleNamespace(stdout="5\n", stderr="", returncode=0)
-        raise AssertionError(f"unexpected command: {cmd}")
+    from hermes_cli.subcommands.update import build_update_parser
 
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_update_parser(subparsers, cmd_update=lambda args: None)
 
-    changed = hermes_main._run_deploy_branch_update(
-        ["git"], tmp_path, "tgi", "oldhead", consume_only=True
-    )
-
-    assert changed == 0
-    commands = [cmd for cmd, _ in calls]
-    assert not any(cmd[:2] == ["git", "worktree"] for cmd in commands)
-    assert ["git", "merge", "--no-edit", "upstream/main"] not in commands
-    out = capsys.readouterr().out
-    assert "consume-only" in out
+    args = parser.parse_args(["update"])
+    assert not hasattr(args, "resolve")
+    assert not hasattr(args, "consume")
+    with pytest.raises(SystemExit):
+        parser.parse_args(["update", "--resolve"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["update", "--consume"])
 
 
-def test_tgi_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tmp_path):
+def test_tgi_bare_update_refreshes_origin_before_comparing(monkeypatch, tmp_path):
     calls = []
     refreshed = {"origin": False}
 
@@ -1721,6 +1810,11 @@ def test_tgi_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tm
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "origin/tgi..upstream/main"]:
             return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd in (
+            ["git", "rev-list", "--count", "upstream/main..main"],
+            ["git", "rev-list", "--count", "main..upstream/main"],
+        ):
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         if cmd == ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "merge", "--ff-only", "origin/tgi"]:
@@ -1732,7 +1826,7 @@ def test_tgi_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tm
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
     changed = hermes_main._run_deploy_branch_update(
-        ["git"], tmp_path, "tgi", "oldhead", consume_only=True
+        ["git"], tmp_path, "tgi", "oldhead"
     )
 
     assert changed == 12
@@ -1745,35 +1839,6 @@ def test_tgi_consume_refreshes_stale_origin_ref_before_comparing(monkeypatch, tm
     ]
     compare = ["git", "rev-list", "--count", "HEAD..origin/tgi"]
     assert calls.index(deploy_fetch) < calls.index(compare)
-
-
-def test_tgi_plain_update_defaults_to_consume_only():
-    from hermes_cli import fork_update as hermes_fork_update
-
-    resolve, consume = hermes_fork_update._resolve_deploy_update_modes(
-        SimpleNamespace(resolve=False, consume=False)
-    )
-    assert resolve is False
-    assert consume is True
-
-
-def test_tgi_resolve_is_explicit_merge_authority():
-    from hermes_cli import fork_update as hermes_fork_update
-
-    resolve, consume = hermes_fork_update._resolve_deploy_update_modes(
-        SimpleNamespace(resolve=True, consume=False)
-    )
-    assert resolve is True
-    assert consume is False
-
-
-def test_tgi_resolve_and_consume_are_mutually_exclusive():
-    from hermes_cli import fork_update as hermes_fork_update
-
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        hermes_fork_update._resolve_deploy_update_modes(
-            SimpleNamespace(resolve=True, consume=True)
-        )
 
 
 def test_install_method_marker_not_autostashed_by_update(tmp_path):

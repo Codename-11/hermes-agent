@@ -32,18 +32,6 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Check whether an update is available without installing anything",
     )
     update_parser.add_argument(
-        "--resolve",
-        action="store_true",
-        default=False,
-        help="Deploy branches: autonomously resolve a retained update handoff, or auto-resolve conflicts encountered during this update, then push and finish the install/restart phase.",
-    )
-    update_parser.add_argument(
-        "--consume",
-        action="store_true",
-        default=False,
-        help="Deploy branches: only consume origin/<branch>; do not merge upstream/main into the deploy branch from this host.",
-    )
-    update_parser.add_argument(
         "--no-backup",
         action="store_true",
         default=False,
