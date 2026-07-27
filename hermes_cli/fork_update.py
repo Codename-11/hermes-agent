@@ -948,6 +948,64 @@ def _focused_check_env() -> dict[str, str]:
     return env
 
 
+def _focused_pytest_requirements() -> list[str]:
+    """Return the pytest packages declared by the checkout's ``dev`` extra."""
+    fallback = ["pytest", "pytest-asyncio"]
+    try:
+        import importlib
+
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        with pyproject.open("rb") as handle:
+            data = importlib.import_module("tomllib").load(handle)
+        dev = data.get("project", {}).get("optional-dependencies", {}).get("dev", [])
+        requirements = [
+            str(item)
+            for item in dev
+            if str(item).lower().split(";", 1)[0].strip().startswith(
+                ("pytest=", "pytest<", "pytest>", "pytest-asyncio")
+            )
+        ]
+        return requirements or fallback
+    except Exception:
+        return fallback
+
+
+def _ensure_focused_pytest(checks: list[str], env: dict[str, str]) -> bool:
+    """Install optional pytest tooling only when resolver checks require it."""
+    if not any("pytest" in check and "-m" in check for check in checks):
+        return True
+
+    probe = subprocess.run(
+        [sys.executable, "-c", "import pytest, pytest_asyncio"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if probe.returncode == 0:
+        return True
+
+    requirements = _focused_pytest_requirements()
+    uv = shutil.which("uv", path=env.get("PATH"))
+    if uv:
+        command = [uv, "pip", "install", "--python", sys.executable, *requirements]
+    else:
+        command = [sys.executable, "-m", "pip", "install", *requirements]
+
+    print("→ Installing optional resolver test tooling: " + ", ".join(requirements))
+    installed = subprocess.run(command, text=True, timeout=300, env=env)
+    if installed.returncode != 0:
+        print("✗ Could not install pytest tooling required by focused checks.")
+        return False
+
+    verified = subprocess.run(
+        [sys.executable, "-c", "import pytest, pytest_asyncio"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return verified.returncode == 0
+
+
 def _handoff_snapshot_is_published(
     git_cmd: list[str],
     repo: Path,
@@ -1275,6 +1333,9 @@ def _resolve_deploy_handoff(
 
     status.advance("focused checks")
     check_env = _focused_check_env()
+    if not _ensure_focused_pytest(checks, check_env):
+        status.fail(note="pytest tooling unavailable")
+        return None
     for check in checks:
         print(f"→ Focused check: {check}")
         check_result = subprocess.run(

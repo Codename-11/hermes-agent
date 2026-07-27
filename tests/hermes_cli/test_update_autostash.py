@@ -1673,6 +1673,69 @@ def test_tgi_update_focused_check_env_keeps_virtualenv_symlink(
     ]
 
 
+def test_tgi_focused_checks_install_declared_pytest_tooling_when_missing(monkeypatch):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    calls = []
+    responses = iter(
+        [
+            SimpleNamespace(returncode=1),
+            SimpleNamespace(returncode=0),
+            SimpleNamespace(returncode=0),
+        ]
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(hermes_fork_update.sys, "executable", "/opt/hermes/venv/bin/python")
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_fork_update.shutil, "which", lambda *args, **kwargs: "/usr/bin/uv")
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_focused_pytest_requirements",
+        lambda: ["pytest==9.0.2", "pytest-asyncio==1.3.0"],
+    )
+
+    ready = hermes_fork_update._ensure_focused_pytest(
+        ["python -m pytest -q tests/hermes_cli/test_cmd_update.py"],
+        {"PATH": "/opt/hermes/venv/bin:/usr/bin"},
+    )
+
+    assert ready is True
+    assert calls[0][0] == [
+        "/opt/hermes/venv/bin/python",
+        "-c",
+        "import pytest, pytest_asyncio",
+    ]
+    assert calls[1][0] == [
+        "/usr/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        "/opt/hermes/venv/bin/python",
+        "pytest==9.0.2",
+        "pytest-asyncio==1.3.0",
+    ]
+    assert calls[2][0] == calls[0][0]
+
+
+def test_tgi_focused_checks_skip_pytest_bootstrap_for_non_pytest_checks(monkeypatch):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    monkeypatch.setattr(
+        hermes_fork_update.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("non-pytest checks must not probe tooling"),
+    )
+
+    assert hermes_fork_update._ensure_focused_pytest(
+        ["python -m py_compile hermes_cli/main.py"],
+        {"PATH": "/usr/bin"},
+    )
+
+
 def test_tgi_update_focused_checks_replace_stale_marker_snapshot():
     from hermes_cli import fork_update as hermes_fork_update
 
