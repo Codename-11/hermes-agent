@@ -939,7 +939,10 @@ def _focused_check_env() -> dict[str, str]:
     without relying on a host-level ``python`` shim.
     """
     env = os.environ.copy()
-    interpreter_dir = str(Path(sys.executable).resolve().parent)
+    # Keep the launcher path intact. Virtualenv interpreters are commonly
+    # symlinks into uv/pyenv/base-Python installs; resolving that symlink would
+    # put the base interpreter (without this environment's pytest/deps) on PATH.
+    interpreter_dir = str(Path(sys.executable).parent)
     current_path = env.get("PATH", "")
     env["PATH"] = os.pathsep.join(part for part in (interpreter_dir, current_path) if part)
     return env

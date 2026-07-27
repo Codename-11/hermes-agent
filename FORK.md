@@ -119,14 +119,15 @@ Required behavior:
 - Detect deploy branches such as `tgi` when no explicit update branch was requested.
 - Fetch/sync upstream safely.
 - Merge upstream into a temp worktree based on `origin/tgi`.
-- On conflict, write/update the handoff marker, generate a human-readable update conflict review in `~/.hermes/update-reports/`, attempt a best-effort LLM operator brief without mutating code, and do not damage the live checkout.
-- `hermes update --resolve` may resume an existing handoff or immediately resolve a newly created handoff after safety gates pass, then validate, commit, push `HEAD:tgi`, fast-forward the live checkout, and clean the retained worktree.
-- Plain `hermes update` and explicit `hermes update --consume` first refresh and then only fast-forward from `origin/tgi`; they never merge `upstream/main` from that host. `hermes update --resolve` is required when the host is intentionally acting as merge authority.
+- On conflict, write/update the handoff marker, generate a human-readable update conflict review in `~/.hermes/update-reports/`, and automatically launch one non-interactive resolver attempt without modifying the live checkout.
+- Bare `hermes update` owns the full deploy transaction: resume or rebuild a retained handoff when needed, validate, commit, push `HEAD:tgi`, fast-forward the live checkout, and continue install/restart handling.
+- Retained handoff classification uses Git ancestry, not literal SHA text: already-published snapshots are cleared; handoffs based on an older `origin/tgi` tip are rebuilt once from the current tip; otherwise the retained worktree is resumed.
+- The resolver must import the clean live Hermes CLI while retaining the conflict worktree as process cwd, because `hermes_cli/main.py` itself may be conflicted and unparsable.
 - Deploy handoff progress must remain scrollback-safe: persistent phase lines only, no carriage-return spinner frames or ANSI clear-line output.
 - Recover the common push race where another TGI host advances `origin/tgi` while an update is preparing its temp merge; retry once when reconciliation is safe before falling back to a handoff.
 - `hermes version` should show the deploy branch and preview both pending deploy-branch commits and pending upstream commits.
-- The LLM conflict review is always shown for deploy-branch merge conflicts when available; if the LLM path fails, the updater prints a deterministic review excerpt and still stops safely for human resolution.
-- After manual push to `origin/tgi`, rerunning `hermes update --yes` fast-forwards live cleanly and refreshes install state.
+- Resolver failures leave the live checkout unchanged and retain enough worktree/report context for safe retry or manual recovery.
+- After a manual push to `origin/tgi`, rerunning `hermes update --yes` fast-forwards live cleanly and refreshes install state.
 
 Retirement criteria:
 
