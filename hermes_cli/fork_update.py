@@ -972,6 +972,34 @@ def _handoff_snapshot_is_published(
     return True
 
 
+def _handoff_origin_is_behind(
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    payload: dict[str, object],
+) -> bool:
+    """Return whether a handoff's origin base is an ancestor of the newer tip."""
+    recorded_origin = str(payload.get("origin_head") or "").strip()
+    if not recorded_origin:
+        return False
+    remote_ref = f"origin/{branch}"
+    base_in_origin = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", recorded_origin, remote_ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if base_in_origin.returncode != 0:
+        return False
+    origin_in_base = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", remote_ref, recorded_origin],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    return origin_in_base.returncode != 0
+
+
 def _remove_managed_update_worktree(
     git_cmd: list[str], repo: Path, worktree: Path
 ) -> bool:
@@ -1179,6 +1207,20 @@ def _resolve_deploy_handoff(
         print(
             f"→ Retained handoff snapshot is already published on origin/{branch}; "
             "starting a fresh deploy update."
+        )
+        return _run_deploy_branch_update(
+            git_cmd, repo, branch, pre_update_head
+        )
+
+    if _handoff_origin_is_behind(git_cmd, repo, branch, payload):
+        if not _discard_published_handoff(git_cmd, repo, worktree):
+            status.fail(note="superseded marker cleanup failed")
+            print("✗ Could not clear superseded deploy handoff marker; stopping.")
+            return None
+        status.finish(note="superseded base cleared")
+        print(
+            f"→ origin/{branch} advanced after this handoff was created; "
+            "rebuilding once from the current deploy tip."
         )
         return _run_deploy_branch_update(
             git_cmd, repo, branch, pre_update_head

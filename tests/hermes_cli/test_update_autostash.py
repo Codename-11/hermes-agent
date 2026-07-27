@@ -1677,6 +1677,85 @@ def test_tgi_published_handoff_snapshot_is_discarded_before_agent_resolve(
     assert "starting a fresh deploy update" in out
 
 
+def test_tgi_handoff_with_superseded_origin_base_rebuilds_once(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = tmp_path / "hermes-update-tgi-superseded"
+    worktree = parent / "worktree"
+    worktree.mkdir(parents=True)
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "repo": str(repo),
+                "branch": "tgi",
+                "worktree": str(worktree),
+                "origin_head": "old-origin",
+                "upstream_head": "pending-upstream",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rebuilt = []
+
+    monkeypatch.setattr(
+        hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker
+    )
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail(
+            "a superseded-base handoff must rebuild before resolving"
+        ),
+    )
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_run_deploy_branch_update",
+        lambda git_cmd, cwd, branch, pre_update_head: rebuilt.append(
+            (git_cmd, cwd, branch, pre_update_head)
+        )
+        or 9,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd in (
+            ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+            ["git", "merge-base", "--is-ancestor", "old-origin", "origin/tgi"],
+            ["git", "worktree", "remove", str(worktree), "--force"],
+        ):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd in (
+            [
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                "pending-upstream",
+                "origin/tgi",
+            ],
+            ["git", "merge-base", "--is-ancestor", "origin/tgi", "old-origin"],
+        ):
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+
+    result = hermes_fork_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="tgi", pre_update_head="live-head"
+    )
+
+    assert result == 9
+    assert not marker.exists()
+    assert rebuilt == [(["git"], repo, "tgi", "live-head")]
+    out = capsys.readouterr().out
+    assert "advanced after this handoff was created" in out
+    assert "rebuilding once" in out
+
+
 def test_conflict_marker_scan_ignores_decorative_equals_separators(tmp_path):
     from hermes_cli import fork_update as hermes_fork_update
 
