@@ -1483,11 +1483,22 @@ def test_tgi_update_focused_checks_keep_custom_marker_fallback():
 def test_tgi_update_detects_handoff_whose_origin_base_changed():
     from hermes_cli import fork_update as hermes_fork_update
 
-    payload = {"origin_head": "old-origin-sha"}
+    payload = {"origin_head": "d9497729b4"}
+    full_same_sha = "d9497729b4342aa26829cbda1376435c411e9b90\n"
 
-    assert hermes_fork_update._handoff_origin_changed(payload, "new-origin-sha\n") is True
-    assert hermes_fork_update._handoff_origin_changed(payload, "old-origin-sha\n") is False
-    assert hermes_fork_update._handoff_origin_changed({}, "new-origin-sha\n") is False
+    assert hermes_fork_update._handoff_origin_changed(payload, full_same_sha) is False
+    assert (
+        hermes_fork_update._handoff_origin_changed(
+            {"origin_head": "d9497729b4342aa26829cbda1376435c411e9b90"},
+            "d9497729b4\n",
+        )
+        is False
+    )
+    assert hermes_fork_update._handoff_origin_changed(payload, "a1497729b4342aa2\n") is True
+    assert hermes_fork_update._handoff_origin_changed({}, full_same_sha) is False
+    assert hermes_fork_update._handoff_origin_changed(
+        {"origin_head": "abc"}, "abcdef0\n"
+    ) is True
 
 
 def test_tgi_update_retires_stale_handoff_and_rebuilds_from_current_origin(

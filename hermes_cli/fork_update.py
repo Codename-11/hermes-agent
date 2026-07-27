@@ -36,7 +36,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 
 logger = logging.getLogger("hermes_cli.fork_update")
@@ -945,11 +945,23 @@ def _focused_check_env() -> dict[str, str]:
     return env
 
 
-def _handoff_origin_changed(payload: dict[str, object], current_origin: str) -> bool:
-    """Return whether a retained handoff was based on an older deploy tip."""
+def _handoff_origin_changed(payload: Mapping[str, object], current_origin: str) -> bool:
+    """Return whether a retained handoff was based on a different deploy tip.
+
+    Handoff reports intentionally store abbreviated SHAs while ``rev-parse``
+    returns the full object ID. Treat either value as equivalent when it is an
+    unambiguous Git-style prefix of the other.
+    """
     handoff_origin = str(payload.get("origin_head") or "").strip()
     current = current_origin.strip()
-    return bool(handoff_origin and current and handoff_origin != current)
+    if not handoff_origin or not current:
+        return False
+    if min(len(handoff_origin), len(current)) < 7:
+        return handoff_origin != current
+    return not (
+        handoff_origin.startswith(current)
+        or current.startswith(handoff_origin)
+    )
 
 
 def _build_deploy_resolver_prompt(payload: dict[str, object], checks: list[str]) -> str:
