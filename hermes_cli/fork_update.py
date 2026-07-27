@@ -64,14 +64,13 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
     {
         "name": "Desktop OAuth remote artifact opening",
         "paths": (
-            "apps/desktop/electron/main.cjs",
-            "apps/desktop/electron/preload.cjs",
+            "apps/desktop/electron/main.ts",
+            "apps/desktop/electron/preload.ts",
             "apps/desktop/src/global.d.ts",
             "apps/desktop/src/app/artifacts/",
             "apps/desktop/src/lib/media",
         ),
         "checks": (
-            "cd apps/desktop && node --check electron/main.cjs && node --check electron/preload.cjs",
             "cd apps/desktop && npx vitest run --environment jsdom src/lib/media.remote.test.ts src/lib/desktop-fs.test.ts src/app/artifacts/index.test.ts",
             "cd apps/desktop && npm run typecheck",
         ),
@@ -79,13 +78,13 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
     {
         "name": "Desktop remote profile handles / remote routing",
         "paths": (
-            "apps/desktop/electron/connection-config.cjs",
-            "apps/desktop/electron/main.cjs",
+            "apps/desktop/electron/connection-config.ts",
+            "apps/desktop/electron/main.ts",
             "apps/desktop/src/store/profile.ts",
             "apps/desktop/src/app/settings/gateway-settings.tsx",
         ),
         "checks": (
-            "cd apps/desktop && node --test electron/connection-config.test.cjs",
+            "cd apps/desktop && npx vitest run --project electron electron/connection-config.test.ts",
             "cd apps/desktop && npm run typecheck",
         ),
     },
@@ -904,13 +903,20 @@ def shlex_quote(value: str) -> str:
 
 def _focused_checks_for_paths(paths: list[str], payload: dict[str, object]) -> list[str]:
     checks: list[str] = []
-    marker_checks = payload.get("focused_checks")
-    if isinstance(marker_checks, list):
-        checks.extend(str(check) for check in marker_checks if str(check).strip())
-    for area in _matched_fork_watch_areas(paths):
+    matched_areas = _matched_fork_watch_areas(paths)
+    for area in matched_areas:
         area_checks = area.get("checks", ())
         if isinstance(area_checks, (list, tuple)):
             checks.extend(str(check) for check in area_checks if str(check).strip())
+    # Handoff markers snapshot the suggested checks at conflict time. Prefer
+    # the live watch-area contract when one still matches so a retained
+    # handoff does not keep invoking checks for files that were renamed or
+    # retired while the deploy branch advanced. Unmatched/custom handoffs keep
+    # their marker-provided checks as a fallback.
+    if not matched_areas:
+        marker_checks = payload.get("focused_checks")
+        if isinstance(marker_checks, list):
+            checks.extend(str(check) for check in marker_checks if str(check).strip())
     unique: list[str] = []
     for check in checks:
         if check not in unique:
@@ -922,6 +928,28 @@ def _focused_checks_for_paths(paths: list[str], payload: dict[str, object]) -> l
         quoted = " ".join(shlex_quote(path) for path in py_files[:20])
         return [f"python -m py_compile {quoted}"]
     return []
+
+
+def _focused_check_env() -> dict[str, str]:
+    """Return an environment where ``python`` is this Hermes interpreter.
+
+    Resolver checks are shell snippets retained in handoff metadata. Minimal
+    Linux hosts commonly install only ``python3``; putting the active venv's
+    bin directory first keeps existing cross-platform check strings working
+    without relying on a host-level ``python`` shim.
+    """
+    env = os.environ.copy()
+    interpreter_dir = str(Path(sys.executable).resolve().parent)
+    current_path = env.get("PATH", "")
+    env["PATH"] = os.pathsep.join(part for part in (interpreter_dir, current_path) if part)
+    return env
+
+
+def _handoff_origin_changed(payload: dict[str, object], current_origin: str) -> bool:
+    """Return whether a retained handoff was based on an older deploy tip."""
+    handoff_origin = str(payload.get("origin_head") or "").strip()
+    current = current_origin.strip()
+    return bool(handoff_origin and current and handoff_origin != current)
 
 
 def _build_deploy_resolver_prompt(payload: dict[str, object], checks: list[str]) -> str:
@@ -1032,6 +1060,50 @@ def _resolve_deploy_handoff(
     subprocess.run(git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"], cwd=repo, capture_output=True, text=True)
     subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=repo, capture_output=True, text=True)
 
+    current_origin = _git_output(
+        git_cmd,
+        repo,
+        ["rev-parse", f"origin/{branch}"],
+        limit=1000,
+    )
+    if _handoff_origin_changed(payload, current_origin):
+        handoff_origin = str(payload.get("origin_head") or "").strip()
+        status.fail(note="stale handoff retired")
+        print("⚠ Retained deploy handoff is stale; origin advanced after it was created.")
+        print(f"  Handoff base: {handoff_origin[:12]}")
+        print(f"  Current origin/{branch}: {current_origin[:12]}")
+        marker = _deploy_handoff_marker_path()
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"✗ Could not retire stale handoff marker: {exc}")
+            return None
+
+        parent = worktree.parent
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        try:
+            managed_temp = (
+                worktree.name == "worktree"
+                and parent.resolve().parent == temp_root
+                and parent.name.startswith(f"hermes-update-{branch}-")
+            )
+        except OSError:
+            managed_temp = False
+        if managed_temp:
+            _remove_update_worktree(git_cmd, repo, worktree, parent)
+            print("  Retired obsolete managed worktree.")
+        else:
+            print(f"  Left nonstandard worktree untouched for review: {worktree}")
+        print(f"→ Rebuilding merge from current origin/{branch}...")
+        return _run_deploy_branch_update(
+            git_cmd,
+            repo,
+            branch,
+            pre_update_head,
+            auto_resolve=True,
+            consume_only=False,
+        )
+
     conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
     blocked = _egregious_handoff_paths(conflict_files)
     if blocked:
@@ -1070,9 +1142,17 @@ def _resolve_deploy_handoff(
         return None
 
     status.advance("focused checks")
+    check_env = _focused_check_env()
     for check in checks:
         print(f"→ Focused check: {check}")
-        check_result = subprocess.run(check, cwd=worktree, shell=True, text=True, timeout=900)
+        check_result = subprocess.run(
+            check,
+            cwd=worktree,
+            shell=True,
+            text=True,
+            timeout=900,
+            env=check_env,
+        )
         if check_result.returncode != 0:
             status.fail(note="focused check failed")
             print(f"✗ Focused check failed: {check}")

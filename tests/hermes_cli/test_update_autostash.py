@@ -1433,6 +1433,135 @@ def test_tgi_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     assert kwargs["capture_output"] is True
 
 
+def test_tgi_update_focused_check_env_prioritizes_running_interpreter(monkeypatch):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    monkeypatch.setattr(
+        hermes_fork_update.sys,
+        "executable",
+        "/opt/hermes/venv/bin/python",
+    )
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+
+    env = hermes_fork_update._focused_check_env()
+
+    assert env["PATH"].split(hermes_fork_update.os.pathsep) == [
+        "/opt/hermes/venv/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+    ]
+
+
+def test_tgi_update_focused_checks_replace_stale_marker_snapshot():
+    from hermes_cli import fork_update as hermes_fork_update
+
+    checks = hermes_fork_update._focused_checks_for_paths(
+        ["apps/desktop/electron/main.ts"],
+        {
+            "focused_checks": [
+                "cd apps/desktop && node --check electron/main.cjs electron/preload.cjs"
+            ]
+        },
+    )
+
+    assert checks
+    assert all(".cjs" not in check for check in checks)
+    assert any("npm run typecheck" in check for check in checks)
+
+
+def test_tgi_update_focused_checks_keep_custom_marker_fallback():
+    from hermes_cli import fork_update as hermes_fork_update
+
+    checks = hermes_fork_update._focused_checks_for_paths(
+        ["custom/integration.txt"],
+        {"focused_checks": ["./scripts/check-custom-integration"]},
+    )
+
+    assert checks == ["./scripts/check-custom-integration"]
+
+
+def test_tgi_update_detects_handoff_whose_origin_base_changed():
+    from hermes_cli import fork_update as hermes_fork_update
+
+    payload = {"origin_head": "old-origin-sha"}
+
+    assert hermes_fork_update._handoff_origin_changed(payload, "new-origin-sha\n") is True
+    assert hermes_fork_update._handoff_origin_changed(payload, "old-origin-sha\n") is False
+    assert hermes_fork_update._handoff_origin_changed({}, "new-origin-sha\n") is False
+
+
+def test_tgi_update_retires_stale_handoff_and_rebuilds_from_current_origin(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    parent = tmp_path / "hermes-update-tgi-stale"
+    worktree = parent / "worktree"
+    worktree.mkdir(parents=True)
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text("{}", encoding="utf-8")
+    payload = {
+        "branch": "tgi",
+        "origin_head": "old-origin-sha",
+        "worktree": str(worktree),
+    }
+    removed = []
+    rebuilt = []
+
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_read_deploy_handoff_payload",
+        lambda repo, branch: payload,
+    )
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_deploy_handoff_marker_path",
+        lambda: marker,
+    )
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_git_output",
+        lambda git_cmd, cwd, args, limit=0: "new-origin-sha\n",
+    )
+    monkeypatch.setattr(
+        hermes_fork_update.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(hermes_fork_update.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_remove_update_worktree",
+        lambda git_cmd, repo, path, root: removed.append((path, root)),
+    )
+
+    def fake_rebuild(git_cmd, repo, branch, pre_update_head, **kwargs):
+        rebuilt.append((git_cmd, repo, branch, pre_update_head, kwargs))
+        return 7
+
+    monkeypatch.setattr(hermes_fork_update, "_run_deploy_branch_update", fake_rebuild)
+
+    result = hermes_fork_update._resolve_deploy_handoff(
+        git_cmd=["git"],
+        repo=tmp_path,
+        branch="tgi",
+        pre_update_head="live-head",
+    )
+
+    assert result == 7
+    assert not marker.exists()
+    assert removed == [(worktree, parent)]
+    assert rebuilt == [
+        (
+            ["git"],
+            tmp_path,
+            "tgi",
+            "live-head",
+            {"auto_resolve": True, "consume_only": False},
+        )
+    ]
+
+
 def test_conflict_marker_scan_ignores_decorative_equals_separators(tmp_path):
     from hermes_cli import fork_update as hermes_fork_update
 
