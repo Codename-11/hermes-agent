@@ -484,6 +484,8 @@ def test_sync_deploy_main_to_upstream_refuses_local_main_commits(monkeypatch, tm
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
             return SimpleNamespace(stdout="2\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="false\n", stderr="", returncode=0)
         if cmd[:3] == ["git", "rev-parse", "--short"]:
             return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
@@ -494,6 +496,87 @@ def test_sync_deploy_main_to_upstream_refuses_local_main_commits(monkeypatch, tm
     assert ["git", "branch", "-f", "main", "upstream/main"] not in calls
     out = capsys.readouterr().out
     assert "local main has commits that are not on upstream/main" in out
+
+
+def test_sync_deploy_main_to_upstream_deepens_shallow_history_before_refusing(
+    monkeypatch, tmp_path
+):
+    calls = []
+    local_counts = iter((691, 0))
+    behind_counts = iter((1, 2))
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
+            return SimpleNamespace(stdout=f"{next(local_counts)}\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            return SimpleNamespace(stdout=f"{next(behind_counts)}\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="true\n", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "--deepen=1024",
+            "upstream",
+            "main:refs/remotes/upstream/main",
+        ]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "branch", "-f", "main", "upstream/main"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    assert hermes_main._sync_deploy_main_to_upstream(["git"], tmp_path) is True
+    assert [
+        "git",
+        "fetch",
+        "--deepen=1024",
+        "upstream",
+        "main:refs/remotes/upstream/main",
+    ] in calls
+    assert ["git", "branch", "-f", "main", "upstream/main"] in calls
+
+
+def test_sync_deploy_main_to_upstream_stops_if_deepened_counts_fail(
+    monkeypatch, tmp_path
+):
+    calls = []
+    local_counts = iter((691, -1))
+    behind_counts = iter((1, -1))
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
+            value = next(local_counts)
+            return SimpleNamespace(
+                stdout=f"{value}\n" if value >= 0 else "",
+                stderr="comparison failed" if value < 0 else "",
+                returncode=0 if value >= 0 else 1,
+            )
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            value = next(behind_counts)
+            return SimpleNamespace(
+                stdout=f"{value}\n" if value >= 0 else "",
+                stderr="comparison failed" if value < 0 else "",
+                returncode=0 if value >= 0 else 1,
+            )
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="true\n", stderr="", returncode=0)
+        if cmd == [
+            "git",
+            "fetch",
+            "--deepen=1024",
+            "upstream",
+            "main:refs/remotes/upstream/main",
+        ]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    assert hermes_main._sync_deploy_main_to_upstream(["git"], tmp_path) is False
+    assert ["git", "branch", "-f", "main", "upstream/main"] not in calls
 
 
 def test_deploy_branch_update_merges_live_ahead_with_origin_then_upstream(monkeypatch, tmp_path):
@@ -1969,6 +2052,82 @@ def test_tgi_handoff_with_superseded_origin_base_rebuilds_once(
     out = capsys.readouterr().out
     assert "advanced after this handoff was created" in out
     assert "rebuilding once" in out
+
+
+def test_tgi_handoff_with_missing_worktree_is_discarded_and_rebuilt(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "tgi",
+                "worktree": "",
+                "origin_head": "old-origin",
+                "upstream_head": "old-upstream",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rebuilt = []
+
+    monkeypatch.setattr(
+        hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker
+    )
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_run_deploy_branch_update",
+        lambda git_cmd, cwd, branch, pre_update_head: rebuilt.append(
+            (git_cmd, cwd, branch, pre_update_head)
+        )
+        or 11,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd in (
+            ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+        ):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+
+    result = hermes_fork_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="tgi", pre_update_head="live-head"
+    )
+
+    assert result == 11
+    assert not marker.exists()
+    assert rebuilt == [(["git"], repo, "tgi", "live-head")]
+    out = capsys.readouterr().out
+    assert "worktree is missing" in out
+    assert "rebuilding once from current refs" in out
+
+
+def test_deploy_handoff_without_worktree_is_not_recorded(monkeypatch, tmp_path):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    marker = tmp_path / ".update_handoff.json"
+    monkeypatch.setattr(
+        hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker
+    )
+
+    hermes_fork_update._record_deploy_handoff(
+        repo=tmp_path,
+        branch="tgi",
+        reason="local main cannot be synchronized with upstream/main.",
+    )
+
+    assert not marker.exists()
 
 
 def test_conflict_marker_scan_ignores_decorative_equals_separators(tmp_path):

@@ -703,6 +703,11 @@ def _record_deploy_handoff(
     conflict_files: str | list[str] = "",
     review: dict[str, object] | None = None,
 ) -> None:
+    # Only merge failures with a retained worktree are resumable. Recording
+    # fetch/ref-classification failures creates a marker with ``worktree: ""``;
+    # the next update then enters the resolver and can never make progress.
+    if worktree_path is None or not worktree_path.is_dir():
+        return
     try:
         marker = _deploy_handoff_marker_path()
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -1288,11 +1293,19 @@ def _resolve_deploy_handoff(
         )
 
     if not worktree_raw or not worktree.exists():
-        status.fail(note="worktree missing")
-        print("✗ Deploy handoff worktree is missing; cannot auto-resolve.")
+        print("⚠ Retained deploy handoff worktree is missing.")
         if _completed_deploy_handoff_requires_post_update(git_cmd, repo, branch):
+            status.finish(note="published handoff cleared")
             return 1
-        return None
+        if not _discard_published_handoff(git_cmd, repo, worktree):
+            status.fail(note="stale marker cleanup failed")
+            print("✗ Could not clear the non-resumable deploy handoff marker.")
+            return None
+        status.finish(note="missing worktree cleared")
+        print("→ Discarded non-resumable handoff; rebuilding once from current refs.")
+        return _run_deploy_branch_update(
+            git_cmd, repo, branch, pre_update_head
+        )
 
     conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
     blocked = _egregious_handoff_paths(conflict_files)
@@ -1410,6 +1423,46 @@ def _sync_deploy_main_to_upstream(git_cmd: list[str], repo: Path) -> bool:
     main_behind = _count_commits_between(git_cmd, repo, "main", "upstream/main")
     if main_local < 0 or main_behind < 0:
         print("  ✗ Could not compare local main with upstream/main.")
+        return False
+
+    if main_local > 0:
+        shallow = subprocess.run(
+            git_cmd + ["rev-parse", "--is-shallow-repository"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+            # A depth-1 update/check fetch makes an old local main look like it
+            # has hundreds of unpublished commits because the merge base is no
+            # longer visible. Deepen the one ref we need, in bounded chunks,
+            # and reclassify before refusing to move main.
+            for _ in range(16):
+                deepen = subprocess.run(
+                    git_cmd
+                    + [
+                        "fetch",
+                        "--deepen=1024",
+                        "upstream",
+                        "main:refs/remotes/upstream/main",
+                    ],
+                    cwd=repo,
+                    capture_output=True,
+                    text=True,
+                )
+                if deepen.returncode != 0:
+                    break
+                main_local = _count_commits_between(
+                    git_cmd, repo, "upstream/main", "main"
+                )
+                main_behind = _count_commits_between(
+                    git_cmd, repo, "main", "upstream/main"
+                )
+                if main_local < 0 or main_behind < 0 or main_local == 0:
+                    break
+
+    if main_local < 0 or main_behind < 0:
+        print("  ✗ Could not compare local main with upstream/main after deepening history.")
         return False
 
     if main_local > 0:
