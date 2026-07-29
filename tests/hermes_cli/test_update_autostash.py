@@ -1416,7 +1416,7 @@ def test_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
 
     assert result.returncode == 0
     cmd, kwargs = calls[0]
-    assert cmd[:3] == [sys.executable, "-m", "hermes_cli.main"]
+    assert cmd[:4] == [sys.executable, "-P", "-m", "hermes_cli.main"]
     assert "-z" in cmd
     assert "chat" not in cmd
     assert "-Q" not in cmd
@@ -1424,6 +1424,10 @@ def test_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     assert "terminal,file,search,skills" in cmd
     assert kwargs["cwd"] == tmp_path
     assert kwargs["env"]["HERMES_UPDATE_RESOLVE"] == "1"
+    resolver_source = Path(hermes_axiom_update.__file__).resolve().parents[1]
+    assert kwargs["env"]["PYTHONPATH"].split(hermes_axiom_update.os.pathsep)[0] == str(
+        resolver_source
+    )
     assert kwargs["capture_output"] is True
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"

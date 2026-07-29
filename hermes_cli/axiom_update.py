@@ -1055,8 +1055,10 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
     authoritative status before the parent has verified the worktree.
     """
     timeout = int(os.environ.get("HERMES_UPDATE_RESOLVE_TIMEOUT", "3600") or "3600")
+    resolver_source = str(Path(__file__).resolve().parents[1])
     cmd = [
         sys.executable,
+        "-P",
         "-m",
         "hermes_cli.main",
         "-z",
@@ -1064,7 +1066,16 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         "-t",
         "terminal,file,search,skills",
     ]
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "HERMES_UPDATE_RESOLVE": "1"}
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    pythonpath = os.pathsep.join(
+        part for part in (resolver_source, existing_pythonpath) if part
+    )
+    env = {
+        **os.environ,
+        "PYTHONUNBUFFERED": "1",
+        "HERMES_UPDATE_RESOLVE": "1",
+        "PYTHONPATH": pythonpath,
+    }
     return subprocess.run(
         cmd,
         cwd=worktree,
