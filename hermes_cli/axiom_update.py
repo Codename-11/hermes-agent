@@ -123,11 +123,11 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "agent/agent_init.py",
             "agent/chat_completion_helpers.py",
             "tools/mcp_tool.py",
-            "tests/agent/test_live_tool_schema_refresh.py",
+            "tests/tools/test_refresh_agent_mcp_tools.py",
             "tests/tools/test_mcp_tool.py",
         ),
         "checks": (
-            "python -m pytest -o addopts= -q tests/agent/test_live_tool_schema_refresh.py tests/tools/test_mcp_tool.py::TestMCPServerTask::test_refresh_tools_replaces_schema_for_unchanged_tool_name",
+            "python -m pytest -o addopts= -q tests/tools/test_refresh_agent_mcp_tools.py",
         ),
     },
     {
@@ -1108,6 +1108,33 @@ def _print_resolver_failure_diagnostics(result: subprocess.CompletedProcess) -> 
             print(f"    {line}")
 
 
+def _run_focused_check(check: str, worktree: Path) -> Optional[bool]:
+    """Run one retained-handoff check.
+
+    ``None`` means the check requires pytest but the active updater
+    interpreter is a production environment without that dev dependency.
+    Missing test tooling is not a failed merge, and the updater must not
+    install pytest into its live runtime venv just to validate a handoff.
+    """
+    if "-m pytest" in check:
+        pytest_probe = subprocess.run(
+            [sys.executable, "-c", "import pytest"],
+            capture_output=True,
+            text=True,
+        )
+        if pytest_probe.returncode != 0:
+            return None
+
+    result = subprocess.run(
+        check,
+        cwd=worktree,
+        shell=True,
+        text=True,
+        timeout=900,
+    )
+    return result.returncode == 0
+
+
 def _resolve_deploy_handoff(
     *,
     git_cmd: list[str],
@@ -1238,8 +1265,11 @@ def _resolve_deploy_handoff(
     status.advance("focused checks")
     for check in checks:
         print(f"→ Focused check: {check}")
-        check_result = subprocess.run(check, cwd=worktree, shell=True, text=True, timeout=900)
-        if check_result.returncode != 0:
+        check_result = _run_focused_check(check, worktree)
+        if check_result is None:
+            print("  ⚠ Skipped: pytest is not installed in the active Hermes interpreter.")
+            continue
+        if not check_result:
             status.fail(note="focused check failed")
             print(f"✗ Focused check failed: {check}")
             return None

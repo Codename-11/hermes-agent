@@ -359,10 +359,11 @@ class TestCmdUpdateBranchFallback:
         assert "origin/main" in rev_list_cmds[0]
         assert "origin/fix/stoicneko" not in rev_list_cmds[0]
 
-        # pull should use main, not fix/stoicneko
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        # the ff-only merge should target origin/main, not the feature branch
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert len(merge_cmds) == 1
+        assert "origin/main" in merge_cmds[0]
+        assert "fix/stoicneko" not in merge_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -381,9 +382,9 @@ class TestCmdUpdateBranchFallback:
         assert len(rev_list_cmds) == 1
         assert "origin/main" in rev_list_cmds[0]
 
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert len(merge_cmds) == 1
+        assert "origin/main" in merge_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -408,9 +409,9 @@ class TestCmdUpdateBranchFallback:
         assert update_observer.__self__ is ensure_observer.__self__
         assert update_observer.__self__ == []
 
-        # Should NOT have called pull
+        # Should NOT have advanced the checkout (no pull, no ff-only merge)
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        pull_cmds = [c for c in commands if "pull" in c]
+        pull_cmds = [c for c in commands if "pull" in c or "merge --ff-only" in c]
         assert len(pull_cmds) == 0
 
     @patch("shutil.which", return_value=None)
@@ -498,19 +499,30 @@ class TestCmdUpdateBranchFallback:
         # Mock it so the test doesn't actually shell out to ``tsc``.
         import subprocess as _subprocess
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        node_tools = {"node": "/usr/bin/node", "npm": "/usr/bin/npm"}
         with patch.object(hm, "_is_termux_env", return_value=False), \
-             patch("hermes_constants.find_node_executable", side_effect=node_tools.get), \
+             patch.object(hm, "_resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
              patch.object(hm, "_npm_lockfile_changed", return_value=True), \
              patch.object(hm, "_web_ui_build_needed", return_value=True), \
              patch.object(hm, "_cold_start_windows_gateway_after_update"), \
+             patch.object(
+                 hm,
+                 "_run_npm_install_deterministic",
+                 return_value=build_ok,
+             ) as mock_npm_install, \
              patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
             cmd_update(mock_args)
 
         npm_calls = [
-            (call.args[0], call.kwargs.get("cwd"))
-            for call in mock_run.call_args_list
-            if call.args and call.args[0][0] == "/usr/bin/npm"
+            (
+                [
+                    call.args[0],
+                    "ci",
+                    "--include=dev",
+                    *call.kwargs.get("extra_args", ()),
+                ],
+                call.args[1],
+            )
+            for call in mock_npm_install.call_args_list
         ]
 
         # cmd_update runs npm commands in these locations:
@@ -573,12 +585,9 @@ class TestCmdUpdateBranchFallback:
         # capture_output=True, so exclude it.
         root_install_calls = [
             call
-            for call in mock_run.call_args_list
-            if call.args
-            and call.args[0][0] == "/usr/bin/npm"
-            and call.args[0][1] == "ci"
-            and call.kwargs.get("cwd") == PROJECT_ROOT
-            and "--silent" not in call.args[0]
+            for call in mock_npm_install.call_args_list
+            if call.args[1] == PROJECT_ROOT
+            and "--silent" not in call.kwargs.get("extra_args", ())
         ]
         assert len(root_install_calls) == 2  # root-only + workspace install
         for call in root_install_calls:
@@ -829,9 +838,9 @@ class TestCmdUpdateBranchFlag:
         assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
         assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
-        # pull must target bb/gui
-        pull_cmds = [c for c in commands if "pull" in c and "ff-only" in c]
-        assert any("bb/gui" in c and "main" not in c.split() for c in pull_cmds), pull_cmds
+        # the ff-only merge must target origin/bb/gui
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert any("origin/bb/gui" in c and "origin/main" not in c for c in merge_cmds), merge_cmds
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

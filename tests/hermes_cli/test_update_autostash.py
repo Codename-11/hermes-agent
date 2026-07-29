@@ -1401,6 +1401,33 @@ def test_update_conflict_review_status_prints_plain_progress(capsys):
     assert "handoff ready" in out
 
 
+def test_focused_pytest_check_is_unavailable_without_pytest(monkeypatch, tmp_path):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd == [sys.executable, "-c", "import pytest"]:
+            return SimpleNamespace(returncode=1)
+        pytest.fail("focused pytest command must not run without pytest")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+
+    result = hermes_axiom_update._run_focused_check(
+        "python -m pytest -q tests/example.py",
+        tmp_path,
+    )
+
+    assert result is None
+    assert calls == [
+        (
+            [sys.executable, "-c", "import pytest"],
+            {"capture_output": True, "text": True},
+        )
+    ]
+
+
 def test_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     from hermes_cli import axiom_update as hermes_axiom_update
 
@@ -1431,6 +1458,24 @@ def test_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     assert kwargs["capture_output"] is True
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
+
+
+def test_fork_watch_area_pytest_checks_reference_existing_files():
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = Path(__file__).resolve().parents[2]
+    missing = []
+    for area in hermes_axiom_update.FORK_WATCH_AREAS:
+        for check in area["checks"]:
+            if "-m pytest" not in check:
+                continue
+            for token in check.split():
+                if token.startswith("tests/"):
+                    test_path = token.split("::", 1)[0]
+                    if not (repo / test_path).exists():
+                        missing.append((area["name"], test_path))
+
+    assert missing == []
 
 
 def test_slack_focused_checks_reference_existing_files():
@@ -1633,7 +1678,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if plain == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if plain == ["git", "pull", "--ff-only", "origin", "main"]:
+        if plain == ["git", "merge", "--ff-only", "origin/main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -1683,7 +1728,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if plain == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if plain == ["git", "pull", "--ff-only", "origin", "main"]:
+        if plain == ["git", "merge", "--ff-only", "origin/main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -1769,11 +1814,12 @@ def test_cmd_update_refreshes_active_memory_provider_dependencies(monkeypatch, t
     )
 
     def fake_run(cmd, **kwargs):
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        plain = ["git"] + cmd[3:] if cmd[:3] == ["git", "-c", "windows.appendAtomically=false"] else cmd
+        if plain == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if plain == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if plain == ["git", "merge", "--ff-only", "origin/main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -1793,13 +1839,14 @@ def test_cmd_update_reloads_runtime_modules_before_lazy_refresh(monkeypatch, tmp
     events = []
 
     def fake_run(cmd, **kwargs):
-        if cmd == ["git", "fetch", "origin", "main"]:
+        plain = ["git"] + cmd[3:] if cmd[:3] == ["git", "-c", "windows.appendAtomically=false"] else cmd
+        if plain == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if plain == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if plain == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if plain == ["git", "merge", "--ff-only", "origin/main"]:
             events.append("pull")
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if "pip" in cmd and "install" in cmd:

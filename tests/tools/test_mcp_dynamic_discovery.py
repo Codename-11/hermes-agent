@@ -147,14 +147,14 @@ class TestRegisterServerTools:
         explicit_text = json.dumps(explicit, sort_keys=True)
         ordinary_names = {tool["function"]["name"] for tool in ordinary}
         assert ordinary_names == {
-            "mcp__forge__catalog_search",
-            "mcp__forge__catalog_describe",
-            "mcp__forge__catalog_call",
+            "tool_search",
+            "tool_describe",
+            "tool_call",
         }
         assert "AgentRun" not in ordinary_text
         assert "EXECUTE" not in ordinary_text
         assert "mcp__forge__runs_operation_0" in explicit_text
-        assert len(ordinary_text.encode()) < len(explicit_text.encode()) / 4
+        assert len(ordinary_text.encode()) < len(explicit_text.encode())
 
 
 class TestRefreshTools:

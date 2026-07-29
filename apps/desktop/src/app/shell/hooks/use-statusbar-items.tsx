@@ -8,13 +8,13 @@ import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
-import type { DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { resolveVersionStatus } from '@/lib/version-status'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -49,79 +49,6 @@ import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
-
-function backendUpdateLabel(status: DesktopUpdateStatus | null | undefined): string | null {
-  if (!status) {
-    return null
-  }
-
-  const parts = []
-  const deployBehind = status.deployBehind ?? 0
-  const upstreamBehind = status.upstreamBehind ?? 0
-
-  if (deployBehind > 0) {
-    parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
-  }
-
-  if (upstreamBehind > 0) {
-    parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
-  }
-
-  if (parts.length > 0) {
-    return `Pending backend update: ${parts.join(', ')}`
-  }
-
-  const behind = status.behind ?? 0
-
-  return behind > 0 ? `${behind} pending backend update commit${behind === 1 ? '' : 's'}` : null
-}
-
-function upstreamDisparityLabel(status: DesktopUpdateStatus | null | undefined): string | null {
-  if (!status?.upstreamBranch) {
-    return null
-  }
-
-  const ahead = status.upstreamAhead ?? 0
-  const behind = status.upstreamBehind ?? 0
-  const parts = []
-
-  if (ahead > 0) {
-    parts.push(`+${ahead} carried`)
-  }
-
-  if (behind > 0) {
-    parts.push(`${behind} behind`)
-  }
-
-  if (parts.length === 0) {
-    parts.push('aligned')
-  }
-
-  return `${status.upstreamBranch}: ${parts.join(', ')}`
-}
-
-function compactUpstreamDisparity(status: DesktopUpdateStatus | null | undefined): string | null {
-  if (!status?.upstreamBranch) {
-    return null
-  }
-
-  const ahead = status.upstreamAhead ?? 0
-  const behind = status.upstreamBehind ?? 0
-
-  if (ahead > 0 && behind > 0) {
-    return `+${ahead} carried / ${behind} behind`
-  }
-
-  if (ahead > 0) {
-    return `+${ahead} carried`
-  }
-
-  if (behind > 0) {
-    return `${behind} upstream behind`
-  }
-
-  return null
-}
 
 function workspaceLabel(cwd: string): string {
   const normalized = cwd.replace(/[\\/]+$/, '')
@@ -292,45 +219,36 @@ export function useStatusbarItems({
       : 'text-destructive hover:text-destructive'
 
   const clientVersionItem = useMemo<StatusbarItem>(() => {
-    const appVersion = desktopVersion?.appVersion
-    const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
-    const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const remote = connection?.mode === 'remote'
 
-    const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
-    const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
-    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
-    const upstreamDisparity = upstreamDisparityLabel(updateStatus)
-    const upstreamDetail = !applying ? compactUpstreamDisparity(updateStatus) : null
-
-    const label = applying
-      ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
-
-    const tooltip = [
-      applying ? updateApply.message || copy.updateInProgress : null,
-      !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
-      appVersion && copy.desktopVersion(appVersion),
-      sha && copy.commit(sha),
-      updateStatus?.branch && copy.branch(updateStatus.branch),
-      upstreamDisparity
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const status = resolveVersionStatus({
+      applying,
+      applyMessage: updateApply.message,
+      behind: updateStatus?.behind ?? 0,
+      branch: updateStatus?.branch,
+      copy,
+      remote: connection?.mode === 'remote',
+      restarting: updateApply.stage === 'restart',
+      sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
+      target: 'client',
+      upstreamAhead: updateStatus?.upstreamAhead,
+      upstreamBehind: updateStatus?.upstreamBehind,
+      upstreamBranch: updateStatus?.upstreamBranch,
+      version: desktopVersion?.appVersion
+    })
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: !applying ? (upstreamDetail ?? (appVersion && sha && !remote ? sha : undefined)) : undefined,
-      hidden: !appVersion && !sha,
+      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+      detail: status.detail,
+      hidden: status.unknown,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
-      label,
+      label: status.label,
       // Update state is not a preference: hiding it is how a user misses that
       // their client is behind. Listed in the menu, but locked on.
       lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('client'),
-      title: tooltip || undefined,
+      title: status.tooltip,
       toggleLabel: copy.toggleVersion,
       variant: 'action'
     }
@@ -341,7 +259,12 @@ export function useStatusbarItems({
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
-    updateStatus
+    updateStatus?.behind,
+    updateStatus?.branch,
+    updateStatus?.currentSha,
+    updateStatus?.upstreamAhead,
+    updateStatus?.upstreamBehind,
+    updateStatus?.upstreamBranch
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -349,39 +272,34 @@ export function useStatusbarItems({
       return null
     }
 
-    const backendVersion = statusSnapshot?.version
-    const behind = backendUpdateStatus?.behind ?? 0
-    const updateAvailable = backendUpdateStatus?.updateAvailable || behind > 0
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
-    const base = copy.backendLabel(backendVersion ?? copy.unknown)
-
-    const behindHint =
-      !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
-    const updateBreakdown = backendUpdateLabel(backendUpdateStatus)
-
-    const label = applying
-      ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
-
-    const tooltip = [
-      applying ? backendUpdateApply.message || copy.updateInProgress : null,
-      !applying && updateBreakdown,
-      backendVersion && copy.backendVersion(backendVersion),
-      backendUpdateStatus?.backendMessage
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const status = resolveVersionStatus({
+      applying,
+      applyMessage: backendUpdateApply.message,
+      backendMessage: backendUpdateStatus?.backendMessage,
+      behind: backendUpdateStatus?.behind ?? 0,
+      copy,
+      deployBehind: backendUpdateStatus?.deployBehind,
+      deployBranch: backendUpdateStatus?.deployBranch,
+      remote: true,
+      restarting: backendUpdateApply.stage === 'restart',
+      target: 'backend',
+      updateAvailable: backendUpdateStatus?.updateAvailable,
+      upstreamBehind: backendUpdateStatus?.upstreamBehind,
+      upstreamBranch: backendUpdateStatus?.upstreamBranch,
+      version: statusSnapshot?.version
+    })
 
     return {
-      className: !applying && updateAvailable ? 'text-primary hover:text-primary' : undefined,
-      hidden: !backendVersion,
+      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+      hidden: status.unknown,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-backend',
-      label,
+      label: status.label,
       lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('backend'),
-      title: tooltip || undefined,
+      title: status.tooltip,
       toggleLabel: copy.toggleBackendVersion,
       variant: 'action'
     }

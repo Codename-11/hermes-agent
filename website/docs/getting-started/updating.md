@@ -24,9 +24,9 @@ This pulls the latest code, updates dependencies, and prompts you to configure a
 
 When you run `hermes update`, the following steps occur:
 
-1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other runtime state; individual files over 1 GiB are skipped). Controlled by `updates.pre_update_backup` (`quick` by default, `full` for all of `HERMES_HOME`, `off` to disable). Recoverable via [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md).
+1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md).
 2. **Git update** — pulls the selected branch, or transactionally merges upstream and fast-forwards a configured deploy branch.
-3. **Post-pull syntax validation + auto-rollback** — Hermes compiles critical startup files after the pull. If one fails to parse, Hermes resets to the pre-pull SHA so the CLI stays bootable. Re-run `hermes update` after the upstream fix lands.
+3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
 6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
