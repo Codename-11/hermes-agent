@@ -1054,6 +1054,43 @@ class TestAdminEndpointsAuthGate:
         assert resp.status_code in (401, 403)
 
 
+def test_deploy_breakdown_keeps_upstream_disparity_non_installable(monkeypatch):
+    import hermes_cli.web_server as ws
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(command, **_kwargs):
+        args = command[3:]
+        if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return Result("tgi\n")
+        if args == ["rev-parse", "--verify", "--quiet", "origin/tgi"]:
+            return Result("deploy-sha\n")
+        if args == ["remote", "get-url", "upstream"]:
+            return Result("https://example.invalid/upstream.git\n")
+        if args[:2] == ["fetch", "origin"] or args[:3] == ["fetch", "upstream", "main"]:
+            return Result("")
+        if args == ["rev-list", "--count", "HEAD..origin/tgi"]:
+            return Result("0\n")
+        if args == ["rev-list", "--count", "origin/tgi..upstream/main"]:
+            return Result("6\n")
+        raise AssertionError(f"unexpected git command: {args}")
+
+    monkeypatch.setattr(ws.subprocess, "run", fake_run)
+
+    status = ws._backend_deploy_update_breakdown()
+    assert status["behind"] == 0
+    assert status["deploy_behind"] == 0
+    assert status["upstream_behind"] == 6
+    assert status["update_available"] is False
+    assert status["commits"] == []
+    assert "hermes update --resolve" in status["message"]
+
+
 class TestUpdateCheckEndpoint:
     """``GET /api/hermes/update/check`` reports availability without applying.
 
@@ -1204,22 +1241,56 @@ class TestUpdateCheckEndpoint:
                 "deploy_behind": 1,
                 "upstream_branch": "upstream/main",
                 "upstream_behind": 6,
-                "behind": 7,
+                "behind": 1,
                 "update_available": True,
-                "message": "Pending backend update: 1 deploy branch commit, 6 upstream commits.",
+                "message": "Pending backend update: 1 deploy branch commit from origin/axiom.",
                 "commits": [{"sha": "def5678", "summary": "fix: y", "author": "b", "at": 2}],
             },
         )
 
         body = self.client.get("/api/hermes/update/check").json()
-        assert body["behind"] == 7
+        assert body["behind"] == 1
         assert body["deploy_branch"] == "origin/axiom"
         assert body["deploy_behind"] == 1
         assert body["upstream_branch"] == "upstream/main"
         assert body["upstream_behind"] == 6
         assert body["update_available"] is True
-        assert "upstream commits" in body["message"]
+        assert "origin/axiom" in body["message"]
         assert body["commits"][0]["summary"] == "fix: y"
+
+    def test_upstream_disparity_is_not_an_installable_deploy_update(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 6)
+        monkeypatch.setattr(
+            ws,
+            "_backend_deploy_update_breakdown",
+            lambda *a, **k: {
+                "branch": "tgi",
+                "deploy_branch": "origin/tgi",
+                "deploy_behind": 0,
+                "upstream_branch": "upstream/main",
+                "upstream_behind": 6,
+                "behind": 0,
+                "update_available": False,
+                "message": (
+                    "Backend is current with origin/tgi. upstream/main has 6 commits "
+                    "awaiting authorized merge; run hermes update --resolve on an authorized host."
+                ),
+                "commits": [],
+            },
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["behind"] == 0
+        assert body["deploy_behind"] == 0
+        assert body["upstream_behind"] == 6
+        assert body["update_available"] is False
+        assert body["commits"] == []
+        assert "hermes update --resolve" in body["message"]
+
 
     def test_up_to_date_omits_commits(self, monkeypatch):
         import hermes_cli.web_server as ws

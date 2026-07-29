@@ -51,6 +51,8 @@ const {
   applyUpdates,
   $updateApply,
   $updateOverlayOpen,
+  $updateOverlayTarget,
+  requestActiveUpdate,
   resetUpdateApplyState,
   startUpdatePoller,
   stopUpdatePoller,
@@ -68,6 +70,18 @@ const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus =>
 })
 
 const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { onDismiss: () => void }
+
+const setRemote = (on: boolean) =>
+  setConnection({
+    baseUrl: 'http://box:9119',
+    isFullscreen: false,
+    mode: on ? 'remote' : 'local',
+    nativeOverlayWidth: 0,
+    token: 't',
+    wsUrl: 'ws://box:9119',
+    logs: [],
+    windowButtonPosition: null
+  })
 
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
@@ -120,7 +134,7 @@ describe('reportBackendContract', () => {
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(4)
+    reportBackendContract(5)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -160,8 +174,8 @@ describe('reportBackendContract', () => {
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(4) // backend updated → satisfied, snooze cleared
-    reportBackendContract(3) // a later regression must warn immediately
+    reportBackendContract(5) // backend updated → satisfied, snooze cleared
+    reportBackendContract(4) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })
@@ -175,28 +189,16 @@ describe('checkBackendUpdates', () => {
     vi.useRealTimers()
   })
 
-  const setRemote = (on: boolean) =>
-    setConnection({
-      baseUrl: 'http://box:9119',
-      isFullscreen: false,
-      mode: on ? 'remote' : 'local',
-      nativeOverlayWidth: 0,
-      token: 't',
-      wsUrl: 'ws://box:9119',
-      logs: [],
-      windowButtonPosition: null
-    })
-
   it('maps the backend /update/check onto the backend status, including commits', async () => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'git',
       current_version: '0.16.0',
-      behind: 2,
-      update_available: true,
+      behind: 0,
+      update_available: false,
       can_apply: true,
       update_command: 'hermes update',
-      message: 'Pending backend update: 2 upstream commits.',
+      message: 'Backend is current with origin/axiom; upstream merge is pending.',
       branch: 'axiom',
       deploy_branch: 'origin/axiom',
       deploy_behind: 0,
@@ -208,14 +210,15 @@ describe('checkBackendUpdates', () => {
     const result = await checkBackendUpdates()
 
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
-    expect(result?.behind).toBe(2)
-    expect(result?.updateAvailable).toBe(true)
+    expect(result?.behind).toBe(0)
+    expect(result?.updateAvailable).toBe(false)
+    expect(result?.currentVersion).toBe('0.16.0')
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.deployBranch).toBe('origin/axiom')
     expect(result?.deployBehind).toBe(0)
     expect(result?.upstreamBranch).toBe('upstream/main')
     expect(result?.upstreamBehind).toBe(2)
-    expect(result?.backendMessage).toContain('upstream commits')
+    expect(result?.backendMessage).toContain('upstream merge')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
   })
@@ -261,6 +264,96 @@ describe('checkBackendUpdates', () => {
     setRemote(false)
     await checkBackendUpdates()
     expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+})
+
+// The ⌘K "Update Hermes" row. It used to call applyBackendUpdate() flat, which
+// in local mode aimed at the backend checkout instead of the client and, with
+// no overlay open, showed nothing at all.
+describe('requestActiveUpdate', () => {
+  const applyClientMock = vi.fn()
+  const checkClientMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
+    checkClientMock.mockReset().mockResolvedValue(status({ behind: 0 }))
+    updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'update' })
+    checkHermesUpdateSpy.mockReset().mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.4.2',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: null,
+      message: null
+    })
+    getActionStatusSpy.mockReset().mockResolvedValue({ lines: [], running: false, exit_code: 0 })
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+    $updateOverlayOpen.set(false)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyClientMock, check: checkClientMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    setRemote(false)
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('applies the CLIENT update in local mode, never the backend', async () => {
+    setRemote(false)
+    $updateStatus.set(status({ behind: 3 }))
+
+    requestActiveUpdate()
+    await vi.waitFor(() => expect(applyClientMock).toHaveBeenCalled())
+
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect($updateOverlayTarget.get()).toBe('client')
+  })
+
+  it('applies the BACKEND update in remote mode', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 3 }))
+
+    requestActiveUpdate()
+    await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
+
+    expect(applyClientMock).not.toHaveBeenCalled()
+    expect($updateOverlayTarget.get()).toBe('backend')
+  })
+
+  it('always opens the overlay, so selecting the row is never a silent no-op', () => {
+    setRemote(false)
+    $updateStatus.set(status({ behind: 3 }))
+
+    requestActiveUpdate()
+
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it('opens the overlay to re-check instead of applying when already current', () => {
+    setRemote(false)
+    $updateStatus.set(status({ behind: 0, updateAvailable: false }))
+
+    requestActiveUpdate()
+
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(applyClientMock).not.toHaveBeenCalled()
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+  })
+
+  it('applies on a backend that reports an update it cannot count commits for', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 0, updateAvailable: true }))
+
+    requestActiveUpdate()
+    await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
   })
 })
 

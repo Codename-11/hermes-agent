@@ -12,7 +12,8 @@ import {
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
-  resolveMediaDisplaySrc
+  resolveMediaDisplaySrc,
+  resolveMediaPlaybackSrc
 } from './media'
 
 describe('isRemoteGateway', () => {
@@ -152,6 +153,40 @@ describe('resolveMediaDisplaySrc', () => {
       'data:image/png;base64,bG9jYWw='
     )
     expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/project/a b.png')
+  })
+})
+
+describe('resolveMediaPlaybackSrc', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  it('keeps a remote HTTPS video URL unchanged', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 'secret' } as never)
+
+    await expect(resolveMediaPlaybackSrc('https://cdn.example.com/render.mp4')).resolves.toBe(
+      'https://cdn.example.com/render.mp4'
+    )
+  })
+
+  it('routes gateway-local video through the authenticated remote-file protocol', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 's e/cret' } as never)
+
+    await expect(resolveMediaPlaybackSrc('/root/outputs/render.mp4')).resolves.toBe(
+      'hermes-remote-file://_/root/outputs/render.mp4'
+    )
+  })
+
+  it('uses the Electron streaming protocol for local desktop video', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(resolveMediaPlaybackSrc('C:\\renders\\demo.mp4')).resolves.toBe(
+      'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
+    )
   })
 })
 
