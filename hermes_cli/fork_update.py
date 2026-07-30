@@ -45,6 +45,7 @@ logger = logging.getLogger("hermes_cli.fork_update")
 # handoff marker. Not referenced upstream.
 DEPLOY_HANDOFF_FILE = ".update_handoff.json"
 UPDATE_REVIEW_DIR = "update-reports"
+DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
 FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (

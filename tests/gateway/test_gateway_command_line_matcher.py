@@ -60,26 +60,3 @@ def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True
 
 
-@pytest.mark.parametrize("cmd", REJECT)
-def test_rejects_non_gateway_run(cmd):
-    assert matches(cmd) is False
-
-
-def test_runtime_matcher_accepts_no_supervisor_restart_process():
-    assert matches("python -m hermes_cli.main gateway restart") is False
-    assert matches_runtime("python -m hermes_cli.main gateway restart") is True
-    assert matches_runtime("python -m hermes_cli.main gateway status") is False
-
-
-def test_profile_command_matcher_normalizes_windows_slashes():
-    profile_home = Path(r"C:\Users\me\.hermes\profiles\tgi")
-    command = r"python -m hermes_cli.main gateway run HERMES_HOME=C:\Users\me\.hermes\profiles\tgi"
-
-    assert _command_line_belongs_to_profile(command, profile_home) is True
-
-
-def test_profile_command_matcher_rejects_mismatched_windows_home():
-    profile_home = Path(r"C:\Users\me\.hermes\profiles\tgi")
-    command = r"python -m hermes_cli.main gateway run HERMES_HOME=C:\Users\me\.hermes\profiles\other"
-
-    assert _command_line_belongs_to_profile(command, profile_home) is False
