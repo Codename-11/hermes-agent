@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as cli_main
+from hermes_cli import update_cmd
 
 
 def _ns(**kw):
@@ -448,6 +449,17 @@ def test_desktop_shortcut_exists_detects_legacy_windows_shortcut(tmp_path, monke
     legacy.write_text("shortcut placeholder", encoding="utf-8")
 
     assert cli_main._desktop_shortcut_exists() is True
+
+
+def test_update_desktop_install_intent_survives_missing_shortcut_target(tmp_path, monkeypatch):
+    """The update pipeline must rebuild when only a Windows shortcut survives."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda _path: None)
+    monkeypatch.setattr(cli_main, "_desktop_dist_exists", lambda _path: False)
+    monkeypatch.setattr(cli_main, "_desktop_shortcut_exists", lambda: True)
+
+    assert update_cmd._desktop_install_intent(desktop_dir) is True
 
 
 def test_desktop_build_stamp_round_trip(tmp_path, monkeypatch):

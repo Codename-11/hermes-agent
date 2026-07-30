@@ -56,6 +56,21 @@ def _m():
     return main
 
 
+def _desktop_install_intent(desktop_dir: Path) -> bool:
+    """Return whether this checkout should keep a packaged Desktop build.
+
+    A Windows shortcut is durable install intent even when its target was
+    removed by a failed/interrupted pack.  Keep this decision in the update
+    module so future pipeline moves cannot silently drop the fork-owned
+    shortcut recovery seam again.
+    """
+    return (
+        _m()._desktop_packaged_executable(desktop_dir) is not None
+        or _m()._desktop_dist_exists(desktop_dir)
+        or _m()._desktop_shortcut_exists()
+    )
+
+
 _UPDATE_RUNTIME_RELOAD_MODULES = (
     "hermes_constants",
     "tools.environments.local",
@@ -3913,7 +3928,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # never run ``hermes desktop`` shouldn't be forced into a full
         # Electron build by ``hermes update``.
         desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _m()._desktop_packaged_executable(desktop_dir) is not None or _m()._desktop_dist_exists(desktop_dir)
+        has_desktop_app = _desktop_install_intent(desktop_dir)
         if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             # Consult the content-hash stamp IN-PROCESS first. The spawned
