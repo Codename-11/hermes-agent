@@ -7923,26 +7923,15 @@ def _quarantine_running_hermes_exe(
     fresh shims at the original paths. The ``.old`` files are cleaned up on
     the next hermes invocation by ``_cleanup_quarantined_exes``.
 
-    Rename can still fail when *another* process has opened the .exe without
-    ``FILE_SHARE_DELETE`` — typically AV real-time scanners with transient
-    handles (recovers in <1s), or the Hermes Desktop backend child process
-    (won't recover until the user closes it). We mitigate:
-
-    1. Retry up to ``max_attempts`` times with exponential backoff
-       (100/250/500/1000 ms). Handles the AV-scanner case.
-    2. If all retries fail, schedule the .exe for replacement on next
-       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
-       lets uv create a fresh shim at the original path (Windows will keep
-       the old file's content under a new name until the reboot), so the
-       update can complete; the user just needs to reboot to fully unload
-       the stale image.
-    3. Print a clear warning naming the most likely culprit (running
-       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+    Rename can still fail when another process opened the executable without
+    ``FILE_SHARE_DELETE`` — typically a live TUI/Desktop backend or a transient
+    AV scan. We retry with short backoff for transient handles. If every rename
+    fails, we stop before invoking uv: a known-locked shim cannot be replaced,
+    and scheduling the old shim to move on reboot before a replacement exists
+    could remove the CLI on the next boot.
 
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement. Pairs
-    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
-    are already deferred and roll-back is meaningless.
+    back if the install itself fails before uv writes a replacement.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
@@ -7978,35 +7967,20 @@ def _quarantine_running_hermes_exe(
         if last_exc is None:
             continue
 
-        # All in-process renames failed. Try MoveFileEx with
-        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
-        # exact case where the inline rename failed (another process holds
-        # the handle without share-delete), at the cost of requiring a
-        # reboot to fully reclaim the old .exe.
-        scheduled = _schedule_replace_on_reboot(shim, target)
-        if scheduled:
-            print(
-                f"  ⚠ {shim.name} is locked by another process; scheduled "
-                f"replacement on next reboot."
-            )
-            print(
-                "    The new shim was written at the same path, but a "
-                "reboot is needed to fully unload the old one."
-            )
-            # Do NOT append to ``moved``: we don't want roll-back to undo a
-            # reboot-deferred operation.
-            continue
-
-        # Truly couldn't budge the .exe. Print an actionable warning and let
-        # uv try its luck — sometimes uv's own retry handling pulls through.
-        print(
-            f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
-            f"another process is holding it open)."
+        # Every immediate rename failed. Do not schedule the old shim for a
+        # reboot-time move: uv has not written its replacement yet, so that can
+        # remove the CLI on the next boot. Continuing is also guaranteed to hit
+        # the same WinError 32 in uv. Fail before any package mutation instead.
+        message = (
+            f"Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
+            "another process is holding it open)."
         )
+        print(f"  ⚠ {message}")
         print(
             "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
             "gateway, or pause AV scanning, then re-run `hermes update`."
         )
+        raise PermissionError(message) from last_exc
 
     return moved
 

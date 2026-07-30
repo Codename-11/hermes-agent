@@ -47,7 +47,14 @@ def _patch_managed_uv(request):
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch.object(hermes_main, "_pause_windows_gateways_for_update", return_value=None), \
+         patch.object(hermes_main, "_resume_windows_gateways_after_update"), \
+         patch.object(hermes_main, "_detect_concurrent_hermes_instances", return_value=[]), \
+         patch.object(hermes_main, "_detect_venv_python_processes", return_value=[]), \
+         patch.object(hermes_main, "_quarantine_running_hermes_exe", return_value=[]), \
+         patch.object(hermes_main, "_refresh_windows_gateway_launchers"), \
+         patch.object(hermes_main, "_cold_start_windows_gateway_after_update"):
         yield
 
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):

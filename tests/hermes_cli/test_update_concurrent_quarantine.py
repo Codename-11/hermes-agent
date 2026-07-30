@@ -265,8 +265,10 @@ def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monkeypatch):
-    """When every retry fails, we schedule via MoveFileEx and warn helpfully."""
+def test_quarantine_does_not_schedule_running_shim_for_reboot(
+    _winp, tmp_path, capsys, monkeypatch
+):
+    """A delayed rename without a replacement would remove Hermes on reboot."""
     shim = tmp_path / "hermes.exe"
     shim.write_bytes(b"locked")
 
@@ -283,18 +285,31 @@ def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monke
     with patch.object(Path, "rename", always_fails), patch.object(
         cli_main, "_schedule_replace_on_reboot", fake_schedule
     ), patch("time.sleep", lambda *_a, **_k: None):
-        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
+        with pytest.raises(PermissionError, match="holding it open"):
+            cli_main._quarantine_running_hermes_exe(tmp_path)
 
     captured = capsys.readouterr().out
+    assert scheduled_calls == []
+    assert "reboot" not in captured.lower()
+    assert "re-run `hermes update`" in captured
 
-    # The reboot-deferred path was used.
-    assert scheduled_calls and scheduled_calls[0][0] == shim
-    # It is NOT added to the returned roll-back list (the issue calls this
-    # out — don't undo a deferred operation).
-    assert pairs == []
-    # The user got a clear message, not raw [WinError 32].
-    assert "scheduled" in captured.lower()
-    assert "reboot" in captured.lower()
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_quarantine_fails_closed_when_running_shim_cannot_move(
+    _winp, tmp_path, monkeypatch
+):
+    shim = tmp_path / "hermes.exe"
+    shim.write_bytes(b"locked")
+
+    def always_fails(self, target):
+        raise PermissionError(32, "simulated lock")
+
+    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda _d: [shim])
+    with patch.object(Path, "rename", always_fails), patch.object(
+        cli_main, "_schedule_replace_on_reboot", return_value=False
+    ), patch("time.sleep", lambda *_a, **_k: None):
+        with pytest.raises(PermissionError, match="holding it open"):
+            cli_main._quarantine_running_hermes_exe(tmp_path)
 
 
 
@@ -381,7 +396,42 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     assert "Restart manually after update" not in captured
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_windows_gateways_deduplicates_unmapped_commands(
+    _winp, monkeypatch
+):
+    import hermes_cli.gateway as gateway_mod
 
+    profile_calls = []
+    cmdline_calls = []
+    monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, pid: profile_calls.append((profile, pid)) or True,
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_gateway_restart_by_cmdline",
+        lambda pid, argv: cmdline_calls.append((pid, argv)) or True,
+    )
+    bare = ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
+    work = [*bare, "-p", "work"]
+    token = {
+        "resume_needed": True,
+        "profiles": {"default": 101},
+        "unmapped": [
+            {"pid": 201, "argv": bare},
+            {"pid": 202, "argv": list(bare)},
+            {"pid": 301, "argv": work},
+            {"pid": 302, "argv": list(work)},
+        ],
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert profile_calls == [("default", 101)]
+    assert cmdline_calls == [(301, work)]
 
 
 

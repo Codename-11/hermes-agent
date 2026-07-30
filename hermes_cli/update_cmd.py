@@ -1186,6 +1186,43 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
         pass
     return None
 
+
+def _handle_update_called_process_error(
+    exc: subprocess.CalledProcessError,
+    args,
+    *,
+    git_phase_completed: bool,
+    is_fork: bool = False,
+) -> bool:
+    """Handle a failed subprocess and report whether ZIP recovery completed.
+
+    ZIP recovery is only safe before git mutates a managed checkout. Once the
+    requested branch has been merged/reset successfully, a dependency or build
+    failure must preserve that checkout for marker-based recovery. Copying
+    canonical upstream ZIP contents over a fork at that point deletes fork-only
+    files and turns one install failure into source-tree corruption.
+    """
+    print(f"⚠ Update subprocess failed: {exc}")
+    if sys.platform == "win32" and is_fork:
+        print(
+            "✗ ZIP fallback disabled for this fork checkout; canonical upstream "
+            "ZIP contents would overwrite fork-only files."
+        )
+        return False
+    if sys.platform == "win32" and not git_phase_completed:
+        print("→ Falling back to ZIP download...")
+        print()
+        _update_via_zip(args)
+        return True
+    if sys.platform == "win32" and git_phase_completed:
+        print(
+            "✗ Post-git dependency/build failure; ZIP fallback disabled to "
+            "preserve this checkout."
+        )
+        print("  Re-run `hermes update` after clearing the reported lock/failure.")
+    return False
+
+
 def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
@@ -2608,8 +2645,9 @@ def _detect_venv_python_processes(
     backend and respawns it within seconds — so the caller should refuse and
     tell the user to close the app instead. Returns ``(pid, name, cmdline)``
     tuples; empty off-Windows / without psutil / when nothing matches. The
-    calling process and its ancestors are always excluded (a CLI ``hermes
-    update`` itself runs from the venv python). Never raises.
+    calling process is always excluded. Ancestors are excluded only when their
+    argv belongs to the current ``update`` launch chain; a TUI/Desktop ancestor
+    remains a real holder and must block mutation. Never raises.
     """
     if not _m()._is_windows():
         return []
@@ -2632,7 +2670,12 @@ def _detect_venv_python_processes(
     skip.add(os.getpid())
     try:
         for anc in psutil.Process().parents():
-            skip.add(int(anc.pid))
+            try:
+                argv = list(anc.cmdline() or [])
+            except Exception:
+                argv = []
+            if any(str(arg).lower() == "update" for arg in argv[1:]):
+                skip.add(int(anc.pid))
     except Exception:
         pass
 
@@ -3021,10 +3064,39 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
                 exc,
             )
 
+    # Respawn only one logical instance per command/profile. A Windows gateway
+    # commonly appears twice (venv trampoline + managed-runtime child), and a
+    # stale fleet can contain many identical pairs. Replaying every PID creates
+    # a geometric restart storm. ``argv[1:]`` intentionally ignores the
+    # interpreter path so trampoline/runtime forms collapse to one command.
+    mapped_profiles = {str(profile).lower() for profile in profiles}
+    seen_commands: set[tuple[str, ...]] = set()
+    unique_unmapped: list[dict] = []
+    for entry in unmapped:
+        argv = list(entry.get("argv") or [])
+        if not argv:
+            continue
+        lowered = [str(part).lower() for part in argv]
+        profile = "default"
+        for index, part in enumerate(lowered):
+            if part in {"-p", "--profile"} and index + 1 < len(lowered):
+                profile = lowered[index + 1]
+                break
+            if part.startswith("--profile="):
+                profile = part.split("=", 1)[1]
+                break
+        if profile in mapped_profiles:
+            continue
+        command_key = tuple(lowered[1:])
+        if command_key in seen_commands:
+            continue
+        seen_commands.add(command_key)
+        unique_unmapped.append(entry)
+
     # Respawn unmapped gateways (no profile→PID-file mapping, e.g. a Scheduled
     # Task) by replaying the argv we snapshotted before force-killing them.
     unmapped_relaunched = 0
-    for entry in unmapped:
+    for entry in unique_unmapped:
         argv = entry.get("argv")
         old_pid = entry.get("pid")
         if not argv or not old_pid:
@@ -3238,6 +3310,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         return
+
+    # ZIP fallback is safe only until git installs the requested revision.
+    git_phase_completed = False
 
     # Fetch and pull
     try:
@@ -3593,6 +3668,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 sys.exit(1)
 
             update_succeeded = True
+            git_phase_completed = True
         finally:
             if auto_stash_ref is not None:
                 # Don't attempt stash restore if the code update itself failed —
@@ -4987,14 +5063,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:
-        if sys.platform == "win32":
-            print(f"⚠ Git update failed: {e}")
-            print("→ Falling back to ZIP download...")
-            print()
-            _update_via_zip(args)
-        else:
-            print(f"✗ Update failed: {e}")
-            sys.exit(1)
+        if not _handle_update_called_process_error(
+            e,
+            args,
+            git_phase_completed=git_phase_completed,
+            is_fork=is_fork,
+        ):
+            sys.exit(e.returncode or 1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---
 

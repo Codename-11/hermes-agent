@@ -1,55 +1,67 @@
-"""Regression: ZIP fallback must not trigger after a successful git update.
+"""Regression tests for Windows ZIP fallback boundaries."""
 
-When the git phase of ``hermes update`` completes but the post-git pip
-install fails (typically because hermes.exe is locked on Windows), the
-outer ``except CalledProcessError`` handler must NOT escalate to the ZIP
-download path.  The checkout is already current; the ZIP extraction would
-destroy build artifacts (Desktop launcher) that don't exist in the source
-archive.
-
-Observed 2026-06-16 and 2026-06-17 on Windows: pip fails on locked exe →
-ZIP fallback → ``shutil.rmtree(apps/)`` → Desktop binary gone.
-"""
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
+from hermes_cli import update_cmd
 
 
 def test_no_zip_fallback_when_git_succeeded(monkeypatch, capsys):
-    """After git phase completes, pip failure should NOT trigger ZIP fallback."""
-    from hermes_cli import main as main_mod
+    """Dependency failure after git success must preserve the fork checkout."""
+    zip_calls = []
+    monkeypatch.setattr(update_cmd, "_update_via_zip", lambda args: zip_calls.append(args))
+    error = subprocess.CalledProcessError(
+        2, ["uv", "pip", "install", "-e", "."]
+    )
 
-    # We'll call the except handler's logic directly by simulating the
-    # _git_phase_completed flag and checking that _update_via_zip is NOT called.
-    zip_called = False
-    original_update_via_zip = getattr(main_mod, "_update_via_zip", None)
+    with patch.object(update_cmd.sys, "platform", "win32"):
+        handled = update_cmd._handle_update_called_process_error(
+            error,
+            SimpleNamespace(branch=None),
+            git_phase_completed=True,
+        )
 
-    def spy_update_via_zip(*a, **k):
-        nonlocal zip_called
-        zip_called = True
+    assert handled is False
+    assert zip_calls == []
+    output = capsys.readouterr().out
+    assert "ZIP fallback disabled" in output
 
-    monkeypatch.setattr(main_mod, "_update_via_zip", spy_update_via_zip)
 
-    # Simulate: git phase completed, then pip raised CalledProcessError
-    # The handler logic checks ``_git_phase_completed`` — we test the
-    # branch by invoking the handler code pattern directly.
-    e = subprocess.CalledProcessError(2, ["uv", "pip", "install", "-e", "."])
+def test_zip_fallback_remains_available_before_git_mutation(monkeypatch):
+    """A genuine pre-git Windows failure may still use canonical ZIP recovery."""
+    args = SimpleNamespace(branch=None)
+    zip_calls = []
+    monkeypatch.setattr(update_cmd, "_update_via_zip", lambda value: zip_calls.append(value))
+    error = subprocess.CalledProcessError(1, ["git", "fetch"])
 
-    # When git completed + Windows: should NOT call _update_via_zip
-    with patch.object(main_mod.sys, "platform", "win32"):
-        _git_phase_completed = True
-        if main_mod.sys.platform == "win32" and not _git_phase_completed:
-            spy_update_via_zip(SimpleNamespace(branch="main"))
-        elif main_mod.sys.platform == "win32":
-            pass  # This is the new path — no ZIP, just message
+    with patch.object(update_cmd.sys, "platform", "win32"):
+        handled = update_cmd._handle_update_called_process_error(
+            error,
+            args,
+            git_phase_completed=False,
+        )
 
-    assert not zip_called, "ZIP fallback was triggered after git phase completed"
+    assert handled is True
+    assert zip_calls == [args]
 
-    # When git did NOT complete + Windows: SHOULD call _update_via_zip
-    _git_phase_completed = False
-    if main_mod.sys.platform == "win32" and not _git_phase_completed:
-        spy_update_via_zip(SimpleNamespace(branch="main"))
 
-    assert zip_called, "ZIP fallback should fire when git phase did NOT complete"
+def test_zip_fallback_is_disabled_for_fork_before_git_mutation(
+    monkeypatch, capsys
+):
+    args = SimpleNamespace(branch="axiom")
+    zip_calls = []
+    monkeypatch.setattr(update_cmd, "_update_via_zip", lambda value: zip_calls.append(value))
+    error = subprocess.CalledProcessError(1, ["git", "fetch"])
+
+    with patch.object(update_cmd.sys, "platform", "win32"):
+        handled = update_cmd._handle_update_called_process_error(
+            error,
+            args,
+            git_phase_completed=False,
+            is_fork=True,
+        )
+
+    assert handled is False
+    assert zip_calls == []
+    assert "fork checkout" in capsys.readouterr().out

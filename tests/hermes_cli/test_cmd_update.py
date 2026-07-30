@@ -51,8 +51,9 @@ def mock_args():
 # per-test changes.
 @pytest.fixture(autouse=True)
 def _patch_managed_uv(request):
-    """Make managed_uv helpers follow shutil.which mocking in tests."""
+    """Isolate update tests from managed runtimes and live Windows services."""
     import shutil
+    from hermes_cli import main as hm
 
     # resolve_uv delegates to shutil.which("uv") so that test patches
     # on shutil.which flow through naturally.
@@ -67,7 +68,14 @@ def _patch_managed_uv(request):
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch.object(hm, "_pause_windows_gateways_for_update", return_value=None), \
+         patch.object(hm, "_resume_windows_gateways_after_update"), \
+         patch.object(hm, "_detect_concurrent_hermes_instances", return_value=[]), \
+         patch.object(hm, "_detect_venv_python_processes", return_value=[]), \
+         patch.object(hm, "_quarantine_running_hermes_exe", return_value=[]), \
+         patch.object(hm, "_refresh_windows_gateway_launchers"), \
+         patch.object(hm, "_cold_start_windows_gateway_after_update"):
         yield
 
 

@@ -69,6 +69,7 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
     venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
     parent = MagicMock()
     parent.pid = 555
+    parent.cmdline.return_value = [venv_py, "-m", "hermes_cli.main", "update"]
     me = MagicMock()
     me.parents.return_value = [parent]
     fake_psutil = types.SimpleNamespace(
@@ -84,6 +85,37 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         sys.modules, {"psutil": fake_psutil}
     ):
         assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_reports_tui_ancestor(_winp, tmp_path):
+    """A live TUI ancestor is a real lock holder, not the update launch chain."""
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    parent = MagicMock()
+    parent.pid = 555
+    parent.cmdline.return_value = [venv_py, "-m", "tui_gateway.entry"]
+    me = MagicMock()
+    me.parents.return_value = [parent]
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [
+                _proc(
+                    555,
+                    venv_py,
+                    "python.exe",
+                    [venv_py, "-m", "tui_gateway.entry"],
+                ),
+            ]
+        ),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+        assert [(pid, name) for pid, name, _cmdline in matches] == [
+            (555, "python.exe")
+        ]
 
 
 
