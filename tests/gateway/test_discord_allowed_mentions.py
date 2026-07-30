@@ -201,6 +201,7 @@ async def test_discord_send_forwards_reply_mention_suppression():
     adapter._reply_to_mode = "off"
     adapter._nonconversational_messages = SimpleNamespace(mark_many=lambda _ids: None)
     adapter._last_self_message_id = {}
+    adapter._record_discord_response = MagicMock()
 
     result = await adapter.send(
         "456",

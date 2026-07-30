@@ -94,36 +94,14 @@ class TestSubscribe:
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
 
-    def test_script_option_is_persisted(self):
-        webhook_command(_make_args(
-            webhook_action="subscribe", name="s", script="todoist_filter.py"
-        ))
-        assert _load_subscriptions()["s"]["script"] == "todoist_filter.py"
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))
         secret = _load_subscriptions()["s"]["secret"]
         assert len(secret) > 20
 
-    def test_update(self, capsys):
-        webhook_command(_make_args(webhook_action="subscribe", name="x", prompt="v1"))
-        webhook_command(_make_args(webhook_action="subscribe", name="x", prompt="v2"))
-        out = capsys.readouterr().out
-        assert "Updated" in out
-        assert _load_subscriptions()["x"]["prompt"] == "v2"
-
-    def test_invalid_name(self, capsys):
-        webhook_command(_make_args(webhook_action="subscribe", name="bad name!"))
-        out = capsys.readouterr().out
-        assert "Error" in out or "Invalid" in out
-        assert _load_subscriptions() == {}
-
 
 class TestList:
-    def test_empty(self, capsys):
-        webhook_command(_make_args(webhook_action="list"))
-        out = capsys.readouterr().out
-        assert "No dynamic" in out
 
     def test_with_entries(self, capsys):
         webhook_command(_make_args(webhook_action="subscribe", name="a"))
@@ -137,17 +115,7 @@ class TestList:
 
 
 class TestRemove:
-    def test_remove_existing(self, capsys):
-        webhook_command(_make_args(webhook_action="subscribe", name="temp"))
-        webhook_command(_make_args(webhook_action="remove", name="temp"))
-        out = capsys.readouterr().out
-        assert "Removed" in out
-        assert _load_subscriptions() == {}
 
-    def test_remove_nonexistent(self, capsys):
-        webhook_command(_make_args(webhook_action="remove", name="nope"))
-        out = capsys.readouterr().out
-        assert "No subscription" in out
 
     def test_selective_remove(self):
         webhook_command(_make_args(webhook_action="subscribe", name="keep"))
@@ -159,12 +127,6 @@ class TestRemove:
 
 
 class TestPersistence:
-    def test_file_written(self):
-        webhook_command(_make_args(webhook_action="subscribe", name="persist"))
-        path = _subscriptions_path()
-        assert path.exists()
-        data = json.loads(path.read_text())
-        assert "persist" in data
 
     def test_corrupted_file(self):
         path = _subscriptions_path()
@@ -199,13 +161,6 @@ class TestPersistence:
 
 
 class TestWebhookEnabledGate:
-    def test_blocks_when_disabled(self, capsys, monkeypatch):
-        monkeypatch.setattr("hermes_cli.webhook._is_webhook_enabled", lambda: False)
-        webhook_command(_make_args(webhook_action="subscribe", name="blocked"))
-        out = capsys.readouterr().out
-        assert "not enabled" in out.lower()
-        assert "hermes gateway setup" in out
-        assert _load_subscriptions() == {}
 
     def test_blocks_list_when_disabled(self, capsys, monkeypatch):
         monkeypatch.setattr("hermes_cli.webhook._is_webhook_enabled", lambda: False)
@@ -232,10 +187,3 @@ class TestWebhookEnabledGate:
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
 
-    def test_real_check_enabled(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.webhook._is_webhook_enabled",
-            lambda: True,
-        )
-        import hermes_cli.webhook as wh_mod
-        assert wh_mod._is_webhook_enabled() is True

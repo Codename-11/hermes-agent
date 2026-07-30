@@ -175,7 +175,7 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
-def _normalize_route_toolsets(raw: Any) -> Optional[List[str]]:
+def _normalize_route_toolsets(raw: Any) -> Optional[list[str]]:
     """Return a cleaned per-route toolset override, or None for fallback.
 
     Dynamic subscriptions are JSON/YAML authored by humans and agents, so be

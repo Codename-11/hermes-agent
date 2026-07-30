@@ -2734,6 +2734,19 @@ def _pause_windows_gateways_for_update() -> dict | None:
     except Exception as exc:
         logger.debug("Could not discover Windows gateway PIDs before update: %s", exc)
         return None
+
+    launcher_matches: list[tuple[int, str, str]] = []
+    try:
+        scripts_dir = _m()._venv_scripts_dir()
+        if scripts_dir is not None:
+            launcher_matches = _m()._detect_windows_gateway_launcher_instances(
+                scripts_dir
+            )
+    except Exception as exc:
+        logger.debug("Could not discover Windows gateway launcher shims: %s", exc)
+
+    launcher_pids = [pid for pid, _name, _profile in launcher_matches]
+    running_pids = list(dict.fromkeys([*running_pids, *launcher_pids]))
     if not running_pids:
         # No gateway is running right now, but the user may have installed an
         # autostart entry (Scheduled Task or Startup-folder login item) — that
@@ -2770,7 +2783,9 @@ def _pause_windows_gateways_for_update() -> dict | None:
     except Exception as exc:
         logger.debug("Could not map Windows gateway PIDs to profiles: %s", exc)
 
-    profiles: dict[str, int] = {}
+    profiles: dict[str, int] = {
+        profile: pid for pid, _name, profile in launcher_matches
+    }
     mapped_pids = []
     for pid in running_pids:
         proc = profile_processes.get(pid)
@@ -2789,7 +2804,11 @@ def _pause_windows_gateways_for_update() -> dict | None:
         mapped_pids,
         timeout=drain_timeout,
     )
-    unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
+    unmapped_pids = [
+        pid
+        for pid in running_pids
+        if pid not in profile_processes and pid not in launcher_pids
+    ]
 
     # Snapshot each unmapped gateway's command line *before* we force-kill it,
     # so ``_resume_windows_gateways_after_update`` can respawn it by replaying
@@ -2807,7 +2826,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         unmapped.append({"pid": int(pid), "argv": argv})
 
     force_killed = []
-    for pid in sorted(set(survivors).union(unmapped_pids)):
+    for pid in sorted(set(survivors).union(unmapped_pids, launcher_pids)):
         try:
             terminate_pid(int(pid), force=True)
             force_killed.append(int(pid))
@@ -3110,6 +3129,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print("⚕ Updating Hermes Agent...")
     print()
 
+    # Pause gateways before the generic Windows shim guard. A gateway started
+    # as ``hermes.exe gateway run`` keeps its launcher shim mapped; checking for
+    # concurrent shims first would abort before the pause path can release it.
+    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+    if _windows_gateway_resume:
+        import atexit as _atexit
+
+        _atexit.register(
+            _m()._resume_windows_gateways_after_update,
+            _windows_gateway_resume,
+        )
+
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
@@ -3127,15 +3158,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Returns the quick-snapshot id (or None when disabled/failed); the
     # post-update cron-jobs safety net uses it to detect job loss.
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
-
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-
-        _atexit.register(
-            _m()._resume_windows_gateways_after_update,
-            _windows_gateway_resume,
-        )
 
     # With gateways paused, anything still running from the venv interpreter
     # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd

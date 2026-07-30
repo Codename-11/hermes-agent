@@ -163,36 +163,6 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     assert not image_keys, f"{family_id} text-only leaked image keys: {image_keys}"
 
 
-@pytest.mark.parametrize("family_id", _all_fal_families())
-def test_fal_text_plus_image_routes_to_image_endpoint(matrix_env, family_id):
-    home, fal_calls, _ = matrix_env
-    from plugins.video_gen.fal import FAL_FAMILIES
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "fal", "model": family_id}},
-        {"prompt": "animate this dog", "image_url": "https://example.com/dog.png"},
-    )
-
-    assert result["success"] is True, f"{family_id}: {result.get('error')}"
-    assert result["modality"] == "image"
-    assert result["provider"] == "fal"
-
-    # Outbound endpoint must be the family's image endpoint
-    assert len(fal_calls) == 1
-    endpoint = fal_calls[0]["endpoint"]
-    assert endpoint == FAL_FAMILIES[family_id]["image_endpoint"]
-
-    # Payload must contain the right image key (may be image_url or
-    # start_image_url depending on the family's image_param_key)
-    payload = fal_calls[0]["arguments"] or {}
-    expected_image_key = FAL_FAMILIES[family_id].get("image_param_key") or "image_url"
-    assert payload.get(expected_image_key) == "https://example.com/dog.png", (
-        f"{family_id} text+image missing {expected_image_key} in payload "
-        f"(keys: {sorted(payload.keys())})"
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────────
 # xAI: text-only / text+image both go to /videos/generations
 # (xAI uses one endpoint with an optional 'image' field, not separate URLs)

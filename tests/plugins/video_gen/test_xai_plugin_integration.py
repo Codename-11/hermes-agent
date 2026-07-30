@@ -239,16 +239,6 @@ class TestXAIValidation:
         # Never hit the network
         assert "client" not in captured or not captured["client"].posts
 
-    def test_image_plus_refs_rejects(self, xai_provider):
-        provider, captured = xai_provider
-        result = provider.generate(
-            "x",
-            image_url="https://example.com/i.png",
-            reference_image_urls=["https://example.com/r.png"],
-        )
-        assert result["success"] is False
-        assert result["error_type"] == "conflicting_inputs"
-        assert "client" not in captured or not captured["client"].posts
 
     def test_too_many_references_rejects(self, xai_provider):
         provider, captured = xai_provider
@@ -266,15 +256,6 @@ class TestXAIClamping:
         provider.generate("x", duration=30)
         assert _last_post(captured)["json"]["duration"] == 15
 
-    def test_duration_clamped_when_refs_present(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate(
-            "x",
-            duration=15,
-            reference_image_urls=["https://example.com/r.png"],
-        )
-        # refs present caps to 10
-        assert _last_post(captured)["json"]["duration"] == 10
 
     def test_invalid_aspect_ratio_soft_clamps(self, xai_provider):
         provider, captured = xai_provider

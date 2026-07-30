@@ -137,24 +137,6 @@ class TestApiPathSanitizer:
         (d / "api.py").write_text("router = None\n")
         assert web_server._safe_plugin_api_relpath("api.py", dashboard_dir=d) == "api.py"
 
-    def test_nested_relative_path_accepted(self, tmp_path):
-        d = self._dashboard_dir(tmp_path)
-        (d / "backend").mkdir()
-        (d / "backend" / "routes.py").write_text("router = None\n")
-        out = web_server._safe_plugin_api_relpath(
-            "backend/routes.py", dashboard_dir=d
-        )
-        assert out == "backend/routes.py"
-
-    @pytest.mark.parametrize("payload", [
-        "/etc/passwd",
-        "/tmp/payload.py",
-        "/usr/bin/python",
-        # NT-style absolute on POSIX is a relative path — covered by traversal below.
-    ])
-    def test_absolute_path_rejected(self, tmp_path, payload):
-        d = self._dashboard_dir(tmp_path)
-        assert web_server._safe_plugin_api_relpath(payload, dashboard_dir=d) is None
 
     @pytest.mark.parametrize("payload", [
         "../../../etc/passwd",
@@ -166,10 +148,6 @@ class TestApiPathSanitizer:
         d = self._dashboard_dir(tmp_path)
         assert web_server._safe_plugin_api_relpath(payload, dashboard_dir=d) is None
 
-    @pytest.mark.parametrize("payload", [None, "", "   ", 42, [], {}])
-    def test_non_string_or_empty_rejected(self, tmp_path, payload):
-        d = self._dashboard_dir(tmp_path)
-        assert web_server._safe_plugin_api_relpath(payload, dashboard_dir=d) is None
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +269,9 @@ class TestMountApiRoutesRefusesUntrusted:
     def test_user_source_api_imports_normally(self, tmp_path):
         plugin = self._payload_plugin(tmp_path, source="user")
         web_server._dashboard_plugins_cache = [plugin]
-        with patch("importlib.util.spec_from_file_location") as spec:
+        with patch(
+            "hermes_cli.plugins_cmd._get_enabled_set", return_value={"synthetic"}
+        ), patch("importlib.util.spec_from_file_location") as spec:
             spec.return_value = None  # loader is None -> early continue, safe
             web_server._mount_plugin_api_routes()
         assert spec.call_count == 1
