@@ -295,7 +295,13 @@ app.include_router(_memory_oauth_router)
 # on every server start. Either way it dies when the process exits and is
 # injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+
+
+def _resolve_session_token() -> str:
+    return os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+
+
+_SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 
@@ -865,7 +871,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+    },
+    "terminal.vercel_runtime": {
+        "type": "select",
+        "description": "Vercel Sandbox runtime",
+        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     },
     "terminal.modal_mode": {
         "type": "select",
@@ -12151,15 +12162,33 @@ _ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.lo
 # ---------------------------------------------------------------------------
 
 
-def _pairing_store():
+def _pairing_store(profile: Optional[str] = None):
+    """Pairing store for ``profile`` — the dashboard's own when unspecified.
+
+    Every other admin endpoint scopes by profile, and the gateway already
+    keeps one store per served profile (``gateway/run.py``). Without this the
+    dashboard and desktop always read the global store, so an operator on a
+    named profile approves into a whitelist their gateway never consults.
+
+    ``PairingStore`` resolves the profile's home itself (``default`` maps back
+    to the global store), so this only needs to validate the name — no
+    ``_profile_scope`` needed, and nothing process-global is swapped across
+    the ``await`` boundary.
+    """
     from gateway.pairing import PairingStore
 
-    return PairingStore()
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return PairingStore()
+
+    _resolve_profile_dir(requested)  # 400/404 on an unknown profile
+
+    return PairingStore(profile=requested)
 
 
 @app.get("/api/pairing")
-async def list_pairing():
-    store = _pairing_store()
+async def list_pairing(profile: Optional[str] = None):
+    store = _pairing_store(profile)
     return {
         "pending": store.list_pending(),
         "approved": store.list_approved(),
@@ -12168,7 +12197,7 @@ async def list_pairing():
 
 @app.post("/api/pairing/approve")
 async def approve_pairing(body: PairingApprove):
-    store = _pairing_store()
+    store = _pairing_store(body.profile)
     platform = (body.platform or "").lower().strip()
     # `request_id` is what an admin surface sends after listing pending
     # requests; `code` is the one-time code the user relays from their DM.
@@ -12204,7 +12233,7 @@ async def approve_pairing(body: PairingApprove):
 
 @app.post("/api/pairing/revoke")
 async def revoke_pairing(body: PairingRevoke):
-    store = _pairing_store()
+    store = _pairing_store(body.profile)
     platform = (body.platform or "").lower().strip()
     if not platform or not body.user_id:
         raise HTTPException(status_code=400, detail="platform and user_id are required")
@@ -12217,8 +12246,8 @@ async def revoke_pairing(body: PairingRevoke):
 
 
 @app.post("/api/pairing/clear-pending")
-async def clear_pending_pairing():
-    store = _pairing_store()
+async def clear_pending_pairing(profile: Optional[str] = None):
+    store = _pairing_store(profile)
     count = store.clear_pending()
     return {"ok": True, "cleared": count}
 
