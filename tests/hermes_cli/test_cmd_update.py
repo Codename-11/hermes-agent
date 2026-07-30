@@ -75,7 +75,11 @@ def _patch_managed_uv(request):
          patch.object(hm, "_detect_venv_python_processes", return_value=[]), \
          patch.object(hm, "_quarantine_running_hermes_exe", return_value=[]), \
          patch.object(hm, "_refresh_windows_gateway_launchers"), \
-         patch.object(hm, "_cold_start_windows_gateway_after_update"):
+         patch.object(hm, "_cold_start_windows_gateway_after_update"), \
+         patch.object(hm, "_write_update_incomplete_marker"), \
+         patch.object(hm, "_clear_update_incomplete_marker"), \
+         patch.object(hm, "_write_lazy_refresh_incomplete_marker"), \
+         patch.object(hm, "_clear_lazy_refresh_incomplete_marker"):
         yield
 
 

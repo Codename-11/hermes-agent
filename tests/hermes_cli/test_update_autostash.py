@@ -54,7 +54,11 @@ def _patch_managed_uv(request):
          patch.object(hermes_main, "_detect_venv_python_processes", return_value=[]), \
          patch.object(hermes_main, "_quarantine_running_hermes_exe", return_value=[]), \
          patch.object(hermes_main, "_refresh_windows_gateway_launchers"), \
-         patch.object(hermes_main, "_cold_start_windows_gateway_after_update"):
+         patch.object(hermes_main, "_cold_start_windows_gateway_after_update"), \
+         patch.object(hermes_main, "_write_update_incomplete_marker"), \
+         patch.object(hermes_main, "_clear_update_incomplete_marker"), \
+         patch.object(hermes_main, "_write_lazy_refresh_incomplete_marker"), \
+         patch.object(hermes_main, "_clear_lazy_refresh_incomplete_marker"):
         yield
 
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
