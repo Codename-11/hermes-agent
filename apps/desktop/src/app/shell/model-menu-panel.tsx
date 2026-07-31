@@ -99,6 +99,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     { model: currentModel, provider: currentProvider },
     modelOptions.data
   )
+
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error

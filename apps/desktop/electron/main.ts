@@ -151,6 +151,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { createOauthLoginCoordinator } from './oauth-login-coordinator'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
@@ -166,6 +167,7 @@ import {
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import { fetchRemoteProfilesJson } from './remote-profile-auth'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -8105,11 +8107,17 @@ function remoteBlockForConnectionInput(input: any = {}, existing = readDesktopCo
 
 async function listDesktopRemoteProfiles(input: any = {}) {
   const { authMode, baseUrl, token } = remoteBlockForConnectionInput(input)
-  const url = `${baseUrl}/api/profiles`
-  const body =
-    authMode === 'oauth'
-      ? await fetchJsonViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
-      : await fetchJson(url, token, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+  const body = await fetchRemoteProfilesJson(
+    { authMode, baseUrl, token },
+    {
+      ensureNativeAccessToken,
+      fetchBearerJson: (url, bearer) =>
+        fetchJson(url, null, { bearer, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
+      fetchCookieJson: url => fetchJsonViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
+      fetchTokenJson: (url, connectionToken) =>
+        fetchJson(url, connectionToken, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+    }
+  )
   const profiles = Array.isArray((body as any)?.profiles) ? (body as any).profiles : []
 
   return {
@@ -10051,6 +10059,8 @@ ipcMain.handle('hermes:connection-config:list-remote-profiles', async (_event, p
 ipcMain.handle('hermes:connection-config:pin-remote-profile', async (_event, payload) =>
   pinRemoteProfileConnection(payload)
 )
+const oauthLoginCoordinator = createOauthLoginCoordinator()
+
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status:
   //   - advertises "native_pkce" in auth_flows → run the system-browser +
@@ -10062,19 +10072,19 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   // identified older runtime" the desktop guide requires.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
-  let statusBody: any = null
+  return oauthLoginCoordinator.run(baseUrl, async () => {
+    let statusBody: any = null
 
-  try {
-    statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch {
-    // Can't read status — fall through to the embedded flow, which has its
-    // own error handling and works against any gated gateway.
-  }
-
-  const strategy = resolveLoginStrategy(statusBody)
-
-  if (strategy === 'native') {
     try {
+      statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
+    } catch {
+      // Can't read status — fall through to the embedded flow, which has its
+      // own error handling and works against any gated gateway.
+    }
+
+    const strategy = resolveLoginStrategy(statusBody)
+
+    if (strategy === 'native') {
       const tokens = await runNativeLogin(baseUrl, {
         openExternal: url => shell.openExternal(url),
         postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
@@ -10087,30 +10097,25 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
       remoteReauthFailure = null
 
       return { ok: true, baseUrl, connected: true }
-    } catch (error) {
-      rememberLog(
-        `[native-oauth] native login failed (${
-          error instanceof Error ? error.message : String(error)
-        }); falling back to embedded flow`
-      )
-      // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
     }
-  }
 
-  // Legacy embedded-webview cookie flow.
-  await openOauthLoginWindow(baseUrl)
+    // Legacy embedded-webview cookie flow is only for gateways that do not
+    // advertise RFC 8252 native PKCE. A failed native attempt must surface to
+    // the user so Retry starts fresh; silently switching mechanisms reuses a
+    // stale browser/PKCE context and can overwrite another pending flow.
+    await openOauthLoginWindow(baseUrl)
 
-  const connected = await hasOauthSessionCookie(baseUrl)
+    const connected = await hasOauthSessionCookie(baseUrl)
 
-  // Only a CONFIRMED sign-in releases the latch. A cancelled/closed login
-  // window must leave it set, or the overlay's "Sign in" button starts
-  // flickering again on the next retry.
-  if (connected) {
-    remoteReauthFailure = null
-  }
+    // Only a CONFIRMED sign-in releases the latch. A cancelled/closed login
+    // window must leave it set, or the overlay's "Sign in" button starts
+    // flickering again on the next retry.
+    if (connected) {
+      remoteReauthFailure = null
+    }
 
-  return { ok: true, baseUrl, connected }
+    return { ok: true, baseUrl, connected }
+  })
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''

@@ -50,7 +50,6 @@ The `axiom` branch is expected to:
 Suggested focused verification for Desktop patch work:
 
 ```bash
-node --check apps/desktop/electron/main.cjs
 cd apps/desktop
 npm run typecheck
 NODE_ENV=test npm run test:ui -- \

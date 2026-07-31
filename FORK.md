@@ -409,8 +409,10 @@ Axiom carries `feat(desktop): add remote profile handles` so Desktop can discove
 
 Primary files:
 
-- `apps/desktop/electron/main.cjs`
-- `apps/desktop/electron/preload.cjs`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/preload.ts`
+- `apps/desktop/electron/remote-profile-auth.ts`
+- `apps/desktop/electron/remote-profile-auth.test.ts`
 - `apps/desktop/src/app/settings/gateway-settings.tsx`
 - `apps/desktop/src/global.d.ts`
 - `apps/desktop/src/i18n/*.ts`
@@ -426,7 +428,7 @@ Why Axiom needs it:
 Required behavior:
 
 - Settings -> Gateway Connection shows a Remote profiles panel when the selected scope is remote.
-- The panel can call the selected remote gateway's `/api/profiles` endpoint using the saved token/OAuth connection path.
+- The panel can call the selected remote gateway's `/api/profiles` endpoint using the saved token/OAuth connection path. Cookieless native PKCE sessions use the encrypted bearer token; legacy OAuth sessions retain the cookie fallback.
 - A remote profile can be added as a distinct local profile handle, then pinned to that remote gateway as a per-profile remote override while preserving `remoteProfile` metadata through sanitized config, REST routing, and WebSocket URL generation.
 - Selecting that handle from the existing profile rail routes future Desktop traffic to the target remote profile; switching back to a local profile uses the local backend.
 
@@ -448,12 +450,19 @@ Reference:
 Focused checks:
 
 ```bash
-node --check apps/desktop/electron/main.cjs
-node --check apps/desktop/electron/preload.cjs
-node --test apps/desktop/electron/connection-config.test.cjs
-cd apps/desktop && npx vitest run --environment jsdom src/app/settings/gateway-settings.remote-profiles.test.ts
-cd apps/desktop && npm run typecheck
+cd apps/desktop
+npm run typecheck
+NODE_ENV=test npx vitest run --project electron electron/connection-config.test.ts electron/remote-profile-auth.test.ts
+NODE_ENV=test npx vitest run --environment jsdom src/app/settings/gateway-settings.remote-profiles.test.ts
 ```
+
+### Desktop native OAuth orchestration — local carry pending upstream equivalent
+
+Axiom keeps native RFC 8252 sign-in single-flight per normalized gateway in Electron main. Multiple renderer surfaces share one pending login instead of opening competing loopback listeners and overwriting browser PKCE state. A gateway that advertises `native_pkce` never silently changes to the embedded cookie flow after timeout, cancellation, or token-exchange failure; the error surfaces and an explicit Retry starts a fresh exchange. Embedded login remains the compatibility path only for gateways that do not advertise native PKCE.
+
+Primary files: `apps/desktop/electron/main.ts`, `apps/desktop/electron/oauth-login-coordinator.ts`, and `apps/desktop/electron/oauth-login-coordinator.test.ts`.
+
+Drop condition: upstream owns native login as a process-wide single-flight operation and keeps fallback capability-gated rather than error-triggered.
 
 ### Desktop OAuth remote artifact opening — local carry pending upstream equivalent
 
@@ -461,8 +470,8 @@ Axiom carries `fix(desktop): open OAuth remote artifacts from gateway session` s
 
 Primary files:
 
-- `apps/desktop/electron/main.cjs`
-- `apps/desktop/electron/preload.cjs`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/preload.ts`
 - `apps/desktop/src/global.d.ts`
 - `apps/desktop/src/app/artifacts/index.tsx`
 - `apps/desktop/src/lib/desktop-fs.ts`
@@ -490,26 +499,23 @@ Upstream watch / retirement criteria:
 Focused checks:
 
 ```bash
-node --check apps/desktop/electron/main.cjs
-node --check apps/desktop/electron/preload.cjs
-cd apps/desktop && npx vitest run --environment jsdom \
+cd apps/desktop
+npm run typecheck
+NODE_ENV=test npx vitest run --environment jsdom \
   src/lib/media.remote.test.ts \
   src/lib/media.test.ts \
   src/lib/desktop-fs.test.ts \
   src/app/artifacts/index.test.ts
-cd apps/desktop && npm run typecheck
 ```
 
 ## Current known update/build pitfalls
 
-### Desktop model picker snap-back — local carry pending upstream equivalent
+### Desktop model picker snap-back — retired 2026-07-31
 
-- **Status:** LOCAL TEMPORARY CARRY — no upstream PR opened at operator direction.
-- **Local subject:** `fix(desktop): keep model picker selection authoritative`
-- **Why carried:** Desktop can briefly render stale `model.options` query metadata over the live composer/session stores after an explicit picker selection, making the UI snap back to the prior model/provider and allowing test chats to launch against the wrong runtime.
-- **Files touched:** `apps/desktop/src/app/session/hooks/use-model-controls.ts`, `apps/desktop/src/app/session/hooks/use-model-controls.test.tsx`, `apps/desktop/src/app/shell/model-menu-panel.tsx`, `apps/desktop/src/components/model-picker.tsx`.
-- **Drop condition:** If upstream changes Desktop model controls so explicit picker selections are store-authoritative, route through the live active session, and include equivalent regression coverage, drop this local carry instead of preserving duplicate fork behavior.
-- **Verification:** `NODE_ENV=test npm run test:ui -- src/app/session/hooks/use-model-controls.test.tsx` → 6 passed; `NODE_ENV=test npm run typecheck` → OK; touched-file eslint → OK.
+- **Status:** RETIRED IN FAVOR OF UPSTREAM. The active `use-model-controls.ts` implementation is byte-identical to `upstream/main`; the two picker components had only blank-line drift, which was removed.
+- **Original local subject:** `fix(desktop): keep model picker selection authoritative`.
+- **Retained coverage:** Axiom keeps the extra active-session regression in `use-model-controls.test.tsx` because it asserts a behavioral invariant without carrying a divergent implementation.
+- **Do not reintroduce:** stale `model.options` query metadata must not override the live composer/session stores after an explicit picker selection.
 
 ### PR #40946 — async background delegation
 
