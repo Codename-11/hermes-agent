@@ -387,6 +387,19 @@ Drop condition: remove the carry when the MCP Python SDK releases its OAuth cont
 
 Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` from a dedicated `carry/upstream-pr-<number>-<topic>` branch so the carry can be reverted as a unit when upstream merges or replaces the feature.
 
+### PR #75049 — Buzz active-thread mention policy
+
+- **Status:** AXIOM CARRY — contributor-authored runtime/config/test/docs subset carried from open upstream PR #75049 on 2026-07-31. The unrelated Dashboard Buzz icon and generic `AutoField` accessibility changes from the PR are intentionally not carried.
+- **PR:** https://github.com/NousResearch/hermes-agent/pull/75049
+- **Carry branch/worktree:** `carry/buzz-active-thread-mentions-75049` at `~/.hermes/worktrees/hermes-buzz-75049/`.
+- **Why carry:** Current upstream applies `require_mention` independently to every inbound Buzz channel event. The agent can reply in a thread, but every human follow-up still needs another mention. Waiting for upstream would leave a reproduced live messaging defect in canonical Docker-Server Victor.
+- **Required behavior:** `require_mention: true` continues gating unrelated channel conversations. With `thread_require_mention: false`, an initial mention invites Hermes into a thread and later authorized replies in that successfully-participated thread dispatch without another mention. DMs and channel/user allow-lists remain unchanged. The backward-compatible default remains `thread_require_mention: true`; Victor opts out explicitly in profile-local config.
+- **Files carried:** `cli-config.yaml.example`, `hermes_cli/config_defaults.py`, `plugins/platforms/buzz/adapter.py`, `tests/gateway/test_buzz_adapter.py`, `website/docs/reference/environment-variables.md`, and `website/docs/user-guide/messaging/buzz.md`.
+- **Verification:** `/home/bailey/.hermes/hermes-agent/.venv/bin/python -m pytest -q tests/gateway/test_buzz_adapter.py tests/gateway/test_buzz_websocket.py --tb=short` → `41 passed`; touched-file Ruff and `git diff --check` passed.
+- **Separate upstream work:** PR #74516 adds Buzz reply-thread session identity through `MessageSource.thread_id`. It is deliberately not stacked here because it overlaps the same adapter heavily and is not required to fix mention admission. Re-evaluate after upstream consolidates or merges the competing Buzz thread-session PRs.
+- **Merge/rebase rule:** Preserve this carry while #75049 is open. If upstream changes the Buzz adapter, retain successful-send participation tracking, nested root resolution, restart reconstruction, bounded out-of-order follow-up handling, allow-list precedence, and the explicit strict-thread default. Do not resolve a conflict by setting `require_mention: false` globally.
+- **Drop condition:** Once upstream merges #75049 or equivalent behavior, remove this carry as a unit, retain Victor's explicit `thread_require_mention: false`, rerun the focused Buzz suite, and complete a hosted-relay smoke test before restarting the gateway.
+
 ### PR #41711 — A2A Agent-to-Agent protocol plugin
 
 - **Status:** LIVE AXIOM/TGI CARRY — promoted to `origin/axiom` and overlaid onto `origin/tgi` on 2026-06-18; still tracked as an upstream PR carry until #41711 or a superseding implementation lands upstream.
