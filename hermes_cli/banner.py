@@ -235,6 +235,9 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             return 1
         return checked
 
+    current_branch = _current_git_branch(repo_dir)
+    origin_branch = current_branch if current_branch in _DEPLOY_BRANCHES else "main"
+
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would
     # unshallow the repo (dragging in the whole history) and
@@ -251,11 +254,11 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # An unscoped ``git fetch origin`` transfers every remote head (~1,400
         # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
         # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
-        # for the same reason. Modern git updates the ``origin/main`` tracking
-        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
-        # unaffected; the shallow path compares against FETCH_HEAD, which a
-        # scoped fetch also updates.
-        fetch_args = ["git", "fetch", "origin", "main"]
+        # for the same reason. Deploy branches must fetch their own origin ref:
+        # fetching only ``main`` would leave ``origin/axiom`` or ``origin/tgi``
+        # stale immediately before the deploy-behind count. The shallow path
+        # compares against FETCH_HEAD, which a scoped fetch also updates.
+        fetch_args = ["git", "fetch", "origin", origin_branch]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
@@ -282,8 +285,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             )
         except Exception:
             pass
-
-    current_branch = _current_git_branch(repo_dir)
 
     if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
@@ -757,13 +758,22 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
         left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
     else:
-        model_short = model.split("/")[-1] if "/" in model else model
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
-        if len(model_short) > 28:
-            model_short = model_short[:25] + "..."
-        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+        if not (model or "").strip() or (model or "").strip().lower() == "unknown":
+            # Unconfigured install: say so in red instead of a blank/"unknown"
+            # slug — this is the single clearest place to tell the user what
+            # is wrong and how to fix it.
+            left_lines.append(
+                f"[bold red]no model configured[/] "
+                f"[dim {dim}]— run /model or hermes setup[/]"
+            )
+        else:
+            model_short = model.split("/")[-1] if "/" in model else model
+            if model_short.endswith(".gguf"):
+                model_short = model_short[:-5]
+            if len(model_short) > 28:
+                model_short = model_short[:25] + "..."
+            ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")

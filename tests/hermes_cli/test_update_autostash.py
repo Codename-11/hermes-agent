@@ -1489,6 +1489,29 @@ def test_fork_watch_area_pytest_checks_reference_existing_files():
     assert missing == []
 
 
+def test_desktop_focused_checks_reference_typescript_sources():
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = Path(__file__).resolve().parents[2]
+    desktop_areas = [
+        area
+        for area in hermes_axiom_update.FORK_WATCH_AREAS
+        if str(area["name"]).startswith("Desktop ")
+    ]
+
+    assert desktop_areas
+    for area in desktop_areas:
+        paths = area["paths"]
+        checks = area["checks"]
+        assert isinstance(paths, tuple)
+        assert isinstance(checks, tuple)
+        for path in paths:
+            if path.endswith((".ts", ".tsx")):
+                assert (repo / path).exists(), path
+        for check in checks:
+            assert ".cjs" not in check, check
+
+
 def test_slack_focused_checks_reference_existing_files():
     from pathlib import Path
 

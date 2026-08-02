@@ -65,29 +65,28 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
     {
         "name": "Desktop OAuth remote artifact opening",
         "paths": (
-            "apps/desktop/electron/main.cjs",
-            "apps/desktop/electron/preload.cjs",
+            "apps/desktop/electron/main.ts",
+            "apps/desktop/electron/preload.ts",
             "apps/desktop/src/global.d.ts",
             "apps/desktop/src/app/artifacts/",
             "apps/desktop/src/lib/media",
         ),
         "checks": (
-            "cd apps/desktop && node --check electron/main.cjs && node --check electron/preload.cjs",
             "cd apps/desktop && npx vitest run --environment jsdom src/lib/media.remote.test.ts src/lib/desktop-fs.test.ts src/app/artifacts/index.test.ts",
-            "cd apps/desktop && npm run typecheck",
+            "cd apps/desktop && NODE_ENV=test npm run typecheck",
         ),
     },
     {
         "name": "Desktop remote profile handles / remote routing",
         "paths": (
-            "apps/desktop/electron/connection-config.cjs",
-            "apps/desktop/electron/main.cjs",
+            "apps/desktop/electron/connection-config.ts",
+            "apps/desktop/electron/main.ts",
             "apps/desktop/src/store/profile.ts",
             "apps/desktop/src/app/settings/gateway-settings.tsx",
         ),
         "checks": (
-            "cd apps/desktop && node --test electron/connection-config.test.cjs",
-            "cd apps/desktop && npm run typecheck",
+            "cd apps/desktop && NODE_ENV=test npx vitest run --project electron electron/connection-config.test.ts",
+            "cd apps/desktop && NODE_ENV=test npm run typecheck",
         ),
     },
     {

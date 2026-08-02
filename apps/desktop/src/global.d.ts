@@ -2,6 +2,7 @@ import type { GatewayWsUrlResult } from '@hermes/shared'
 
 import type { ProfileInfo } from '@/types/hermes'
 
+import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
   PetOverlayControl,
@@ -44,6 +45,11 @@ declare global {
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
       claimAmbientCue: (key: string) => Promise<boolean>
+      wakeIndicator?: {
+        getState: () => Promise<WakeIndicatorState>
+        setState: (state: WakeIndicatorState) => void
+        onState: (callback: (state: WakeIndicatorState) => void) => () => void
+      }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -550,6 +556,7 @@ export interface DesktopConnectionConfig {
   sshPort: number | null
   sshKeyPath: string
   sshRemoteHermesPath: string
+  sshRemoteProfile: string
 }
 
 export interface DesktopConnectionConfigInput {
@@ -568,6 +575,7 @@ export interface DesktopConnectionConfigInput {
   sshPort?: number | null
   sshKeyPath?: string
   sshRemoteHermesPath?: string
+  sshRemoteProfile?: string
 }
 
 export interface DesktopPinRemoteProfileInput extends DesktopConnectionConfigInput {

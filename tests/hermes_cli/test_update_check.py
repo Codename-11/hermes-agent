@@ -87,7 +87,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         calls.append(cmd)
         if cmd == ["git", "remote", "get-url", "origin"]:
             return MagicMock(returncode=0, stdout="https://github.com/Codename-11/hermes-agent.git\n")
-        if cmd == ["git", "fetch", "origin", "--quiet"]:
+        if cmd == ["git", "fetch", "origin", "main", "--quiet"]:
             return MagicMock(returncode=0, stdout="")
         if cmd == ["git", "remote", "get-url", "upstream"]:
             return MagicMock(returncode=1, stdout="")
@@ -104,7 +104,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     assert result == 5
     assert ["git", "remote", "get-url", "origin"] in calls
     assert ["git", "rev-parse", "--is-shallow-repository"] in calls
-    assert ["git", "fetch", "origin", "--quiet"] in calls
+    assert ["git", "fetch", "origin", "main", "--quiet"] in calls
     assert ["git", "remote", "get-url", "upstream"] in calls
     assert ["git", "rev-parse", "--abbrev-ref", "HEAD"] in calls
     assert ["git", "rev-list", "--count", "HEAD..origin/main"] in calls
@@ -126,7 +126,7 @@ def test_check_for_updates_deploy_branch_uses_origin_deploy_baseline(tmp_path, m
             return MagicMock(returncode=0, stdout="https://github.com/Codename-11/hermes-agent.git\n")
         if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
             return MagicMock(returncode=0, stdout="false\n")
-        if cmd == ["git", "fetch", "origin", "--quiet"]:
+        if cmd == ["git", "fetch", "origin", "axiom", "--quiet"]:
             return MagicMock(returncode=0, stdout="")
         if cmd == ["git", "remote", "get-url", "upstream"]:
             return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
@@ -147,6 +147,7 @@ def test_check_for_updates_deploy_branch_uses_origin_deploy_baseline(tmp_path, m
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         assert banner.check_for_updates() == 5
 
+    assert ["git", "fetch", "origin", "axiom", "--quiet"] in calls
     assert ["git", "rev-list", "--count", "HEAD..origin/axiom"] in calls
     assert ["git", "rev-list", "--count", "origin/axiom..upstream/main"] in calls
 
