@@ -51,8 +51,9 @@ function backendBreakdown(status: DesktopUpdateStatus | null, target: UpdateTarg
   const deployBehind = status.deployBehind ?? 0
   const upstreamBehind = status.upstreamBehind ?? 0
 
-  if (deployBehind > 0) parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
-  if (upstreamBehind > 0) parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
+  if (deployBehind > 0) {parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)}
+
+  if (upstreamBehind > 0) {parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)}
 
   if (parts.length > 0) {
     return `Pending backend update: ${parts.join(', ')}. Hermes update will reconcile upstream into the deploy branch and refresh the running backend.`

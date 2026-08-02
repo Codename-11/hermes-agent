@@ -370,6 +370,17 @@ class TestFailureAttribution:
     """
 
     def _make_pool(self, tmp_path, monkeypatch, entries):
+        # Keep this fixture independent of the developer's live Anthropic/
+        # Claude credentials. ``load_pool`` intentionally seeds credentials
+        # from both the process environment and the user's Claude home, which
+        # would invalidate tests whose contract depends on an exact pool size.
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        for key in (
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)

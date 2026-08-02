@@ -546,41 +546,17 @@ venv/bin/python -m py_compile cron/scheduler.py
 venv/bin/python -m pytest -o 'addopts=' -q tests/cron/test_scheduler.py::TestCronFailureSummary
 ```
 
-### 11. A2A reconnect contract
+### 11. RETIRED — A2A reconnect carry
 
-Commit:
-
-- `fbe2a6c38d` — `fix(a2a): restore reconnect adapter contract`
-
-Primary file:
-
-- `plugins/platforms/a2a/adapter.py`
-
-Why TGI needs it:
-
-- The gateway reconnect watcher calls every platform adapter with `connect(is_reconnect=...)`.
-- A later A2A plugin rewrite regressed to a bare `connect(self)` signature, leaving Atlas/default A2A disconnected after the 2026-07-21 update.
-
-Required behavior:
-
-- `A2AAdapter.connect` accepts the keyword-only `is_reconnect: bool = False` contract and otherwise keeps the same cold-start/server behavior.
-- The static adapter contract test must include A2A so future plugin rewrites cannot silently drop the parameter.
-
-Retirement criteria:
-
-- Upstream's A2A plugin ships the same reconnect-compatible signature and contract coverage.
-
-Focused checks:
-
-```bash
-venv/bin/python -m pytest -o 'addopts=' -q \
-  tests/gateway/test_adapter_connect_is_reconnect_contract.py \
-  tests/plugins/test_a2a_plugin.py
-```
-
-Live verification:
-
-- Default/Atlas gateway logs `✓ a2a connected` and listens in authenticated remote mode on `100.84.156.70:9900`.
+- **Former carry:** `fbe2a6c38d` (`fix(a2a): restore reconnect adapter contract`).
+- **Retired:** 2026-08-02 after upstream merged A2A v1 in PR #77109.
+- **Replacement:** upstream's adapter accepts gateway reconnect kwargs and ships
+  substantially broader protocol, integration, and conformance coverage.
+- **Resolution:** `plugins/platforms/a2a/*` and its tests now follow upstream;
+  do not reapply the old TGI overlay.
+- **Surviving seam:** `hermes_cli/plugins.py` still eagerly loads an explicitly
+  enabled bundled platform plugin so A2A's outbound tools register. Keep the
+  generic plugin discovery regression test until upstream absorbs that behavior.
 
 ## Current known update/build pitfalls
 
