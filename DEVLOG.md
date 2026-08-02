@@ -1,5 +1,18 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-02 — Retire the A2A carry into upstream v1
+
+### Summary
+
+Merged upstream's accepted A2A v1 implementation from PR #77109, retiring Axiom's temporary PR #41711 plugin carry while preserving the generic plugin-loader behavior required for enabled platform plugins that also expose tools.
+
+### What changed
+
+- Replaced `plugins/platforms/a2a/*` and the original A2A test file with upstream's protocol-v1 implementation and added upstream's Phase 2/3 coverage.
+- Retired Axiom's notice-prefix workaround in favor of upstream's gateway `metadata["notify"]` final-reply contract.
+- Preserved `9c06b9874`, which eagerly loads explicitly enabled bundled platform plugins so their toolsets register and appear in `hermes tools`.
+- Marked the old carry, TGI overlay, and #41711 watcher for retirement rather than continuing to treat them as protected fork surface.
+
 ## 2026-07-25 — Collapse deploy updates to one command
 
 ### Summary
