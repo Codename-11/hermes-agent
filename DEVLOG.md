@@ -13,6 +13,18 @@ Merged upstream's accepted A2A v1 implementation from PR #77109, retiring Axiom'
 - Preserved `9c06b9874`, which eagerly loads explicitly enabled bundled platform plugins so their toolsets register and appear in `hermes tools`.
 - Marked the old carry, TGI overlay, and #41711 watcher for retirement rather than continuing to treat them as protected fork surface.
 
+## 2026-08-02 — Stream auto-resolver progress without weakening validation
+
+### Summary
+
+Restored live visibility into deploy-branch conflict resolution. The autonomous Hermes resolver now uses visible non-interactive chat and streams its transcript to the terminal and messaging `/update` output instead of leaving the operator at a silent `agent resolve` phase for the duration of the session.
+
+### What changed
+
+- Replaced the final-response-only `hermes -z` child with non-interactive `hermes chat -q` plus a line-buffered tee that streams tool progress and merged stdout/stderr while retaining a bounded transcript tail for failure diagnostics.
+- Framed the child session as advisory and kept parent-side conflict-marker checks, focused verification, commit, push, and live fast-forward as the authoritative result.
+- Kept the one-command auto-resolve workflow and all existing sensitive-path and live-checkout isolation gates.
+
 ## 2026-07-25 — Collapse deploy updates to one command
 
 ### Summary

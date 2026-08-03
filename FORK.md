@@ -109,7 +109,7 @@ _detect_windows_gateway_launcher_instances
 
 Plus fork-only update metadata constants such as `DEPLOY_HANDOFF_FILE`, `UPDATE_REVIEW_DIR`, and `FORK_WATCH_AREAS`.
 
-**Conflict-review / resolve carry:** deploy-branch merge conflicts automatically generate a visible operator review and full markdown report under `~/.hermes/update-reports/`. The LLM summary is best-effort/advisory only; if auxiliary LLM review fails, the updater prints and writes a deterministic brief. Bare `hermes update` runs the non-interactive Hermes resolver in the retained worktree, validates no unmerged files/conflict markers remain, runs matched focused checks, commits/pushes `HEAD:<deploy>`, fast-forwards the live checkout, clears `.update_handoff.json`, and continues the normal install/restart phase. Hard safety failures retain the worktree without mutating live source.
+**Conflict-review / resolve carry:** deploy-branch merge conflicts automatically generate a visible operator review and full markdown report under `~/.hermes/update-reports/`. The LLM summary is best-effort/advisory only; if auxiliary LLM review fails, the updater prints and writes a deterministic brief. Bare `hermes update` runs the non-interactive Hermes resolver in the retained worktree and streams its transcript under an explicit advisory banner. The parent updater remains authoritative: it validates no unmerged files/conflict markers remain, runs matched focused checks, commits/pushes `HEAD:<deploy>`, fast-forwards the live checkout, clears `.update_handoff.json`, and continues the normal install/restart phase. Hard safety failures retain the worktree without mutating live source.
 
 **Seam contract:**
 - `main.py` imports the public seam helpers from `hermes_cli.axiom_update` at module load
@@ -287,7 +287,7 @@ Protected behavior:
 - Axiom deploy branch strategy remains explicit: upstream is reconciled into `origin/axiom` in a temporary worktree before the live checkout fast-forwards.
 - `hermes update` / update checks understand fork deploy branches and do not incorrectly declare up-to-date by checking only `origin`.
 - Deploy branch updates are transactional and preserve rescue prompts for stash/merge conflicts.
-- Deploy-branch merge conflicts automatically print an `Update conflict review`, write a full markdown report under `~/.hermes/update-reports/`, and use LLM review only as a best-effort advisory layer with deterministic fallback. Bare `hermes update` runs the resolver agent in the retained worktree, validates focused checks, pushes, fast-forwards, and finishes install/restart; safety failures leave live source untouched.
+- Deploy-branch merge conflicts automatically print an `Update conflict review`, write a full markdown report under `~/.hermes/update-reports/`, and use LLM review only as a best-effort advisory layer with deterministic fallback. Bare `hermes update` streams the resolver agent's advisory transcript from the retained worktree, then independently validates focused checks, pushes, fast-forwards, and finishes install/restart; safety failures leave live source untouched.
 - The first host to observe upstream work publishes one reconciled `origin/<deploy>` artifact. Later hosts fast-forward to it rather than repeating the same resolution.
 - Update path can restart named profile gateway services without leaking profile env between processes.
 - Update path excludes systemd-managed dashboard/Desktop child processes from unsafe kill sweeps.

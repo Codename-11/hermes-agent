@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from io import StringIO
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
@@ -1078,6 +1079,8 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     out = capsys.readouterr().out
     assert "prepare resolve" in out
     assert "agent resolve" in out
+    assert "Live Hermes resolver session (advisory)" in out
+    assert "authoritative parent validation" in out
     assert "sync live" in out
     assert "resolved handoff" in out
     assert "Resolved deploy handoff" in out
@@ -1439,36 +1442,91 @@ def test_focused_pytest_check_is_unavailable_without_pytest(monkeypatch, tmp_pat
     ]
 
 
-def test_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
+def test_update_resolver_agent_uses_visible_noninteractive_chat(monkeypatch, tmp_path):
     from hermes_cli import axiom_update as hermes_axiom_update
 
     calls = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        return SimpleNamespace(returncode=0)
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = StringIO("inspecting conflict\nresolved file\n")
+            self.returncode = 0
+            self.killed = False
 
-    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+        def wait(self, timeout=None):
+            assert timeout == 3600
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "Popen", fake_popen)
 
     result = hermes_axiom_update._run_update_resolver_agent("resolve this", tmp_path)
 
     assert result.returncode == 0
     cmd, kwargs = calls[0]
     assert cmd[:4] == [sys.executable, "-P", "-m", "hermes_cli.main"]
-    assert "-z" in cmd
-    assert "chat" not in cmd
+    assert "chat" in cmd
+    assert "-z" not in cmd
     assert "-Q" not in cmd
-    assert cmd[cmd.index("-z") + 1] == "resolve this"
+    assert cmd[cmd.index("-q") + 1] == "resolve this"
     assert "terminal,file,search,skills" in cmd
+    assert cmd[cmd.index("--source") + 1] == "update-resolver"
+    assert "--yolo" in cmd
     assert kwargs["cwd"] == tmp_path
     assert kwargs["env"]["HERMES_UPDATE_RESOLVE"] == "1"
     resolver_source = Path(hermes_axiom_update.__file__).resolve().parents[1]
     assert kwargs["env"]["PYTHONPATH"].split(hermes_axiom_update.os.pathsep)[0] == str(
         resolver_source
     )
-    assert kwargs["capture_output"] is True
+    assert kwargs["stdin"] is hermes_axiom_update.subprocess.DEVNULL
+    assert kwargs["stdout"] is hermes_axiom_update.subprocess.PIPE
+    assert kwargs["stderr"] is hermes_axiom_update.subprocess.STDOUT
+    assert kwargs["bufsize"] == 1
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
+    assert result.stdout == "inspecting conflict\nresolved file\n"
+
+
+def test_update_resolver_agent_streams_advisory_transcript(monkeypatch, tmp_path, capsys):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    class FakeStream:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            return iter(["tool: read_file\n", "\n", "resolver summary\n"])
+
+        def close(self):
+            self.closed = True
+
+    stream = FakeStream()
+    process = SimpleNamespace(
+        stdout=stream,
+        wait=lambda timeout=None: 0,
+        kill=lambda: pytest.fail("successful resolver must not be killed"),
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update.subprocess,
+        "Popen",
+        lambda *args, **kwargs: process,
+    )
+
+    result = hermes_axiom_update._run_update_resolver_agent("resolve", tmp_path)
+
+    out = capsys.readouterr().out
+    assert "  │ tool: read_file" in out
+    assert "  │\n" in out
+    assert "  │ resolver summary" in out
+    assert stream.closed is True
+    assert result.returncode == 0
+    assert result.stdout.endswith("resolver summary\n")
 
 
 def test_fork_watch_area_pytest_checks_reference_existing_files():

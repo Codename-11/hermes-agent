@@ -35,6 +35,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -1049,9 +1051,10 @@ Do not push or run `hermes update` yourself; the parent updater will validate, c
 def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.CompletedProcess:
     """Run a non-interactive Hermes resolver session in the retained worktree.
 
-    The parent updater owns user-facing progress and validation. Capture the
-    child agent's transcript so optimistic final self-reports do not appear as
-    authoritative status before the parent has verified the worktree.
+    Stream the child transcript so a long conflict resolution is observable,
+    while retaining a bounded tail for failure diagnostics. The caller frames
+    this output as advisory because the parent updater still owns validation,
+    publication, and the final user-facing result.
     """
     timeout = int(os.environ.get("HERMES_UPDATE_RESOLVE_TIMEOUT", "3600") or "3600")
     resolver_source = str(Path(__file__).resolve().parents[1])
@@ -1060,10 +1063,14 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         "-P",
         "-m",
         "hermes_cli.main",
-        "-z",
+        "chat",
+        "-q",
         prompt,
         "-t",
         "terminal,file,search,skills",
+        "--source",
+        "update-resolver",
+        "--yolo",
     ]
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     pythonpath = os.pathsep.join(
@@ -1075,15 +1082,57 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         "HERMES_UPDATE_RESOLVE": "1",
         "PYTHONPATH": pythonpath,
     }
-    return subprocess.run(
+    process = subprocess.Popen(
         cmd,
         cwd=worktree,
         env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout,
-        capture_output=True,
+        bufsize=1,
+    )
+    if process.stdout is None:
+        process.kill()
+        raise RuntimeError("Resolver subprocess did not expose an output stream")
+
+    transcript_tail: deque[str] = deque(maxlen=200)
+
+    def _pump_output() -> None:
+        assert process.stdout is not None
+        try:
+            for raw_line in process.stdout:
+                transcript_tail.append(raw_line)
+                line = raw_line.rstrip("\r\n")
+                print(f"  │ {line}" if line else "  │", flush=True)
+        finally:
+            process.stdout.close()
+
+    pump = threading.Thread(
+        target=_pump_output,
+        name="hermes-update-resolver-output",
+        daemon=True,
+    )
+    pump.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.wait()
+        pump.join()
+        raise subprocess.TimeoutExpired(
+            cmd,
+            timeout,
+            output="".join(transcript_tail),
+        ) from exc
+    pump.join()
+    return subprocess.CompletedProcess(
+        cmd,
+        returncode,
+        stdout="".join(transcript_tail),
+        stderr="",
     )
 
 
@@ -1235,7 +1284,10 @@ def _resolve_deploy_handoff(
 
     checks = _focused_checks_for_paths(conflict_files, payload)
     status.advance("agent resolve")
+    print("  ┌─ Live Hermes resolver session (advisory)", flush=True)
+    print("  │ Parent validation, focused checks, commit, and push still follow.", flush=True)
     result = _run_update_resolver_agent(_build_deploy_resolver_prompt({**payload, "conflict_files": conflict_files}, checks), worktree)
+    print("  └─ Resolver exited; starting authoritative parent validation.", flush=True)
     if result.returncode != 0:
         status.fail(note="resolver agent failed")
         print("✗ Resolver agent failed; retained worktree was left untouched for manual review.")
