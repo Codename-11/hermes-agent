@@ -1,5 +1,22 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-03 — Recover unscoped cross-profile session reads
+
+### Summary
+
+Restored Discord transcript loading for older Desktop request paths that selected a row from the cross-profile messaging list but omitted its owning `profile` from subsequent session detail/message reads.
+
+### What changed
+
+- Unscoped read-only session detail, transcript, and latest-descendant endpoints now fall back across named profile databases only when the requested ID has exactly one owner.
+- Explicitly scoped requests remain authoritative, and ambiguous IDs still return not found; mutation endpoints do not cross profile boundaries.
+- Added regression coverage for both unique-owner recovery and collision rejection.
+
+### Verification
+
+- Focused endpoint suite: 5 passed.
+- Live unscoped read of Mizu Discord session `20260803_085708_54d1eac3` resolved to profile `mizu` and returned 243 messages.
+
 ## 2026-08-02 — Retire the A2A carry into upstream v1
 
 ### Summary

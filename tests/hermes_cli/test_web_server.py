@@ -1604,6 +1604,45 @@ class TestWebServerEndpoints:
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_get_session_messages_finds_unique_profile_owner_when_scope_omitted(self):
+        """Older Desktop builds omitted ``?profile=`` when opening a row from
+        the cross-profile messaging list.  A read may recover only when exactly
+        one named profile owns the id; it must never guess between collisions.
+        """
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profile_db = SessionDB(db_path=profiles_mod.get_profile_dir("mizu") / "state.db")
+        try:
+            profile_db.create_session(session_id="legacy-desktop-discord", source="discord")
+            profile_db.append_message(
+                session_id="legacy-desktop-discord",
+                role="user",
+                content="history survives profile routing",
+            )
+        finally:
+            profile_db.close()
+
+        response = self.client.get("/api/sessions/legacy-desktop-discord/messages")
+
+        assert response.status_code == 200
+        assert response.json()["messages"][0]["content"] == "history survives profile routing"
+
+    def test_get_session_messages_rejects_ambiguous_profile_owner_when_scope_omitted(self):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        for profile in ("mizu", "mizuki"):
+            profile_db = SessionDB(db_path=profiles_mod.get_profile_dir(profile) / "state.db")
+            try:
+                profile_db.create_session(session_id="ambiguous-discord", source="discord")
+            finally:
+                profile_db.close()
+
+        response = self.client.get("/api/sessions/ambiguous-discord/messages")
+
+        assert response.status_code == 404
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""
