@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli import fork_update
 from hermes_cli import main as cli_main
+from hermes_cli import update_cmd
 
 
 def _ns(**kw):
@@ -325,6 +327,71 @@ def _collect_codesign_calls(monkeypatch):
     )
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
     return calls
+
+
+def test_update_desktop_install_intent_survives_missing_shortcut_target(tmp_path, monkeypatch):
+    """The update pipeline must rebuild when only a Windows shortcut survives."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda _path: None)
+    monkeypatch.setattr(cli_main, "_desktop_dist_exists", lambda _path: False)
+    monkeypatch.setattr(cli_main, "_desktop_shortcut_exists", lambda: True)
+
+    assert update_cmd._desktop_install_intent(desktop_dir) is True
+
+
+def test_desktop_shortcut_exists_uses_windows_known_folders(tmp_path, monkeypatch):
+    redirected_desktop = tmp_path / "Bureau Réorienté"
+    redirected_programs = tmp_path / "Redirected Programs"
+    redirected_desktop.mkdir()
+    redirected_programs.mkdir()
+    (redirected_desktop / "Hermes.lnk").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(fork_update.sys, "platform", "win32")
+    monkeypatch.setattr(fork_update.shutil, "which", lambda _name: "powershell.exe")
+    def fake_run(*args, **kwargs):
+        assert kwargs["encoding"] == "utf-8"
+        assert "OutputEncoding" in args[0][-1]
+        return subprocess.CompletedProcess(
+            args[0], 0, stdout=f"{redirected_programs}\n{redirected_desktop}\n", stderr=""
+        )
+
+    monkeypatch.setattr(fork_update.subprocess, "run", fake_run)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    assert fork_update._desktop_shortcut_exists() is True
+
+
+def test_desktop_shortcut_exists_falls_back_after_known_folder_decode_error(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    desktop = profile / "Desktop"
+    desktop.mkdir(parents=True)
+    (desktop / "Hermes.lnk").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(fork_update.sys, "platform", "win32")
+    monkeypatch.setattr(fork_update.shutil, "which", lambda _name: "powershell.exe")
+    monkeypatch.setattr(
+        fork_update.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            UnicodeDecodeError("utf-8", b"\x82", 0, 1, "invalid start byte")
+        ),
+    )
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    assert fork_update._desktop_shortcut_exists() is True
+
+
+def test_update_desktop_install_intent_is_false_without_desktop_install(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda _path: None)
+    monkeypatch.setattr(cli_main, "_desktop_dist_exists", lambda _path: False)
+    monkeypatch.setattr(cli_main, "_desktop_shortcut_exists", lambda: False)
+
+    assert update_cmd._desktop_install_intent(desktop_dir) is False
 
 
 def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatch):

@@ -205,17 +205,54 @@ def _desktop_shortcut_exists() -> bool:
     if sys.platform != "win32":
         return False
 
-    candidates: list[Path] = []
+    shortcut_dirs: list[Path] = []
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if powershell:
+        try:
+            result = subprocess.run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-Command",
+                    "$encoding = [System.Text.UTF8Encoding]::new($false); "
+                    "[Console]::OutputEncoding = $encoding; "
+                    "$OutputEncoding = $encoding; "
+                    "[Environment]::GetFolderPath('Programs'); "
+                    "[Environment]::GetFolderPath('Desktop')",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                check=False,
+            )
+            if result.returncode == 0:
+                shortcut_dirs.extend(
+                    Path(line.strip())
+                    for line in (result.stdout or "").splitlines()
+                    if line.strip()
+                )
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            pass
+
+    # Fall back to conventional locations when Known Folder lookup is not
+    # available. Keep these candidates even after a successful lookup to
+    # detect shortcuts left behind by older installers.
     userprofile = os.environ.get("USERPROFILE")
     appdata = os.environ.get("APPDATA")
     if userprofile:
-        desktop = Path(userprofile) / "Desktop"
-        candidates.extend([desktop / "Hermes.lnk", desktop / "Hermes Desktop.lnk"])
+        shortcut_dirs.append(Path(userprofile) / "Desktop")
     if appdata:
-        programs = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-        candidates.extend([programs / "Hermes.lnk", programs / "Hermes Desktop.lnk"])
+        shortcut_dirs.append(
+            Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        )
 
-    return any(path.exists() for path in candidates)
+    shortcut_names = ("Hermes.lnk", "Hermes Desktop.lnk")
+    return any(
+        (shortcut_dir / shortcut_name).exists()
+        for shortcut_dir in shortcut_dirs
+        for shortcut_name in shortcut_names
+    )
 
 
 def _get_dashboard_service_pids() -> set:

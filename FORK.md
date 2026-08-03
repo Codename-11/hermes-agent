@@ -128,6 +128,7 @@ Required behavior:
 - `hermes version` should show the deploy branch and preview both pending deploy-branch commits and pending upstream commits.
 - Resolver failures leave the live checkout unchanged and retain enough worktree/report context for safe retry or manual recovery.
 - After a manual push to `origin/tgi`, rerunning `hermes update --yes` fast-forwards live cleanly and refreshes install state.
+- On Windows, an existing Hermes Desktop shortcut is durable install intent. `hermes update` must rebuild Desktop when source changed even if a failed or interrupted package step removed the source-tree `release/` and `dist/` artifacts.
 
 Retirement criteria:
 

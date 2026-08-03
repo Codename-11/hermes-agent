@@ -491,6 +491,7 @@ from hermes_cli.fork_update import (  # noqa: E402  (fork seam)
     DEPLOY_BRANCHES,
     _completed_deploy_handoff_requires_post_update,
     _count_changed_from_pre_update,
+    _desktop_shortcut_exists,
     _deploy_handoff_exists_for,
     _deploy_handoff_marker_path,
     _preserve_deploy_branch_stash,
