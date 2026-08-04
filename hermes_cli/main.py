@@ -8719,6 +8719,7 @@ def _verify_console_scripts_installed(
             )
         except subprocess.CalledProcessError as e:
             logger.warning("console script verification: pip fallback failed: %s", e)
+            raise
 
     still_missing = _missing()
     if still_missing:

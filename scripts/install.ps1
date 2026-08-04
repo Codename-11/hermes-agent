@@ -2364,6 +2364,10 @@ print(','.join(scripts))
                         Write-Warn "uv did not restore every entry point: $($stillMissing -join ', ')"
                         Write-Info "Retrying with the venv's pip without resolving dependencies..."
                         Invoke-NativeWithRelaxedErrorAction { & $pythonExe -m pip install --force-reinstall --no-deps -e . }
+                        $pipFallbackExit = $LASTEXITCODE
+                        if ($pipFallbackExit -ne 0) {
+                            throw "venv pip entry-point repair failed with exit code $pipFallbackExit. Close other Hermes processes and re-run the installer."
+                        }
                         $stillMissing = @()
                         foreach ($name in $expected) {
                             $exe = Join-Path $scriptsDir "$name.exe"

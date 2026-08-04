@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -99,6 +100,28 @@ class TestVerifyConsoleScriptsInstalled:
 
             with pytest.raises(RuntimeError, match="console entry points remain missing"):
                 _verify_console_scripts_installed(["uv", "pip"], env={})
+
+    def test_propagates_failed_pip_fallback_even_if_it_creates_shims(
+        self, temp_pyproject, fake_scripts_dir
+    ):
+        python_exe = fake_scripts_dir / "python.exe"
+        python_exe.write_bytes(b"fake")
+
+        def fake_install(cmd, *, env, scripts_dir):
+            if cmd[0] == str(python_exe):
+                for name in ("hermes", "hermes-agent", "hermes-acp"):
+                    (fake_scripts_dir / f"{name}.exe").write_bytes(b"fake")
+                raise subprocess.CalledProcessError(7, cmd)
+
+        with patch("hermes_cli.main._is_windows", return_value=True), \
+             patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts_dir), \
+             patch("hermes_cli.main._run_quarantined_install", side_effect=fake_install):
+            from hermes_cli.main import _verify_console_scripts_installed
+
+            with pytest.raises(subprocess.CalledProcessError) as exc_info:
+                _verify_console_scripts_installed(["uv", "pip"], env={})
+
+        assert exc_info.value.returncode == 7
 
 
 

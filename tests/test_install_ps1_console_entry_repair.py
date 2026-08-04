@@ -48,3 +48,19 @@ def test_entry_point_repair_fails_install_if_launchers_remain_missing(
     assert install_dependencies.index(pip_fallback) < install_dependencies.index(
         fatal_postcondition
     )
+
+
+def test_entry_point_repair_fails_if_pip_fallback_exits_nonzero(
+    install_dependencies: str,
+):
+    pip_fallback = (
+        "& $pythonExe -m pip install --force-reinstall --no-deps -e ."
+    )
+    capture_exit = "$pipFallbackExit = $LASTEXITCODE"
+    reject_failure = "if ($pipFallbackExit -ne 0)"
+
+    fallback_index = install_dependencies.index(pip_fallback)
+    capture_index = install_dependencies.index(capture_exit)
+    reject_index = install_dependencies.index(reject_failure)
+
+    assert fallback_index < capture_index < reject_index
