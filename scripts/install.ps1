@@ -2363,6 +2363,21 @@ print(','.join(scripts))
                     if ($stillMissing.Count -gt 0) {
                         Write-Warn "uv did not restore every entry point: $($stillMissing -join ', ')"
                         Write-Info "Retrying with the venv's pip without resolving dependencies..."
+                        Invoke-NativeWithRelaxedErrorAction { & $pythonExe -m pip --version >$null 2>&1 }
+                        $pipProbeExit = $LASTEXITCODE
+                        if ($pipProbeExit -ne 0) {
+                            Write-Info "venv pip is unavailable; bootstrapping it with ensurepip..."
+                            Invoke-NativeWithRelaxedErrorAction { & $pythonExe -m ensurepip --upgrade }
+                            $ensurePipExit = $LASTEXITCODE
+                            if ($ensurePipExit -ne 0) {
+                                throw "Could not bootstrap pip in the Hermes venv (exit code $ensurePipExit). Re-run the installer after checking the Python installation."
+                            }
+                            Invoke-NativeWithRelaxedErrorAction { & $pythonExe -m pip --version >$null 2>&1 }
+                            $pipVerifyExit = $LASTEXITCODE
+                            if ($pipVerifyExit -ne 0) {
+                                throw "pip remains unavailable in the Hermes venv after ensurepip (exit code $pipVerifyExit)."
+                            }
+                        }
                         Invoke-NativeWithRelaxedErrorAction { & $pythonExe -m pip install --force-reinstall --no-deps -e . }
                         $pipFallbackExit = $LASTEXITCODE
                         if ($pipFallbackExit -ne 0) {

@@ -41,6 +41,34 @@ def fake_scripts_dir(tmp_path):
 
 
 class TestVerifyConsoleScriptsInstalled:
+    def test_ensure_venv_pip_bootstraps_when_probe_fails(self, tmp_path):
+        python_exe = tmp_path / "python.exe"
+        python_exe.write_bytes(b"fake")
+        probe = subprocess.CompletedProcess([], 1)
+        bootstrapped = subprocess.CompletedProcess([], 0)
+        verified = subprocess.CompletedProcess([], 0)
+
+        with patch(
+            "hermes_cli.main.subprocess.run",
+            side_effect=[probe, bootstrapped, verified],
+        ) as mock_run:
+            from hermes_cli.main import _ensure_venv_pip
+
+            _ensure_venv_pip(python_exe, env={"VIRTUAL_ENV": "fake"})
+
+        assert mock_run.call_args_list[0].args[0] == [
+            str(python_exe), "-m", "pip", "--version"
+        ]
+        assert mock_run.call_args_list[0].kwargs["check"] is False
+        assert mock_run.call_args_list[1].args[0] == [
+            str(python_exe), "-m", "ensurepip", "--upgrade"
+        ]
+        assert mock_run.call_args_list[1].kwargs["check"] is True
+        assert mock_run.call_args_list[2].args[0] == [
+            str(python_exe), "-m", "pip", "--version"
+        ]
+        assert mock_run.call_args_list[2].kwargs["check"] is True
+
     def test_no_action_when_all_shims_present(self, temp_pyproject, fake_scripts_dir):
         for name in ("hermes", "hermes-agent", "hermes-acp"):
             (fake_scripts_dir / f"{name}.exe").write_bytes(b"fake")
@@ -60,16 +88,22 @@ class TestVerifyConsoleScriptsInstalled:
         python_exe = fake_scripts_dir / "python.exe"
         python_exe.write_bytes(b"fake")
         calls = []
+        events = []
 
         def fake_install(cmd, *, env, scripts_dir):
             calls.append(cmd)
+            events.append("install")
             if cmd[0] == str(python_exe):
                 for name in ("hermes", "hermes-agent", "hermes-acp"):
                     (fake_scripts_dir / f"{name}.exe").write_bytes(b"fake")
 
         with patch("hermes_cli.main._is_windows", return_value=True), \
              patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts_dir), \
-             patch("hermes_cli.main._run_quarantined_install", side_effect=fake_install):
+             patch("hermes_cli.main._run_quarantined_install", side_effect=fake_install), \
+             patch(
+                 "hermes_cli.main._ensure_venv_pip",
+                 side_effect=lambda *_a, **_k: events.append("ensure-pip"),
+             ):
             from hermes_cli.main import _verify_console_scripts_installed
 
             _verify_console_scripts_installed(["uv", "pip"], env={"VIRTUAL_ENV": "fake"})
@@ -87,6 +121,7 @@ class TestVerifyConsoleScriptsInstalled:
                 ".",
             ],
         ]
+        assert events == ["install", "ensure-pip", "install"]
 
     def test_raises_when_uv_and_pip_leave_shims_missing(
         self, temp_pyproject, fake_scripts_dir
@@ -95,7 +130,8 @@ class TestVerifyConsoleScriptsInstalled:
 
         with patch("hermes_cli.main._is_windows", return_value=True), \
              patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts_dir), \
-             patch("hermes_cli.main._run_quarantined_install"):
+             patch("hermes_cli.main._run_quarantined_install"), \
+             patch("hermes_cli.main._ensure_venv_pip"):
             from hermes_cli.main import _verify_console_scripts_installed
 
             with pytest.raises(RuntimeError, match="console entry points remain missing"):
@@ -115,7 +151,8 @@ class TestVerifyConsoleScriptsInstalled:
 
         with patch("hermes_cli.main._is_windows", return_value=True), \
              patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts_dir), \
-             patch("hermes_cli.main._run_quarantined_install", side_effect=fake_install):
+             patch("hermes_cli.main._run_quarantined_install", side_effect=fake_install), \
+             patch("hermes_cli.main._ensure_venv_pip"):
             from hermes_cli.main import _verify_console_scripts_installed
 
             with pytest.raises(subprocess.CalledProcessError) as exc_info:

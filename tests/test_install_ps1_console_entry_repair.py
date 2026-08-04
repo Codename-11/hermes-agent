@@ -64,3 +64,23 @@ def test_entry_point_repair_fails_if_pip_fallback_exits_nonzero(
     reject_index = install_dependencies.index(reject_failure)
 
     assert fallback_index < capture_index < reject_index
+
+
+def test_entry_point_repair_bootstraps_pip_before_fallback(
+    install_dependencies: str,
+):
+    pip_probe = "& $pythonExe -m pip --version"
+    ensurepip = "& $pythonExe -m ensurepip --upgrade"
+    ensurepip_exit = "$ensurePipExit = $LASTEXITCODE"
+    reject_ensurepip_failure = "if ($ensurePipExit -ne 0)"
+    pip_fallback = (
+        "& $pythonExe -m pip install --force-reinstall --no-deps -e ."
+    )
+
+    probe_index = install_dependencies.index(pip_probe)
+    ensurepip_index = install_dependencies.index(ensurepip)
+    exit_index = install_dependencies.index(ensurepip_exit)
+    reject_index = install_dependencies.index(reject_ensurepip_failure)
+    fallback_index = install_dependencies.index(pip_fallback)
+
+    assert probe_index < ensurepip_index < exit_index < reject_index < fallback_index

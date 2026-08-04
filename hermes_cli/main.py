@@ -8638,6 +8638,38 @@ def _load_console_script_names() -> list[str]:
         return []
 
 
+def _ensure_venv_pip(
+    python_exe: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Ensure a uv-created venv has pip before using the repair fallback."""
+    probe_cmd = [str(python_exe), "-m", "pip", "--version"]
+    probe = subprocess.run(
+        probe_cmd,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if probe.returncode == 0:
+        return
+
+    print("  → venv pip is unavailable; bootstrapping it with ensurepip...")
+    subprocess.run(
+        [str(python_exe), "-m", "ensurepip", "--upgrade"],
+        env=env,
+        check=True,
+    )
+    subprocess.run(
+        probe_cmd,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+    )
+
+
 def _verify_console_scripts_installed(
     install_cmd_prefix: list[str],
     *,
@@ -8702,6 +8734,7 @@ def _verify_console_scripts_installed(
     python_exe = scripts_dir / "python.exe"
     if python_exe.is_file():
         print("  → uv did not restore every entry point; retrying with venv pip --no-deps...")
+        _ensure_venv_pip(python_exe, env=env)
         try:
             _run_quarantined_install(
                 [
