@@ -8258,7 +8258,7 @@ def _quarantine_running_hermes_exe(
         )
         print(
             "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
-            "    gateway, or pause AV scanning, then re-run `hermes update`."
+            "gateway, or pause AV scanning, then re-run `hermes update`."
         )
         _restore_quarantined_exes(moved)
         raise RuntimeError(

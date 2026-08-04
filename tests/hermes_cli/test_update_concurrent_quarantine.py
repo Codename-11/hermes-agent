@@ -181,6 +181,36 @@ def test_quarantine_lock_aborts_and_keeps_launcher(
 
     assert shim.exists()
     assert "close hermes desktop" in captured.lower()
+    assert "stop the gateway" in captured.lower()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_quarantine_restores_earlier_shim_when_later_shim_is_locked(
+    _winp, tmp_path, monkeypatch
+):
+    first = tmp_path / "hermes-agent.exe"
+    locked = tmp_path / "hermes.exe"
+    first.write_bytes(b"first")
+    locked.write_bytes(b"locked")
+    real_rename = Path.rename
+
+    def fail_only_for_locked(self, target):
+        if self == locked:
+            raise OSError(32, "locked")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(
+        cli_main, "_hermes_exe_shims", lambda _d: [first, locked]
+    )
+    with patch.object(Path, "rename", fail_only_for_locked), patch(
+        "time.sleep", lambda *_a, **_k: None
+    ):
+        with pytest.raises(RuntimeError, match="could not quarantine hermes.exe"):
+            cli_main._quarantine_running_hermes_exe(tmp_path)
+
+    assert first.read_bytes() == b"first"
+    assert locked.read_bytes() == b"locked"
+    assert not list(tmp_path.glob("*.old.*"))
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
