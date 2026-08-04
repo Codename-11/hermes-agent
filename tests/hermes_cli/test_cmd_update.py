@@ -81,6 +81,7 @@ def _patch_managed_dependency_resolvers(request):
         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None),
         patch("hermes_cli.main._resume_windows_gateways_after_update"),
         patch("hermes_cli.main._detect_venv_python_processes", return_value=[]),
+        patch("hermes_cli.main._verify_console_scripts_installed"),
     ):
         yield
 
@@ -369,6 +370,34 @@ class TestCmdUpdateBranchFallback:
         sync_mock.assert_called_once_with(_expected_git_cmd(), PROJECT_ROOT)
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_still_verifies_console_scripts(
+        self, mock_run, _mock_which, mock_args
+    ):
+        """A current, import-healthy checkout must still self-heal missing launchers."""
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/NousResearch/hermes-agent.git",
+        ), patch.object(
+            hm, "_venv_core_imports_healthy", return_value=(True, "ok")
+        ), patch.object(
+            hm, "_verify_console_scripts_installed"
+        ) as verify_scripts:
+            cmd_update(mock_args)
+
+        verify_scripts.assert_called_once_with(
+            [sys.executable, "-m", "pip"], env=None
+        )
 
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):

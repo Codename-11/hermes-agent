@@ -160,36 +160,44 @@ def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monkeypatch):
-    """When every retry fails, we schedule via MoveFileEx and warn helpfully."""
+def test_quarantine_lock_aborts_and_keeps_launcher(
+    _winp, tmp_path, capsys, monkeypatch
+):
+    """A locked launcher must remain intact and abort before dependency mutation."""
     shim = tmp_path / "hermes.exe"
     shim.write_bytes(b"locked")
 
     def always_fails(self, target):
         raise OSError(32, "The process cannot access the file (simulated lock)")
 
-    scheduled_calls: list[tuple[Path, Path]] = []
-
-    def fake_schedule(s: Path, q: Path) -> bool:
-        scheduled_calls.append((s, q))
-        return True
-
     monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
-    with patch.object(Path, "rename", always_fails), patch.object(
-        cli_main, "_schedule_replace_on_reboot", fake_schedule
-    ), patch("time.sleep", lambda *_a, **_k: None):
-        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
+    with patch.object(Path, "rename", always_fails), patch(
+        "time.sleep", lambda *_a, **_k: None
+    ):
+        with pytest.raises(RuntimeError, match="could not quarantine"):
+            cli_main._quarantine_running_hermes_exe(tmp_path)
 
     captured = capsys.readouterr().out
 
-    # The reboot-deferred path was used.
-    assert scheduled_calls and scheduled_calls[0][0] == shim
-    # It is NOT added to the returned roll-back list (the issue calls this
-    # out — don't undo a deferred operation).
-    assert pairs == []
-    # The user got a clear message, not raw [WinError 32].
-    assert "scheduled" in captured.lower()
-    assert "reboot" in captured.lower()
+    assert shim.exists()
+    assert "close hermes desktop" in captured.lower()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_quarantine_failure_does_not_run_installer(_winp, tmp_path, monkeypatch):
+    shim = tmp_path / "hermes.exe"
+    shim.write_bytes(b"locked")
+
+    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda _d: [shim])
+    with patch.object(Path, "rename", side_effect=OSError(32, "locked")), \
+         patch("time.sleep", lambda *_a, **_k: None), \
+         patch.object(cli_main, "_run_install_with_heartbeat") as mock_install:
+        with pytest.raises(RuntimeError, match="could not quarantine"):
+            cli_main._run_quarantined_install(
+                ["uv", "pip", "install", "-e", "."], scripts_dir=tmp_path
+            )
+
+    mock_install.assert_not_called()
 
 
 

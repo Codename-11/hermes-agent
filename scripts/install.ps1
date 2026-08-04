@@ -2361,8 +2361,17 @@ print(','.join(scripts))
                         if (-not (Test-Path $exe)) { $stillMissing += "$name.exe" }
                     }
                     if ($stillMissing.Count -gt 0) {
-                        Write-Warn "Entry points still missing after repair: $($stillMissing -join ', ')"
-                        Write-Info "Workaround: `"$pythonExe`" -m hermes_cli.main <command>"
+                        Write-Warn "uv did not restore every entry point: $($stillMissing -join ', ')"
+                        Write-Info "Retrying with the venv's pip without resolving dependencies..."
+                        Invoke-NativeWithRelaxedErrorAction { & $pythonExe -m pip install --force-reinstall --no-deps -e . }
+                        $stillMissing = @()
+                        foreach ($name in $expected) {
+                            $exe = Join-Path $scriptsDir "$name.exe"
+                            if (-not (Test-Path $exe)) { $stillMissing += "$name.exe" }
+                        }
+                    }
+                    if ($stillMissing.Count -gt 0) {
+                        throw "Console entry points remain missing after uv and pip repair: $($stillMissing -join ', '). Close other Hermes processes and re-run the installer."
                     } else {
                         Write-Success "Console entry points restored"
                     }

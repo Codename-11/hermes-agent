@@ -6079,6 +6079,12 @@ $targets = @(
     (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes.lnk'),
     (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk')
 )
+$taskbarPin = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Hermes.lnk'
+if (Test-Path -LiteralPath $taskbarPin) {
+    # Preserve user intent: repair an existing pin, but never create a pin for
+    # someone who did not ask Windows to pin Hermes.
+    $targets += $taskbarPin
+}
 foreach ($lnkPath in $targets) {
     $parent = Split-Path -Parent $lnkPath
     if (-not (Test-Path -LiteralPath $parent)) {
@@ -8200,19 +8206,14 @@ def _quarantine_running_hermes_exe(
 
     1. Retry up to ``max_attempts`` times with exponential backoff
        (100/250/500/1000 ms). Handles the AV-scanner case.
-    2. If all retries fail, schedule the .exe for replacement on next
-       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
-       lets uv create a fresh shim at the original path (Windows will keep
-       the old file's content under a new name until the reboot), so the
-       update can complete; the user just needs to reboot to fully unload
-       the stale image.
+    2. If all retries fail, restore any shims already moved and abort before
+       dependency installation. A reboot-deferred rename is unsafe here: it
+       would remove the old launcher on reboot without creating a replacement.
     3. Print a clear warning naming the most likely culprit (running
-       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+       Hermes Desktop / gateway / REPL).
 
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement. Pairs
-    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
-    are already deferred and roll-back is meaningless.
+    back if the install itself fails before uv writes a replacement.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
@@ -8248,72 +8249,23 @@ def _quarantine_running_hermes_exe(
         if last_exc is None:
             continue
 
-        # All in-process renames failed. Try MoveFileEx with
-        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
-        # exact case where the inline rename failed (another process holds
-        # the handle without share-delete), at the cost of requiring a
-        # reboot to fully reclaim the old .exe.
-        scheduled = _schedule_replace_on_reboot(shim, target)
-        if scheduled:
-            print(
-                f"  ⚠ {shim.name} is locked by another process; scheduled "
-                f"replacement on next reboot."
-            )
-            print(
-                "    The new shim was written at the same path, but a "
-                "reboot is needed to fully unload the old one."
-            )
-            # Do NOT append to ``moved``: we don't want roll-back to undo a
-            # reboot-deferred operation.
-            continue
-
-        # Truly couldn't budge the .exe. Print an actionable warning and let
-        # uv try its luck — sometimes uv's own retry handling pulls through.
+        # Fail before uv/pip can uninstall a working launcher and leave package
+        # metadata ahead of the filesystem. Do not queue a reboot-deferred
+        # rename: no replacement has been written yet.
         print(
             f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
             f"another process is holding it open)."
         )
         print(
             "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
-            "gateway, or pause AV scanning, then re-run `hermes update`."
+            "    gateway, or pause AV scanning, then re-run `hermes update`."
+        )
+        _restore_quarantined_exes(moved)
+        raise RuntimeError(
+            f"could not quarantine {shim.name}; dependency installation aborted"
         )
 
     return moved
-
-
-def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
-    """Schedule ``shim`` -> ``quarantine_target`` via PendingFileRenameOperations.
-
-    Uses Win32 ``MoveFileExW`` with ``MOVEFILE_REPLACE_EXISTING |
-    MOVEFILE_DELAY_UNTIL_REBOOT``. The OS persists the rename in
-    ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
-    PendingFileRenameOperations`` and applies it before any user-mode code
-    runs on next boot — at which point no process can hold the .exe.
-
-    Returns ``True`` if the schedule call succeeded, ``False`` otherwise
-    (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
-    """
-    if not _is_windows():
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        MOVEFILE_REPLACE_EXISTING = 0x1
-        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
-
-        MoveFileExW = ctypes.windll.kernel32.MoveFileExW
-        MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
-        MoveFileExW.restype = wintypes.BOOL
-
-        ok = MoveFileExW(
-            str(shim),
-            str(quarantine_target),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
-        )
-        return bool(ok)
-    except Exception:
-        return False
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
@@ -8731,6 +8683,7 @@ def _verify_console_scripts_installed(
     )
     print("  → Reinstalling entry points with --reinstall...")
 
+    uv_error: BaseException | None = None
     try:
         _run_quarantined_install(
             install_cmd_prefix + ["install", "--reinstall", "-e", "."],
@@ -8738,21 +8691,43 @@ def _verify_console_scripts_installed(
             scripts_dir=scripts_dir,
         )
     except subprocess.CalledProcessError as e:
+        uv_error = e
         logger.warning("console script verification: repair install failed: %s", e)
-        print(
-            "  ⚠ Entry point repair failed; try `hermes update --force` after "
-            "closing other hermes processes."
-        )
+
+    still_missing = _missing()
+    if not still_missing:
+        print("  ✓ All console entry points restored")
         return
+
+    python_exe = scripts_dir / "python.exe"
+    if python_exe.is_file():
+        print("  → uv did not restore every entry point; retrying with venv pip --no-deps...")
+        try:
+            _run_quarantined_install(
+                [
+                    str(python_exe),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--force-reinstall",
+                    "--no-deps",
+                    "-e",
+                    ".",
+                ],
+                env=env,
+                scripts_dir=scripts_dir,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.warning("console script verification: pip fallback failed: %s", e)
 
     still_missing = _missing()
     if still_missing:
-        print(
-            f"  ⚠ Still missing after repair: {', '.join(still_missing)}. "
-            "Workaround: python -m hermes_cli.main <command>"
-        )
-    else:
-        print("  ✓ All console entry points restored")
+        detail = f"Windows console entry points remain missing: {', '.join(still_missing)}"
+        if uv_error is not None:
+            detail += f" (uv repair failed: {uv_error})"
+        raise RuntimeError(detail)
+
+    print("  ✓ All console entry points restored with venv pip fallback")
 
 
 def _verify_core_dependencies_installed(

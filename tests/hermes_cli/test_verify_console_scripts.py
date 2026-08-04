@@ -53,6 +53,53 @@ class TestVerifyConsoleScriptsInstalled:
 
         mock_install.assert_not_called()
 
+    def test_falls_back_to_venv_pip_when_uv_leaves_shims_missing(
+        self, temp_pyproject, fake_scripts_dir
+    ):
+        python_exe = fake_scripts_dir / "python.exe"
+        python_exe.write_bytes(b"fake")
+        calls = []
+
+        def fake_install(cmd, *, env, scripts_dir):
+            calls.append(cmd)
+            if cmd[0] == str(python_exe):
+                for name in ("hermes", "hermes-agent", "hermes-acp"):
+                    (fake_scripts_dir / f"{name}.exe").write_bytes(b"fake")
+
+        with patch("hermes_cli.main._is_windows", return_value=True), \
+             patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts_dir), \
+             patch("hermes_cli.main._run_quarantined_install", side_effect=fake_install):
+            from hermes_cli.main import _verify_console_scripts_installed
+
+            _verify_console_scripts_installed(["uv", "pip"], env={"VIRTUAL_ENV": "fake"})
+
+        assert calls == [
+            ["uv", "pip", "install", "--reinstall", "-e", "."],
+            [
+                str(python_exe),
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                "--no-deps",
+                "-e",
+                ".",
+            ],
+        ]
+
+    def test_raises_when_uv_and_pip_leave_shims_missing(
+        self, temp_pyproject, fake_scripts_dir
+    ):
+        (fake_scripts_dir / "python.exe").write_bytes(b"fake")
+
+        with patch("hermes_cli.main._is_windows", return_value=True), \
+             patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts_dir), \
+             patch("hermes_cli.main._run_quarantined_install"):
+            from hermes_cli.main import _verify_console_scripts_installed
+
+            with pytest.raises(RuntimeError, match="console entry points remain missing"):
+                _verify_console_scripts_installed(["uv", "pip"], env={})
+
 
 
 

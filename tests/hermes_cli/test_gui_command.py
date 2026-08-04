@@ -384,6 +384,24 @@ def test_desktop_shortcut_exists_falls_back_after_known_folder_decode_error(tmp_
     assert fork_update._desktop_shortcut_exists() is True
 
 
+def test_windows_shortcut_repair_updates_existing_taskbar_pin(tmp_path, monkeypatch):
+    exe = tmp_path / "Programs" / "Hermes" / "Hermes.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"fake")
+    completed = subprocess.CompletedProcess(
+        ["powershell.exe"], 0, stdout="", stderr=""
+    )
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    with patch("hermes_cli.main.shutil.which", return_value="powershell.exe"), \
+         patch("hermes_cli.main.subprocess.run", return_value=completed) as mock_run:
+        cli_main._create_windows_desktop_shortcuts(exe)
+
+    script = mock_run.call_args.args[0][-1]
+    assert "User Pinned\\TaskBar" in script
+    assert "if (Test-Path -LiteralPath $taskbarPin)" in script
+
+
 def test_update_desktop_install_intent_is_false_without_desktop_install(tmp_path, monkeypatch):
     desktop_dir = tmp_path / "apps" / "desktop"
     desktop_dir.mkdir(parents=True)

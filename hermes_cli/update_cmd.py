@@ -4007,7 +4007,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             runtime_repairs = []
             update_managed_uv(repair_observer=runtime_repairs.append)
-            ensure_uv(repair_observer=runtime_repairs.append)
+            repair_uv = ensure_uv(repair_observer=runtime_repairs.append)
             runtime_repaired = next(
                 (result for result in runtime_repairs if result.repaired),
                 None,
@@ -4026,9 +4026,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
                 _write_update_incomplete_marker()
-                from hermes_cli.managed_uv import ensure_uv
-
-                repair_uv = ensure_uv()
                 # A managed install whose venv is gone entirely (interrupted
                 # repair after the old venv was moved aside) needs the venv
                 # recreated before dependencies can be installed into it.
@@ -4061,6 +4058,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
+                if repair_uv:
+                    verify_env = {
+                        **os.environ,
+                        "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv"),
+                    }
+                    _m()._verify_console_scripts_installed(
+                        [repair_uv, "pip"], env=verify_env
+                    )
+                else:
+                    _m()._verify_console_scripts_installed(
+                        [sys.executable, "-m", "pip"], env=None
+                    )
                 print("✓ Already up to date!")
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
