@@ -95,6 +95,10 @@ updates:
 
 `updates.pre_update_backup` is a single knob with three modes: `quick` (default — the lightweight state snapshot described above), `full` (the quick snapshot plus a complete `HERMES_HOME` zip; can add minutes on large homes), and `off` (no pre-update backup at all — `--no-backup` does the same for a single run). Legacy boolean values still work: `true` means `full`, `false` means `off`.
 
+:::tip Moving to a new machine instead?
+Update backups protect an in-place update. If you're migrating your whole setup to different hardware, use `hermes backup` + `hermes import` instead — see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine) and [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
+:::
+
 ### Windows: another `hermes.exe` is running
 
 On Windows, `hermes update` first pauses running Hermes gateway processes it can identify, then checks for any remaining `hermes.exe` process holding the venv's entry-point executable open. If a non-gateway process still has the shim loaded — most commonly the Hermes Desktop app's spawned backend or an open `hermes` REPL in another terminal — the update refuses to continue:

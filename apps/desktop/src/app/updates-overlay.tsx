@@ -19,7 +19,6 @@ import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
-import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -128,7 +127,8 @@ export function UpdatesOverlay() {
       {/* This dialog has no inputs, so Radix's default autofocus would land on
           the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        className="max-h-[min(44rem,calc(100vh-2rem))] w-[min(44rem,calc(100vw-2rem))] max-w-2xl overflow-hidden border-border/70 p-0 gap-0"
+        bodyClassName="gap-0 overflow-hidden p-0"
+        className="max-h-[min(44rem,calc(100vh-2rem))] w-[min(44rem,calc(100vw-2rem))] max-w-2xl border-border/70"
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
