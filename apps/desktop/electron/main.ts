@@ -1103,7 +1103,7 @@ async function fetchRemotePreviewFile(profile, remotePath) {
     throw new Error('Remote preview requires a remote gateway connection')
   }
 
-  const route = remotePreviewRoute(remotePath, conn.remoteProfile)
+  const route = remotePreviewRoute(remotePath, conn.remoteProfile || conn.profile)
   const url = `${conn.baseUrl}${route}`
 
   return conn.authMode === 'oauth'
@@ -1554,7 +1554,13 @@ async function openRemoteFile(payload: any = {}) {
   }
 
   const base = String(conn.baseUrl || '').replace(/\/+$/, '')
-  const url = `${base}/api/files/download?path=${encodeURIComponent(remotePath)}`
+  const downloadPath = pathWithGlobalRemoteProfile(
+    `/api/files/download?path=${encodeURIComponent(remotePath)}`,
+    payload.profile,
+    profileRouteOptions(payload.profile),
+    conn.remoteProfile
+  )
+  const url = `${base}${downloadPath}`
 
   const download =
     conn.authMode === 'oauth'
@@ -10766,7 +10772,12 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, profileRouteOptions(profile))
+  const requestPath = pathWithGlobalRemoteProfile(
+    request.path,
+    profile,
+    profileRouteOptions(profile),
+    connection.remoteProfile
+  )
 
   const url = `${connection.baseUrl}${requestPath}`
 

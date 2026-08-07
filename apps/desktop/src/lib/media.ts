@@ -139,8 +139,10 @@ export function mediaExternalUrl(path: string): string {
     if (conn?.baseUrl && isGatewayLocalMediaPath(path)) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
       const token = conn.token ? `&token=${encodeURIComponent(conn.token)}` : ''
+      const effectiveProfile = conn.remoteProfile || conn.profile
+      const profile = effectiveProfile ? `&profile=${encodeURIComponent(effectiveProfile)}` : ''
 
-      return `${conn.baseUrl}/api/fs/preview?path=${file}${token}`
+      return `${conn.baseUrl}/api/fs/preview?path=${file}${token}${profile}`
     }
   }
 

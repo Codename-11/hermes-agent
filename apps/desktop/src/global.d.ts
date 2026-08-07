@@ -500,6 +500,7 @@ export interface HermesConnection {
   remoteHost?: string
   remoteIdentity?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
+  remoteProfile?: string
   remoteHermesVersion?: string
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'profile' | 'settings'

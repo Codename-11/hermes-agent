@@ -236,20 +236,17 @@ let gatewaySwitch: Promise<void> | null = null
 // instead of `image.attach_bytes`, handing the remote gateway a client-only
 // path it can't resolve ("image not found: C:\…"), while the /api/fs/* file
 // browser and /api/media fetches targeted the wrong machine (#46651).
-// Best-effort: a failed descriptor fetch leaves the prior connection intact for
-// boot/reconnect to resync.
-async function syncConnectionToActiveProfile(profile: string): Promise<void> {
+// Resolve a profile's effective connection before publishing that profile as
+// active. Keeping the descriptor fetch separate from the atom update prevents
+// renderers from observing a new profile with the previous profile's transport.
+async function resolveConnectionForProfile(profile: string) {
   const getConnection = window.hermesDesktop?.getConnection
 
   if (!getConnection) {
-    return
+    throw new Error('Desktop connection routing is unavailable')
   }
 
-  try {
-    setConnection(await getConnection(profile))
-  } catch {
-    // Leave the prior connection in place; boot/reconnect resyncs it later.
-  }
+  return getConnection(profile)
 }
 
 // Make `profile`'s backend the active gateway, lazily opening its socket if it
@@ -272,36 +269,58 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
-    return
-  }
+  // Wait until we own the serialization slot. Several callers can be queued
+  // behind the same operation; after each wait, re-check the live lock so only
+  // one continuation can install the next operation.
+  while (gatewaySwitch) {
+    const pending = gatewaySwitch
+    let succeeded = true
 
-  // Serialize concurrent activations so two rapid session switches don't race
-  // the active pointer.
-  if (gatewaySwitch) {
-    await gatewaySwitch.catch(() => undefined)
+    try {
+      await pending
+    } catch {
+      succeeded = false
+    }
 
-    if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+    // A successful queued switch to our target already reconciled its
+    // descriptor. Failed switches are retried rather than mistaken for success.
+    if (succeeded && normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
       return
     }
   }
 
+  const gatewayAlreadyActive = normalizeProfileKey($activeGatewayProfile.get()) === target && Boolean($gateway.get())
+
   $gatewaySwapTarget.set(target)
-  gatewaySwitch = (async () => {
-    // ensureGatewayForProfile opens (or reuses) the target's socket and points
-    // the active gateway at it — without closing the profile you came from.
-    await ensureGatewayForProfile(target)
+  const operation = (async () => {
+    // Resolve under the same serialization lock as the gateway swap. If lookup
+    // fails, the previous route remains coherent and callers receive the error.
+    const connection = await resolveConnectionForProfile(target)
+
+    // Reuse the active socket for a descriptor-only repair. Otherwise open (or
+    // reuse) the target socket and point the active gateway at it.
+    if (!gatewayAlreadyActive) {
+      await ensureGatewayForProfile(target)
+    }
+    // Publish the effective transport and profile back-to-back, with no await
+    // between them, after the target gateway is selected. A secondary socket
+    // may still be reconnecting; its remote descriptor must remain authoritative
+    // so REST/filesystem work never falls back to this machine's local disk.
+    if (connection) {
+      setConnection(connection)
+    }
     $activeGatewayProfile.set(target)
-    // The active backend just changed; resync $connection so remote-aware
-    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
-    await syncConnectionToActiveProfile(target)
   })()
+  gatewaySwitch = operation
 
   try {
-    await gatewaySwitch
+    await operation
   } finally {
-    gatewaySwitch = null
-    $gatewaySwapTarget.set(null)
+    // Never let an older caller clear a newer operation's lock or UI target.
+    if (gatewaySwitch === operation) {
+      gatewaySwitch = null
+      $gatewaySwapTarget.set(null)
+    }
   }
 }
 

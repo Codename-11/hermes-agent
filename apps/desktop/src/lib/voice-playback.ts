@@ -119,7 +119,7 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
 
     // The backend resolves the TTS provider chain from this profile's
     // config/.env (same seam as /api/pty?profile=).
-    if (profile) {
+    if (profile && !url.searchParams.has('profile')) {
       url.searchParams.set('profile', profile)
     }
 

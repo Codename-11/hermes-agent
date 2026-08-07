@@ -78,6 +78,33 @@ describe('mediaExternalUrl', () => {
     )
   })
 
+  it('applies the resolved remote profile alias to preview URLs', () => {
+    $connection.set({
+      mode: 'remote',
+      baseUrl: 'https://gw',
+      token: 'secret',
+      profile: 'local-handle',
+      remoteProfile: 'writer'
+    } as never)
+
+    expect(mediaExternalUrl('/tmp/a.png')).toBe(
+      'https://gw/api/fs/preview?path=%2Ftmp%2Fa.png&token=secret&profile=writer'
+    )
+  })
+
+  it('applies the selected profile scope to shared-global remote preview URLs', () => {
+    $connection.set({
+      mode: 'remote',
+      baseUrl: 'https://gw',
+      token: 'secret',
+      profile: 'coder'
+    } as never)
+
+    expect(mediaExternalUrl('/tmp/a.png')).toBe(
+      'https://gw/api/fs/preview?path=%2Ftmp%2Fa.png&token=secret&profile=coder'
+    )
+  })
+
   it('omits the query token when the remote connection lacks one', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('https://gw/api/fs/preview?path=%2Ftmp%2Fa.png')
