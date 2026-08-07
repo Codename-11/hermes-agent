@@ -3300,6 +3300,20 @@ def _pause_windows_gateways_for_update() -> dict | None:
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
+    # ``TerminateProcess`` is asynchronous with respect to final process/image
+    # teardown. Returning immediately races the shim quarantine below: the
+    # gateway can be gone from discovery while Windows still has hermes.exe
+    # mapped, so ``Path.rename`` fails with WinError 32. Wait for every process
+    # we successfully nominated for a force-stop before allowing update
+    # mutation to continue. Any genuine survivor remains visible to the
+    # concurrent-shim / venv-holder guards that run immediately after this
+    # helper and the update still fails closed.
+    if force_killed:
+        _m()._wait_for_windows_update_gateway_exit(
+            force_killed,
+            timeout=drain_timeout,
+        )
+
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
     if force_killed:
