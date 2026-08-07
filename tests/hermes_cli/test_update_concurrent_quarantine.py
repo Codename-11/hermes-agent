@@ -320,7 +320,7 @@ def test_quarantine_fails_closed_when_running_shim_cannot_move(
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
+def test_pause_windows_gateways_for_update_waits_for_force_killed_pids(
     _winp,
     monkeypatch,
     tmp_path,
@@ -346,10 +346,10 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         "_detect_windows_gateway_launcher_instances",
         lambda _scripts_dir: [(303, "hermes.exe", "default")],
     )
-    waited_for = []
+    wait_calls: list[list[int]] = []
 
     def fake_wait(pids, *, timeout):
-        waited_for.extend(pids)
+        wait_calls.append(list(pids))
         return set()
 
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
@@ -381,7 +381,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
             }
         ],
     }
-    assert waited_for == [101]
+    assert wait_calls == [[101], [202, 303]]
     assert terminated == [(202, True), (303, True)]
 
     marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
