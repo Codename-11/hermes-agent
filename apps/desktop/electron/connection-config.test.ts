@@ -353,6 +353,38 @@ test('pathWithGlobalRemoteProfile skips local and per-profile remote override pa
   )
 })
 
+test('pathWithGlobalRemoteProfile applies a pinned remote profile alias to a per-profile override', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile(
+      '/api/fs/default-cwd',
+      'local-handle',
+      {
+        globalRemote: false,
+        primaryProfile: 'default',
+        profileRemoteOverride: true
+      },
+      'default'
+    ),
+    '/api/fs/default-cwd?profile=default'
+  )
+})
+
+test('pathWithGlobalRemoteProfile preserves an explicit profile over a resolved remote alias', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile(
+      '/api/fs/default-cwd?profile=writer',
+      'local-handle',
+      {
+        globalRemote: false,
+        primaryProfile: 'default',
+        profileRemoteOverride: true
+      },
+      'default'
+    ),
+    '/api/fs/default-cwd?profile=writer'
+  )
+})
+
 test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', '', {

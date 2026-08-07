@@ -56,7 +56,34 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('https://example.com/a.png')).toBe('https://example.com/a.png')
   })
 
-  it('keeps file:// form in local mode', () => {
+  it('applies the resolved remote profile alias to download URLs', () => {
+    $connection.set({
+      mode: 'remote',
+      baseUrl: 'https://gw',
+      token: 'secret',
+      profile: 'local-handle',
+      remoteProfile: 'writer'
+    } as never)
+
+    expect(mediaExternalUrl('/tmp/a.png')).toBe(
+      'https://gw/api/files/download?path=%2Ftmp%2Fa.png&token=secret&profile=writer'
+    )
+  })
+
+  it('applies the selected profile scope to shared-global remote download URLs', () => {
+    $connection.set({
+      mode: 'remote',
+      baseUrl: 'https://gw',
+      token: 'secret',
+      profile: 'coder'
+    } as never)
+
+    expect(mediaExternalUrl('/tmp/a.png')).toBe(
+      'https://gw/api/files/download?path=%2Ftmp%2Fa.png&token=secret&profile=coder'
+    )
+  })
+
+  it('keeps local file form in local mode', () => {
     $connection.set({ mode: 'local' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
     expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')

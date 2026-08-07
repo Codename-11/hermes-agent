@@ -89,24 +89,150 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect($connection.get()?.mode).toBe('local')
   })
 
-  it('leaves the prior connection intact when the descriptor fetch fails', async () => {
-    getConnection.mockRejectedValue(new Error('backend unreachable'))
+  it('fails closed when the Desktop connection descriptor bridge is unavailable', async () => {
+    vi.stubGlobal('window', { hermesDesktop: {} })
 
-    await ensureGatewayProfile('vps-remote')
+    await expect(ensureGatewayProfile('vps-remote')).rejects.toThrow('connection routing is unavailable')
 
-    // Best-effort: boot/reconnect resyncs later; we must not null it out here.
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
     expect($connection.get()?.mode).toBe('local')
   })
 
-  it('does not churn $connection when the target is already the active profile', async () => {
+  it('fails before switching the gateway or active profile when the descriptor fetch fails', async () => {
+    getConnection.mockRejectedValue(new Error('backend unreachable'))
+
+    await expect(ensureGatewayProfile('vps-remote')).rejects.toThrow('backend unreachable')
+
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.mode).toBe('local')
+  })
+
+  it('resyncs a stale local descriptor when the already-active profile is remote-pinned', async () => {
     $activeGatewayProfile.set('vps-remote')
-    $connection.set(remoteConn())
+    $connection.set({ ...localConn(), profile: 'vps-remote' })
+    getConnection.mockResolvedValue(remoteConn())
 
     await ensureGatewayProfile('vps-remote')
 
-    expect(getConnection).not.toHaveBeenCalled()
+    expect(getConnection).toHaveBeenCalledWith('vps-remote')
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+
+  it('publishes the new profile only after its gateway and descriptor are both ready', async () => {
+    let resolveDescriptor!: (connection: HermesConnection) => void
+    let descriptorRequested!: () => void
+    const requested = new Promise<void>(resolve => {
+      descriptorRequested = resolve
+    })
+    const descriptor = new Promise<HermesConnection>(resolve => {
+      resolveDescriptor = resolve
+    })
+    getConnection.mockImplementationOnce(() => {
+      descriptorRequested()
+
+      return descriptor
+    })
+
+    const switching = ensureGatewayProfile('vps-remote')
+    await requested
+
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.mode).toBe('local')
+
+    resolveDescriptor(remoteConn())
+    await switching
+
+    expect($activeGatewayProfile.get()).toBe('vps-remote')
+    expect($connection.get()?.mode).toBe('remote')
+  })
+
+  it('serializes descriptor resolution across concurrent profile activations', async () => {
+    let resolveFirst!: (connection: HermesConnection) => void
+    let firstRequested!: () => void
+    const requested = new Promise<void>(resolve => {
+      firstRequested = resolve
+    })
+    const firstDescriptor = new Promise<HermesConnection>(resolve => {
+      resolveFirst = resolve
+    })
+    getConnection.mockImplementation(profile => {
+      if (profile === 'vps-remote') {
+        firstRequested()
+
+        return firstDescriptor
+      }
+
+      return Promise.resolve({ ...remoteConn(), profile: 'other-remote' })
+    })
+
+    const first = ensureGatewayProfile('vps-remote')
+    await requested
+    const second = ensureGatewayProfile('other-remote')
+    await Promise.resolve()
+
+    expect(getConnection).toHaveBeenCalledTimes(1)
+    expect(getConnection).toHaveBeenLastCalledWith('vps-remote')
+
+    resolveFirst(remoteConn())
+    await Promise.all([first, second])
+
+    expect(getConnection).toHaveBeenLastCalledWith('other-remote')
+    expect($activeGatewayProfile.get()).toBe('other-remote')
+    expect($connection.get()?.profile).toBe('other-remote')
+  })
+
+  it('serializes multiple activations queued behind one in-flight switch', async () => {
+    const requested: string[] = []
+    let resolveFirst!: (connection: HermesConnection) => void
+    let resolveSecond!: (connection: HermesConnection) => void
+    let secondRequested!: () => void
+    const secondStarted = new Promise<void>(resolve => {
+      secondRequested = resolve
+    })
+    const firstDescriptor = new Promise<HermesConnection>(resolve => {
+      resolveFirst = resolve
+    })
+    const secondDescriptor = new Promise<HermesConnection>(resolve => {
+      resolveSecond = resolve
+    })
+
+    getConnection.mockImplementation(profile => {
+      requested.push(String(profile))
+
+      if (profile === 'vps-remote') {
+        return firstDescriptor
+      }
+
+      if (profile === 'queued-b') {
+        secondRequested()
+
+        return secondDescriptor
+      }
+
+      return Promise.resolve({ ...remoteConn(), profile: 'queued-c' })
+    })
+
+    const first = ensureGatewayProfile('vps-remote')
+    const second = ensureGatewayProfile('queued-b')
+    const third = ensureGatewayProfile('queued-c')
+
+    expect(requested).toEqual(['vps-remote'])
+
+    resolveFirst(remoteConn())
+    await secondStarted
+    await Promise.resolve()
+
+    expect(requested).toEqual(['vps-remote', 'queued-b'])
+
+    resolveSecond({ ...remoteConn(), profile: 'queued-b' })
+    await Promise.all([first, second, third])
+
+    expect(requested).toEqual(['vps-remote', 'queued-b', 'queued-c'])
+    expect($activeGatewayProfile.get()).toBe('queued-c')
+    expect($connection.get()?.profile).toBe('queued-c')
   })
 })
 

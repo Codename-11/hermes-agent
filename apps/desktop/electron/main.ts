@@ -1450,7 +1450,13 @@ async function openRemoteFile(payload: { path?: string; profile?: string | null 
   }
 
   const base = String(conn.baseUrl || '').replace(/\/+$/, '')
-  const url = `${base}/api/files/download?path=${encodeURIComponent(remotePath)}`
+  const downloadPath = pathWithGlobalRemoteProfile(
+    `/api/files/download?path=${encodeURIComponent(remotePath)}`,
+    payload.profile,
+    profileRouteOptions(payload.profile),
+    conn.remoteProfile
+  )
+  const url = `${base}${downloadPath}`
   const download =
     conn.authMode === 'oauth'
       ? await fetchBinaryViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
@@ -10610,7 +10616,12 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, profileRouteOptions(profile))
+  const requestPath = pathWithGlobalRemoteProfile(
+    request.path,
+    profile,
+    profileRouteOptions(profile),
+    connection.remoteProfile
+  )
 
   const url = `${connection.baseUrl}${requestPath}`
 

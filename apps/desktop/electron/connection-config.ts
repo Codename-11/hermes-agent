@@ -446,13 +446,17 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 }
 
 /**
- * Add renderer-side `request.profile` to a REST path when the route says the
- * serving backend is not already scoped to that profile.
+ * Add the effective remote profile to a REST path. An explicit alias from the
+ * resolved connection wins; otherwise shared global-remote routes use the
+ * renderer's Desktop profile handle.
  */
-function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = {}) {
+function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = {}, remoteProfile = null) {
   const scopedProfile = connectionScopeKey(profile)
+  const resolvedRemoteProfile = connectionScopeKey(remoteProfile)
+  const route = resolveProfileBackendRoute(profile, opts)
+  const requestProfile = resolvedRemoteProfile || (route.scopePath ? scopedProfile : null)
 
-  if (!resolveProfileBackendRoute(profile, opts).scopePath) {
+  if (!requestProfile) {
     return path
   }
 
@@ -474,7 +478,7 @@ function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = 
     return path
   }
 
-  parsed.searchParams.set('profile', scopedProfile)
+  parsed.searchParams.set('profile', requestProfile)
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
 }

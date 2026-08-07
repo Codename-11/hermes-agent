@@ -111,8 +111,10 @@ export function mediaExternalUrl(path: string): string {
 
     if (conn?.baseUrl && conn.token) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
+      const effectiveProfile = conn.remoteProfile || conn.profile
+      const profile = effectiveProfile ? `&profile=${encodeURIComponent(effectiveProfile)}` : ''
 
-      return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
+      return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}${profile}`
     }
   }
 
