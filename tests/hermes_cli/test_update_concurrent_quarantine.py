@@ -238,7 +238,7 @@ def test_quarantine_failure_does_not_run_installer(_winp, tmp_path, monkeypatch)
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
+def test_pause_windows_gateways_for_update_waits_for_force_killed_pids(
     _winp,
     monkeypatch,
     tmp_path,
@@ -258,10 +258,15 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         lambda **_k: [profile_proc],
     )
     monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
-    waited_for = []
+    monkeypatch.setattr(
+        cli_main,
+        "_venv_launcher_ancestors",
+        lambda _pids: {303},
+    )
+    wait_calls: list[list[int]] = []
 
     def fake_wait(pids, *, timeout):
-        waited_for.extend(pids)
+        wait_calls.append(list(pids))
         return set()
 
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
@@ -293,8 +298,8 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
             }
         ],
     }
-    assert waited_for == [101]
-    assert terminated == [(202, True)]
+    assert wait_calls == [[101], [202, 303]]
+    assert terminated == [(202, True), (303, True)]
 
     marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
     assert marker["target_pid"] == 101
