@@ -41,7 +41,8 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 - **`host.state.*`** — readonly views over the app's live state (nanostore
   atoms): active session, cwd, gateway status, model, profile, viewport.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
-  restart the gateway, subscribe to the gateway event stream.
+  restart the gateway, subscribe to the gateway event stream, and inspect or
+  open the core-owned updater through `host.updates`.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
@@ -59,8 +60,8 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 Both take the same `HermesPlugin` contract, appear in **Settings → Plugins**, and
 enable/disable live. Everything on this page is written against the disk door
 (what you and the agent write); [Bundled plugins](#bundled-plugins) notes the two
-differences. No desktop plugins ship in the core tree today — reference demos
-live in the companion
+differences. The Axiom fork ships the **Update Control** bundled plugin; reference
+demos live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 repo.
 
@@ -403,6 +404,33 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
+### Update status and native-updater handoff
+
+The Axiom fork adds a narrow `host.updates` facade for plugins that need update
+observability without becoming an updater:
+
+```ts
+const client = host.updates.getStatus('client')
+const backend = host.updates.getStatus('backend')
+
+host.updates.open()
+```
+
+The client and backend are deliberately separate. `client` describes the
+Electron host's checkout and configured update branch; `backend` describes the
+active `hermes serve` runtime, which may be remote and have a different version
+or deploy state. Each call returns a detached snapshot (or `null` before core has
+published one), including `fetchedAt` when available. Mutating a returned object
+cannot change core update state.
+
+`open()` takes no target or options. Core selects the active client/backend
+target from the current connection, refreshes it, and owns confirmation,
+dirty-tree handling, deploy reconciliation, install, restart, and relaunch.
+There are intentionally no plugin-facing check, branch-write, progress, shell,
+raw IPC, or apply methods. Build-stamp/source-hash and running-executable
+verification remain separate host/operator checks rather than claims inferred
+from update status.
+
 ## Data layer — React Query + nanostores
 
 Plugins share the app's single `QueryClient`, so plugin queries cache, dedupe,
@@ -567,8 +595,9 @@ enable/disable contract as a disk plugin. The two differences:
 2. It's still lint-fenced to `@hermes/plugin-sdk` + `react` only — no `@/…` app
    internals.
 
-No desktop plugins ship in the core tree today; the shipped app stays uncluttered
-and demos live in the
+The Axiom fork ships **Update Control** from this tree. It uses
+`host.updates.getStatus()` for read-only comparison and `host.updates.open()` to
+delegate the active target to the native update overlay. Demos still live in the
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo.
 
@@ -614,7 +643,7 @@ not treat this pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.updates.getStatus`, `.updates.open`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
