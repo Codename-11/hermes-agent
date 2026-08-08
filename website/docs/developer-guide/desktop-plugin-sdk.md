@@ -42,7 +42,8 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   atoms): active session, per-session turn-busy, cwd, gateway socket status,
   model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
-  restart the gateway, subscribe to the gateway event stream.
+  restart the gateway, subscribe to the gateway event stream, and inspect or
+  invoke the core-owned updater through the typed `host.updates` facade.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
