@@ -22,12 +22,14 @@ import { atom, type ReadableAtom } from 'nanostores'
 
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
+import type { DesktopUpdateStatus } from '@/global'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
+import { $backendUpdateStatus, $updateStatus, openUpdatesWindow, type UpdateTarget } from '@/store/updates'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -55,6 +57,23 @@ if (typeof window !== 'undefined') {
   $narrowViewport.listen(refresh)
 }
 
+export type PluginUpdateTarget = UpdateTarget
+
+export interface PluginUpdateManagement {
+  /** Detached status for the local client or currently connected backend. */
+  getStatus: (target: PluginUpdateTarget) => DesktopUpdateStatus | null
+  /** Open the core updater for the active connection target. */
+  open: () => void
+}
+
+const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateStatus | null =>
+  status
+    ? {
+        ...status,
+        commits: status.commits?.map(commit => ({ ...commit }))
+      }
+    : null
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -70,6 +89,13 @@ export const host = {
     /** Window geometry ({ width, height, narrow }). */
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
+
+  /** Read detached update snapshots; hand every mutation to the core updater. */
+  updates: {
+    getStatus: (target: PluginUpdateTarget) =>
+      cloneUpdateStatus(target === 'client' ? $updateStatus.get() : $backendUpdateStatus.get()),
+    open: () => openUpdatesWindow()
+  } satisfies PluginUpdateManagement,
 
   /** Toast into the app's notification stack. */
   notify,
@@ -214,7 +240,10 @@ export type {
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
+
 export type { Contribution } from '@/contrib/types'
+/** Public update snapshot contract for plugin-owned status UI. */
+export type { DesktopUpdateStatus } from '@/global'
 /** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
  *  the shared scrub primitive; don't hand-roll drag-to-scroll. */
 export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'

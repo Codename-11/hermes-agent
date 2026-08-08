@@ -8,6 +8,17 @@ This repository is Bailey/Axiom's deploy fork of `NousResearch/hermes-agent`.
 - Axiom deploy branch: `origin/axiom` (`https://github.com/Codename-11/hermes-agent.git`).
 - Axiom-Desktop install path: `%LOCALAPPDATA%\hermes\hermes-agent`.
 - Axiom-Desktop tracks `origin/axiom`; do not silently switch it back to upstream `main`.
+- Axiom-Desktop's update branch must be explicit. On Windows it is persisted in
+  `%APPDATA%\Hermes\updates.json`:
+
+  ```json
+  {
+    "branch": "axiom"
+  }
+  ```
+
+  The checkout's current branch does not replace this setting; a checkout can
+  be on `axiom` while Desktop still checks another configured update channel.
 - Bare `hermes update`, `hermes update --check`, and `hermes --version` are intentionally deploy-branch-aware on `axiom`; operators should not need a special Desktop-only update command. On a deploy branch, plain `hermes update` fetches both remotes, reconciles `upstream/main` into `origin/<deploy>` in a temporary worktree, publishes the result, then fast-forwards the live checkout.
 - Desktop's update UI should distinguish deploy-branch freshness from upstream disparity: `HEAD..origin/axiom` means a published result is ready to consume, while `origin/axiom..upstream/main` means the next update must first reconcile and publish upstream work.
 - If upstream has new commits but `origin/axiom` has not moved, the first host to run `hermes update` becomes the integration host for that run. It resolves and publishes once; later hosts consume the published `origin/axiom` result unless upstream advances again.
@@ -46,6 +57,31 @@ The `axiom` branch is expected to:
 8. Plain `hermes update` autonomously resolves deploy handoffs when needed. It may run a Hermes resolver in the retained temp worktree, validate no unmerged files/conflict markers remain, run matched focused checks, commit/push `HEAD:<deploy>`, fast-forward the live checkout, and then continue the normal install/restart phase. It must hard-stop on sensitive paths or ambiguous git state.
 9. A retained handoff is a snapshot, not a permanent merge state. Before launching the resolver, compare the marker's recorded `origin_head` and `upstream_head` against current `origin/<deploy>`. If both recorded refs are already ancestors, clear the stale marker/worktree and start a fresh deploy update; do not compare completion only against the moving current `upstream/main`. The resolver transcript streams live under an explicit advisory banner, while the parent updater remains authoritative: it validates the worktree, runs focused checks, commits, and pushes only after the child exits. Resolver failures also print the exit code plus a bounded transcript tail.
 10. There are no deploy update modes. The first host to observe upstream work publishes the reconciled artifact; any later host fast-forwards to that same `origin/<deploy>` result.
+
+## Desktop Update Control contract
+
+The bundled **Update Control** plugin is a read-only cockpit over the existing
+Desktop updater. It reports the local Desktop client and the active backend as
+separate targets because they can update on different hosts and schedules.
+
+- **Client freshness** describes the Windows checkout, configured Desktop update
+  branch, built Desktop artifact, and running `Hermes.exe`.
+- **Backend freshness** describes the connected `hermes serve` runtime. A current
+  client does not prove a remote backend is current, and vice versa.
+- **Checkout disparity** compares the local `HEAD` with the published deploy
+  branch (`origin/axiom`).
+- **Deploy disparity** compares the published deploy branch with
+  `upstream/main`. Upstream work can be pending reconciliation even when the
+  local checkout has consumed every published Axiom commit.
+
+The fork-local `host.updates` plugin facade exposes only detached client/backend
+status snapshots and one entry point that opens the native updater for the
+active connection target. It does not expose checks, branch selection, progress
+streams, raw Electron IPC, shell commands, or apply controls. It reports
+Git/update readiness but does not replace the separate build-stamp/source-hash/
+running-executable verification below. All polling, mutation, confirmation,
+dirty-tree policy, deploy reconciliation, and restart/relaunch handling stay in
+the core updater.
 
 Suggested focused verification for Desktop patch work:
 
@@ -114,8 +150,26 @@ hermes update
 Verify:
 
 ```powershell
+Get-Content "$env:APPDATA\Hermes\updates.json"
 git status --short --branch
 git log -5 --oneline
 hermes --version
+Get-Content "$env:LOCALAPPDATA\hermes\desktop-build-stamp.json"
 Get-Item apps\desktop\release\win-unpacked\Hermes.exe | Select-Object FullName,Length,LastWriteTime
+Get-CimInstance Win32_Process -Filter "Name = 'Hermes.exe'" | Select-Object ExecutablePath,CreationDate
 ```
+
+Do not use the executable timestamp alone as proof. Verify all of the following:
+
+1. `%APPDATA%\Hermes\updates.json` names `axiom` explicitly.
+2. `HEAD...origin/axiom` shows no unpublished deploy commits waiting for this
+   checkout, while `origin/axiom...upstream/main` is interpreted separately as
+   fork carry versus upstream work still awaiting reconciliation.
+3. `%LOCALAPPDATA%\hermes\desktop-build-stamp.json` exists and its
+   `contentHash` matches the current Desktop source hash. A matching Git commit
+   alone is insufficient when tracked source is modified.
+4. The expected unpacked executable exists and was produced by that verified
+   build.
+5. the running `Hermes.exe` process points to that executable and started after
+   it was built. Otherwise the source/build may be current while the open client
+   is still the previous process.
