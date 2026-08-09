@@ -96,6 +96,59 @@ NODE_ENV=test npm run test:ui -- \
 
 Run React/Vitest slices with `NODE_ENV=test`. A production ambient env can make Testing Library resolve React's production build and fail with `TypeError: React.act is not a function`, even when the Desktop code is fine. If Vitest's jsdom localStorage shim fails in `src/store/session.test.ts`, rerun with the repo's `npm run test:ui -- ...` harness and record the exact failure. Do not treat unrelated harness failures as proof that the Desktop patch is broken.
 
+## Windows HUD stability carry
+
+Axiom carries a narrow Windows HUD stabilization layer while upstream's
+cross-platform HUD behavior remains incomplete. It protects four related
+boundaries:
+
+1. The transparent frameless HUD is native non-resizable on Windows. Windows
+   exposes invisible resize zones on that window type and can grow the window
+   during drag movement, especially under display scaling.
+2. Drag movement reapplies a size captured when the HUD was created rather than
+   using `setPosition()` against geometry Windows may mutate mid-drag.
+3. Windows joins Linux's native cursor feed. Electron's
+   `setIgnoreMouseEvents(true, { forward: true })` can leave a Windows HUD with
+   `WS_EX_TRANSPARENT` active and never deliver the page mousemove required to
+   make the composer interactive again.
+4. Programmatic HUD close, profile respawn, and app quit remove only the HUD
+   restore/broadcast handler. Resource cleanup listeners remain attached, so
+   native cursor polling stops instead of leaking a 60 ms timer per HUD cycle.
+
+On Windows, persisted integer geometry is accepted only inside a compact
+two-times-default envelope (`620x320` default, `380x160` minimum). Larger
+values are treated as drag-growth damage and ignored, so an existing
+oversized `hud-state.json` automatically returns to default geometry after
+rebuilding and reopening HUD mode. The file is stored at `%APPDATA%\Hermes\hud-state.json`.
+
+Primary seams:
+
+- `apps/desktop/electron/hud-window-geometry.ts`
+- `apps/desktop/electron/hud-cursor.ts`
+- `apps/desktop/electron/hud-window-lifecycle.ts`
+- the HUD creation/movement path in `apps/desktop/electron/main.ts`
+
+Focused verification:
+
+```bash
+cd apps/desktop
+NODE_ENV=test npm run test:desktop:platforms -- --run \
+  electron/hud-cursor.test.ts \
+  electron/hud-window-geometry.test.ts \
+  electron/hud-window-lifecycle.test.ts \
+  electron/hud-url.test.ts
+NODE_ENV=test npm run test:ui -- --run \
+  src/app/hud/click-through.test.ts \
+  src/store/hud.test.ts
+npm run typecheck
+```
+
+Drop this carry only after upstream provides equivalent or better Windows
+behavior for **both** geometry stability and click-through recovery. A resize
+handle alone is not equivalent. Review upstream PR #82455 and successors during
+integration, then remove the fork modules/tests only after a Windows packaged
+build passes physical drag, composer-hover, click, and exit-HUD smoke tests.
+
 ## Current Desktop remote-file/access layer
 
 Axiom-Desktop often runs the Electron shell on Windows while the active Hermes gateway/profile is remote. That means a path like `/home/.../artifact.png` usually exists on the gateway, **not** on the Windows client.

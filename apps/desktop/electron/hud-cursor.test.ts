@@ -8,10 +8,16 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { cursorPointInWindow } from './hud-cursor'
+import { cursorPointInWindow, shouldFeedHudCursor } from './hud-cursor'
 
 // A HUD parked 300px right and 200px down, 620×320 as it is created.
 const BOUNDS = { x: 300, y: 200, width: 620, height: 320 }
+
+test('polls cursor position where transparent HUD mouse forwarding is unreliable', () => {
+  assert.equal(shouldFeedHudCursor('win32'), true)
+  assert.equal(shouldFeedHudCursor('linux'), true)
+  assert.equal(shouldFeedHudCursor('darwin'), false)
+})
 
 test('screen cursor becomes a point relative to the window', () => {
   assert.deepEqual(cursorPointInWindow({ x: 300, y: 200 }, BOUNDS, 1), { x: 0, y: 0 })

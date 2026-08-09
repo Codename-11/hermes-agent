@@ -409,6 +409,40 @@ Carried commits from open upstream PRs are merged into `axiom` with `--no-ff` fr
 - **Cleanup:** retire the #41711 watcher after this merge is published; update the separate `tgi` deploy branch from upstream rather than retaining its old `94b54a08b` overlay as protected code.
 
 
+### Windows HUD stability — local carry pending upstream equivalent
+
+Axiom carries a compact Windows HUD stabilization layer because the upstream
+transparent frameless window can grow during drag and remain native
+click-through after the pointer returns to the composer.
+
+Protected behavior:
+
+- HUD uses a non-resizable native `BrowserWindow` on Windows; drag movement
+  pins the size captured at window creation.
+- Windows persisted geometry beyond twice the `620x320` default envelope is
+  treated as Windows drag-growth corruption and ignored on the next HUD open;
+- Windows uses the same main-process cursor-position feed as Linux so the
+  renderer can clear `WS_EX_TRANSPARENT` even when Electron forwarding stalls.
+- Programmatic close paths suppress only the HUD restore/broadcast behavior;
+  cleanup listeners remain attached so cursor polling cannot leak timers.
+
+Primary files:
+
+- `apps/desktop/electron/hud-window-geometry.ts`
+- `apps/desktop/electron/hud-window-geometry.test.ts`
+- `apps/desktop/electron/hud-cursor.ts`
+- `apps/desktop/electron/hud-cursor.test.ts`
+- `apps/desktop/electron/hud-window-lifecycle.ts`
+- `apps/desktop/electron/hud-window-lifecycle.test.ts`
+- `apps/desktop/electron/main.ts`
+
+Retirement condition: upstream must provide equivalent or better packaged
+Windows behavior for geometry stability **and** click-through recovery. An
+upstream resize handle without the Windows cursor recovery is not sufficient.
+Verify with physical drag/composer/click/exit smoke tests before dropping the
+carry. Operator details and focused commands live in
+`docs/axiom-fork-contract.md`.
+
 ### Desktop remote profile handles — local carry pending upstream equivalent
 
 Axiom carries `feat(desktop): add remote profile handles` so Desktop can discover named profiles exposed by a selected remote gateway and pin them as local profile handles. This turns the existing profile rail into the practical local/remote agent switcher without hand-creating stub profiles or copying remote connection settings.

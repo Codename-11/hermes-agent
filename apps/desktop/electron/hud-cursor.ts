@@ -1,17 +1,16 @@
 /**
- * Cursor→page coordinate math for the HUD's Linux click-through fallback.
+ * Cursor→page coordinate math for the HUD's Windows/Linux click-through fallback.
  *
  * The HUD decides whether to swallow the mouse by hit-testing the document
  * under the cursor, which needs a cursor position in CSS pixels. On macOS and
  * Windows that arrives for free: `setIgnoreMouseEvents(true, { forward: true })`
  * keeps mousemove flowing to the page even while the window is ignoring, so the
  * renderer can always see where the pointer is and re-arm when it returns to
- * the bar. `forward` is `@platform darwin,win32`. On Linux the moves stop the
- * instant the window starts ignoring, the renderer's last known point freezes,
- * and the HUD can never decide to be solid again — the bar goes permanently
- * untouchable.
+ * the bar. Windows is polled as well because transparent frameless windows can
+ * remain WS_EX_TRANSPARENT despite `forward: true`, stranding the composer in
+ * click-through mode. macOS continues to use forwarded mousemove directly.
  *
- * Main can still see the cursor, so on Linux it polls and pushes the position
+ * Main can still see the cursor, so Windows/Linux poll and push the position
  * in. This is the conversion that push needs, kept pure and separate because
  * the two unit mismatches in it are exactly what silently makes a hit test miss
  * by a hand's width.
@@ -27,6 +26,17 @@ interface Bounds {
   y: number
   width: number
   height: number
+}
+
+/**
+ * Native cursor polling is required anywhere transparent-window forwarding is
+ * not reliable enough to re-arm the HUD. Linux does not support Electron's
+ * `forward` option; Windows supports it nominally, but transparent frameless
+ * windows can remain WS_EX_TRANSPARENT and stop delivering the move that would
+ * make the composer solid again. Poll both platforms; macOS forwarding works.
+ */
+export function shouldFeedHudCursor(platform: NodeJS.Platform): boolean {
+  return platform === 'linux' || platform === 'win32'
 }
 
 /**

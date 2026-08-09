@@ -136,8 +136,19 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
-import { cursorPointInWindow } from './hud-cursor'
+import { cursorPointInWindow, shouldFeedHudCursor } from './hud-cursor'
 import { buildHudWindowUrl } from './hud-url'
+import {
+  HUD_DEFAULT_HEIGHT,
+  HUD_DEFAULT_WIDTH,
+  HUD_MIN_HEIGHT,
+  HUD_MIN_WIDTH,
+  hudBoundsForDrag,
+  hudNativeWindowOptions,
+  sanitizeHudState,
+  shouldPinHudDragSize
+} from './hud-window-geometry'
+import { bindHudCloseBehavior, suppressHudCloseBehavior } from './hud-window-lifecycle'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -9510,12 +9521,15 @@ let hudSessionId = null
 // must be respawned against the new profile's backend (see openHudWindow).
 let hudProfile = null
 
+// Size pinned while moving the transparent frameless window. Windows can grow
+// this window during native geometry calls, so every move reapplies the size
+// captured when the current HUD was created.
+let hudDragSize: [number, number] | null = null
+
 // A wide, short bar parked near the bottom of the active display — the shape
 // of a game chat frame, and where one belongs. Defaults only: once the user
-// moves or resizes the HUD, hud-state.json wins (same pattern as the main
-// window's window-state.json).
-const HUD_WIDTH = 620
-const HUD_HEIGHT = 320
+// moves the HUD, hud-state.json wins (same pattern as the main window's
+// window-state.json). Obviously drifted Windows geometry is rejected below.
 const HUD_BOTTOM_MARGIN = 72
 const HUD_STATE_PATH = path.join(app.getPath('userData'), 'hud-state.json')
 
@@ -9523,13 +9537,7 @@ function readHudState() {
   try {
     const raw = JSON.parse(fs.readFileSync(HUD_STATE_PATH, 'utf8'))
 
-    if (
-      [raw?.x, raw?.y, raw?.width, raw?.height].every(v => Number.isFinite(v)) &&
-      raw.width >= 380 &&
-      raw.height >= 160
-    ) {
-      return raw
-    }
+    return sanitizeHudState(raw, process.platform)
   } catch {
     // First run / unreadable — fall through to defaults.
   }
@@ -9553,21 +9561,20 @@ function persistHudState() {
 
 const schedulePersistHudState = debounce(persistHudState, 250)
 
-// How often Linux gets told where the cursor is. Fast enough that the bar is
-// solid before a click lands after the pointer arrives, cheap enough to leave
-// running for as long as the HUD is open — it is one `getCursorScreenPoint()`
-// and, when the answer has not changed, nothing else.
+// How often Windows/Linux gets told where the cursor is. Fast enough that the
+// bar is solid before a click lands after the pointer arrives, cheap enough to
+// leave running for as long as the HUD is open — one cursor read and, when the
+// answer has not changed, nothing else.
 const HUD_CURSOR_POLL_MS = 60
 
 /**
- * Feed the HUD renderer the cursor position on Linux.
+ * Feed the HUD renderer a native cursor position where forwarded page moves are
+ * not reliable enough to recover from click-through mode.
  *
- * Everywhere else the renderer learns this from mousemove, which keeps arriving
- * while the window ignores the mouse because we pass `{ forward: true }`. That
- * option is macOS/Windows only. Without it a Linux HUD stops hearing the
- * pointer the moment it turns click-through, so it can never notice the pointer
- * coming back and stays transparent — the bar is there, and clicking it hits
- * whatever is behind. Main can still see the cursor, so it says so.
+ * Linux does not support Electron's `{ forward: true }`. Windows nominally does,
+ * but transparent frameless windows can remain WS_EX_TRANSPARENT and never
+ * deliver the move that should make the composer solid again. Main can still
+ * see the cursor on both systems, so it pushes the same point into the renderer.
  *
  * Deliberately the same decision, just a different source for one input: the
  * renderer runs its usual hit test on the point it is handed. Re-deciding
@@ -9575,14 +9582,27 @@ const HUD_CURSOR_POLL_MS = 60
  * the main process.
  */
 function startHudCursorFeed(win: BrowserWindow) {
-  if (process.platform !== 'linux') {
+  if (!shouldFeedHudCursor(process.platform)) {
     return
   }
 
   let last: string | null = null
+  let timer: ReturnType<typeof setInterval> | null = null
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
+  }
 
-  const timer = setInterval(() => {
-    if (win.isDestroyed() || !win.isVisible()) {
+  timer = setInterval(() => {
+    if (win.isDestroyed()) {
+      stop()
+
+      return
+    }
+
+    if (!win.isVisible()) {
       return
     }
 
@@ -9601,7 +9621,7 @@ function startHudCursorFeed(win: BrowserWindow) {
     win.webContents.send('hermes:hud:cursor', point)
   }, HUD_CURSOR_POLL_MS)
 
-  win.on('closed', () => clearInterval(timer))
+  win.once('closed', stop)
 }
 
 function hudBounds() {
@@ -9630,11 +9650,11 @@ function hudBounds() {
   const area = display?.workArea
 
   if (!area) {
-    return { width: HUD_WIDTH, height: HUD_HEIGHT, x: undefined, y: undefined }
+    return { width: HUD_DEFAULT_WIDTH, height: HUD_DEFAULT_HEIGHT, x: undefined, y: undefined }
   }
 
-  const width = Math.min(HUD_WIDTH, area.width)
-  const height = Math.min(HUD_HEIGHT, area.height)
+  const width = Math.min(HUD_DEFAULT_WIDTH, area.width)
+  const height = Math.min(HUD_DEFAULT_HEIGHT, area.height)
 
   return {
     width,
@@ -9674,11 +9694,14 @@ function broadcastHudState(open) {
 function spawnHudWindow(sessionId, profile) {
   const win = new BrowserWindow({
     ...hudBounds(),
-    minWidth: 380,
-    minHeight: 160,
+    minWidth: HUD_MIN_WIDTH,
+    minHeight: HUD_MIN_HEIGHT,
     frame: false,
     transparent: true,
-    resizable: true,
+    // Transparent frameless Windows windows expose invisible resize zones and
+    // grow during native geometry calls. HUD is intentionally compact; keep
+    // native resizing off on Windows and pin its size explicitly while moving.
+    ...hudNativeWindowOptions(process.platform),
     movable: true,
     minimizable: false,
     maximizable: false,
@@ -9705,6 +9728,13 @@ function spawnHudWindow(sessionId, profile) {
     // voice, the shared throttling contract).
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
+
+  if (shouldPinHudDragSize(process.platform)) {
+    const [hudWidth, hudHeight] = win.getSize()
+    hudDragSize = [hudWidth, hudHeight]
+  } else {
+    hudDragSize = null
+  }
 
   win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
   win.setHiddenInMissionControl?.(true)
@@ -9743,7 +9773,9 @@ function spawnHudWindow(sessionId, profile) {
     }
   })
 
-  win.on('closed', () => {
+  bindHudCloseBehavior(win, () => {
+    hudDragSize = null
+
     if (hudWindow === win) {
       hudWindow = null
     }
@@ -9783,7 +9815,7 @@ function openHudWindow(sessionId, profile) {
     if (profileKey && hudProfile !== profileKey) {
       const win = hudWindow
       hudWindow = null
-      win.removeAllListeners('closed')
+      suppressHudCloseBehavior(win)
       win.destroy()
 
       hudSessionId = sessionId || null
@@ -9824,8 +9856,8 @@ function closeHudWindow() {
   hudWindow = null
 
   if (win && !win.isDestroyed()) {
-    // Null'd first so the 'closed' handler doesn't broadcast a second time.
-    win.removeAllListeners('closed')
+    // Null'd first so the behavior handler doesn't broadcast a second time.
+    suppressHudCloseBehavior(win)
     win.close()
   }
 
@@ -10534,8 +10566,8 @@ ipcMain.handle('hermes:hud:vibrancy', (_event, on) => {
 // Let clicks fall through the HUD wherever it isn't really there. An
 // always-on-top window eats every click inside its rectangle, and most of that
 // rectangle is a faded-out band over whatever the user is actually working in.
-// `forward` keeps mousemove flowing so the renderer can re-arm when the cursor
-// reaches the bar.
+// `forward` keeps mousemove flowing on macOS; the native cursor feed re-arms
+// Windows/Linux when forwarded page movement is unavailable or unreliable.
 ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
   if (hudWindow && !hudWindow.isDestroyed()) {
     hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
@@ -10554,9 +10586,17 @@ ipcMain.on('hermes:hud:move-by', (event, delta) => {
     return
   }
 
-  const [x, y] = hudWindow.getPosition()
+  const position = hudWindow.getPosition()
 
-  hudWindow.setPosition(Math.round(x + dx), Math.round(y + dy))
+  if (shouldPinHudDragSize(process.platform)) {
+    const [currentWidth, currentHeight] = hudWindow.getSize()
+    const size = hudDragSize ?? [currentWidth, currentHeight]
+
+    hudDragSize = size
+    hudWindow.setBounds(hudBoundsForDrag(position, { x: dx, y: dy }, size))
+  } else {
+    hudWindow.setPosition(Math.round(position[0] + dx), Math.round(position[1] + dy))
+  }
 })
 
 // The HUD renderer reporting which session it is on, so the close broadcast
@@ -12906,7 +12946,7 @@ app.on('before-quit', event => {
   // closeHudWindow(): that also re-shows the main window, which is wrong on the
   // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
   if (hudWindow && !hudWindow.isDestroyed()) {
-    hudWindow.removeAllListeners('closed')
+    suppressHudCloseBehavior(hudWindow)
     hudWindow.destroy()
   }
 
