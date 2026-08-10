@@ -137,6 +137,8 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { cursorPointInWindow, shouldFeedHudCursor } from './hud-cursor'
+import { snapHudBounds } from './hud-snap'
+import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import {
   HUD_DEFAULT_HEIGHT,
@@ -5427,12 +5429,18 @@ async function waitForHermes(baseUrl, token, signal?, authMode?) {
   })
 }
 
-function getWindowButtonPosition() {
+function getWindowButtonPosition(win = mainWindow) {
   if (!IS_MAC) {
     return null
   }
 
-  return mainWindow?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
+  // Fullscreen hides the traffic lights — treat as no left-side controls so the
+  // renderer drops the traffic-light dodge inset and Y nudge.
+  if (win?.isFullScreen?.()) {
+    return null
+  }
+
+  return win?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
 }
 
 function getNativeOverlayWidth() {
@@ -5445,7 +5453,8 @@ function getWindowState(win = mainWindow) {
     isMinimized: Boolean(win?.isMinimized?.()),
     isVisible: Boolean(win?.isVisible?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition()
+    windowButtonPosition: getWindowButtonPosition(win),
+    darwinMajor: IS_MAC ? DARWIN_MAJOR : 0
   }
 }
 
@@ -9567,6 +9576,46 @@ const schedulePersistHudState = debounce(persistHudState, 250)
 // answer has not changed, nothing else.
 const HUD_CURSOR_POLL_MS = 60
 
+// Snap-to-pointer — global ⌘⇧G while the HUD is open (tap, not hold).
+const HUD_SNAP_ANCHOR_Y = 48
+
+function applyHudSnapToPointer() {
+  if (!hudWindow || hudWindow.isDestroyed()) {
+    return
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const bounds = hudWindow.getBounds()
+  const display = screen.getDisplayNearestPoint(cursor)
+  const workArea = display?.workArea ?? bounds
+  const anchor = { x: Math.round(bounds.width / 2), y: HUD_SNAP_ANCHOR_Y }
+
+  const origin = snapHudBounds(
+    cursor,
+    anchor,
+    { width: bounds.width, height: bounds.height },
+    hudWindow.webContents.getZoomFactor(),
+    workArea
+  )
+
+  // setBounds — NOT setPosition alone: on Windows, a transparent frameless
+  // window silently grows ~1px per setPosition call (see move-by handler).
+  hudWindow.setBounds({
+    x: origin.x,
+    y: origin.y,
+    width: bounds.width,
+    height: bounds.height
+  })
+}
+
+const hudSnapShortcut = createHudSnapShortcut(globalShortcut, applyHudSnapToPointer)
+
+function registerHudSnapShortcut() {
+  if (!hudSnapShortcut.register()) {
+    rememberLog('[hud] snap shortcut unavailable — CommandOrControl+Shift+G may be owned by another app')
+  }
+}
+
 /**
  * Feed the HUD renderer a native cursor position where forwarded page moves are
  * not reliable enough to recover from click-through mode.
@@ -9822,6 +9871,7 @@ function openHudWindow(sessionId, profile) {
       hudProfile = profileKey
       hudWindow = spawnHudWindow(sessionId, profileKey)
       broadcastHudState(true)
+      registerHudSnapShortcut()
 
       return hudWindow
     }
@@ -9847,11 +9897,14 @@ function openHudWindow(sessionId, profile) {
   hudProfile = profileKey
   hudWindow = spawnHudWindow(sessionId, profileKey)
   broadcastHudState(true)
+  registerHudSnapShortcut()
 
   return hudWindow
 }
 
 function closeHudWindow() {
+  hudSnapShortcut.dispose()
+
   const win = hudWindow
   hudWindow = null
 
@@ -10581,8 +10634,10 @@ ipcMain.on('hermes:hud:move-by', (event, delta) => {
 
   const dx = Number(delta?.x)
   const dy = Number(delta?.y)
+  const width = Number(delta?.width)
+  const height = Number(delta?.height)
 
-  if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(width) || !Number.isFinite(height)) {
     return
   }
 
@@ -10595,7 +10650,42 @@ ipcMain.on('hermes:hud:move-by', (event, delta) => {
     hudDragSize = size
     hudWindow.setBounds(hudBoundsForDrag(position, { x: dx, y: dy }, size))
   } else {
-    hudWindow.setPosition(Math.round(position[0] + dx), Math.round(position[1] + dy))
+    hudWindow.setBounds({
+      x: Math.round(position[0] + dx),
+      y: Math.round(position[1] + dy),
+      width: Math.round(width),
+      height: Math.round(height)
+    })
+  }
+})
+
+// Resize from the HUD's corner handle. Windows HUDs are created non-resizable
+// to suppress transparent frameless native resize zones, so briefly enable
+// programmatic resizing there and restore the prior platform policy afterward.
+ipcMain.on('hermes:hud:set-bounds', (event, bounds) => {
+  if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents || !bounds) {
+    return
+  }
+
+  const win = hudWindow
+  const width = Math.max(380, Math.round(Number(bounds.width)))
+  const height = Math.max(160, Math.round(Number(bounds.height)))
+  const [curW, curH] = win.getSize()
+  const resizing = width !== curW || height !== curH
+  const wasResizable = win.isResizable()
+
+  if (resizing && !wasResizable) {
+    win.setResizable(true)
+  }
+
+  win.setBounds({ x: Math.round(Number(bounds.x)), y: Math.round(Number(bounds.y)), width, height })
+
+  if (resizing && shouldPinHudDragSize(process.platform)) {
+    hudDragSize = [width, height]
+  }
+
+  if (resizing && !wasResizable) {
+    win.setResizable(false)
   }
 })
 
@@ -10606,6 +10696,7 @@ ipcMain.on('hermes:hud:session', (event, sessionId) => {
     hudSessionId = typeof sessionId === 'string' && sessionId ? sessionId : null
   }
 })
+
 ipcMain.handle('hermes:hud:close', async () => {
   closeHudWindow()
 
@@ -12945,6 +13036,8 @@ app.on('before-quit', event => {
   // floating composer with nothing behind it. Close it directly rather than via
   // closeHudWindow(): that also re-shows the main window, which is wrong on the
   // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
+  hudSnapShortcut.dispose()
+
   if (hudWindow && !hudWindow.isDestroyed()) {
     suppressHudCloseBehavior(hudWindow)
     hudWindow.destroy()
