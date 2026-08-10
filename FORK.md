@@ -82,6 +82,12 @@ Projects view remains project-only with nested three-session previews:
   **Recent Sessions** lane in the same overview. The recent lane reuses the
   existing session rows, actions, date/status grouping, filters, ordering, and
   pagination; project rows never expand into nested session previews.
+- Projects/Home and flat recents share the same source posture: only known
+  interactive local conversations enter project navigation. Messaging sources
+  stay in Messaging, while A2A, cron, kanban, webhook/API, subagent, tool, and
+  unknown future system runners remain outside Projects/Home. This is a query
+  policy only; it never mutates session rows and source-specific/search history
+  remains available.
 - Entering a project hides global recents and shows only that project's hydrated
   repo/worktree/session lanes. Switching back to flat Sessions mode preserves
   the upstream flat-list behavior.
@@ -98,9 +104,11 @@ Projects view remains project-only with nested three-session previews:
 
 Protected files: `apps/desktop/src/app/chat/sidebar/{index,sessions-section,project-dialog}.tsx`,
 `apps/desktop/src/app/chat/sidebar/projects/{overview-row,workspace-header}.tsx`,
-`apps/desktop/src/{lib/desktop-fs.ts,store/projects.ts}`, the matching Desktop
-tests/locales/bridge declarations, and `hermes_cli/{web_models,web_server}.py`
-plus `tests/hermes_cli/test_web_server_fs.py`.
+`apps/desktop/src/{lib/desktop-fs.ts,lib/session-source.ts,store/projects.ts}`,
+`apps/desktop/src/app/session/hooks/use-session-list-actions.ts`, the matching
+Desktop tests/locales/bridge declarations, `hermes_cli/{session_source_policy,
+web_models,web_server}.py`, `tui_gateway/server.py`, and the focused backend
+tests.
 
 Focused verification:
 
@@ -111,11 +119,16 @@ NODE_ENV=test ../../node_modules/.bin/vitest run --project ui \
   src/app/chat/sidebar/sessions-section.test.tsx \
   src/app/chat/sidebar/projects/overview-row.test.tsx \
   src/app/chat/sidebar/projects/workspace-header.test.tsx \
-  src/lib/desktop-fs.test.ts src/store/projects.test.ts
+  src/app/session/hooks/use-session-list-actions.test.tsx \
+  src/lib/desktop-fs.test.ts src/lib/session-source.test.ts \
+  src/store/projects.test.ts
 npm run typecheck
 
 cd ../..
-scripts/run_tests.sh tests/hermes_cli/test_web_server_fs.py -q
+scripts/run_tests.sh \
+  tests/hermes_cli/test_web_server_fs.py \
+  tests/tui_gateway/test_project_tree_source_policy.py \
+  tests/tui_gateway/test_projects_rpc.py -q
 ```
 
 Drop condition: upstream must provide the complete user-visible behavior set together:
@@ -123,8 +136,10 @@ a hybrid Projects + flat-recents overview without nested previews, no global
 recents during drill-in, labeled project-lane paging, an explicit Home creation
 target that clears active-project state, and explicit-submit-only typed-path
 creation across both local Electron and authenticated/profile-routed remote
-Desktop. Partial Projects UI parity is not sufficient to drop the remote
-mutation seam, and a remote mkdir endpoint alone is not sufficient to drop the
+Desktop, plus source-filter parity that keeps messaging and automation/system
+runs out of Projects/Home without database mutation or title heuristics. Partial
+Projects UI parity is not sufficient to drop the remote mutation or source
+policy seams, and a remote mkdir endpoint alone is not sufficient to drop the
 overview carry.
 
 ## Fork footprint reduction — extracted modules

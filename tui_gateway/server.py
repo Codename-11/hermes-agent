@@ -11904,11 +11904,30 @@ def _discover_repos_payload(
     return out
 
 
-# Sources excluded from the project tree: cron runs, and kanban dispatcher
-# workers, are not user conversations. Subagent/compression children are
-# already dropped by list_sessions_rich(include_children=False); cron has its
-# own section, and kanban runs are read on the board.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban"]
+def _list_project_tree_sessions(db, session_limit: int) -> list[dict]:
+    """Return only human/local conversations eligible for Projects and Home.
+
+    This is an allowlist on purpose. Messaging adapters and automation runners
+    grow over time; an unknown future source must not silently become a Home
+    conversation. Search and source-specific history surfaces still query the
+    underlying database independently.
+    """
+    from hermes_cli.session_source_policy import PROJECT_CONVERSATION_SOURCES
+
+    rows = db.list_sessions_rich(
+        sources=list(PROJECT_CONVERSATION_SOURCES),
+        limit=session_limit,
+        offset=0,
+        order_by_last_active=True,
+        min_message_count=1,
+        include_children=False,
+        include_archived=False,
+        # `_project_tree_row` keeps ~18 fields and drops the rest, so selecting
+        # the system-prompt blob only to discard it costs tens of MB of B-tree
+        # reads per build on a long-lived database.
+        compact_rows=True,
+    )
+    return [_project_tree_row(r) for r in rows]
 
 
 def _project_tree_row(r: dict) -> dict:
@@ -11959,20 +11978,7 @@ def _project_tree_inputs(
     which already has sessions — avoiding the distinct-cwd scan + git probes on
     that per-turn path. One projects.db connection serves both reads.
     """
-    rows = db.list_sessions_rich(
-        limit=session_limit,
-        offset=0,
-        order_by_last_active=True,
-        min_message_count=1,
-        include_children=False,
-        exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
-        include_archived=False,
-        # `_project_tree_row` keeps ~18 fields and drops the rest, so selecting
-        # the system-prompt blob only to discard it costs tens of MB of B-tree
-        # reads per build on a long-lived database.
-        compact_rows=True,
-    )
-    sessions = [_project_tree_row(r) for r in rows]
+    sessions = _list_project_tree_sessions(db, session_limit)
     # Parallel-warm the git cache so build_tree's resolver reads it instead of
     # cold-probing each cwd in sequence (matters on the drill-in path, which
     # skips the discovery warm-up below).

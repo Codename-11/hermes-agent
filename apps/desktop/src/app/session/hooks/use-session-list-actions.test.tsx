@@ -171,6 +171,27 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
+  it('fails non-local and unknown sources closed even if an older backend returns them', async () => {
+    listSidebarSessions.mockResolvedValue(
+      sidebar({
+        sessions: [
+          row('local', { source: 'desktop' }),
+          row('discord', { source: 'discord' }),
+          row('a2a', { source: 'a2a' }),
+          row('future', { source: 'future_runner' })
+        ]
+      })
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['local'])
+  })
+
   it('still shows loading for the initial (empty-list) fetch', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
@@ -222,7 +243,15 @@ describe('refreshSessions batches slices into one request', () => {
     expect(listSidebarSessions).toHaveBeenCalledWith(
       expect.objectContaining({
         recentsProfile: 'work',
-        recentsExclude: expect.arrayContaining(['cron']),
+        recentsExclude: expect.arrayContaining([
+          'cron',
+          'kanban',
+          'a2a',
+          'webhook',
+          'api_server',
+          'discord',
+          'telegram'
+        ]),
         messagingExclude: expect.arrayContaining(['cron'])
       })
     )

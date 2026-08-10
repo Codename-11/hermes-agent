@@ -7,6 +7,8 @@
 Kept Projects primary in grouped Desktop mode while restoring a separate flat
 Recent Sessions lane beneath it, and added explicit-submit-only creation for
 typed project directory paths in both local and authenticated remote Desktop.
+Projects/Home and flat recents now also share a deliberate source taxonomy so
+messaging and automation history no longer pollute local project navigation.
 
 ### What changed
 
@@ -22,15 +24,25 @@ typed project directory paths in both local and authenticated remote Desktop.
   directory through Electron locally or the active profile's authenticated
   `/api/fs/ensure-directory` route remotely; typing and browsing do no writes,
   and failures stay visible without creating the project.
+- Replaced the project tree's `cron`/`kanban` denylist with an authoritative
+  backend allowlist of interactive local conversation sources. Discord,
+  Telegram, A2A, webhook/API, cron, kanban, subagent/tool, and unknown future
+  system sources fail closed from Projects/Home while remaining in their own
+  history/search surfaces.
+- Centralized Desktop's automation-source taxonomy and reused it for the flat
+  Recents request, eliminating the separate A2A/API/webhook leak there without
+  mutating existing database rows or relying on titles.
 - Added focused renderer/store/filesystem and authenticated backend regression
   coverage. The carry and its complete drop criteria are recorded in `FORK.md`
   and `docs/axiom-fork-contract.md`.
 
 ### Verification
 
-- Focused Desktop UI/store/filesystem suite: 58 passed.
+- Focused Desktop UI/store/filesystem/source-policy suite: 75 passed.
 - Authenticated backend filesystem suite: 5 passed.
 - Desktop typecheck: passed.
+- Project-tree source policy + Projects RPC suite: 25 passed.
+- Desktop source-policy/refresh slice: 17 passed (included in the 75 above).
 - Full Desktop lint remains red on pre-existing errors outside this carry;
   focused changed-file lint is recorded in the implementation handoff.
 

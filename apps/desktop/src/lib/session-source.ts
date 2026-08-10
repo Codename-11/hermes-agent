@@ -46,6 +46,32 @@ const SOURCE_ALIASES: Record<string, string[]> = {
 export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'kanban', 'local', 'tui']
 const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 
+// Positive policy for Projects/Home and the flat Recents lane. Unknown sources
+// fail closed so a newly added platform/runner cannot silently pollute local
+// navigation before the source taxonomy is reviewed. Empty source preserves
+// legacy conversations created before source tagging was consistent.
+export const PROJECT_CONVERSATION_SOURCE_IDS = ['', 'acp', 'cli', 'codex', 'desktop', 'gateway', 'local', 'tui', 'webui']
+const PROJECT_CONVERSATION_SOURCES = new Set(PROJECT_CONVERSATION_SOURCE_IDS)
+
+export function isProjectConversationSource(source: null | string | undefined): boolean {
+  return PROJECT_CONVERSATION_SOURCES.has(normalizeSessionSource(source) ?? '')
+}
+
+// Non-human/system session sources. Keep this policy centralized: the flat
+// Recents list excludes these along with messaging platforms, while Projects
+// applies the equivalent backend local-conversation allowlist. Search and the
+// dedicated Cron/Kanban/Messaging histories remain independently queryable.
+export const AUTOMATION_SESSION_SOURCE_IDS = [
+  'a2a',
+  'api_server',
+  'cron',
+  'kanban',
+  'msgraph_webhook',
+  'subagent',
+  'tool',
+  'webhook'
+]
+
 // External messaging platforms that each get their own self-managed sidebar
 // section (fetched separately from local recents). Mirrors the gateway platform
 // adapters; keep in sync with PLATFORM_ICONS in app/messaging/platform-icon.tsx.
@@ -72,6 +98,10 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'feishu'
 ]
 const MESSAGING_SOURCE_IDS = new Set(MESSAGING_SESSION_SOURCE_IDS)
+
+export const SIDEBAR_RECENTS_EXCLUDED_SOURCE_IDS = [
+  ...new Set([...AUTOMATION_SESSION_SOURCE_IDS, ...MESSAGING_SESSION_SOURCE_IDS])
+]
 
 /** True when a source id is an external messaging platform (gets its own
  *  sidebar section) rather than a local/CLI/desktop session. */

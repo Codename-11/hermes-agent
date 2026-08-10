@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMessagingSource, MESSAGING_SESSION_SOURCE_IDS, sessionSourceSearchTerms } from './session-source'
+import {
+  AUTOMATION_SESSION_SOURCE_IDS,
+  isMessagingSource,
+  isProjectConversationSource,
+  MESSAGING_SESSION_SOURCE_IDS,
+  sessionSourceSearchTerms,
+  SIDEBAR_RECENTS_EXCLUDED_SOURCE_IDS
+} from './session-source'
 
 // Regression guard for #46761 / PR #47395: Photon (iMessage) must keep its own
 // sidebar section. refreshMessagingSessions() filters rows through
@@ -31,5 +38,26 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource('cli')).toBe(false)
     expect(isMessagingSource(null)).toBe(false)
     expect(isMessagingSource(undefined)).toBe(false)
+  })
+})
+
+describe('sidebar source taxonomy', () => {
+  it('keeps messaging and automation out of flat recents', () => {
+    expect(SIDEBAR_RECENTS_EXCLUDED_SOURCE_IDS).toEqual(
+      expect.arrayContaining(['discord', 'telegram', 'a2a', 'webhook', 'api_server', 'cron', 'kanban', 'subagent'])
+    )
+  })
+
+  it('classifies A2A/API/webhook runs as automation rather than local conversation history', () => {
+    expect(AUTOMATION_SESSION_SOURCE_IDS).toEqual(expect.arrayContaining(['a2a', 'api_server', 'webhook']))
+  })
+
+  it('admits only local conversations and fails unknown future sources closed', () => {
+    expect(isProjectConversationSource('desktop')).toBe(true)
+    expect(isProjectConversationSource(' CLI ')).toBe(true)
+    expect(isProjectConversationSource(null)).toBe(true)
+    expect(isProjectConversationSource('discord')).toBe(false)
+    expect(isProjectConversationSource('a2a')).toBe(false)
+    expect(isProjectConversationSource('future_runner')).toBe(false)
   })
 })
