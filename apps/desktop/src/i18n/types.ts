@@ -1574,6 +1574,7 @@ export interface Translations {
     results: string
     pinned: string
     sessions: string
+    recentSessions: string
     cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
@@ -1597,6 +1598,8 @@ export interface Translations {
       addFolderTitle: string
       namePlaceholder: string
       foldersLabel: string
+      folderPathLabel: string
+      folderPathPlaceholder: string
       ideaLabel: string
       ideaPlaceholder: string
       ideaGenerate: string

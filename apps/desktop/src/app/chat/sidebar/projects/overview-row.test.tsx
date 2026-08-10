@@ -2,8 +2,6 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo } from '@/hermes'
-
 import { ProjectOverviewRow } from './overview-row'
 import type { SidebarProjectTree } from './workspace-groups'
 
@@ -22,12 +20,6 @@ vi.mock('@/i18n', () => ({
       }
     }
   })
-}))
-
-vi.mock('./model', () => ({
-  PROJECT_PREVIEW_COUNT: 3,
-  latestProjectSessions: () => [],
-  useWorkspaceNodeOpen: () => [false, vi.fn()]
 }))
 
 // ProjectMenu (the kebab) has its own dedicated test file — stub it here so
@@ -51,21 +43,7 @@ describe('ProjectOverviewRow', () => {
     expect(tipTrigger(button)).toBeTruthy()
   })
 
-  it('wraps the disclosure toggle in a Tip when there are preview sessions', () => {
-    render(
-      <ProjectOverviewRow
-        previewSessions={[{ id: 's1' } as unknown as SessionInfo]}
-        project={project}
-        renderRows={() => null}
-      />
-    )
-
-    // Collapsed by default, so the disclosure offers to show the sessions.
-    const button = screen.getByRole('button', { name: 'Show Test D sessions' })
-    expect(tipTrigger(button)).toBeTruthy()
-  })
-
-  it('does not render the disclosure toggle when there is nothing to preview', () => {
+  it('never nests session previews under project rows', () => {
     render(<ProjectOverviewRow project={project} />)
 
     expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
@@ -85,5 +63,20 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
 
     expect(onNewSession).toHaveBeenCalledWith(null)
+  })
+
+  it('marks Home active when the durable project target is clear and exposes its add button on row hover', () => {
+    const home = {
+      id: '__no_project__',
+      isNoProject: true,
+      label: 'Home',
+      path: null
+    } as unknown as SidebarProjectTree
+
+    const { container } = render(<ProjectOverviewRow activeProjectId={null} onNewSession={vi.fn()} project={home} />)
+
+    expect(screen.getByText('Home').className).toContain('text-foreground')
+    expect(container.querySelector('[class~="group/workspace"]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New session in Home' })).toBeTruthy()
   })
 })

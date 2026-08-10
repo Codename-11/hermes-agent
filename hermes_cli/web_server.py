@@ -1362,6 +1362,7 @@ from hermes_cli.web_models import (  # noqa: F401
     MoaPresetPayload,
     MoaConfigPayload,
     FsWriteText,
+    FsEnsureDirectory,
     GitPathBody,
     GitFileBody,
     GitCommitBody,
@@ -2730,6 +2731,32 @@ async def fs_write_text(payload: FsWriteText):
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
 
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
+
+
+@app.post("/api/fs/ensure-directory")
+async def fs_ensure_directory(payload: FsEnsureDirectory):
+    """Create a directory tree after an authenticated Desktop submit.
+
+    This is deliberately a separate mutation from the directory browser: merely
+    listing or typing a path never creates it. ``_fs_path`` provides the same
+    absolute-path normalization used by the rest of the remote Desktop facade.
+    """
+    target = _fs_path(payload.path)
+
+    try:
+        await run_in_threadpool(target.mkdir, parents=True, exist_ok=True)
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a directory")
+    except HTTPException:
+        raise
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Directory is not writable")
+    except FileExistsError:
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create directory: {exc}")
+
+    return {"ok": True, "path": str(target)}
 
 
 @app.get("/api/fs/read-data-url")

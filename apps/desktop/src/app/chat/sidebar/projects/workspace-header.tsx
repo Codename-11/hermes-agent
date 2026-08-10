@@ -48,6 +48,8 @@ export function WorkspaceAddButton({ label, onClick }: { label: string; onClick:
 }
 
 // Reveals the next page of already-loaded rows within a workspace/worktree.
+// Keep the action labeled: inside a project, an unlabeled ellipsis is
+// indistinguishable from the adjacent actions menus.
 export function WorkspaceShowMoreButton({
   count,
   label,
@@ -61,16 +63,13 @@ export function WorkspaceShowMoreButton({
   const text = t.sidebar.showMoreIn(count, label)
 
   return (
-    <Tip label={text}>
-      <button
-        aria-label={text}
-        className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
-        onClick={onClick}
-        type="button"
-      >
-        <Codicon name="ellipsis" size="0.75rem" />
-      </button>
-    </Tip>
+    <button
+      className="ml-5 self-start bg-transparent py-1 text-[0.6875rem] text-(--ui-text-tertiary) underline-offset-2 hover:text-foreground hover:underline"
+      onClick={onClick}
+      type="button"
+    >
+      {text}
+    </button>
   )
 }
 

@@ -18,6 +18,7 @@ import {
   beginSessionMutation,
   createProject,
   endSessionMutation,
+  ensureProjectFolder,
   enterProject,
   exitProjectScope,
   openProjectCreate,
@@ -42,6 +43,7 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('@/lib/desktop-fs', () => ({
   desktopDefaultCwd: vi.fn(),
+  ensureDesktopDirectory: vi.fn(),
   isDesktopFsRemoteMode: vi.fn(),
   selectDesktopPaths: vi.fn(),
   writeDesktopFileText: vi.fn()
@@ -64,6 +66,7 @@ vi.mock('@/hermes', () => ({
 
 const fs = await import('@/lib/desktop-fs')
 const desktopDefaultCwd = vi.mocked(fs.desktopDefaultCwd)
+const ensureDesktopDirectory = vi.mocked(fs.ensureDesktopDirectory)
 const isDesktopFsRemoteMode = vi.mocked(fs.isDesktopFsRemoteMode)
 const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 
@@ -102,9 +105,11 @@ describe('project scope', () => {
     expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
-  it('entering the synthetic Home bucket still scopes (no active pin)', () => {
+  it('entering Home scopes the view and clears the active project target', () => {
+    $activeProjectId.set('p_previous')
     enterProject(NO_PROJECT_ID)
     expect($projectScope.get()).toBe(NO_PROJECT_ID)
+    expect($activeProjectId.get()).toBeNull()
   })
 
   it('persists the scope to localStorage', () => {
@@ -349,6 +354,16 @@ describe('createProject', () => {
       'sidebar.projects.staleBackend'
     )
     expect($projectsRpcAvailable.get()).toBe(false)
+  })
+})
+
+describe('ensureProjectFolder', () => {
+  it('returns the path normalized by the active local/remote filesystem authority', async () => {
+    ensureDesktopDirectory.mockResolvedValue({ path: '/resolved/demo' })
+
+    await expect(ensureProjectFolder('  ~/demo  ')).resolves.toBe('/resolved/demo')
+
+    expect(ensureDesktopDirectory).toHaveBeenCalledWith('~/demo')
   })
 })
 

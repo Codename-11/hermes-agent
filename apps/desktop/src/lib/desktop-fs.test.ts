@@ -7,6 +7,7 @@ import {
   desktopFileDiff,
   desktopFsCacheKey,
   desktopGitRoot,
+  ensureDesktopDirectory,
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileText,
@@ -19,6 +20,7 @@ const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local'
 const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
+const ensureDirectory = vi.fn(async (path: string) => ({ path }))
 
 const api = vi.fn(async ({ path }: { path: string }) => {
   if (path.startsWith('/api/fs/list?')) {
@@ -41,6 +43,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
     return { cwd: '/backend/project', branch: 'main' }
   }
 
+  if (path === '/api/fs/ensure-directory') {
+    return { ok: true, path: '/remote/new-project' }
+  }
+
   if (path.startsWith('/api/git/file-diff?')) {
     return { diff: 'remote diff' }
   }
@@ -52,6 +58,7 @@ function stubBridge() {
   vi.stubGlobal('window', {
     hermesDesktop: {
       api,
+      ensureDirectory,
       gitRoot,
       readDir,
       readFileDataUrl,
@@ -117,6 +124,29 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('creates typed project directories through Electron only in local mode', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(ensureDesktopDirectory('/local/new-project')).resolves.toEqual({ path: '/local/new-project' })
+
+    expect(ensureDirectory).toHaveBeenCalledWith('/local/new-project')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('creates typed project directories through the active authenticated remote profile', async () => {
+    $connection.set({ mode: 'remote', profile: 'coder' } as never)
+
+    await expect(ensureDesktopDirectory('/remote/new-project')).resolves.toEqual({ path: '/remote/new-project' })
+
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/remote/new-project' },
+      method: 'POST',
+      path: '/api/fs/ensure-directory',
+      profile: 'coder'
+    })
+    expect(ensureDirectory).not.toHaveBeenCalled()
   })
 
   it('targets the active profile backend so a remote profile never reads local disk', async () => {

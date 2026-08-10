@@ -119,8 +119,9 @@ interface SidebarSessionsSectionProps {
   // which then passes `projectContent` on the next render. Takes precedence
   // over `tree` / `groups`.
   projectOverview?: SidebarProjectTree[]
-  // Per-project preview rows (from the backend tree), keyed by project id.
-  projectOverviewPreviews?: Record<string, SessionInfo[]>
+  // Hybrid overview: a separate flat recents lane rendered after Projects.
+  // Omitted in project drill-in and flat Sessions mode.
+  projectOverviewRecentsLabel?: string
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
@@ -186,7 +187,7 @@ export function SidebarSessionsSection({
   footer,
   groups,
   projectOverview,
-  projectOverviewPreviews,
+  projectOverviewRecentsLabel,
   projectsLoading = false,
   onEnterProject,
   projectContent,
@@ -363,6 +364,45 @@ export function SidebarSessionsSection({
   const showProjectsSkeleton =
     projectsLoading && !hasProjectOverview && !hasProjectContent && !projectContent && !groups?.length
 
+  const renderFlatContent = (allowVirtual: boolean) => {
+    if (allowVirtual && flatVirtualized) {
+      const virtual = (
+        <VirtualSessionList
+          activeSessionId={activeSessionId}
+          className={contentClassName}
+          dividerAction={dividerAction}
+          onArchiveSession={onArchiveSession}
+          onBranchSession={onBranchSession}
+          onDeleteSession={onDeleteSession}
+          onResumeSession={onResumeSession}
+          onTogglePin={onTogglePin}
+          pinned={pinned}
+          rows={flatRows}
+          showProfileTags={showProfileTags}
+          sortable={sessionsDraggable}
+        />
+      )
+
+      return sessionsDraggable && onReorderSessions ? (
+        <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
+          {virtual}
+        </ReorderableList>
+      ) : (
+        virtual
+      )
+    }
+
+    if (sessionsDraggable && onReorderSessions) {
+      return (
+        <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
+          {flatRows.map(row => renderListRow(row, true, dividerAction))}
+        </ReorderableList>
+      )
+    }
+
+    return flatRows.map(row => renderListRow(row, false, dividerAction))
+  }
+
   let inner: React.ReactNode
 
   if (showProjectsSkeleton) {
@@ -406,9 +446,7 @@ export function SidebarSessionsSection({
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
-        previewSessions={projectOverviewPreviews?.[project.id]}
         project={project}
-        renderRows={renderRows}
       />
     )
 
@@ -428,6 +466,17 @@ export function SidebarSessionsSection({
         ) : (
           rows
         )}
+        {projectOverviewRecentsLabel && (
+          <>
+            <SidebarSectionHeader
+              collapsible={false}
+              label={projectOverviewRecentsLabel}
+              onToggle={() => undefined}
+              open
+            />
+            {flatRows.length ? renderFlatContent(false) : emptyState}
+          </>
+        )}
       </>
     )
   } else if (groups?.length) {
@@ -440,40 +489,8 @@ export function SidebarSessionsSection({
         renderRows={renderRows}
       />
     ))
-  } else if (flatVirtualized) {
-    const virtual = (
-      <VirtualSessionList
-        activeSessionId={activeSessionId}
-        className={contentClassName}
-        dividerAction={dividerAction}
-        onArchiveSession={onArchiveSession}
-        onBranchSession={onBranchSession}
-        onDeleteSession={onDeleteSession}
-        onResumeSession={onResumeSession}
-        onTogglePin={onTogglePin}
-        pinned={pinned}
-        rows={flatRows}
-        showProfileTags={showProfileTags}
-        sortable={sessionsDraggable}
-      />
-    )
-
-    inner =
-      sessionsDraggable && onReorderSessions ? (
-        <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
-          {virtual}
-        </ReorderableList>
-      ) : (
-        virtual
-      )
-  } else if (sessionsDraggable && onReorderSessions) {
-    inner = (
-      <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
-        {flatRows.map(row => renderListRow(row, true, dividerAction))}
-      </ReorderableList>
-    )
   } else {
-    inner = flatRows.map(row => renderListRow(row, false, dividerAction))
+    inner = renderFlatContent(true)
   }
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow

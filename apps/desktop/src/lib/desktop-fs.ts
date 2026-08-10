@@ -101,6 +101,27 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
+// Resolve and create a directory on the machine that owns the active Desktop
+// workspace. Local mode uses Electron; remote mode uses the authenticated API
+// bridge (including active-profile routing). Callers must invoke this only from
+// an explicit mutation such as Create Project submit — never from input/picker
+// change handlers.
+export async function ensureDesktopDirectory(path: string): Promise<{ path: string }> {
+  const desktop = bridge()
+
+  if (!isDesktopFsRemoteMode()) {
+    if (!desktop.ensureDirectory) {
+      throw new Error('Creating directories is not available')
+    }
+
+    return desktop.ensureDirectory(path)
+  }
+
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/ensure-directory', { path })
+
+  return { path: result.path || path }
+}
+
 export async function readDesktopFileDataUrl(path: string, profile?: string | null): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readFileDataUrl(path)

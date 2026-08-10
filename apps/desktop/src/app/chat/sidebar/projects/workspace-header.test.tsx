@@ -54,11 +54,12 @@ describe('WorkspaceAddButton', () => {
 })
 
 describe('WorkspaceShowMoreButton', () => {
-  it('wraps the ellipsis button in a Tip with the composed label', () => {
+  it('renders a visible, labeled project-lane paging action', () => {
     render(<WorkspaceShowMoreButton count={5} label="Test D" onClick={vi.fn()} />)
 
     const button = screen.getByRole('button', { name: 'Show 5 more in Test D' })
-    expect(tipTrigger(button)).toBeTruthy()
+    expect(button.textContent).toBe('Show 5 more in Test D')
+    expect(tipTrigger(button)).toBeNull()
   })
 })
 

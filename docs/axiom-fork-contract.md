@@ -159,7 +159,7 @@ Keep this section as the tracking source for remote file/sidebar/artifact behavi
 
 | Surface | Current behavior | Source | Notes |
 | --- | --- | --- | --- |
-| Files/sidebar browse + preview | Remote Desktop sessions use authenticated read-only `/api/fs/*` backend REST for listing, capped text preview, capped data URLs, git-root detection, and backend default cwd. Local Desktop sessions keep Electron filesystem IPC. | Upstream #44326 | Supersedes the older local-only ENOENT workaround path from #42497/#43082. |
+| Files/sidebar browse + preview | Remote Desktop sessions use authenticated `/api/fs/*` backend REST for listing, capped text preview, capped data URLs, git-root detection, backend default cwd, and the explicit-submit-only project-directory create carry. Local Desktop sessions keep Electron filesystem IPC. | Upstream #44326 + Axiom hybrid Projects carry | Browsing/typing stays read-only; only Create Project submit may call `ensure-directory`. |
 | OS/Finder drops into remote sessions | Local dropped files upload/stage into the remote session workspace instead of leaking Windows/macOS absolute paths into prompts. | Upstream #43109 | Keeps drag/drop usable when chat runs on a remote gateway. |
 | Remote profile switches | Remote-aware surfaces follow the active profile/backend after profile switches. | Upstream #46658 | Covers `image.attach_bytes`, `/api/fs/*`, and `/api/media`. |
 | Global remote/Docker profile REST | Desktop appends the active profile to global-remote profile-scoped REST calls and profile-scopes OAuth status/start/completion. | Upstream #47011 | Needed when many profiles share one remote backend. |
@@ -173,6 +173,7 @@ Keep this section as the tracking source for remote file/sidebar/artifact behavi
 | Upstream PR #44538 — `fix(desktop): remote-mode chat file links download via the fs bridge instead of dead file:// URLs` | Provides chat/media fallback download handling and visible error state beyond the shared artifact download path. | Drop once upstream merges #44538 or equivalent chat/media fallback UX is present on `main`. |
 | Upstream PR #42603 — `fix(desktop): narrow hover-reveal trigger strip to avoid blocking scrollbar` | Small Desktop UX fix; prevents collapsed side-panel hover activation from stealing the scrollbar hit area. | Drop once equivalent behavior is verified on `main`. |
 | Upstream PR #41189, focused manual port — `fix(desktop): raise FILE_BROWSER_MAX_WIDTH from 20rem to 40rem` | One-line width improvement; original PR head had unrelated merge noise. | Drop once equivalent width is verified on `main`. |
+| Hybrid Projects overview + typed-path creation | Keeps Projects primary with a separate flat Recent Sessions lane, removes nested previews, hides global recents in drill-in, labels lane paging, makes Home an explicit active/no-folder creation target, and creates typed missing directories only on explicit submit through local Electron or authenticated/profile-routed remote REST. | Drop only when upstream covers the complete UI and local/remote mutation contract; see `FORK.md` for the focused tests and exact criteria. |
 
 ### Retired or superseded — do not reintroduce by default
 

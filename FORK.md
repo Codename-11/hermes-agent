@@ -73,6 +73,60 @@ npm run typecheck
 
 Drop condition: upstream scopes dashboard PTY keep-alive identity by profile, or the backend binds and validates every attachment token against immutable profile metadata.
 
+## Axiom Desktop hybrid Projects overview and typed project paths
+
+Axiom carries a focused Desktop information-architecture change while upstream's
+Projects view remains project-only with nested three-session previews:
+
+- Projects stay the primary lane in grouped mode, followed by a separate flat
+  **Recent Sessions** lane in the same overview. The recent lane reuses the
+  existing session rows, actions, date/status grouping, filters, ordering, and
+  pagination; project rows never expand into nested session previews.
+- Entering a project hides global recents and shows only that project's hydrated
+  repo/worktree/session lanes. Switching back to flat Sessions mode preserves
+  the upstream flat-list behavior.
+- Project-lane paging uses a visible `Show N more in <lane>` label rather than
+  an ambiguous ellipsis.
+- Home is a first-class creation target: selecting it clears the durable active
+  project pointer, visibly marks Home active, and exposes the same hover `+`
+  affordance as persisted projects so plain new sessions land outside projects.
+- Create Project accepts a typed directory. Only explicit Create submission may
+  create a missing directory. Local mode routes through narrow Electron IPC;
+  remote mode routes through the active profile's authenticated
+  `POST /api/fs/ensure-directory`. Typing and directory browsing never mutate
+  disk, and failures remain in the dialog with a visible error.
+
+Protected files: `apps/desktop/src/app/chat/sidebar/{index,sessions-section,project-dialog}.tsx`,
+`apps/desktop/src/app/chat/sidebar/projects/{overview-row,workspace-header}.tsx`,
+`apps/desktop/src/{lib/desktop-fs.ts,store/projects.ts}`, the matching Desktop
+tests/locales/bridge declarations, and `hermes_cli/{web_models,web_server}.py`
+plus `tests/hermes_cli/test_web_server_fs.py`.
+
+Focused verification:
+
+```bash
+cd apps/desktop
+NODE_ENV=test ../../node_modules/.bin/vitest run --project ui \
+  src/app/chat/sidebar/project-dialog.test.tsx \
+  src/app/chat/sidebar/sessions-section.test.tsx \
+  src/app/chat/sidebar/projects/overview-row.test.tsx \
+  src/app/chat/sidebar/projects/workspace-header.test.tsx \
+  src/lib/desktop-fs.test.ts src/store/projects.test.ts
+npm run typecheck
+
+cd ../..
+scripts/run_tests.sh tests/hermes_cli/test_web_server_fs.py -q
+```
+
+Drop condition: upstream must provide the complete user-visible behavior set together:
+a hybrid Projects + flat-recents overview without nested previews, no global
+recents during drill-in, labeled project-lane paging, an explicit Home creation
+target that clears active-project state, and explicit-submit-only typed-path
+creation across both local Electron and authenticated/profile-routed remote
+Desktop. Partial Projects UI parity is not sufficient to drop the remote
+mutation seam, and a remote mkdir endpoint alone is not sufficient to drop the
+overview carry.
+
 ## Fork footprint reduction — extracted modules
 
 To honor rule #4 ("port Axiom behavior into upstream's new split/module rather

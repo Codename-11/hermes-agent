@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,6 +20,12 @@ vi.mock('@/i18n', () => ({
           older: 'Older',
           today: 'Today',
           yesterday: 'Yesterday'
+        },
+        newSessionIn: (label: string) => `New session in ${label}`,
+        projects: {
+          enter: (label: string) => `Open ${label}`,
+          reorder: (label: string) => `Reorder ${label}`,
+          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
         }
       }
     }
@@ -175,5 +181,71 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 
     const thirdRowsRef = mockVirtualListPropsHistory[2].rows
     expect(thirdRowsRef).not.toBe(secondRowsRef)
+  })
+})
+
+describe('SidebarSessionsSection hybrid project overview', () => {
+  const homeProject = {
+    id: '__no_project__',
+    isNoProject: true,
+    label: 'Home',
+    path: null,
+    repos: [],
+    sessionCount: 0
+  }
+
+  it('renders Projects first and a separate flat Recent Sessions lane beneath', () => {
+    const { container } = render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        grouping="date"
+        label="Projects"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        open
+        pinned={false}
+        projectOverview={[homeProject] as never}
+        projectOverviewRecentsLabel="Recent Sessions"
+        sessions={[makeSession('recent-1')]}
+      />
+    )
+
+    const labels = screen.getAllByText(/Projects|Home|Recent Sessions|recent-1/).map(node => node.textContent)
+    expect(labels).toContain('Projects')
+    expect(labels).toContain('Home')
+    expect(labels).toContain('Recent Sessions')
+    expect(container.textContent?.indexOf('Projects')).toBeLessThan(
+      container.textContent?.indexOf('Recent Sessions') ?? -1
+    )
+    expect(screen.getByTestId('session-row-recent-1')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Show Home sessions' })).toBeNull()
+  })
+
+  it('hides global recents while drilled into a project', () => {
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Project empty</div>}
+        label="Demo"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        open
+        pinned={false}
+        projectContent={{ ...homeProject, id: 'p-demo', isNoProject: false, label: 'Demo' } as never}
+        projectOverviewRecentsLabel="Recent Sessions"
+        sessions={[makeSession('global-recent')]}
+      />
+    )
+
+    expect(screen.getByText('Project empty')).toBeTruthy()
+    expect(screen.queryByText('Recent Sessions')).toBeNull()
+    expect(screen.queryByTestId('session-row-global-recent')).toBeNull()
   })
 })

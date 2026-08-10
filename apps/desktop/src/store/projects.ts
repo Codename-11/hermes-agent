@@ -8,7 +8,13 @@ import {
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { getHermesConfig, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import {
+  desktopDefaultCwd,
+  ensureDesktopDirectory,
+  isDesktopFsRemoteMode,
+  selectDesktopPaths,
+  writeDesktopFileText
+} from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
@@ -156,11 +162,15 @@ export const $projectScope = persistentAtom<string>(PROJECT_SCOPE_KEY, ALL_PROJE
 export function enterProject(id: string): void {
   $projectScope.set(id)
 
-  // Only explicit, persisted projects (ids are `p_<hex>`) become active. Auto
-  // projects (ids are filesystem paths) and the Home bucket have no durable row
-  // to pin, so they're view-scope only.
+  // Explicit projects pin their durable row. Home has no row, but selecting it
+  // must explicitly clear that pointer or a plain new session can still inherit
+  // the previously-active project while the UI says Home. Auto projects remain
+  // view-scope only because they have no durable identity to pin.
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
+  } else if (id === NO_PROJECT_ID) {
+    $activeProjectId.set(null)
+    void setActiveProject(null).catch(() => undefined)
   }
 }
 
@@ -1215,6 +1225,20 @@ export async function pickProjectFolder(): Promise<null | string> {
   })
 
   return dir || null
+}
+
+// Typed project paths may not exist yet. Resolve/create them on the machine
+// that owns the active workspace and return its authoritative path. The dialog
+// calls this only from explicit Create submission; picker and input changes are
+// intentionally read-only.
+export async function ensureProjectFolder(path: string): Promise<string> {
+  const trimmed = path.trim()
+
+  if (!trimmed) {
+    throw new Error('Project folder is required')
+  }
+
+  return (await ensureDesktopDirectory(trimmed)).path
 }
 
 // ⌘O / palette "Open folder…": open a folder AS a project, upserting. A folder

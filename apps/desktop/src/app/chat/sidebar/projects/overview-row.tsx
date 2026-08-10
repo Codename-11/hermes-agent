@@ -2,7 +2,6 @@ import type * as React from 'react'
 import { useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
-import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
@@ -15,11 +14,9 @@ import {
   SidebarRowLead,
   SidebarRowLeadGlyph,
   SidebarRowLink,
-  SidebarRowNest,
   SidebarRowShell
 } from '../chrome'
 
-import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
@@ -64,9 +61,7 @@ interface ProjectOverviewRowProps {
   project: SidebarProjectTree
   onEnter?: (id: string) => void
   onNewSession?: (path: null | string) => void
-  renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
-  previewSessions?: SessionInfo[]
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -78,9 +73,7 @@ export function ProjectOverviewRow({
   project,
   onEnter,
   onNewSession,
-  renderRows,
   activeProjectId,
-  previewSessions,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -89,13 +82,13 @@ export function ProjectOverviewRow({
 }: ProjectOverviewRowProps) {
   const { t } = useI18n()
   const s = t.sidebar
-  const isActive = project.id === activeProjectId
-  const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
+  // Home represents the null durable project pointer. Treat it as active when
+  // that pointer is clear so the synthetic row can communicate the current
+  // target just as explicitly as a persisted project row.
+  const isActive = project.isNoProject ? activeProjectId === null : project.id === activeProjectId
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
-  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
-  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
 
   const lead = reorderable ? (
     <SidebarRowGrab
@@ -124,7 +117,7 @@ export function ProjectOverviewRow({
           )}
         </>
       }
-      className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
       label={
         <SidebarRowLink
           aria-label={s.projects.enter(project.label)}
@@ -148,11 +141,6 @@ export function ProjectOverviewRow({
         dragHandleProps?.onPointerDown?.(event)
       }}
       ref={rowRef}
-      toggle={
-        preview.length > 0
-          ? { ariaLabel: s.projects.toggle(project.label, !open), onToggle: toggleOpen, open }
-          : undefined
-      }
       totals={{ costUsd: project.totalCostUsd ?? 0, tokens: project.totalTokens ?? 0 }}
     />
   )
@@ -167,7 +155,6 @@ export function ProjectOverviewRow({
           {shell}
         </ProjectContextMenu>
       )}
-      {open && preview.length > 0 && <SidebarRowNest>{renderRows?.(preview)}</SidebarRowNest>}
     </div>
   )
 }

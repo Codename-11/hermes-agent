@@ -1,5 +1,39 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-10 — Carry the hybrid Desktop Projects overview
+
+### Summary
+
+Kept Projects primary in grouped Desktop mode while restoring a separate flat
+Recent Sessions lane beneath it, and added explicit-submit-only creation for
+typed project directory paths in both local and authenticated remote Desktop.
+
+### What changed
+
+- Removed nested three-session previews from project rows; the overview now
+  reuses the existing flat session rows, actions, date/status grouping, filters,
+  ordering, and pagination under a dedicated Recent Sessions heading.
+- Kept global recents out of project drill-in and left flat Sessions mode
+  unchanged. Project/worktree lane paging now has a visible `Show N more` label.
+- Made Home an explicit creation target: selecting it clears the active project,
+  marks Home active, and restores the project-row `+` affordance for a no-folder
+  new session.
+- Added a typed directory field to Create Project. Submit resolves/creates the
+  directory through Electron locally or the active profile's authenticated
+  `/api/fs/ensure-directory` route remotely; typing and browsing do no writes,
+  and failures stay visible without creating the project.
+- Added focused renderer/store/filesystem and authenticated backend regression
+  coverage. The carry and its complete drop criteria are recorded in `FORK.md`
+  and `docs/axiom-fork-contract.md`.
+
+### Verification
+
+- Focused Desktop UI/store/filesystem suite: 58 passed.
+- Authenticated backend filesystem suite: 5 passed.
+- Desktop typecheck: passed.
+- Full Desktop lint remains red on pre-existing errors outside this carry;
+  focused changed-file lint is recorded in the implementation handoff.
+
 ## 2026-08-03 — Recover unscoped cross-profile session reads
 
 ### Summary

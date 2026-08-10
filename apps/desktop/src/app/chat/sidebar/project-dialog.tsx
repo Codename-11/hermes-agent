@@ -24,14 +24,16 @@ import {
   addProjectFolder,
   closeProjectDialog,
   createProject,
+  ensureProjectFolder,
   generateProjectIdea,
   pickProjectFolder,
   renameProject
 } from '@/store/projects'
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
-// add-folder flows driven by the $projectDialog atom. Folders are chosen via
-// the native directory picker (reused from the default-project-dir setting).
+// add-folder flows driven by the $projectDialog atom. Create also accepts one
+// typed folder; it is resolved/created only on explicit submit. Browsing and
+// typing remain read-only.
 export function ProjectDialog() {
   const { t } = useI18n()
   const p = t.sidebar.projects
@@ -41,6 +43,7 @@ export function ProjectDialog() {
 
   const [name, setName] = useState('')
   const [folders, setFolders] = useState<string[]>([])
+  const [folderPath, setFolderPath] = useState('')
   const [idea, setIdea] = useState('')
   const [templates, setTemplates] = useState<ProjectIdeaTemplate[]>([])
   const [generatingIdea, setGeneratingIdea] = useState(false)
@@ -51,6 +54,7 @@ export function ProjectDialog() {
     if (open) {
       setName(state?.name ?? '')
       setFolders([])
+      setFolderPath('')
       setIdea('')
       setTemplates(randomIdeaTemplates())
       setGeneratingIdea(false)
@@ -123,8 +127,18 @@ export function ProjectDialog() {
 
     // A project owns sessions by folder (cwd-prefix), so creation requires at
     // least one — a folder-less project couldn't hold a session anyway.
-    if (mode === 'create' && trimmed && folders.length) {
-      await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
+    const typedFolder = folderPath.trim()
+
+    if (mode === 'create' && trimmed && (folders.length || typedFolder)) {
+      await runSubmit(async () => {
+        const resolvedTypedFolder = typedFolder ? await ensureProjectFolder(typedFolder) : ''
+
+        const projectFolders = resolvedTypedFolder
+          ? [resolvedTypedFolder, ...folders.filter(folder => folder !== typedFolder && folder !== resolvedTypedFolder)]
+          : folders
+
+        await createProject({ folders: projectFolders, idea: idea.trim() || undefined, name: trimmed, use: true })
+      })
     }
   }
 
@@ -178,6 +192,19 @@ export function ProjectDialog() {
         {mode === 'create' && (
           <div className="flex flex-col gap-1.5">
             <span className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{p.foldersLabel}</span>
+            <Input
+              aria-label={p.folderPathLabel}
+              disabled={submitting}
+              onChange={event => setFolderPath(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void submit()
+                }
+              }}
+              placeholder={p.folderPathPlaceholder}
+              value={folderPath}
+            />
             {folders.length === 0 ? (
               <span className="text-[0.75rem] text-(--ui-text-quaternary)">{p.noFolders}</span>
             ) : (
@@ -291,7 +318,7 @@ export function ProjectDialog() {
               {t.common.cancel}
             </Button>
             <Button
-              disabled={submitting || !name.trim() || (mode === 'create' && folders.length === 0)}
+              disabled={submitting || !name.trim() || (mode === 'create' && folders.length === 0 && !folderPath.trim())}
               onClick={() => void submit()}
               type="button"
             >

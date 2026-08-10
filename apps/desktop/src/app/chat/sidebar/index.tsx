@@ -144,8 +144,6 @@ import {
   liveSessionProjectId,
   orderProjectsByIds,
   overlayLiveLanes,
-  overlayLivePreviews,
-  PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
@@ -662,8 +660,8 @@ export function ChatSidebar({
   // The backend project tree is a structural snapshot, NOT a per-message feed.
   // Refresh it on structural edges only — entering the grouped view, a profile
   // switch, gateway (re)connect — plus the once-per-run disk scan. Live session
-  // changes between refreshes are reflected by the in-memory overlay
-  // (overlayLiveLanes / overlayLivePreviews) off `$sessions`, so a turn
+  // changes between refreshes are reflected by the in-memory lane overlay off
+  // `$sessions`, so a turn
   // completing does NOT re-run the heavy list_sessions_rich scan. Project
   // mutations refresh the tree from their own store actions.
   useEffect(() => {
@@ -1050,21 +1048,6 @@ export function ChatSidebar({
   // The project overview (drill-in list) vs. the entered project's content.
   const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
 
-  // Preview rows come from the backend tree (each project carries its
-  // most-recent sessions), overlaid with live $sessions so a just-created
-  // session shows under its project instantly (and with its working arc),
-  // matching the flat Recents list. Keyed by project id for the rows.
-  const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () =>
-      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, {
-        removed: removedSessionIds,
-        // Rank before the trim, so "3 priciest in this project" isn't "3 most
-        // recent, priciest first".
-        rankIds: sortOrderIds
-      }),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds]
-  )
-
   const onEnterProject = useCallback(
     (id: string) => {
       const project = projectModel.find(node => node.id === id)
@@ -1218,8 +1201,9 @@ export function ChatSidebar({
     )
   }, [profileGrouped, agentSessions, profileColors])
 
-  // The flat Sessions list always shows ALL recent sessions; Projects is a
-  // parallel grouped view, not a filter on this one — nothing is hidden here.
+  // This is the one global recent-session source. Flat Sessions renders it as
+  // the primary list; the Projects overview reuses it in the separate Recent
+  // Sessions lane. Project drill-in never receives it as flat content.
   const displayAgentSessions = agentSessions
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
@@ -1254,10 +1238,9 @@ export function ChatSidebar({
       const targetVisible = startVisible + SIDEBAR_SESSIONS_PAGE_SIZE
       let lastLoaded = loadedRecentsCountRef.current
 
-      // Project-less recents can be sparse in the global recent stream (because
-      // project-scoped sessions are filtered out in the UI). Keep paging until
-      // we actually reveal a full page of visible rows, or the backend window
-      // stops growing.
+      // Pins and active filters can make visible recents sparse in the loaded
+      // backend window. Keep paging until we reveal a full visible page, or the
+      // backend window stops growing.
       for (let attempt = 0; attempt < 6; attempt += 1) {
         await Promise.resolve(onLoadMoreSessions())
         await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
@@ -1575,10 +1558,10 @@ export function ChatSidebar({
                   )
                 }
                 footer={
-                  // Hidden only when workspace-grouped — those groups page
-                  // themselves. Profile groups don't: this one footer fetches the
-                  // next page, which grows every profile at once.
-                  !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
+                  // Project drill-in pages its own lanes. Flat Sessions and the
+                  // hybrid overview's global Recent Sessions lane reuse this
+                  // footer to grow the backend window.
+                  (!agentsGrouped || Boolean(projectOverview)) && !showSessionSkeletons && hasMoreSessions ? (
                     <SidebarLoadMoreRow
                       loading={sessionsLoading || recentsLoadMorePending}
                       onClick={() => void onLoadMoreRecents()}
@@ -1685,7 +1668,7 @@ export function ChatSidebar({
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
-                projectOverviewPreviews={overviewPreviews}
+                projectOverviewRecentsLabel={projectOverview ? s.recentSessions : undefined}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}

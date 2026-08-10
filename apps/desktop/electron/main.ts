@@ -12116,6 +12116,33 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dir
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
+// Create a directory tree only when the renderer explicitly submits a path.
+// The native directory picker remains read-only: browsing never reaches this
+// handler. Normalize ``~`` and relative input on the Electron host, then return
+// the authoritative absolute path that Projects should persist.
+ipcMain.handle('hermes:fs:ensureDirectory', async (_event, dirPath) => {
+  const raw = String(dirPath || '').trim()
+
+  if (!raw || raw.includes('\0')) {
+    throw new Error('Invalid directory path')
+  }
+
+  const resolved = path.resolve(expandUserPath(raw))
+
+  try {
+    await fs.promises.mkdir(resolved, { recursive: true })
+    const stat = await fs.promises.stat(resolved)
+
+    if (!stat.isDirectory()) {
+      throw new Error('Path is not a directory')
+    }
+  } catch (error) {
+    throw new Error(`Could not create directory: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  return { path: resolved }
+})
+
 // Reveal a path in the OS file manager (Finder / Explorer / Files).
 ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
   const target = String(targetPath || '').trim()
