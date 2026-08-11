@@ -64,7 +64,6 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { dropSessionState } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -203,6 +202,7 @@ interface GatewayEventDeps {
   activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
+  evictSessionState: (runtimeSessionId: string) => unknown
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
@@ -211,7 +211,8 @@ interface GatewayEventDeps {
     sessionId: string,
     text: string,
     responsePreviewed?: boolean,
-    failure?: { error: string; partial: boolean }
+    failure?: { error: string; partial: boolean },
+    sourceProfile?: string
   ) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
@@ -241,6 +242,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     activeGatewayProfile,
     activeSessionIdRef,
     compactedTurnRef,
+    evictSessionState,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,
@@ -331,7 +333,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
         // Backends with the change watcher broadcast pet/cron/sessions change
         // events; consumers demote their legacy polls to slow backstops.
-        setChangeEventsAvailable(Boolean((payload as { change_events?: boolean } | undefined)?.change_events))
+        setChangeEventsAvailable(
+          Boolean((payload as { change_events?: boolean } | undefined)?.change_events),
+          event.profile,
+          activeGatewayProfile
+        )
 
         return
       } else if (event.type === 'skin.changed') {
@@ -384,7 +390,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
 
         if (reclaimedRuntimeId) {
-          dropSessionState(reclaimedRuntimeId)
+          evictSessionState(reclaimedRuntimeId)
         }
 
         // The row's ended_at moved, so refresh the lists that render it.
@@ -783,7 +789,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
             : undefined
 
-        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure)
+        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, event.profile)
 
         // Structured billing wall forwarded by the gateway (out of credits /
         // payment required) — cache it + raise a billing-specific toast.
@@ -1293,6 +1299,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       activeGatewayProfile,
       compactedTurnRef,
       completeAssistantMessage,
+      evictSessionState,
       failAssistantMessage,
       finalizeInterimAssistantMessage,
       flushQueuedDeltas,

@@ -24,6 +24,7 @@ const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionSt
 
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
+  onSecondaryReconnect?: (profile: string, gateway: HermesGateway) => void
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -35,6 +36,7 @@ interface Secondary {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
   reconnecting: boolean
+  everOpened: boolean
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
@@ -216,7 +218,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   }
 }
 
-function createSecondary(profile: string): Secondary {
+function createSecondary(profile: string, wantOpen = true): Secondary {
   const gateway = new HermesGateway()
 
   const entry: Secondary = {
@@ -227,7 +229,8 @@ function createSecondary(profile: string): Secondary {
     reconnectTimer: null,
     reconnectAttempt: 0,
     reconnecting: false,
-    wantOpen: true
+    everOpened: false,
+    wantOpen
   }
 
   entry.offEvent = gateway.onEvent(event => g.config?.onEvent({ ...event, profile }))
@@ -235,8 +238,14 @@ function createSecondary(profile: string): Secondary {
     reportGatewayState(profile, state)
 
     if (state === 'open') {
+      const reconnected = entry.everOpened
+      entry.everOpened = true
       entry.reconnectAttempt = 0
       clearTimer(entry)
+
+      if (reconnected) {
+        g.config?.onSecondaryReconnect?.(profile, gateway)
+      }
     } else if ((state === 'closed' || state === 'error') && entry.wantOpen) {
       scheduleReconnect(entry)
     }
@@ -260,12 +269,47 @@ export async function openGatewayForProfile(profile: string): Promise<void> {
     return
   }
 
-  const entry = g.secondaries.get(key) ?? createSecondary(key)
-  entry.wantOpen = true
+  // Hover prewarming is speculative. It must not opt the profile into the
+  // permanent reconnect loop until activation or live work actually needs it.
+  const entry = g.secondaries.get(key) ?? createSecondary(key, false)
 
   if (!isOpen(entry.gateway)) {
     await openSecondary(entry)
   }
+}
+
+/** Evict a profile's descriptor-bound socket after its connection settings
+ * change. If it is foreground-active, reconnect immediately from the newly
+ * persisted descriptor; otherwise the next activation opens it lazily. */
+export async function refreshGatewayForProfile(profile: string): Promise<void> {
+  const key = normKey(profile)
+
+  if (key === g.primaryProfile) {
+    return
+  }
+
+  const previous = g.secondaries.get(key)
+
+  if (previous) {
+    disposeSecondary(previous)
+    g.secondaries.delete(key)
+  }
+
+  if (g.activeKey !== key) {
+    return
+  }
+
+  g.$gateway.set(null)
+  setGatewayState('closed')
+  const entry = createSecondary(key, true)
+
+  try {
+    await openSecondary(entry)
+  } catch {
+    scheduleReconnect(entry)
+  }
+
+  setActive(key)
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The

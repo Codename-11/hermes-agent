@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { chatMessageText } from '@/lib/chat-messages'
@@ -13,9 +13,17 @@ import { useMessageStream } from './index'
 
 const SID = 'session-1'
 
+type Hydrate = (
+  attempts?: number,
+  storedSessionId?: string | null,
+  runtimeSessionId?: string | null,
+  profile?: string
+) => Promise<void>
+
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let sessionStates: Map<string, ClientSessionState>
 let mockCompleteSound: ReturnType<typeof vi.fn>
+let mockHydrate: Mock<Hydrate>
 let mockHaptic: ReturnType<typeof vi.fn>
 
 function Harness() {
@@ -25,7 +33,7 @@ function Harness() {
 
   const stream = useMessageStream({
     activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
+    hydrateFromStoredSession: mockHydrate,
     queryClient: queryClientRef.current,
     refreshHermesConfig: vi.fn(async () => undefined),
     refreshSessions: vi.fn(async () => undefined),
@@ -49,6 +57,7 @@ function Harness() {
 
 async function mountStream() {
   sessionStates = new Map()
+  mockHydrate = vi.fn(async () => undefined)
   render(<Harness />)
   await waitFor(() => expect(handleEvent).not.toBeNull())
 }
@@ -109,6 +118,17 @@ describe('useMessageStream interim text sealing', () => {
     const texts = assistantMessages()
     expect(texts).toContain('awaaaaa clean!! tsc zero errors')
     expect(texts).toContain('All checks passed.')
+  })
+
+  it('hydrates an adopted completion through the event source profile', async () => {
+    await mountStream()
+    await start()
+
+    await act(() =>
+      handleEvent!({ payload: { text: '' }, profile: 'worker', session_id: SID, type: 'message.complete' })
+    )
+
+    expect(mockHydrate).toHaveBeenCalledWith(3, null, SID, 'worker')
   })
 
   it('marks sealed interim bubbles interim and leaves the final reply unmarked', async () => {

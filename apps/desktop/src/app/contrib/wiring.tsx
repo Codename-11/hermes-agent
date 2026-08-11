@@ -107,6 +107,7 @@ import { usePreviewRouting } from '../session/hooks/use-preview-routing'
 import { usePromptActions } from '../session/hooks/use-prompt-actions'
 import { useRouteResume } from '../session/hooks/use-route-resume'
 import { useSessionActions } from '../session/hooks/use-session-actions'
+import { preserveLocalPendingTurnMessages } from '../session/hooks/use-session-actions/utils'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { startWorkspaceSession } from '../session/workspace-session-target'
@@ -159,6 +160,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // intent counter here; the ref skips the initial mount value.
   const billingSettingsSeenRef = useRef(0)
   const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
+  const messagingTranscriptRequestRef = useRef(new Map<string, number>())
+  const storedHydrationRequestRef = useRef(new Map<string, number>())
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
   const actionsRef = useRef<WiringActions | null>(null)
@@ -235,6 +238,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     activeSessionIdRef,
     ensureSessionState,
+    evictSessionState,
     getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
@@ -320,30 +324,69 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     async (
       attempts = 1,
       storedSessionId = selectedStoredSessionIdRef.current,
-      runtimeSessionId = activeSessionIdRef.current
+      runtimeSessionId = activeSessionIdRef.current,
+      requestedProfile?: string
     ) => {
       if (!storedSessionId || !runtimeSessionId) {
         return
       }
 
-      const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
+      const targetProfile = normalizeProfileKey(requestedProfile ?? activeGatewayProfile)
+      const storedProfile =
+        $sessions
+          .get()
+          .find(
+            session =>
+              sessionMatchesStoredId(session, storedSessionId) && normalizeProfileKey(session.profile) === targetProfile
+          )?.profile ?? targetProfile
+      const hydrationKey = `${normalizeProfileKey(storedProfile)}:${storedSessionId}:${runtimeSessionId}`
+      const requestId = (storedHydrationRequestRef.current.get(hydrationKey) ?? 0) + 1
+      storedHydrationRequestRef.current.set(hydrationKey, requestId)
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
           const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
+
+          if (storedHydrationRequestRef.current.get(hydrationKey) !== requestId) {
+            return
+          }
+
+          const ownedState = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)
+
+          if (ownedState?.storedSessionId !== storedSessionId) {
+            return
+          }
+
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
-            state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+            state => {
+              if (state.storedSessionId !== storedSessionId) {
+                return state
+              }
+
+              const withPendingTurn = preserveLocalPendingTurnMessages(messages, state.messages)
+
+              return { ...state, messages: preserveLocalAssistantErrors(withPendingTurn, state.messages) }
+            },
             storedSessionId
           )
 
           const restored = todosForHydration(latestSessionTodos(messages))
+          const current = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)
 
-          if (restored) {
-            setSessionTodos(runtimeSessionId, restored)
-          } else {
-            clearSessionTodos(runtimeSessionId)
+          if (
+            storedHydrationRequestRef.current.get(hydrationKey) === requestId &&
+            current?.storedSessionId === storedSessionId &&
+            !current.busy &&
+            !current.awaitingResponse &&
+            !current.streamId
+          ) {
+            if (restored) {
+              setSessionTodos(runtimeSessionId, restored)
+            } else {
+              clearSessionTodos(runtimeSessionId)
+            }
           }
 
           return
@@ -356,7 +399,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         }
       }
     },
-    [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
+    [activeGatewayProfile, activeSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState]
   )
 
   // Refresh the open messaging transcript (inbound platform turns arrive via
@@ -370,15 +413,35 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       return
     }
 
-    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+    const stored = $messagingSessions
+      .get()
+      .find(
+        session =>
+          sessionMatchesStoredId(session, storedSessionId) &&
+          normalizeProfileKey(session.profile) === normalizeProfileKey(activeGatewayProfile)
+      )
 
     if (!stored || !isMessagingSource(stored.source)) {
       return
     }
 
     try {
+      const signatureKey = `${normalizeProfileKey(stored.profile)}:${storedSessionId}`
+      const requestId = (messagingTranscriptRequestRef.current.get(signatureKey) ?? 0) + 1
+      messagingTranscriptRequestRef.current.set(signatureKey, requestId)
       const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
-      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+      const current = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)
+
+      if (
+        messagingTranscriptRequestRef.current.get(signatureKey) !== requestId ||
+        current?.storedSessionId !== storedSessionId ||
+        current.busy ||
+        current.awaitingResponse ||
+        current.streamId
+      ) {
+        return
+      }
+
       const sig = sessionMessagesSignature(latest.messages)
 
       if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
@@ -396,11 +459,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     } catch {
       // Non-fatal: next poll or manual refresh can hydrate.
     }
-  }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
+  }, [
+    activeGatewayProfile,
+    activeSessionIdRef,
+    busyRef,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef,
+    updateSessionState
+  ])
 
   const { handleGatewayEvent } = useMessageStream({
     activeGatewayProfile,
     activeSessionIdRef,
+    evictSessionState,
     hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,

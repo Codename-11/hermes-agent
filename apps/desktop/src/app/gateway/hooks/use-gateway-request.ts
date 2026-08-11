@@ -120,6 +120,14 @@ export function useGatewayRequest() {
           throw error
         }
 
+        // The request belongs to the gateway captured above. A profile switch
+        // can replace gatewayRef while this await is pending; recovering via the
+        // newly active gateway would retry A's RPC against B's backend. Let the
+        // newer navigation own recovery instead of cross-wiring profiles.
+        if (gatewayRef.current !== gateway) {
+          throw error
+        }
+
         // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
         // single-use ticket); background profiles are always local pool
         // backends, so the registry handles their reconnect with no reauth.

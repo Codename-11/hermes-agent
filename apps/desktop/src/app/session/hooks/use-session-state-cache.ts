@@ -10,6 +10,7 @@ import {
   $activeSessionId,
   $busy,
   $messages,
+  setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
@@ -17,10 +18,12 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSelectedStoredSessionId,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { publishSessionState } from '@/store/session-states'
+import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { clearSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
 
@@ -327,9 +330,41 @@ export function useSessionStateCache({
     return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
   }, [])
 
+  const evictSessionState = useCallback(
+    (runtimeSessionId: string) => {
+      const state = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)
+      sessionStateByRuntimeIdRef.current.delete(runtimeSessionId)
+
+      for (const [storedSessionId, mappedRuntimeId] of runtimeIdByStoredSessionIdRef.current) {
+        if (mappedRuntimeId === runtimeSessionId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        }
+      }
+
+      clearSessionTodos(runtimeSessionId)
+      dropSessionState(runtimeSessionId)
+
+      if (activeSessionIdRef.current === runtimeSessionId) {
+        resetViewSync()
+        activeSessionIdRef.current = null
+        selectedStoredSessionIdRef.current = null
+        setActiveSessionId(null)
+        setSelectedStoredSessionId(null)
+        setBusy(false)
+        setMutableRef(busyRef, false)
+        setAwaitingResponse(false)
+        setTurnStartedAt(null)
+      }
+
+      return state
+    },
+    [busyRef, resetViewSync, setAwaitingResponse, setBusy]
+  )
+
   return {
     activeSessionIdRef,
     ensureSessionState,
+    evictSessionState,
     getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,

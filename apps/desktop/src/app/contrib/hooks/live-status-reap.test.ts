@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds, clearAllSessionStates } from '@/store/session-states'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $selectedStoredSessionId, $unreadFinishedSessionIds, setSessions } from '@/store/session'
+import {
+  $attentionSessionIds,
+  $workingSessionIds,
+  clearAllSessionStates,
+  publishSessionState
+} from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
 import { rehydrateLiveSessionStatuses } from './use-background-sync'
 
@@ -24,6 +31,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     vi.clearAllTimers()
     vi.useRealTimers()
     clearAllSessionStates()
+    setSessions([])
     $unreadFinishedSessionIds.set([])
   })
 
@@ -75,5 +83,33 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'default')
 
     expect($workingSessionIds.get()).toEqual(['stored-other'])
+  })
+
+  it('reaps a stream-seeded background runtime on its first reconnect snapshot', () => {
+    setSessions([{ id: 'stored-worker', profile: 'worker' } as SessionInfo])
+    publishSessionState('runtime-worker', {
+      ...createClientSessionState('stored-worker'),
+      busy: true,
+      storedSessionId: 'stored-worker'
+    })
+
+    expect($workingSessionIds.get()).toEqual(['stored-worker'])
+
+    rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'worker', true)
+
+    expect($workingSessionIds.get()).toEqual([])
+  })
+
+  it('does not reap another profile during authoritative reconnect', () => {
+    setSessions([{ id: 'stored-worker', profile: 'worker' } as SessionInfo])
+    publishSessionState('runtime-worker', {
+      ...createClientSessionState('stored-worker'),
+      busy: true,
+      storedSessionId: 'stored-worker'
+    })
+
+    rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'default', true)
+
+    expect($workingSessionIds.get()).toEqual(['stored-worker'])
   })
 })

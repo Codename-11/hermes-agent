@@ -8778,7 +8778,7 @@ async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
   }
 }
 
-function sendConnectionApplied() {
+function sendConnectionApplied(profile = '') {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -8789,7 +8789,7 @@ function sendConnectionApplied() {
     return
   }
 
-  webContents.send('hermes:connection:applied')
+  webContents.send('hermes:connection:applied', { profile })
 }
 
 async function waitForBackendExit(child, timeoutMs = 5000) {

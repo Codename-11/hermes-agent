@@ -53,7 +53,7 @@ describe('applyConnectionChange', () => {
       },
       isPrimary: false,
       scope: 'worker',
-      sendApplied: () => events.push('applied'),
+      sendApplied: scope => events.push(`applied:${scope}`),
       stopPool: scope => events.push(`pool:${scope}`),
       teardownPrimary: async () => {
         events.push('primary')
@@ -62,7 +62,7 @@ describe('applyConnectionChange', () => {
         events.push(`ssh:${scope}`)
       }
     })
-    expect(events).toEqual(['cancel:worker', 'ssh:worker', 'pool:worker'])
+    expect(events).toEqual(['cancel:worker', 'ssh:worker', 'pool:worker', 'applied:worker'])
   })
 })
 

@@ -23,6 +23,7 @@ import {
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
+import { dropSessionState } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
@@ -35,10 +36,12 @@ import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STR
 interface MessageStreamOptions {
   activeGatewayProfile?: string
   activeSessionIdRef: MutableRefObject<string | null>
+  evictSessionState?: (runtimeSessionId: string) => unknown
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
-    runtimeSessionId?: string | null
+    runtimeSessionId?: string | null,
+    profile?: string
   ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
@@ -66,6 +69,7 @@ const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++str
 export function useMessageStream({
   activeGatewayProfile = 'default',
   activeSessionIdRef,
+  evictSessionState = dropSessionState,
   hydrateFromStoredSession,
   queryClient,
   refreshHermesConfig,
@@ -536,7 +540,13 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string, responsePreviewed?: boolean, failure?: { error: string; partial: boolean }) => {
+    (
+      sessionId: string,
+      text: string,
+      responsePreviewed?: boolean,
+      failure?: { error: string; partial: boolean },
+      sourceProfile?: string
+    ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -699,7 +709,7 @@ export function useMessageStream({
       }
 
       if (shouldHydrate) {
-        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
+        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId, sourceProfile)
       }
 
       dispatchNativeNotification({
@@ -765,6 +775,7 @@ export function useMessageStream({
     appendReasoningDelta,
     activeSessionIdRef,
     compactedTurnRef,
+    evictSessionState,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,

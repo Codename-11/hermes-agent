@@ -20,11 +20,13 @@ import {
   ensureGatewayForProfile,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
+  refreshGatewayForProfile,
   reportPrimaryGatewayState,
   setPrimaryGateway,
   touchSecondaryGateways
 } from '@/store/gateway'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
+import { type LiveSessionStatusResponse, rehydrateLiveSessionStatuses } from '@/store/live-session-status'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
@@ -108,6 +110,11 @@ export function useGatewayBoot({
       return () => void (cancelled = true)
     }
 
+    // Socket ownership is not the same thing as whichever profile happens to
+    // be foreground-active. Keep the primary's scope stable across secondary
+    // profile switches so reconnects and event attribution cannot drift.
+    let primaryProfile = normalizeProfileKey(windowProfileOverride() ?? $activeGatewayProfile.get())
+
     // --- Reconnect-after-sleep machinery -------------------------------------
     // macOS sleep silently drops the renderer's WebSocket. The backend Python
     // process keeps running, but nothing re-opened the socket on wake, so the
@@ -146,6 +153,16 @@ export function useGatewayBoot({
       }
     }
 
+    const rehydrateLiveStatuses = async (target: HermesGateway, profile: string) => {
+      try {
+        const response = await target.request<LiveSessionStatusResponse>('session.active_list', {})
+        rehydrateLiveSessionStatuses(response, Date.now(), normalizeProfileKey(profile), true)
+      } catch {
+        // Older gateways may not expose session.active_list. Stream events and
+        // the visible backstop poll continue to provide the legacy behavior.
+      }
+    }
+
     const attemptReconnect = async () => {
       if (cancelled || reconnecting || gatewayOpen() || $gatewaySwitching.get()) {
         return
@@ -161,13 +178,15 @@ export function useGatewayBoot({
         // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
         await desktop.revalidateConnection?.().catch(() => undefined)
 
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        const conn = await desktop.getConnection(primaryProfile)
 
         if (cancelled) {
           return
         }
 
-        publish(conn)
+        if (normalizeProfileKey($activeGatewayProfile.get()) === primaryProfile) {
+          publish(conn)
+        }
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces
@@ -188,6 +207,10 @@ export function useGatewayBoot({
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         resetTileRuntimeBindings()
+        // Events emitted while disconnected cannot be replayed. Reconcile the
+        // authoritative running/waiting set without delaying config/session
+        // recovery if an agent under load answers active_list slowly.
+        void rehydrateLiveStatuses(gateway, primaryProfile)
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
@@ -268,11 +291,14 @@ export function useGatewayBoot({
       try {
         const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
         const key = normalizeProfileKey(profileKey)
+        primaryProfile = key
         $activeGatewayProfile.set(key)
         setPrimaryGateway(gateway, key)
         void ensureGatewayForProfile(key)
       } catch {
-        $activeGatewayProfile.set(normalizeProfileKey(override))
+        primaryProfile = normalizeProfileKey(override)
+        $activeGatewayProfile.set(primaryProfile)
+        setPrimaryGateway(gateway, primaryProfile)
       }
     }
 
@@ -316,6 +342,7 @@ export function useGatewayBoot({
           return
         }
 
+        await adoptPrimaryProfile()
         publish(conn)
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
@@ -324,9 +351,8 @@ export function useGatewayBoot({
           return
         }
 
-        // Same shape as boot(): profile first (session scope depends on it),
-        // then the independent fetches concurrently.
-        await adoptPrimaryProfile()
+        // Profile already landed before opening the socket; now run the
+        // independent post-connect fetches concurrently.
         await Promise.all([
           seedDefaultCwd(),
           callbacksRef.current.refreshHermesConfig().catch(() => undefined),
@@ -390,11 +416,28 @@ export function useGatewayBoot({
     }
 
     const gateway = adoptedFromHmr ? survivor!.gateway : new HermesGateway()
+    primaryProfile = survivor?.profile ?? primaryProfile
 
     callbacksRef.current.onGatewayReady(gateway)
-    setPrimaryGateway(gateway, survivor?.profile ?? normalizeProfileKey($activeGatewayProfile.get()))
+    setPrimaryGateway(gateway, primaryProfile)
     // Secondary (background-profile) sockets funnel into the same handler.
-    configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
+    configureGatewayRegistry({
+      onEvent: event => callbacksRef.current.handleGatewayEvent(event),
+      onSecondaryReconnect: (profile, reconnectedGateway) => {
+        // Reconcile even while this profile is backgrounded: no active-profile
+        // poll will otherwise clear a turn that ended during the disconnect.
+        void rehydrateLiveStatuses(reconnectedGateway, profile)
+
+        if (normalizeProfileKey($activeGatewayProfile.get()) !== normalizeProfileKey(profile)) {
+          return
+        }
+
+        // A respawned secondary re-mints runtime ids just like the primary.
+        resetTileRuntimeBindings()
+        void callbacksRef.current.refreshHermesConfig().catch(() => undefined)
+        void callbacksRef.current.refreshSessions().catch(() => undefined)
+      }
+    })
 
     const offState = gateway.onState(st => {
       // Mirror to the composer only while the primary is the active profile —
@@ -423,16 +466,43 @@ export function useGatewayBoot({
       }
     })
 
-    const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
-
     const offEvent = gateway.onEvent(event =>
-      callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
+      callbacksRef.current.handleGatewayEvent({ ...event, profile: primaryProfile })
     )
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
     const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
-    const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
+    const offConnectionApplied = desktop.onConnectionApplied?.(payload => {
+      const appliedProfile = normalizeProfileKey(payload?.profile)
+
+      if (!payload?.profile || appliedProfile === primaryProfile) {
+        void softSwitch()
+
+        return
+      }
+
+      const wasActive = normalizeProfileKey($activeGatewayProfile.get()) === appliedProfile
+
+      if (wasActive) {
+        resetTileRuntimeBindings()
+      }
+
+      void refreshGatewayForProfile(appliedProfile)
+        .then(async () => {
+          if (!wasActive || normalizeProfileKey($activeGatewayProfile.get()) !== appliedProfile) {
+            return
+          }
+
+          const conn = await desktop.getConnection(appliedProfile)
+          publish(conn)
+          await Promise.all([
+            callbacksRef.current.refreshHermesConfig().catch(() => undefined),
+            callbacksRef.current.refreshSessions().catch(() => undefined)
+          ])
+        })
+        .catch(error => notifyError(error, translateNow('boot.errors.desktopBootFailed')))
+    })
 
     const onOnline = () => reconnectNow()
 
@@ -509,6 +579,11 @@ export function useGatewayBoot({
           return
         }
 
+        // Establish socket ownership before the socket can emit gateway.ready
+        // or session events. Otherwise a named primary is permanently tagged
+        // with the startup placeholder profile.
+        await adoptPrimaryProfile()
+
         setDesktopBootStep({
           phase: 'renderer.gateway.connect',
           message: translateNow('boot.steps.connectingGateway'),
@@ -541,13 +616,10 @@ export function useGatewayBoot({
           return
         }
 
-        // Profile adoption must land first: refreshSessions scopes its fetch by
-        // $profileScope ← $activeGatewayProfile. The remaining three fetches
+        // Profile adoption already landed before opening the socket. The three
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile()
-
         setDesktopBootStep({
           phase: 'renderer.config',
           message: translateNow('boot.steps.loadingSettings'),

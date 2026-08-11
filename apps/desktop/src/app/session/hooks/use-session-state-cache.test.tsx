@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
+  $activeSessionId,
   $activeSessionStoredIdRotation,
   $currentFastMode,
   $currentModel,
@@ -11,6 +12,7 @@ import {
   $currentReasoningEffort,
   $currentServiceTier,
   $messages,
+  $selectedStoredSessionId,
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -19,8 +21,10 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSelectedStoredSessionId,
   setTurnStartedAt
 } from '@/store/session'
+import { $sessionStates, clearAllSessionStates } from '@/store/session-states'
 
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -36,7 +40,9 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
     setActiveSessionStoredIdRotation(null)
+    clearAllSessionStates()
   })
 
   it('emits the previous, next, and runtime ids and removes the stale reverse mapping', () => {
@@ -77,6 +83,27 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect($activeSessionStoredIdRotation.get()).toBeNull()
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('atomically evicts private mappings and active view state for a reclaimed runtime', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => ({ ...state, busy: true }), 'stored-A')
+      cache.evictSessionState('runtime-A')
+    })
+
+    expect(cache.sessionStateByRuntimeIdRef.current.has('runtime-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect($sessionStates.get()['runtime-A']).toBeUndefined()
+    expect($activeSessionId.get()).toBeNull()
+    expect($selectedStoredSessionId.get()).toBeNull()
   })
 })
 

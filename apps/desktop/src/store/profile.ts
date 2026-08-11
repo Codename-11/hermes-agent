@@ -12,6 +12,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import { activateChangeEventsProfile } from '@/store/live-sync'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -174,6 +175,7 @@ let _lastRoutedProfile: string | null = null
 $activeGatewayProfile.subscribe(value => {
   const key = normalizeProfileKey(value)
   setApiRequestProfile(key)
+  activateChangeEventsProfile(key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.

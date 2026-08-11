@@ -34,11 +34,12 @@ const PROFILE_INDEPENDENT_QUERY_ROOTS = new Set<string>([
   'contrib-logs-tail'
 ])
 
-// Invalidate profile-scoped query caches on a profile / gateway switch, leaving
-// account/global caches intact. Replaces a keyless invalidateQueries() that
-// refetched everything (billing, marketplace, onboarding) on every switch.
+// Reset profile-scoped query caches on a profile / gateway switch, leaving
+// account/global caches intact. Invalidation alone can reuse an initial pending
+// promise that was already routed to the previous profile; reset cancels that
+// ownership and active observers refetch against the newly selected profile.
 export function invalidateProfileScopedQueries(): void {
-  void queryClient.invalidateQueries({
+  void queryClient.resetQueries({
     predicate: query => {
       const root = query.queryKey[0]
 

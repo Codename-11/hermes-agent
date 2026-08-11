@@ -15,6 +15,9 @@ import { atom } from 'nanostores'
 // false (an older backend), so nothing goes dark mid-upgrade.
 
 export const $changeEventsAvailable = atom(false)
+const changeEventsAvailableByProfile = new Map<string, boolean>()
+
+const profileKey = (profile: string | null | undefined) => (profile ?? '').trim() || 'default'
 
 export const $cronChangeTick = atom(0)
 export const $sessionsChangeTick = atom(0)
@@ -33,8 +36,17 @@ export interface PetChangeMeta {
 
 export const $petChange = atom<{ meta?: PetChangeMeta; tick: number }>({ tick: 0 })
 
-export function setChangeEventsAvailable(available: boolean): void {
-  $changeEventsAvailable.set(available)
+export function setChangeEventsAvailable(available: boolean, profile = 'default', activeProfile = profile): void {
+  const key = profileKey(profile)
+  changeEventsAvailableByProfile.set(key, available)
+
+  if (key === profileKey(activeProfile)) {
+    $changeEventsAvailable.set(available)
+  }
+}
+
+export function activateChangeEventsProfile(profile: string): void {
+  $changeEventsAvailable.set(changeEventsAvailableByProfile.get(profileKey(profile)) ?? false)
 }
 
 export function notifyPetChanged(meta?: PetChangeMeta): void {
@@ -61,5 +73,6 @@ export function notifyPairingChanged(): void {
  *  its own gateway.ready, and stale ticks must not fire refreshes into stores
  *  the wipe just cleared. */
 export function resetLiveSync(): void {
+  changeEventsAvailableByProfile.clear()
   $changeEventsAvailable.set(false)
 }

@@ -13,6 +13,7 @@ async function applyConnectionChange({
 
   if (!isPrimary) {
     stopPool(scope)
+    sendApplied(scope)
 
     return
   }
