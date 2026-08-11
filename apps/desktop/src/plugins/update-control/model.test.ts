@@ -91,6 +91,20 @@ describe('preparation view derivation', () => {
     })
   })
 
+  it('does not offer Prepare when the core reports staging unsupported', () => {
+    expect(
+      derivePreparationView(status, {
+        supported: false,
+        state: 'available',
+        message: 'Staged updates currently require Windows.'
+      })
+    ).toMatchObject({
+      action: null,
+      diagnostic: 'Staged updates currently require Windows.',
+      title: 'Staging unavailable'
+    })
+  })
+
   it('surfaces dirty checkout diagnostics without hiding the available update', () => {
     expect(derivePreparationView({ ...status, dirty: true }, null)).toMatchObject({
       action: 'prepare',

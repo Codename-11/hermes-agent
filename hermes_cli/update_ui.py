@@ -552,25 +552,32 @@ def write_update_brief(
         "range": f"{old_sha[:10]}..{new_sha[:10]}",
     }
 
+    category_names = {
+        "feat": "features",
+        "fix": "fixes",
+        "perf": "performance",
+        "refactor": "refactors",
+        "docs": "docs",
+    }
     history_entry = {
-        "schema": 1,
         "id": f"{stamp}-{new_sha[:10]}",
-        "status": "completed",
-        "finishedAt": int(now.timestamp() * 1000),
+        "at": int(now.timestamp() * 1000),
+        "phase": "apply",
+        "result": "completed",
         "branch": branch,
-        "oldSha": old_sha,
-        "newSha": new_sha,
-        "range": f"{old_sha[:10]}..{new_sha[:10]}",
-        "summary": summary_text,
-        "stat": stat,
-        "filesChanged": files_changed,
+        "baseSha": old_sha,
+        "targetSha": new_sha,
+        "message": summary_text,
+        "shortstat": stat,
+        "filesChanged": len(files_changed),
+        "changedFiles": files_changed,
         "briefPath": str(path),
         "commits": [
             {
                 "sha": sha,
-                "summary": subject,
+                "subject": subject,
                 "author": author,
-                "category": category,
+                "category": category_names.get(category, "other"),
             }
             for sha, subject, author, category in commits
         ],

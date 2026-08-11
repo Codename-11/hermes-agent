@@ -23,6 +23,7 @@
 #     -Branch <ref>         branch to update against
 #     -DesktopPid <pid>     the Electron main process to wait out
 #     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
+#     [-StageManifest <path>] stage prepared while Desktop remained open
 #     [-NoUi]               headless (tests); default shows a progress window
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
 #
@@ -45,6 +46,7 @@ param(
     [string]$Branch = "main",
     [int]$DesktopPid = 0,
     [string]$RelaunchExe = "",
+    [string]$StageManifest = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup
 )
@@ -75,6 +77,13 @@ $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
 $script:Ui = $null
+$script:StageSwapped = $false
+$script:StageLiveDir = ""
+$script:StageBackupDir = ""
+$script:StageBuildStamp = Join-Path $HermesHome "desktop-build-stamp.json"
+$script:StageBuildStampBackup = ""
+$script:StageHadBuildStamp = $false
+$script:StageData = $null
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
@@ -169,6 +178,87 @@ function Remove-MarkerIfOwned {
             }
         }
     } catch {}
+}
+
+function Get-LiveDirtyFingerprint {
+    $tracked = & git -c core.quotepath=false -C $InstallRoot diff --name-only HEAD -- 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not inspect tracked live checkout changes." }
+    $untracked = & git -c core.quotepath=false -C $InstallRoot ls-files --others --exclude-standard 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not inspect untracked live checkout changes." }
+    $summaryLines = & git -c core.quotepath=false -C $InstallRoot diff --summary HEAD -- 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not inspect live checkout metadata changes." }
+    $paths = New-Object 'System.Collections.Generic.SortedSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($line in @($tracked) + @($untracked)) {
+        if ("$line") { [void]$paths.Add("$line") }
+    }
+    $records = New-Object System.Collections.Generic.List[string]
+    foreach ($relative in $paths) {
+        $candidate = Join-Path $InstallRoot $relative
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $blobLines = & git -C $InstallRoot hash-object --no-filters -- $relative 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Could not hash dirty path: $relative" }
+            $blob = (@($blobLines)[-1]).ToString().Trim()
+        } else {
+            $blob = "deleted"
+        }
+        $records.Add("$relative`0$blob")
+    }
+    $summary = (@($summaryLines) -join "`n").Trim()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes("$summary`n$($records -join "`n")")
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    } finally { $sha.Dispose() }
+}
+
+function Get-FileSha256([string]$FilePath) {
+    $stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "").ToLowerInvariant() } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Get-ArtifactTreeHash([string]$Root) {
+    $rootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $records = New-Object System.Collections.Generic.List[string]
+    foreach ($item in Get-ChildItem -LiteralPath $rootPath -Recurse -Force -ErrorAction Stop) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Staged package contains a reparse point: $($item.FullName)"
+        }
+        if ($item.PSIsContainer) { continue }
+        $relative = $item.FullName.Substring($rootPath.Length).TrimStart('\').Replace('\', '/')
+        $fileHash = Get-FileSha256 $item.FullName
+        $records.Add("$relative`0$($item.Length)`0$fileHash")
+    }
+    $ordered = $records.ToArray()
+    [Array]::Sort($ordered, [System.StringComparer]::Ordinal)
+    $payload = [System.Text.Encoding]::UTF8.GetBytes(($ordered -join "`n"))
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($payload))).Replace("-", "").ToLowerInvariant() } finally { $sha.Dispose() }
+}
+
+function Restore-StagedRelease {
+    if (-not $script:StageSwapped) { return }
+    Write-HandoffLog "restoring the previous Desktop package after failed staged apply"
+    try {
+        if ($script:StageLiveDir -and (Test-Path -LiteralPath $script:StageLiveDir)) {
+            Remove-Item -LiteralPath $script:StageLiveDir -Recurse -Force -ErrorAction Stop
+        }
+        if ($script:StageBackupDir -and (Test-Path -LiteralPath $script:StageBackupDir)) {
+            Move-Item -LiteralPath $script:StageBackupDir -Destination $script:StageLiveDir -Force -ErrorAction Stop
+        }
+        if ($script:StageHadBuildStamp -and (Test-Path -LiteralPath $script:StageBuildStampBackup)) {
+            Move-Item -LiteralPath $script:StageBuildStampBackup -Destination $script:StageBuildStamp -Force -ErrorAction Stop
+        } elseif (Test-Path -LiteralPath $script:StageBuildStamp) {
+            Remove-Item -LiteralPath $script:StageBuildStamp -Force -ErrorAction Stop
+        }
+        $script:StageSwapped = $false
+        Write-HandoffLog "previous Desktop package restored"
+    } catch {
+        Write-HandoffLog "ERROR: could not restore previous Desktop package: $($_.Exception.Message)"
+    }
 }
 
 function Start-DesktopRelaunch {
@@ -372,7 +462,107 @@ try {
         Write-HandoffLog "venv shim unlocked"
     }
 
-    # -- 3. Run the update from the CURRENT checkout ------------------------
+    # -- 3. Revalidate and adopt a prepared Desktop package -----------------
+    # Electron validates before quitting so ordinary preflight failures leave
+    # the app open. Repeat every check here after exit to close TOCTOU gaps.
+    if ($StageManifest) {
+        $expectedStageRoot = Join-Path $HermesHome "update-stage\desktop"
+        $expectedManifest = Join-Path $expectedStageRoot "stage.json"
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetFullPath($StageManifest),
+            [System.IO.Path]::GetFullPath($expectedManifest),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) { throw "Staged update manifest is outside the Hermes stage directory." }
+        if (-not (Test-Path -LiteralPath $StageManifest)) { throw "Staged update manifest is missing." }
+        try { $script:StageData = Get-Content -Raw -LiteralPath $StageManifest | ConvertFrom-Json } catch {
+            throw "Staged update manifest is malformed. Prepare the update again."
+        }
+        if ($script:StageData.schemaVersion -ne 1) {
+            throw "Staged update manifest is not ready. Prepare the update again."
+        }
+        if ($script:StageData.branch -ne $Branch) { throw "Staged branch does not match the requested update branch." }
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetFullPath($script:StageData.installRoot),
+            [System.IO.Path]::GetFullPath($InstallRoot),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) { throw "Staged install root does not match this Hermes installation." }
+
+        $artifactDir = [System.IO.Path]::GetFullPath($script:StageData.artifactDir)
+        $artifactExe = [System.IO.Path]::GetFullPath($script:StageData.artifactPath)
+        $stageStamp = [System.IO.Path]::GetFullPath($script:StageData.buildStampPath)
+        $stageWorktree = [System.IO.Path]::GetFullPath($script:StageData.worktree)
+        $expectedWorktree = [System.IO.Path]::GetFullPath((Join-Path $expectedStageRoot "worktree"))
+        $expectedArtifactDir = [System.IO.Path]::GetFullPath((Join-Path $expectedWorktree "apps\desktop\release\win-unpacked"))
+        $expectedArtifactExe = [System.IO.Path]::GetFullPath((Join-Path $expectedArtifactDir "Hermes.exe"))
+        $expectedStageStamp = [System.IO.Path]::GetFullPath((Join-Path $expectedStageRoot "desktop-build-stamp.json"))
+        if (-not [string]::Equals($stageWorktree, $expectedWorktree, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($artifactDir, $expectedArtifactDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($artifactExe, $expectedArtifactExe, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($stageStamp, $expectedStageStamp, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Staged update paths do not match the Hermes-owned stage layout."
+        }
+        if (-not (Test-Path -LiteralPath $artifactDir -PathType Container) -or
+            -not (Test-Path -LiteralPath $artifactExe -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $stageStamp -PathType Leaf)) {
+            throw "Staged Desktop package is incomplete. Prepare the update again."
+        }
+
+        $currentHead = (& git -C $InstallRoot rev-parse HEAD 2>&1 | Select-Object -Last 1).ToString().Trim()
+        if ($LASTEXITCODE -ne 0 -or $currentHead -ne $script:StageData.baseSha) {
+            throw "The live checkout changed after preparation. Prepare the update again."
+        }
+        Write-HandoffLog "refreshing origin/$Branch before staged apply"
+        & git -C $InstallRoot fetch origin $Branch --prune 2>&1 | ForEach-Object { if ("$_".Trim()) { Write-HandoffLog "fetch| $_" } }
+        if ($LASTEXITCODE -ne 0) { throw "Could not refresh origin/$Branch. Nothing was changed." }
+        $remoteTarget = (& git -C $InstallRoot rev-parse "refs/remotes/origin/$Branch" 2>&1 | Select-Object -Last 1).ToString().Trim()
+        if ($LASTEXITCODE -ne 0 -or $remoteTarget -ne $script:StageData.targetSha) {
+            throw "origin/$Branch changed after preparation. Prepare the newer update before restarting."
+        }
+        if ((Get-LiveDirtyFingerprint) -ne $script:StageData.liveDirtyFingerprint) {
+            throw "The live checkout's uncommitted changes changed after preparation. Prepare the update again."
+        }
+        $actualArtifactHash = Get-FileSha256 $artifactExe
+        if ($actualArtifactHash -ne "$($script:StageData.artifactSha256)".ToLowerInvariant()) {
+            throw "Staged Desktop package failed integrity validation. Prepare the update again."
+        }
+        $actualTreeHash = Get-ArtifactTreeHash $artifactDir
+        if ($actualTreeHash -ne "$($script:StageData.artifactTreeSha256)".ToLowerInvariant()) {
+            throw "Staged Desktop package tree failed integrity validation. Prepare the update again."
+        }
+        $stampData = Get-Content -Raw -LiteralPath $stageStamp | ConvertFrom-Json
+        if ($stampData.sourceRevision -ne $script:StageData.targetSha -or -not $stampData.contentHash) {
+            throw "Staged Desktop build stamp does not match the target revision."
+        }
+
+        $script:StageLiveDir = Join-Path $InstallRoot "apps\desktop\release\win-unpacked"
+        $script:StageBackupDir = Join-Path $InstallRoot ("apps\desktop\release\win-unpacked.pre-stage-{0}" -f $PID)
+        $script:StageBuildStampBackup = "$($script:StageBuildStamp).pre-stage-$PID"
+        if (-not (Test-Path -LiteralPath $script:StageLiveDir)) {
+            throw "The current Desktop package is missing, so staged apply has no rollback target. Use the normal Desktop build once, then prepare again."
+        }
+        if (Test-Path -LiteralPath $script:StageBackupDir) {
+            Remove-Item -LiteralPath $script:StageBackupDir -Recurse -Force -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $script:StageBuildStampBackup) {
+            Remove-Item -LiteralPath $script:StageBuildStampBackup -Force -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $script:StageBuildStamp) {
+            Copy-Item -LiteralPath $script:StageBuildStamp -Destination $script:StageBuildStampBackup -Force -ErrorAction Stop
+            $script:StageHadBuildStamp = $true
+        }
+        try {
+            Move-Item -LiteralPath $script:StageLiveDir -Destination $script:StageBackupDir -ErrorAction Stop
+            $script:StageSwapped = $true
+            Move-Item -LiteralPath $artifactDir -Destination $script:StageLiveDir -ErrorAction Stop
+            Copy-Item -LiteralPath $stageStamp -Destination $script:StageBuildStamp -Force -ErrorAction Stop
+            Write-HandoffLog "adopted staged Desktop package for $($script:StageData.targetSha.Substring(0, 10))"
+        } catch {
+            Restore-StagedRelease
+            throw
+        }
+    }
+
+    # -- 4. Run the update from the CURRENT checkout ------------------------
     # --force skips only the hermes.exe shim guard, which step 2 just PROVED
     # is unlocked; the venv-python holder guard (orphan reap included) stays
     # active. Our marker claim is adopted by the child via update_lock.py's
@@ -385,6 +575,9 @@ try {
         exit $finalCode
     }
     $updateArgs = @("update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    if ($script:StageData -and $script:StageData.targetSha) {
+        $updateArgs += @("--target-sha", "$($script:StageData.targetSha)")
+    }
     Write-HandoffLog ("running: hermes " + ($updateArgs -join " "))
     $res = Invoke-StreamedHermes $hermesExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
@@ -397,7 +590,7 @@ try {
         Write-HandoffLog "retry exit code: $($res.Code)"
     }
 
-    # -- 4. Truthful completion: don't trust exit 0 -------------------------
+    # -- 5. Truthful completion: don't trust exit 0 -------------------------
     # `hermes update` treats a Desktop GUI build failure as NON-fatal (prints
     # a one-line warning, exits 0). For a Desktop-DRIVEN update that warning
     # is fatal: we would relaunch the old exe and call it success. Detect it,
@@ -422,6 +615,32 @@ try {
     }
     exit $finalCode
 } finally {
+    if ($finalCode -ne 0) {
+        Restore-StagedRelease
+    } elseif ($script:StageSwapped) {
+        # The normal updater accepted the pinned target and the staged build
+        # stamp, so the package is now authoritative. Remove rollback only
+        # after truthful completion has been established.
+        Remove-Item -LiteralPath $script:StageBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $script:StageBuildStampBackup -Force -ErrorAction SilentlyContinue
+        try {
+            if ($script:StageData.worktree) {
+                & git -C $InstallRoot worktree remove --force $script:StageData.worktree 2>&1 | ForEach-Object {
+                    if ("$_".Trim()) { Write-HandoffLog "stage-cleanup| $_" }
+                }
+                & git -C $InstallRoot worktree prune 2>&1 | Out-Null
+            }
+        } catch {
+            Write-HandoffLog "WARNING: staged worktree cleanup failed: $($_.Exception.Message)"
+        }
+        Remove-Item -LiteralPath $StageManifest -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $script:StageData.buildStampPath -Force -ErrorAction SilentlyContinue
+        $consumedStageRoot = Split-Path -Parent $StageManifest
+        Remove-Item -LiteralPath (Join-Path $consumedStageRoot "progress.json") -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $consumedStageRoot "stage-result.json") -Force -ErrorAction SilentlyContinue
+        $script:StageSwapped = $false
+        Write-HandoffLog "consumed staged update"
+    }
     Write-Result ($finalCode -eq 0) $finalCode $finalMsg
     Remove-MarkerIfOwned
     Close-ProgressWindow

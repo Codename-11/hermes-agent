@@ -68,6 +68,7 @@ export type PreparationState = 'available' | 'failed' | 'invalid' | 'preparing' 
 export type PreparationAction = 'prepare' | 'refresh' | 'restartAndApply'
 
 export interface UpdateStageSnapshot {
+  supported?: boolean
   state: PreparationState
   phase?: string
   percent?: number | null
@@ -232,6 +233,18 @@ export function derivePreparationView(
   }
 
   if (hasUpdate(status)) {
+    if (stage?.supported === false) {
+      return {
+        action: null,
+        canDiscard: false,
+        description: stage.message || 'Staged updates are unavailable on this platform.',
+        diagnostic: stage.message || statusDiagnostic,
+        state: 'available',
+        title: 'Staging unavailable',
+        tone: 'muted'
+      }
+    }
+
     return {
       action: 'prepare',
       canDiscard: false,

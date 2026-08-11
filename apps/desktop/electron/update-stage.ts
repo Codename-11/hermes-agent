@@ -11,7 +11,13 @@ export interface DesktopUpdateStageManifest {
   targetSha: string
   installRoot: string
   artifactPath: string
+  artifactDir: string
   artifactSha256: string
+  artifactTreeSha256: string
+  buildStampPath: string
+  worktree: string
+  liveDirtyFingerprint: string
+  logPath: string
   createdAt: number
 }
 
@@ -65,12 +71,17 @@ export type DesktopUpdateStageInvalidReason =
   | 'install-root-changed'
   | 'missing-artifact'
   | 'artifact-hash-mismatch'
+  | 'dirty-state-changed'
+  | 'stage-path-invalid'
+  | 'missing-build-stamp'
 
 export interface DesktopUpdateStageLiveState {
   branch: string
   headSha: string
   installRoot: string
   targetSha: string
+  stageRoot: string
+  dirtyFingerprint: string
 }
 
 export type DesktopUpdateStageValidation =
@@ -79,6 +90,7 @@ export type DesktopUpdateStageValidation =
 export interface UpdateStageValidationDeps {
   fileExists?: (candidate: string) => boolean
   sha256File?: (candidate: string) => string
+  sha256Tree?: (candidate: string) => string
 }
 
 export interface UpdateStageReadDeps {
@@ -129,13 +141,19 @@ export function parseUpdateStageManifest(text: string): DesktopUpdateStageManife
   const targetSha = requireNonEmptyString(value.targetSha, 'targetSha')
   const installRoot = requireNonEmptyString(value.installRoot, 'installRoot')
   const artifactPath = requireNonEmptyString(value.artifactPath, 'artifactPath')
+  const artifactDir = requireNonEmptyString(value.artifactDir, 'artifactDir')
   const artifactSha256 = requireNonEmptyString(value.artifactSha256, 'artifactSha256')
+  const artifactTreeSha256 = requireNonEmptyString(value.artifactTreeSha256, 'artifactTreeSha256')
+  const buildStampPath = requireNonEmptyString(value.buildStampPath, 'buildStampPath')
+  const worktree = requireNonEmptyString(value.worktree, 'worktree')
+  const liveDirtyFingerprint = requireNonEmptyString(value.liveDirtyFingerprint, 'liveDirtyFingerprint')
+  const logPath = requireNonEmptyString(value.logPath, 'logPath')
 
   if (!GIT_SHA_RE.test(baseSha) || !GIT_SHA_RE.test(targetSha)) {
     throw new Error('Malformed update stage manifest: invalid Git hash')
   }
 
-  if (!SHA256_RE.test(artifactSha256)) {
+  if (!SHA256_RE.test(artifactSha256) || !SHA256_RE.test(artifactTreeSha256) || !SHA256_RE.test(liveDirtyFingerprint)) {
     throw new Error('Malformed update stage manifest: invalid artifact hash')
   }
 
@@ -150,7 +168,13 @@ export function parseUpdateStageManifest(text: string): DesktopUpdateStageManife
     targetSha: targetSha.toLowerCase(),
     installRoot,
     artifactPath,
+    artifactDir,
     artifactSha256: artifactSha256.toLowerCase(),
+    artifactTreeSha256: artifactTreeSha256.toLowerCase(),
+    buildStampPath,
+    worktree,
+    liveDirtyFingerprint: liveDirtyFingerprint.toLowerCase(),
+    logPath,
     createdAt: value.createdAt
   }
 }
@@ -165,6 +189,35 @@ function defaultFileExists(candidate: string): boolean {
 
 function defaultSha256File(candidate: string): string {
   return createHash('sha256').update(fs.readFileSync(candidate)).digest('hex')
+}
+
+function defaultSha256Tree(root: string): string {
+  const records: string[] = []
+
+  const visit = (directory: string) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const fullPath = path.join(directory, entry.name)
+
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Staged package contains a symbolic link: ${fullPath}`)
+      }
+
+      if (entry.isDirectory()) {
+        visit(fullPath)
+      } else if (entry.isFile()) {
+        const relative = path.relative(root, fullPath).split(path.sep).join('/')
+        const stat = fs.statSync(fullPath)
+        const hash = defaultSha256File(fullPath)
+
+        records.push(`${relative}\0${stat.size}\0${hash}`)
+      }
+    }
+  }
+
+  visit(root)
+  records.sort()
+
+  return createHash('sha256').update(records.join('\n'), 'utf8').digest('hex')
 }
 
 export function validateUpdateStageManifest(
@@ -184,8 +237,36 @@ export function validateUpdateStageManifest(
     return { valid: false, reason: 'target-changed' }
   }
 
-  if (path.resolve(manifest.installRoot) !== path.resolve(live.installRoot)) {
+  const isWindowsPath = /^[a-z]:[\\/]/i.test(manifest.installRoot) || /^[a-z]:[\\/]/i.test(live.installRoot)
+  const pathApi = isWindowsPath ? path.win32 : path
+
+  const normalizePath = (value: string) => {
+    const resolved = pathApi.resolve(value)
+
+    return isWindowsPath ? resolved.toLowerCase() : resolved
+  }
+
+  if (normalizePath(manifest.installRoot) !== normalizePath(live.installRoot)) {
     return { valid: false, reason: 'install-root-changed' }
+  }
+
+  if (manifest.liveDirtyFingerprint !== live.dirtyFingerprint.toLowerCase()) {
+    return { valid: false, reason: 'dirty-state-changed' }
+  }
+
+  const stageRoot = normalizePath(live.stageRoot)
+  const expectedWorktree = normalizePath(pathApi.join(stageRoot, 'worktree'))
+  const expectedArtifactDir = normalizePath(pathApi.join(expectedWorktree, 'apps', 'desktop', 'release', 'win-unpacked'))
+  const expectedArtifactPath = normalizePath(pathApi.join(expectedArtifactDir, 'Hermes.exe'))
+  const expectedBuildStamp = normalizePath(pathApi.join(stageRoot, 'desktop-build-stamp.json'))
+
+  if (
+    normalizePath(manifest.worktree) !== expectedWorktree ||
+    normalizePath(manifest.artifactDir) !== expectedArtifactDir ||
+    normalizePath(manifest.artifactPath) !== expectedArtifactPath ||
+    normalizePath(manifest.buildStampPath) !== expectedBuildStamp
+  ) {
+    return { valid: false, reason: 'stage-path-invalid' }
   }
 
   const fileExists = deps.fileExists ?? defaultFileExists
@@ -194,9 +275,25 @@ export function validateUpdateStageManifest(
     return { valid: false, reason: 'missing-artifact' }
   }
 
+  if (!fileExists(manifest.buildStampPath)) {
+    return { valid: false, reason: 'missing-build-stamp' }
+  }
+
   const actualHash = (deps.sha256File ?? defaultSha256File)(manifest.artifactPath)
 
   if (!SHA256_RE.test(actualHash) || actualHash.toLowerCase() !== manifest.artifactSha256.toLowerCase()) {
+    return { valid: false, reason: 'artifact-hash-mismatch' }
+  }
+
+  let actualTreeHash: string
+
+  try {
+    actualTreeHash = (deps.sha256Tree ?? defaultSha256Tree)(manifest.artifactDir)
+  } catch {
+    return { valid: false, reason: 'artifact-hash-mismatch' }
+  }
+
+  if (!SHA256_RE.test(actualTreeHash) || actualTreeHash.toLowerCase() !== manifest.artifactTreeSha256.toLowerCase()) {
     return { valid: false, reason: 'artifact-hash-mismatch' }
   }
 

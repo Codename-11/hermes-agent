@@ -450,7 +450,13 @@ export interface DesktopUpdateStageManifest {
   targetSha: string
   installRoot: string
   artifactPath: string
+  artifactDir: string
   artifactSha256: string
+  artifactTreeSha256: string
+  buildStampPath: string
+  worktree: string
+  liveDirtyFingerprint: string
+  logPath: string
   createdAt: number
 }
 
@@ -472,6 +478,9 @@ export type DesktopUpdateStageInvalidReason =
   | 'install-root-changed'
   | 'missing-artifact'
   | 'artifact-hash-mismatch'
+  | 'dirty-state-changed'
+  | 'stage-path-invalid'
+  | 'missing-build-stamp'
 
 export interface DesktopUpdateStageProgress {
   phase: DesktopUpdateStagePhase

@@ -4222,12 +4222,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         current_branch = result.stdout.strip()
 
         deploy_commit_count: int | None = None
+        exact_target = getattr(args, "target_sha", None)
         is_deploy_branch = (
-            not getattr(args, "branch", None)
+            (not getattr(args, "branch", None) or (exact_target and branch == current_branch))
             and current_branch in DEPLOY_BRANCHES
             and is_fork
             and _m()._has_upstream_remote(git_cmd, _m().PROJECT_ROOT)
         )
+        if exact_target and not is_deploy_branch:
+            print("✗ --target-sha is only supported for the current fork deploy branch.")
+            sys.exit(1)
         if is_deploy_branch:
             branch = current_branch
             print(f"→ Deploy branch: {current_branch}")
@@ -4237,7 +4241,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd, _m().PROJECT_ROOT
             )
             pre_update_head = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
-            if _m()._deploy_handoff_exists_for(_m().PROJECT_ROOT, current_branch):
+            if not exact_target and _m()._deploy_handoff_exists_for(_m().PROJECT_ROOT, current_branch):
                 deploy_commit_count = _m()._resolve_deploy_handoff(
                     git_cmd=git_cmd,
                     repo=_m().PROJECT_ROOT,
@@ -4250,6 +4254,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _m().PROJECT_ROOT,
                     current_branch,
                     pre_update_head,
+                    target_sha=getattr(args, "target_sha", None),
                 )
             if deploy_commit_count is None:
                 if deploy_stash_ref is not None:

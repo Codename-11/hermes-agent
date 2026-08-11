@@ -458,6 +458,55 @@ def test_deploy_branch_update_fast_forwards_when_origin_ahead(monkeypatch, tmp_p
     ]
 
 
+def test_deploy_branch_update_pins_exact_staged_target(monkeypatch, tmp_path):
+    target = "a" * 40
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "origin/axiom"]:
+            return SimpleNamespace(stdout=f"{target}\n", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--ff-only", target]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "oldhead..HEAD"]:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], tmp_path, "axiom", "oldhead", target_sha=target
+    )
+
+    assert changed == 3
+    assert ["git", "fetch", "upstream", "--quiet"] not in calls
+    assert ["git", "merge", "--ff-only", target] in calls
+
+
+def test_deploy_branch_update_rejects_moved_staged_target(monkeypatch, tmp_path):
+    target = "a" * 40
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "origin/axiom"]:
+            return SimpleNamespace(stdout=f"{'b' * 40}\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], tmp_path, "axiom", "oldhead", target_sha=target
+    )
+
+    assert changed is None
+    assert not any(cmd[:3] == ["git", "merge", "--ff-only"] for cmd in calls)
+
+
 def test_sync_deploy_main_to_upstream_fast_forwards_without_checkout(monkeypatch, tmp_path):
     calls = []
 

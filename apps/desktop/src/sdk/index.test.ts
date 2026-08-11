@@ -3,6 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const updateMocks = vi.hoisted(() => ({
   $backendUpdateStatus: { get: vi.fn() },
   $updateStatus: { get: vi.fn() },
+  checkBackendUpdates: vi.fn(),
+  checkUpdates: vi.fn(),
+  discardDesktopUpdateStage: vi.fn(),
+  getDesktopUpdateHistory: vi.fn(),
+  getDesktopUpdateStage: vi.fn(),
+  prepareDesktopUpdateStage: vi.fn(),
+  restartAndApplyDesktopUpdateStage: vi.fn(),
   openUpdatesWindow: vi.fn()
 }))
 
@@ -52,8 +59,62 @@ describe('host.updates', () => {
     expect(updateMocks.openUpdatesWindow).toHaveBeenCalledOnce()
   })
 
-  it('does not expose mutation, branch, check, progress, or raw bridge doors', () => {
-    expect(Object.keys(host.updates).sort()).toEqual(['getStatus', 'open'])
+  it('maps core stage/history records and rejects failed lifecycle results', async () => {
+    updateMocks.getDesktopUpdateStage.mockResolvedValue({
+      supported: true,
+      phase: 'ready',
+      manifest: { baseSha: 'a'.repeat(40), targetSha: 'b'.repeat(40), branch: 'axiom', createdAt: 10 }
+    })
+    updateMocks.getDesktopUpdateHistory.mockResolvedValue([
+      {
+        id: 'one',
+        at: 20,
+        phase: 'apply',
+        result: 'completed',
+        baseSha: 'a'.repeat(40),
+        targetSha: 'b'.repeat(40),
+        commits: [{ sha: 'c'.repeat(40), subject: 'fix: update', author: 'Nous' }]
+      }
+    ])
+    updateMocks.prepareDesktopUpdateStage.mockResolvedValue({
+      ok: false,
+      error: 'blocked',
+      status: { message: 'Close the second Desktop window before preparing again.' }
+    })
+
+    await expect(host.updates.getStage()).resolves.toMatchObject({ state: 'ready', branch: 'axiom' })
+    await expect(host.updates.getHistory()).resolves.toMatchObject([
+      { id: 'one', result: 'completed', commits: [{ summary: 'fix: update' }] }
+    ])
+    await expect(host.updates.prepare()).rejects.toThrow('Close the second Desktop window before preparing again.')
+  })
+
+  it('preserves unsupported staging capability instead of erasing it as idle', async () => {
+    updateMocks.getDesktopUpdateStage.mockResolvedValue({
+      supported: false,
+      phase: 'idle',
+      message: 'Staged updates currently require Windows.'
+    })
+
+    await expect(host.updates.getStage()).resolves.toMatchObject({
+      supported: false,
+      state: 'available',
+      message: 'Staged updates currently require Windows.'
+    })
+  })
+
+  it('exposes only the named staged lifecycle, never branch, raw apply, progress, or bridge doors', () => {
+    expect(Object.keys(host.updates).sort()).toEqual([
+      'discardStage',
+      'getHistory',
+      'getStage',
+      'getStatus',
+      'open',
+      'openNative',
+      'prepare',
+      'refresh',
+      'restartAndApply'
+    ])
     expect(host.updates).not.toHaveProperty('apply')
     expect(host.updates).not.toHaveProperty('setBranch')
     expect(host.updates).not.toHaveProperty('check')

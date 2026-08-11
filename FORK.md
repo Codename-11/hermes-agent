@@ -57,6 +57,16 @@ sidebar. Its row re-fronts the current URL pane without navigating it away, or
 creates that same singleton at its home page when none exists. Do not add a
 parallel browser surface.
 
+### Staged update lifecycle
+
+On Windows, Update Control must prepare release updates without mutating the live checkout, venv, or packaged app. Preparation fetches and pins the deploy target, builds the Desktop package in a Hermes-owned isolated worktree, records artifact integrity and the live checkout fingerprint, and atomically publishes a stage manifest. Closing the Update Control pane must not cancel or duplicate that worker.
+
+Restart/apply must revalidate the exact branch, live HEAD, dirty fingerprint, remote target, Hermes-owned paths, build stamp, and artifact hash **before** releasing the backend lock or quitting Electron. A failed preflight leaves the current Desktop and relay available. The detached handoff may then adopt the staged package, run the normal deploy-aware CLI updater, and restore the previous packaged app on failure.
+
+Plugins may control this lifecycle only through the typed `host.updates` methods (`refresh`, `getStage`, `prepare`, `discardStage`, `restartAndApply`, and `getHistory`). Do not expose raw IPC, shell execution, arbitrary manifest paths, branch mutation, or the legacy immediate `apply` action to plugins.
+
+Update history is the bounded Hermes-owned `logs/update-history.json` index. Successful CLI updates retain Markdown briefs plus structured sidecars; failed preparation and detached apply results are reconciled into the same index. Update Control presents categorized pending commits, staged progress/recovery, and completed/failed history from this contract.
+
 Protected files: `apps/desktop/src/plugins/update-control/`,
 `apps/desktop/src/contrib/plugin.ts`,
 `apps/desktop/src/components/pane-shell/tree/store.ts`,

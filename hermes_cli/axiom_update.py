@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1671,6 +1672,8 @@ def _run_deploy_branch_update(
     repo: Path,
     branch: str,
     pre_update_head: str,
+    *,
+    target_sha: str | None = None,
 ) -> Optional[int]:
     """Update a merge-based deploy branch without mutating live code on conflicts.
 
@@ -1704,22 +1707,23 @@ def _run_deploy_branch_update(
     _pipe = Pipeline(["fetch upstream", "merge upstream", f"sync {branch}"])
     _pipe.start("fetch upstream")
 
-    fetch_upstream = subprocess.run(
-        git_cmd + ["fetch", "upstream", "--quiet"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_upstream.returncode != 0:
-        _pipe.fail(note="cannot fetch upstream")
-        _print_deploy_branch_handoff(
-            reason="cannot fetch upstream.",
-            repo=repo,
-            branch=branch,
-            error=(fetch_upstream.stderr or "").strip(),
-            git_cmd=git_cmd,
+    if not target_sha:
+        fetch_upstream = subprocess.run(
+            git_cmd + ["fetch", "upstream", "--quiet"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
         )
-        return None
+        if fetch_upstream.returncode != 0:
+            _pipe.fail(note="cannot fetch upstream")
+            _print_deploy_branch_handoff(
+                reason="cannot fetch upstream.",
+                repo=repo,
+                branch=branch,
+                error=(fetch_upstream.stderr or "").strip(),
+                git_cmd=git_cmd,
+            )
+            return None
 
     # The deploy artifact is published on origin/<branch>. Fetch that ref
     # explicitly before computing origin_ahead/local_ahead. A checkout can have
@@ -1749,6 +1753,33 @@ def _run_deploy_branch_update(
             git_cmd=git_cmd,
         )
         return None
+
+    if target_sha:
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", target_sha):
+            raise ValueError("target_sha must be a full Git commit SHA")
+        resolved = subprocess.run(
+            git_cmd + ["rev-parse", remote_ref],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if resolved.returncode != 0 or resolved.stdout.strip().lower() != target_sha.lower():
+            _pipe.fail(note=f"{remote_ref} moved after staging")
+            print(f"✗ {remote_ref} no longer matches the staged target. Prepare the update again.")
+            return None
+        ff_result = subprocess.run(
+            git_cmd + ["merge", "--ff-only", target_sha],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if ff_result.returncode != 0:
+            _pipe.fail(note=f"cannot fast-forward to staged target {target_sha[:12]}")
+            print("✗ The live checkout cannot fast-forward to the staged target. Nothing was merged.")
+            return None
+        changed = _count_changed_from_pre_update(git_cmd, repo, pre_update_head, 0)
+        _pipe.finish(note=f"fast-forwarded to staged target {target_sha[:12]}")
+        return changed
 
     if not _sync_deploy_main_to_upstream(git_cmd, repo):
         _pipe.fail(note="cannot sync local main")

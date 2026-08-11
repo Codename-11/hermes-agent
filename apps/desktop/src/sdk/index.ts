@@ -22,14 +22,26 @@ import { atom, type ReadableAtom } from 'nanostores'
 
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
-import type { DesktopUpdateStatus } from '@/global'
+import type { DesktopUpdateHistoryEntry, DesktopUpdateStageStatus, DesktopUpdateStatus } from '@/global'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
-import { $backendUpdateStatus, $updateStatus, openUpdatesWindow, type UpdateTarget } from '@/store/updates'
+import {
+  $backendUpdateStatus,
+  $updateStatus,
+  checkBackendUpdates,
+  checkUpdates,
+  discardDesktopUpdateStage,
+  getDesktopUpdateHistory,
+  getDesktopUpdateStage,
+  openUpdatesWindow,
+  prepareDesktopUpdateStage,
+  restartAndApplyDesktopUpdateStage,
+  type UpdateTarget
+} from '@/store/updates'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -59,11 +71,47 @@ if (typeof window !== 'undefined') {
 
 export type PluginUpdateTarget = UpdateTarget
 
+export interface PluginUpdateStageSnapshot {
+  supported: boolean
+  state: 'available' | 'failed' | 'invalid' | 'preparing' | 'ready'
+  phase: string
+  percent: number | null
+  message?: string
+  invalidationReason?: string
+  currentSha?: string
+  targetSha?: string
+  branch?: string
+  preparedAt?: number
+}
+
+export interface PluginUpdateHistoryEntry {
+  id: string
+  result: string
+  branch?: string
+  finishedAt: number
+  fromSha?: string
+  toSha?: string
+  message?: string
+  phase?: string
+  briefPath?: string
+  logPath?: string
+  shortstat?: string
+  filesChanged?: number
+  commits?: Array<{ author?: string; at?: number; sha: string; summary: string }>
+}
+
 export interface PluginUpdateManagement {
   /** Detached status for the local client or currently connected backend. */
   getStatus: (target: PluginUpdateTarget) => DesktopUpdateStatus | null
+  getStage: () => Promise<null | PluginUpdateStageSnapshot>
+  getHistory: () => Promise<PluginUpdateHistoryEntry[]>
+  refresh: (target: PluginUpdateTarget) => Promise<DesktopUpdateStatus | null>
+  prepare: () => ReturnType<typeof prepareDesktopUpdateStage>
+  discardStage: () => ReturnType<typeof discardDesktopUpdateStage>
+  restartAndApply: () => ReturnType<typeof restartAndApplyDesktopUpdateStage>
   /** Open the core updater for the active connection target. */
   open: () => void
+  openNative: () => void
 }
 
 const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateStatus | null =>
@@ -73,6 +121,64 @@ const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateSta
         commits: status.commits?.map(commit => ({ ...commit }))
       }
     : null
+
+const pluginStageSnapshot = (status: DesktopUpdateStageStatus): null | PluginUpdateStageSnapshot => {
+  if (status.phase === 'idle' && status.supported) {
+    return null
+  }
+
+  const state = status.phase === 'idle'
+    ? 'available'
+    : status.phase === 'ready'
+    ? 'ready'
+    : status.phase === 'invalidated'
+      ? 'invalid'
+      : status.phase === 'failed'
+        ? 'failed'
+        : 'preparing'
+
+  return {
+    supported: status.supported,
+    state,
+    phase: status.phase,
+    percent: status.percent ?? null,
+    message: status.message,
+    invalidationReason: status.reason,
+    currentSha: status.manifest?.baseSha,
+    targetSha: status.manifest?.targetSha,
+    branch: status.manifest?.branch,
+    preparedAt: status.manifest?.createdAt
+  }
+}
+
+const pluginHistoryEntry = (entry: DesktopUpdateHistoryEntry): PluginUpdateHistoryEntry => ({
+  id: entry.id,
+  result: entry.result,
+  branch: entry.branch,
+  finishedAt: entry.at,
+  fromSha: entry.baseSha,
+  toSha: entry.targetSha,
+  message: entry.message,
+  phase: entry.phase,
+  briefPath: entry.briefPath,
+  logPath: entry.logPath,
+  shortstat: entry.shortstat,
+  filesChanged: entry.filesChanged,
+  commits: entry.commits?.map(commit => ({
+    sha: commit.sha,
+    summary: commit.subject,
+    author: commit.author,
+    at: commit.at
+  }))
+})
+
+const requireUpdateSuccess = <T extends { error?: string; message?: string; ok: boolean; status?: { message?: string } }>(result: T): T => {
+  if (!result.ok) {
+    throw new Error(result.message || result.status?.message || result.error || 'Update action failed.')
+  }
+
+  return result
+}
 
 export const host = {
   state: {
@@ -94,7 +200,15 @@ export const host = {
   updates: {
     getStatus: (target: PluginUpdateTarget) =>
       cloneUpdateStatus(target === 'client' ? $updateStatus.get() : $backendUpdateStatus.get()),
-    open: () => openUpdatesWindow()
+    getStage: async () => pluginStageSnapshot(await getDesktopUpdateStage()),
+    getHistory: async () => (await getDesktopUpdateHistory()).map(pluginHistoryEntry),
+    refresh: async (target: PluginUpdateTarget) =>
+      cloneUpdateStatus(await (target === 'client' ? checkUpdates() : checkBackendUpdates())),
+    prepare: async () => requireUpdateSuccess(await prepareDesktopUpdateStage()),
+    discardStage: async () => requireUpdateSuccess(await discardDesktopUpdateStage()),
+    restartAndApply: async () => requireUpdateSuccess(await restartAndApplyDesktopUpdateStage()),
+    open: () => openUpdatesWindow(),
+    openNative: () => openUpdatesWindow()
   } satisfies PluginUpdateManagement,
 
   /** Toast into the app's notification stack. */

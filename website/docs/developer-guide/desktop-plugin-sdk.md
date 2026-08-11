@@ -441,13 +441,16 @@ shell, plain browser) — branch on the result rather than sniffing the bridge.
 ### Update status and native-updater handoff
 
 The Axiom fork adds a narrow `host.updates` facade for plugins that need update
-observability without becoming an updater:
+observability and the core-owned staged lifecycle without becoming an updater:
 
 ```ts
 const client = host.updates.getStatus('client')
 const backend = host.updates.getStatus('backend')
+const stage = await host.updates.getStage()
+const history = await host.updates.getHistory()
 
-host.updates.open()
+await host.updates.prepare()
+await host.updates.restartAndApply()
 ```
 
 The client and backend are deliberately separate. `client` describes the
@@ -457,13 +460,12 @@ or deploy state. Each call returns a detached snapshot (or `null` before core ha
 published one), including `fetchedAt` when available. Mutating a returned object
 cannot change core update state.
 
-`open()` takes no target or options. Core selects the active client/backend
-target from the current connection, refreshes it, and owns confirmation,
-dirty-tree handling, deploy reconciliation, install, restart, and relaunch.
-There are intentionally no plugin-facing check, branch-write, progress, shell,
-raw IPC, or apply methods. Build-stamp/source-hash and running-executable
-verification remain separate host/operator checks rather than claims inferred
-from update status.
+The named lifecycle methods are `refresh(target)`, `getStage()`, `prepare()`,
+`discardStage()`, `restartAndApply()`, and `getHistory()`. Core owns target
+pinning, progress, dirty-tree validation, deploy reconciliation, package
+integrity, shutdown, rollback, and relaunch. `open()` / `openNative()` retain the
+core overlay fallback. There are intentionally no plugin-facing branch-write,
+raw apply, arbitrary manifest path, shell, progress-event, or raw IPC methods.
 
 ## Data layer — React Query + nanostores
 

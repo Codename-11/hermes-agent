@@ -49,6 +49,11 @@ const {
   $backendUpdateApply,
   reportBackendContract,
   applyUpdates,
+  discardDesktopUpdateStage,
+  getDesktopUpdateHistory,
+  getDesktopUpdateStage,
+  prepareDesktopUpdateStage,
+  restartAndApplyDesktopUpdateStage,
   $updateApply,
   $updateOverlayOpen,
   $updateOverlayTarget,
@@ -357,6 +362,43 @@ describe('requestActiveUpdate', () => {
 
     requestActiveUpdate()
     await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
+  })
+})
+
+describe('staged update bridge', () => {
+  it('passes lifecycle calls through the preload contract', async () => {
+    const status = { supported: true, phase: 'ready' as const }
+    const history = [{ id: 'one', at: 1, phase: 'apply' as const, result: 'completed' as const }]
+    const prepare = { ok: true, status }
+    const discard = { ok: true, discarded: true }
+
+    const restart = { ok: true, applying: true }
+
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: {
+        updates: {
+          status: vi.fn().mockResolvedValue(status),
+          history: vi.fn().mockResolvedValue(history),
+          prepare: vi.fn().mockResolvedValue(prepare),
+          discard: vi.fn().mockResolvedValue(discard),
+          restartAndApply: vi.fn().mockResolvedValue(restart)
+        }
+      }
+    }
+
+    await expect(getDesktopUpdateStage()).resolves.toEqual(status)
+    await expect(getDesktopUpdateHistory()).resolves.toEqual(history)
+    await expect(prepareDesktopUpdateStage()).resolves.toEqual(prepare)
+    await expect(discardDesktopUpdateStage()).resolves.toEqual(discard)
+    await expect(restartAndApplyDesktopUpdateStage()).resolves.toEqual(restart)
+  })
+
+  it('fails closed when the preload bridge is absent', async () => {
+    ;(globalThis as unknown as { window: unknown }).window = {}
+
+    await expect(getDesktopUpdateStage()).resolves.toMatchObject({ supported: false, phase: 'idle' })
+    await expect(prepareDesktopUpdateStage()).resolves.toMatchObject({ ok: false, error: 'unavailable' })
+    await expect(restartAndApplyDesktopUpdateStage()).resolves.toMatchObject({ ok: false, error: 'unavailable' })
   })
 })
 

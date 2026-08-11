@@ -21,6 +21,7 @@ export interface HandoffResult {
   exitCode: number
   message: string
   branch: string
+  finishedAt: number
 }
 
 export function handoffResultPath(hermesHome: string): string {
@@ -66,6 +67,7 @@ export function readAndConsumeHandoffResult(
     ok: Boolean(parsed?.ok),
     exitCode: Number.isFinite(Number(parsed?.exit_code)) ? Number(parsed.exit_code) : 1,
     message: typeof parsed?.message === 'string' ? parsed.message : '',
-    branch: typeof parsed?.branch === 'string' ? parsed.branch : ''
+    branch: typeof parsed?.branch === 'string' ? parsed.branch : '',
+    finishedAt: finishedAt * 1000
   }
 }

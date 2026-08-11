@@ -8,8 +8,13 @@ import { atom } from 'nanostores'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
+  DesktopUpdateDiscardResult,
+  DesktopUpdateHistoryEntry,
+  DesktopUpdatePrepareResult,
   DesktopUpdateProgress,
+  DesktopUpdateRestartResult,
   DesktopUpdateStage,
+  DesktopUpdateStageStatus,
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
@@ -390,6 +395,46 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   } finally {
     $updateChecking.set(false)
   }
+}
+
+export async function getDesktopUpdateStage(): Promise<DesktopUpdateStageStatus> {
+  const bridge = window.hermesDesktop?.updates
+
+  if (!bridge?.status) {
+    return { supported: false, phase: 'idle', reason: 'missing' }
+  }
+
+  return bridge.status()
+}
+
+export async function getDesktopUpdateHistory(): Promise<DesktopUpdateHistoryEntry[]> {
+  return (await window.hermesDesktop?.updates?.history?.()) ?? []
+}
+
+export async function prepareDesktopUpdateStage(): Promise<DesktopUpdatePrepareResult> {
+  const bridge = window.hermesDesktop?.updates
+
+  if (!bridge?.prepare) {
+    return {
+      ok: false,
+      error: 'unavailable',
+      status: { supported: false, phase: 'failed', message: 'Staged update support is unavailable.' }
+    }
+  }
+
+  return bridge.prepare()
+}
+
+export async function discardDesktopUpdateStage(): Promise<DesktopUpdateDiscardResult> {
+  const bridge = window.hermesDesktop?.updates
+
+  return bridge?.discard?.() ?? { ok: false, discarded: false, error: 'unavailable' }
+}
+
+export async function restartAndApplyDesktopUpdateStage(): Promise<DesktopUpdateRestartResult> {
+  const bridge = window.hermesDesktop?.updates
+
+  return bridge?.restartAndApply?.() ?? { ok: false, applying: false, error: 'unavailable' }
 }
 
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {

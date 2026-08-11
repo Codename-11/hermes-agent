@@ -187,7 +187,8 @@ function UpdateControlPane() {
   const stageQuery = useQuery({
     queryFn: async () => (await api?.getStage?.()) ?? null,
     queryKey: [...ROOT_KEY, 'stage'],
-    refetchInterval: 5_000,
+    refetchInterval: query =>
+      (query.state.data as UpdateStageSnapshot | null)?.state === 'preparing' ? 2_000 : false,
     retry: false
   })
 
@@ -256,6 +257,7 @@ function UpdateControlPane() {
   const history = (historyQuery.data ?? []) as UpdateHistoryEntry[]
   const commits = stage?.commits ?? status?.commits ?? []
   const queryError = statusQuery.error || stageQuery.error || historyQuery.error
+  const primaryLoading = statusQuery.isPending || (target === 'client' && stageQuery.isPending)
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
@@ -265,7 +267,9 @@ function UpdateControlPane() {
             <div className="flex flex-wrap items-center gap-2">
               <Codicon className="text-(--ui-text-tertiary)" name="cloud-download" size="1.1rem" />
               <h1 className="text-lg font-semibold tracking-tight text-(--ui-text-primary)">Update Control</h1>
-              <Badge>{stage?.state ?? (hasUpdate(status) ? 'available' : 'current')}</Badge>
+              <Badge>
+                {primaryLoading ? 'loading' : target === 'client' && stage?.state ? stage.state : hasUpdate(status) ? 'available' : 'current'}
+              </Badge>
             </div>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-(--ui-text-tertiary)">
               Prepare and verify updates in the background, then finish through a safe restart handoff.
@@ -285,7 +289,11 @@ function UpdateControlPane() {
           </Button>
         </div>
 
-        <TargetSummary status={status} target={target} />
+        {statusQuery.isPending ? (
+          <p className="py-6 text-xs text-(--ui-text-tertiary)" role="status">Loading update status…</p>
+        ) : statusQuery.isSuccess ? (
+          <TargetSummary status={status} target={target} />
+        ) : null}
 
         {actionError || queryError ? (
           <div className="border-l-2 border-destructive pl-3 text-xs leading-5 text-(--ui-text-secondary)">
@@ -293,15 +301,29 @@ function UpdateControlPane() {
           </div>
         ) : null}
 
-        <UpdateActions
-          busy={lifecycle.isPending || refresh.isPending}
-          onDiscard={() => lifecycle.mutate('discard')}
-          onPrepare={() => lifecycle.mutate('prepare')}
-          onRefresh={() => refresh.mutate()}
-          onRestart={() => lifecycle.mutate('restart')}
-          stage={stage}
-          status={status}
-        />
+        {primaryLoading ? null : target === 'client' ? (
+          <UpdateActions
+            busy={lifecycle.isPending || refresh.isPending}
+            onDiscard={() => lifecycle.mutate('discard')}
+            onPrepare={() => lifecycle.mutate('prepare')}
+            onRefresh={() => refresh.mutate()}
+            onRestart={() => lifecycle.mutate('restart')}
+            stage={stage}
+            status={status}
+          />
+        ) : (
+          <section aria-labelledby="backend-handoff-heading" className="border-t border-(--ui-stroke-tertiary) pt-5">
+            <h2 className="text-sm font-semibold text-(--ui-text-primary)" id="backend-handoff-heading">
+              Backend update handoff
+            </h2>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-(--ui-text-tertiary)">
+              Backend updates remain core-owned because this connection may be remote. Open the native updater to review and apply its update safely.
+            </p>
+            <Button className="mt-3" disabled={!api?.openNative && !api?.open} onClick={openNative} size="sm" variant="outline">
+              Open native updater
+            </Button>
+          </section>
+        )}
 
         {stage?.fallbackCommand || status?.fallbackCommand ? (
           <div className="mt-4 border-l-2 border-(--ui-accent) pl-3 text-xs leading-5 text-(--ui-text-tertiary)">
@@ -312,11 +334,19 @@ function UpdateControlPane() {
           </div>
         ) : null}
 
+        {!primaryLoading && statusQuery.isSuccess ? (
+          <div className="mt-6">
+            <PendingChanges commits={commits} filesChanged={stage?.filesChanged} shortstat={stage?.shortstat} />
+          </div>
+        ) : null}
         <div className="mt-6">
-          <PendingChanges commits={commits} filesChanged={stage?.filesChanged} shortstat={stage?.shortstat} />
-        </div>
-        <div className="mt-6">
-          <UpdateHistory entries={history} />
+          {historyQuery.isPending ? (
+            <p className="border-t border-(--ui-stroke-tertiary) pt-5 text-xs text-(--ui-text-tertiary)" role="status">
+              Loading update history…
+            </p>
+          ) : historyQuery.isSuccess ? (
+            <UpdateHistory entries={history} />
+          ) : null}
         </div>
 
         {!api?.prepare ? (
