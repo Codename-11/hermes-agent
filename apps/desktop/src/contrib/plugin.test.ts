@@ -1,10 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { dispatchPluginNativeNotification } from '@/store/native-notifications'
 
 import { createPluginContext } from './plugin'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
+vi.mock('@/components/pane-shell/tree/store', () => ({ revealTreePane: vi.fn() }))
+
+describe('createPluginContext.panes', () => {
+  it('reveals only the plugin-namespaced pane id', () => {
+    const ctx = createPluginContext('demo')
+
+    ctx.panes.reveal('control')
+
+    expect(revealTreePane).toHaveBeenCalledWith('demo:control')
+  })
+})
 
 describe('createPluginContext.onDispose', () => {
   it('collects arbitrary cleanups so the host runs them on deactivate', () => {

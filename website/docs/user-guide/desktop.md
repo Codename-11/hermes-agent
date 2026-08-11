@@ -203,10 +203,11 @@ routines pane, and composer middleware unregister live, no restart needed.
 
 The app checks for updates in the background and offers a one-click update when
 one is ready. In the Axiom fork, the bundled **Update Control** plugin adds a
-page, status-bar summary, and command-palette entry for viewing the local
+closable tab, status-bar summary, and command-palette entry for viewing the local
 Desktop client and active backend snapshots without treating them as one target.
 Enable it under **Settings → Plugins**, then open **Update Control** from the
-sidebar or command palette.
+status bar or command palette. It joins the same main tab strip as sessions;
+closing the tab leaves the plugin enabled so either entry point can reopen it.
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 

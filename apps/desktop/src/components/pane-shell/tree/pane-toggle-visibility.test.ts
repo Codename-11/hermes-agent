@@ -3,13 +3,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 
-import { group, split } from './model'
+import { allPaneIds, group, split } from './model'
 import {
   $dismissedPanes,
   $hiddenTreePanes,
   $layoutTree,
   bindPaneVisibility,
+  closeTreePane,
   isPaneVisible,
+  revealTreePane,
   setTreeGroupMinimized,
   togglePaneVisible
 } from './store'
@@ -122,5 +124,35 @@ describe('the toggle round-trip', () => {
 
     expect($files.get()).toBe(true)
     expect(isPaneVisible('files')).toBe(true)
+  })
+})
+
+describe('a dismissible plugin main tab', () => {
+  it('closes without disabling its contribution and reopens focused', () => {
+    const paneId = 'update-control:panel'
+
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        id: paneId,
+        source: 'plugin:update-control',
+        title: 'Update Control',
+        data: { closeBehavior: 'dismiss', placement: 'main' },
+        render: () => null
+      })
+    )
+    $layoutTree.set(group(['workspace', paneId], { active: paneId, id: 'g-main' }))
+
+    closeTreePane(paneId)
+
+    expect(allPaneIds($layoutTree.get()!)).not.toContain(paneId)
+    expect($dismissedPanes.get()).toContain(paneId)
+    expect(registry.getArea('panes').some(contribution => contribution.id === paneId)).toBe(true)
+
+    revealTreePane(paneId)
+
+    expect(allPaneIds($layoutTree.get()!)).toContain(paneId)
+    expect($dismissedPanes.get()).not.toContain(paneId)
+    expect(isPaneVisible(paneId)).toBe(true)
   })
 })
