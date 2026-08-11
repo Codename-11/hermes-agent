@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
@@ -6,10 +6,12 @@ import {
   blurComposerInput,
   getActiveComposer,
   markActiveComposer,
+  onComposerDictationToggleRequest,
   onComposerFocusRequest,
   onComposerModelMenuRequest,
   releaseActiveComposer,
   requestComposerFocus,
+  requestDictationToggle,
   requestModelMenuToggle
 } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -219,6 +221,27 @@ describe('resolveActive / keep-alive tab heal', () => {
     markActiveComposer('edit')
 
     expect(getActiveComposer()).toBe('edit')
+  })
+})
+
+describe('requestDictationToggle', () => {
+  it('routes repeated start/stop requests only to the active visible composer', async () => {
+    mountSurface('main', true)
+    mountSurface('tile:front')
+    markActiveComposer('tile:front')
+    const mainToggle = vi.fn()
+    const tileToggle = vi.fn()
+    const offMain = onComposerDictationToggleRequest(target => target === 'main' && mainToggle())
+    const offTile = onComposerDictationToggleRequest(target => target === 'tile:front' && tileToggle())
+
+    requestDictationToggle()
+    requestDictationToggle()
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    offMain()
+    offTile()
+
+    expect(tileToggle).toHaveBeenCalledTimes(2)
+    expect(mainToggle).not.toHaveBeenCalled()
   })
 })
 

@@ -49,12 +49,15 @@ def test_project_tree_admits_local_conversations_and_rejects_other_surfaces():
     ]
     db = _SessionDB(rows)
 
-    listed = server._list_project_tree_sessions(db, 100)
+    listed = server._list_project_tree_sessions(db)
 
     assert [row["id"] for row in listed] == ["desktop-project", "local-home", "legacy-home"]
     assert db.kwargs is not None
     assert set(db.kwargs["sources"]) == set(PROJECT_CONVERSATION_SOURCES)
     assert "exclude_sources" not in db.kwargs
+    assert db.kwargs["limit"] == -1
+    assert db.kwargs["offset"] == 0
+    assert db.kwargs["compact_rows"] is True
 
 
 def test_project_source_policy_normalizes_and_fails_closed():

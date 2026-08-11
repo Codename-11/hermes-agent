@@ -2,6 +2,7 @@ import type * as React from 'react'
 import { useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
@@ -18,6 +19,7 @@ import {
 } from '../chrome'
 
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
+import { ProjectWorktreeMenu } from './project-worktree-actions'
 import type { SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
 
@@ -61,6 +63,8 @@ interface ProjectOverviewRowProps {
   project: SidebarProjectTree
   onEnter?: (id: string) => void
   onNewSession?: (path: null | string) => void
+  expanded?: boolean
+  onToggleExpanded?: () => void
   activeProjectId?: null | string
   reorderable?: boolean
   dragging?: boolean
@@ -73,6 +77,8 @@ export function ProjectOverviewRow({
   project,
   onEnter,
   onNewSession,
+  expanded = false,
+  onToggleExpanded,
   activeProjectId,
   reorderable = false,
   dragging = false,
@@ -89,8 +95,11 @@ export function ProjectOverviewRow({
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
+  const repos = project.repos ?? []
+  const projectPath = project.path || repos.find(repo => repo.path)?.path || null
+  const repoPath = repos.find(repo => repo.path)?.path || null
 
-  const lead = reorderable ? (
+  const iconLead = reorderable ? (
     <SidebarRowGrab
       ariaLabel={s.projects.reorder(project.label)}
       dragging={dragging}
@@ -103,6 +112,25 @@ export function ProjectOverviewRow({
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
   )
 
+  const lead = (
+    <div className="flex items-center">
+      {project.sessionCount > 0 && onToggleExpanded ? (
+        <button
+          aria-label={s.projects.toggle(project.label, !expanded)}
+          className="grid size-5 place-items-center bg-transparent text-(--ui-text-tertiary)"
+          onClick={event => {
+            event.stopPropagation()
+            onToggleExpanded()
+          }}
+          type="button"
+        >
+          <DisclosureCaret open={expanded} />
+        </button>
+      ) : null}
+      {iconLead}
+    </div>
+  )
+
   const shell = (
     <SidebarGroupRow
       actions={
@@ -112,9 +140,17 @@ export function ProjectOverviewRow({
               folder" chat. New session sits outermost: it's the one you reach
               for. */}
           {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
-          {onNewSession && (
-            <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
-          )}
+          {onNewSession &&
+            (project.isNoProject ? (
+              <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+            ) : (
+              <ProjectWorktreeMenu
+                onNewSession={onNewSession}
+                projectLabel={project.label}
+                projectPath={projectPath}
+                repoPath={repoPath}
+              />
+            ))}
         </>
       }
       className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}

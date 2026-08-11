@@ -1624,11 +1624,17 @@ export interface Translations {
       moveNoProjects: string
       reveal: string
       copyPath: string
+      openTerminal: string
+      openReview: string
       removeFromSidebar: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string
       startWork: string
+      newSessionInProject: string
+      newWorktreeSession: string
+      lifecycleMenu: (project: string) => string
+      moveCurrentSessionToWorktree: string
       newWorktreeTitle: string
       newWorktreeDesc: string
       branchPlaceholder: string
@@ -1637,6 +1643,10 @@ export interface Translations {
       baseBranchNone: string
       startWorkFailed: string
       worktreeProjectLabel: string
+      worktreeRepositoryLabel: string
+      worktreeIntentLabel: string
+      createWorktreeIntent: string
+      openExistingIntent: string
       worktreeProjectPlaceholder: string
       worktreeProjectNone: string
       convertBranch: string
@@ -1658,6 +1668,7 @@ export interface Translations {
       enter: (label: string) => string
       reorder: (label: string) => string
       toggle: (label: string, open: boolean) => string
+      viewAllSessions: (count: number) => string
       back: string
     }
     newSessionIn: (label: string) => string

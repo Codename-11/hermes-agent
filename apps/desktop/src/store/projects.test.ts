@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $showAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
@@ -21,6 +21,7 @@ import {
   ensureProjectFolder,
   enterProject,
   exitProjectScope,
+  moveSessionToProject,
   openProjectCreate,
   pickProjectFolder,
   projectIdForCwd,
@@ -199,6 +200,50 @@ describe('resolveNewSessionCwd', () => {
     // Focused session has no workspace → fall through to configured default,
     // not the stale $currentCwd from an earlier chat.
     expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+})
+
+describe('moveSessionToProject', () => {
+  beforeEach(() => {
+    $projectTree.set([])
+    $sessions.set([
+      {
+        id: 'session-1',
+        cwd: '/repo/old',
+        git_branch: 'feature',
+        git_repo_root: '/repo/old'
+      } as never
+    ])
+  })
+
+  afterEach(() => {
+    activeGateway.mockReset()
+    $projectTree.set([])
+    $sessions.set([])
+  })
+
+  it('unassigns to Home without sending an invalid empty cwd', async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === 'session.workspace.move') {
+        return { cwd: '/home/bailey', branch: null, git_repo_root: null }
+      }
+
+      return { active_id: null, projects: [], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await moveSessionToProject('session-1', null)
+
+    expect(request).toHaveBeenCalledWith('session.workspace.move', {
+      session_key: 'session-1',
+      unassigned: true
+    })
+    expect($sessions.get()[0]).toMatchObject({
+      cwd: '/home/bailey',
+      git_branch: null,
+      git_repo_root: null
+    })
   })
 })
 
@@ -566,5 +611,37 @@ describe('tombstone pruning', () => {
     await refreshProjectTree()
 
     expect($removedSessionIds.get().has('sess-1')).toBe(false)
+  })
+})
+
+describe('all-profile project previews', () => {
+  afterEach(() => {
+    $showAllProfiles.set(false)
+    $selectedStoredSessionId.set(null)
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.restoreAllMocks()
+  })
+
+  it('passes the selected session through to the all-profile tree request', async () => {
+    const api = vi.fn().mockResolvedValue({
+      active_id: null,
+      projects: [],
+      scoped_session_ids: []
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+    $showAllProfiles.set(true)
+    $selectedStoredSessionId.set('victor/active session')
+
+    await refreshProjectTree()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles/projects/tree?preview_limit=5&active_session_id=victor%2Factive%20session'
+      })
+    )
   })
 })

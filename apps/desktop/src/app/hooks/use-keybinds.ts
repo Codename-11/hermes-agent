@@ -13,6 +13,7 @@ import {
   togglePaneVisible
 } from '@/components/pane-shell/tree/store'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
+import { useI18n } from '@/i18n'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
@@ -34,6 +35,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
   cycleProfile,
@@ -58,10 +60,12 @@ import {
   switcherJustClosed
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import { requestComposerFocus, requestDictationToggle, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
 import { openSession } from '../open-session'
 import {
   $workspaceIsPage,
@@ -90,12 +94,54 @@ export interface KeybindRuntimeDeps {
 
 type HandlerMap = Record<string, () => void>
 
+export async function toggleAutoSpeakFromKeyboard(
+  failureLabel: string,
+  persist: (enabled: boolean) => Promise<void> = setAutoSpeakReplies
+): Promise<void> {
+  try {
+    await persist(!$autoSpeakReplies.get())
+  } catch (error) {
+    notifyError(error, failureLabel)
+  }
+}
+
+export async function toggleWakeWordFromKeyboard(
+  actionLabel: string,
+  toggle: () => Promise<void> = toggleWakeWord
+): Promise<void> {
+  const before = $wakeWord.get()
+
+  if (before.pending) {
+    notify({
+      id: 'wake-word-keybind-pending',
+      kind: 'warning',
+      message: actionLabel,
+      detail: before.notice
+    })
+
+    return
+  }
+
+  await toggle()
+  const after = $wakeWord.get()
+
+  if (after.listening === before.listening) {
+    notify({
+      id: 'wake-word-keybind-failed',
+      kind: 'error',
+      message: actionLabel,
+      detail: after.notice
+    })
+  }
+}
+
 // Mount once near the top of the app. Owns the single global keydown listener
 // for every rebindable hotkey: it runs the matched action, or — while capture
 // mode is active (edit overlay / panel rebind) — records the pressed combo.
 export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const navigate = useNavigate()
   const { resolvedMode, setMode } = useTheme()
+  const { t } = useI18n()
 
   // Keep the latest closures without re-subscribing the listener.
   const handlersRef = useRef<HandlerMap>({})
@@ -184,6 +230,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'composer.voice': requestVoiceToggle,
+    'composer.dictate': requestDictationToggle,
+    'composer.autoSpeak': () => void toggleAutoSpeakFromKeyboard(t.settings.config.autosaveFailed),
+    'composer.wakeWord': () => void toggleWakeWordFromKeyboard(t.keybinds.actions['composer.wakeWord']),
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,

@@ -1,5 +1,7 @@
 import type * as React from 'react'
 
+import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { createTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -8,6 +10,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { copyPath, revealPath } from '@/store/projects'
+import { openReview } from '@/store/review'
 
 import { SidebarRowLead } from '../chrome'
 
@@ -96,6 +99,25 @@ function useWorkspaceItems({ path, onRemove }: { path: null | string; onRemove: 
         key: 'copy',
         label: p.copyPath,
         onSelect: () => void copyPath(path)
+      })}
+      {renderActionItem(kit, {
+        disabled: !path,
+        icon: 'terminal',
+        key: 'terminal',
+        label: p.openTerminal,
+        onSelect: () => {
+          if (path) {
+            createTerminal(path)
+            setTerminalTakeover(true)
+          }
+        }
+      })}
+      {renderActionItem(kit, {
+        disabled: !path,
+        icon: 'diff',
+        key: 'review',
+        label: p.openReview,
+        onSelect: () => openReview(path)
       })}
       <kit.Separator />
       {renderActionItem(kit, {

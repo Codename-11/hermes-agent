@@ -517,7 +517,8 @@ export async function resolveWorktreeRepoPath(): Promise<string> {
 }
 
 export async function openWorktreeDialog(options?: { base?: string; repoPath?: string }): Promise<void> {
-  const repoPath = options?.repoPath?.trim() || (await resolveWorktreeRepoPath())
+  const explicit = options?.repoPath?.trim() || ''
+  const repoPath = explicit && (await isGitRepoPath(explicit)) ? explicit : explicit ? '' : await resolveWorktreeRepoPath()
 
   if (repoPath) {
     $worktreeDialog.set({ base: options?.base, repoPath })

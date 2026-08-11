@@ -22,6 +22,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
+import { $projectTree, projectLabelForCwd } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -57,6 +58,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
    *  flat cross-profile lists — Pinned and search results in the All-profiles
    *  view — where no group header communicates ownership (#66003). */
   showProfile?: boolean
+  showProject?: boolean
 }
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
@@ -89,6 +91,7 @@ function SidebarSessionRowImpl({
   dragging = false,
   dragHandleProps,
   showProfile = false,
+  showProject = false,
   className,
   style,
   ref,
@@ -104,6 +107,7 @@ function SidebarSessionRowImpl({
   // rather than threaded as props: the subscription re-renders past the memo
   // below, and a toggle should repaint every row at once anyway.
   const rowMeta = useStore($sidebarRowMeta)
+  const projectTree = useStore($projectTree)
   // Pinned metadata occupies the actions slot and swaps out for the kebab on
   // hover, so the row reserves the same width either way and never reflows.
   const pinnedAge = rowMeta.includes('updated')
@@ -137,6 +141,18 @@ function SidebarSessionRowImpl({
   // thing. Chips used to render in the body instead, which left them stranded
   // to the left of the kebab's own column: never flush right, never swapping.
   const trailing: { key: string; node: React.ReactNode }[] = []
+
+  if (showProject) {
+    void projectTree
+    trailing.push({
+      key: 'project',
+      node: (
+        <span className="max-w-20 truncate text-[0.625rem] text-(--ui-text-tertiary)" title={session.cwd || undefined}>
+          {projectLabelForCwd(session.cwd)}
+        </span>
+      )
+    })
+  }
 
   if ((showProfile || pinnedProfile) && hasProfileTag) {
     trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })
@@ -383,6 +399,7 @@ function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): bo
     a.reorderable === b.reorderable &&
     a.dragging === b.dragging &&
     a.showProfile === b.showProfile &&
+    a.showProject === b.showProject &&
     a.dragHandleProps === b.dragHandleProps &&
     a.className === b.className &&
     a.style === b.style

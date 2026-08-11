@@ -18,6 +18,7 @@ import {
 } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { $expandedProjectIds, toggleProjectExpanded } from '@/store/projects'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
@@ -158,6 +159,8 @@ interface SidebarSessionsSectionProps {
   // lists (Pinned / search results) in the All-profiles view, where no group
   // header communicates ownership (#66003).
   showProfileTags?: boolean
+  // Show Project/Home identity on global Recent/search rows.
+  showProjectTags?: boolean
   // Which dividers to fold into the flat list: `date` gives the chronological
   // "Yesterday" / "Last week" separators (flat recents + entered-project lanes),
   // `status` splits into WORKING / DONE under the same separators. `none` for
@@ -205,12 +208,14 @@ export function SidebarSessionsSection({
   projectBackRow,
   dndSensors,
   showProfileTags = false,
+  showProjectTags = false,
   grouping = 'none'
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
+  const expandedProjectIds = useStore($expandedProjectIds)
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   // A defined project list is itself content (even an empty project should
@@ -253,7 +258,8 @@ export function SidebarSessionsSection({
         onResume: () => onResumeSession(session.id),
         reorderable: draggable && !branchStem,
         session,
-        showProfile: showProfileTags
+        showProfile: showProfileTags,
+        showProject: showProjectTags
       }
 
       return draggable && !branchStem ? (
@@ -270,7 +276,8 @@ export function SidebarSessionsSection({
       onResumeSession,
       onTogglePin,
       pinned,
-      showProfileTags
+      showProfileTags,
+      showProjectTags
     ]
   )
 
@@ -440,15 +447,35 @@ export function SidebarSessionsSection({
     const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
     const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
-    const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
-      <Component
-        activeProjectId={activeProjectId}
-        key={project.id}
-        onEnter={onEnterProject}
-        onNewSession={onNewSessionInWorkspace}
-        project={project}
-      />
-    )
+    const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => {
+      const expanded = expandedProjectIds.includes(project.id)
+      const previews = project.previewSessions ?? []
+
+      return (
+        <div key={project.id}>
+          <Component
+            activeProjectId={activeProjectId}
+            expanded={expanded}
+            onEnter={onEnterProject}
+            onNewSession={onNewSessionInWorkspace}
+            onToggleExpanded={() => toggleProjectExpanded(project.id)}
+            project={project}
+          />
+          {expanded && project.sessionCount > 0 ? (
+            <div className="ml-4 border-l border-(--ui-border-subtle) pl-1">
+              {previews.map(session => renderRow(session, false))}
+              <button
+                className="w-full bg-transparent px-7 py-1 text-left text-[0.6875rem] text-(--ui-text-tertiary) hover:text-foreground hover:underline"
+                onClick={() => onEnterProject?.(project.id)}
+                type="button"
+              >
+                {t.sidebar.projects.viewAllSessions(project.sessionCount)}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      )
+    }
 
     const rows = sortableProjects.map(project => projectRow(project, Row))
 

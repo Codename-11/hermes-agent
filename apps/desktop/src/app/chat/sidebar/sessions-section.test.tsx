@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -25,7 +25,8 @@ vi.mock('@/i18n', () => ({
         projects: {
           enter: (label: string) => `Open ${label}`,
           reorder: (label: string) => `Reorder ${label}`,
-          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
+          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
+          viewAllSessions: (count: number) => `View all ${count} sessions`
         }
       }
     }
@@ -223,6 +224,40 @@ describe('SidebarSessionsSection hybrid project overview', () => {
     )
     expect(screen.getByTestId('session-row-recent-1')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Show Home sessions' })).toBeNull()
+  })
+
+  it('expands a bounded five-session Home preview and keeps full drill-in separate', () => {
+    const onEnterProject = vi.fn()
+    const previews = generateSessions(5)
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        label="Projects"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onEnterProject={onEnterProject}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        open
+        pinned={false}
+        projectOverview={[{ ...homeProject, previewSessions: previews, sessionCount: 9 }] as never}
+        sessions={[]}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Home sessions' }))
+
+    for (const preview of previews) {
+      expect(screen.getByTestId(`session-row-${preview.id}`)).toBeTruthy()
+    }
+
+    expect(screen.getAllByTestId(/^session-row-/)).toHaveLength(5)
+
+    fireEvent.click(screen.getByRole('button', { name: 'View all 9 sessions' }))
+    expect(onEnterProject).toHaveBeenCalledWith('__no_project__')
   })
 
   it('hides global recents while drilled into a project', () => {

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
+import { resetAllBindings, setBinding } from '@/store/keybinds'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
 import { ComposerControls } from './controls'
@@ -57,6 +58,7 @@ async function expectShortcutTooltip(label: string, shortcut: string) {
 
 afterEach(() => {
   cleanup()
+  resetAllBindings()
 })
 
 describe('ComposerControls shortcut tooltips', () => {
@@ -76,6 +78,22 @@ describe('ComposerControls shortcut tooltips', () => {
     renderControls({ busy: true, busyAction: 'queue' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
+  })
+
+  it('renders configured voice shortcuts in tooltips and aria-keyshortcuts', async () => {
+    setBinding('composer.dictate', ['mod+shift+d'])
+    setBinding('composer.autoSpeak', ['mod+shift+r'])
+    setBinding('composer.wakeWord', ['mod+shift+h'])
+    renderControls({ state: { ...state, voice: { active: false, enabled: true } } })
+
+    const dictate = screen.getByLabelText('Voice dictation')
+    const autoSpeak = screen.getByLabelText('Read replies aloud')
+    const wake = screen.getByLabelText('Wake word: "hey hermes" — off')
+
+    expect(dictate.getAttribute('aria-keyshortcuts')).toMatch(/^(Meta|Control)\+Shift\+D$/)
+    expect(autoSpeak.getAttribute('aria-keyshortcuts')).toMatch(/^(Meta|Control)\+Shift\+R$/)
+    expect(wake.getAttribute('aria-keyshortcuts')).toMatch(/^(Meta|Control)\+Shift\+H$/)
+    await expectShortcutTooltip('Voice dictation', 'D')
   })
 })
 

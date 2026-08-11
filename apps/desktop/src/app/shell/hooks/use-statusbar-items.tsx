@@ -19,7 +19,7 @@ import { resolveVersionStatus } from '@/lib/version-status'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $projectTree, projectNameForCwd } from '@/store/projects'
+import { $projectTree, projectLabelForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -210,12 +210,21 @@ export function useStatusbarItems({
     ''
   ).trim()
 
-  // Derive the workspace's project name from the already-cached project tree
-  // (backend truth via projects.*), so the status item labels by project without
-  // a second per-session copy of the same fact. Re-derives whenever the cwd or
-  // the tree changes; null (no named project) falls back to the cwd leaf below.
+  // Derive the workspace's Project/Home identity from the already-cached tree
+  // (backend truth via projects.*), so every focused chat says where it belongs.
+  // A blank/unclaimed cwd is explicitly Home rather than a missing status item.
   const projectTree = useStore($projectTree)
-  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+
+  const projectLabel = useMemo(
+    () => {
+      // The helper reads the atom synchronously; this explicit read keeps the
+      // memo subscribed to authoritative Project-tree refreshes.
+      void projectTree
+
+      return currentCwd ? projectLabelForCwd(currentCwd) : t.sidebar.projects.home
+    },
+    [currentCwd, projectTree, t.sidebar.projects.home]
+  )
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
@@ -424,13 +433,11 @@ export function useStatusbarItems({
         variant: 'menu'
       },
       {
-        hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        // Prefer the named project; fall back to the cwd leaf. Hover tip uses
-        // the shared display formatter (home → ~) so statusbar and branch bar
-        // agree on how a path looks.
-        label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
+        // Project/Home is primary identity; a raw folder leaf is never enough
+        // to tell the user which sidebar bucket owns the focused conversation.
+        label: projectLabel || (currentCwd ? pathLeaf(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
               {
@@ -453,7 +460,7 @@ export function useStatusbarItems({
               }
             ]
           : undefined,
-        title: currentCwd ? displayPath(currentCwd) : undefined,
+        title: currentCwd ? displayPath(currentCwd) : projectLabel,
         toggleLabel: copy.toggleWorkspace,
         variant: 'menu'
       },
@@ -516,7 +523,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
-      projectName,
+      projectLabel,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter

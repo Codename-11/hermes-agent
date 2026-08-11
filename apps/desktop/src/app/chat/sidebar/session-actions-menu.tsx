@@ -137,9 +137,9 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // The project list inside the session menu's "Move to project" submenu. Its own
 // component so only an OPEN submenu subscribes to the stores (same reasoning as
 // SessionColorSwatches). Re-homes the session's workspace at the target
-// project's root — the fix for a chat created in the wrong folder. The current
-// owner and folderless projects (the Home bucket) are excluded: there is
-// nothing to move into.
+// project's root — the fix for a chat created in the wrong folder. Home is a
+// real unassignment target: the backend re-anchors the runtime at its user-home
+// directory and clears persisted Git identity so no Project claims the row.
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
@@ -147,27 +147,35 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
-  const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
 
-  if (targets.length === 0) {
-    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
-  }
+  const targets = [
+    { id: null, label: p.home },
+    ...tree.filter(node => !node.isNoProject && projectRootCwd(node)).map(node => ({ id: node.id, label: node.label }))
+  ]
 
   return (
     <>
-      {targets.map(node => (
-        <kit.Item
-          key={node.id}
-          onSelect={() => {
-            triggerHaptic('selection')
-            moveSessionToProject(sessionId, node.id, profile)
-              .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
-              .catch(err => notifyError(err, p.moveFailed))
-          }}
-        >
-          {node.label}
-        </kit.Item>
-      ))}
+      {targets.map(target => {
+        const current = target.id === currentProjectId
+
+        return (
+          <kit.Item
+            disabled={current}
+            key={target.id ?? '__home__'}
+            onSelect={() => {
+              triggerHaptic('selection')
+              moveSessionToProject(sessionId, target.id, profile)
+                .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(target.label) }))
+                .catch(err => notifyError(err, p.moveFailed))
+            }}
+          >
+            <span className="inline-flex w-4 shrink-0 items-center justify-center">
+              {current ? <Codicon name="check" size="0.75rem" /> : null}
+            </span>
+            {target.label}
+          </kit.Item>
+        )
+      })}
     </>
   )
 }

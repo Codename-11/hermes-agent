@@ -38,6 +38,44 @@ Operational note: as of 2026-06-17, the `agent/anthropic_adapter.py` / `agent/sy
 5. **If a feature is obsolete because upstream now provides equivalent behavior, mark it retired in this file and add verification evidence.**
 6. **Do not resume the daily sync cron until conflict alerts are deduped and the contract tests cover the protected Axiom behavior.**
 
+## Axiom Desktop voice keybinds
+
+Desktop carries three independent, user-rebindable composer actions:
+`composer.dictate` toggles one-shot dictation in exactly the active visible
+composer, `composer.autoSpeak` persists the existing profile-backed
+`voice.auto_tts` preference with optimistic rollback, and `composer.wakeWord`
+delegates to the gateway-owned wake listener. All three ship unbound. They must
+remain separate from `composer.voice` (the full voice-conversation toggle), and
+Desktop's keybind registry—not `voice.record_key`—is authoritative.
+
+Dictation routing must retain the composer event-bus ownership filter so tiled
+composers do not all record. Wake shortcuts must preserve backend mic ownership,
+pending/capture state, persisted config truth, and surface refusals or failures
+as visible notifications. The three composer buttons must display live configured
+bindings and expose WAI-ARIA `aria-keyshortcuts` values.
+
+Protected files: `apps/desktop/src/lib/keybinds/`,
+`apps/desktop/src/app/hooks/use-keybinds.ts`,
+`apps/desktop/src/app/chat/composer/focus.ts`, composer voice hooks/controls,
+voice preference/wake stores, and Desktop i18n labels. Focused verification:
+
+```bash
+cd apps/desktop
+npx vitest run --project ui \
+  src/lib/keybinds/voice-actions.test.ts \
+  src/app/hooks/use-keybinds.test.ts \
+  src/app/chat/composer/focus.test.ts \
+  src/app/chat/composer/controls.test.tsx \
+  src/store/voice-prefs.test.ts \
+  src/store/wake-word.test.ts
+npm run typecheck
+```
+
+Drop condition: upstream provides equivalent distinct rebindable actions with
+active-composer dictation routing, profile-authoritative auto-TTS persistence,
+gateway-authoritative wake behavior with keyboard-visible failures, and matching
+tooltip/accessibility discovery.
+
 ## Axiom shared cron registry and generic profile ownership
 
 Axiom keeps one inspectable cron registry at the platform root (`<root>/cron/jobs.json`) while every profile-scoped row carries `owner_profile` / `profile` metadata. This is a storage and management carry only; execution must remain generic:
@@ -75,13 +113,21 @@ Drop condition: upstream scopes dashboard PTY keep-alive identity by profile, or
 
 ## Axiom Desktop hybrid Projects overview and typed project paths
 
-Axiom carries a focused Desktop information-architecture change while upstream's
-Projects view remains project-only with nested three-session previews:
+Axiom carries a focused Desktop information-architecture and session-ownership
+layer while upstream's Projects UX remains in flux:
 
 - Projects stay the primary lane in grouped mode, followed by a separate flat
   **Recent Sessions** lane in the same overview. The recent lane reuses the
   existing session rows, actions, date/status grouping, filters, ordering, and
-  pagination; project rows never expand into nested session previews.
+  pagination. A Project/Home chevron independently expands a persisted,
+  bounded five-session preview; the Project label still opens full drill-in and
+  the preview ends with a labeled `View all N sessions` action. The active
+  conversation must remain in its preview even when it is older than the five
+  most recent rows.
+- Project membership is computed from one complete compact eligible-session
+  query (`limit=-1`) before presentation limits are applied. The five-row
+  preview is hydration/UI policy only; it must never decide whether an older
+  session belongs to a Project or Home.
 - Projects/Home and flat recents share the same source posture: only known
   interactive local conversations enter project navigation. Messaging sources
   stay in Messaging, while A2A, cron, kanban, webhook/API, subagent, tool, and
@@ -93,21 +139,29 @@ Projects view remains project-only with nested three-session previews:
   the upstream flat-list behavior.
 - Project-lane paging uses a visible `Show N more in <lane>` label rather than
   an ambiguous ellipsis.
-- Home is a first-class creation target: selecting it clears the durable active
-  project pointer, visibly marks Home active, and exposes the same hover `+`
-  affordance as persisted projects so plain new sessions land outside projects.
+- Home is a first-class creation and reassignment target: selecting it clears
+  the durable active project pointer, visibly marks Home active, and exposes the
+  same hover `+` affordance as persisted projects. Moving an existing session
+  to Home re-anchors it at the backend user-home directory and clears persisted
+  Git metadata, preserving a valid tool cwd without inventing a second
+  assignment database.
+- Global Recent/search rows show textual Project/Home ownership, and the focused
+  chat's statusbar always names its Project or explicit Home. Session reassignment
+  shows the current owner checked instead of hiding it.
 - Create Project accepts a typed directory. Only explicit Create submission may
   create a missing directory. Local mode routes through narrow Electron IPC;
   remote mode routes through the active profile's authenticated
   `POST /api/fs/ensure-directory`. Typing and directory browsing never mutate
   disk, and failures remain in the dialog with a visible error.
 
-Protected files: `apps/desktop/src/app/chat/sidebar/{index,sessions-section,project-dialog}.tsx`,
-`apps/desktop/src/app/chat/sidebar/projects/{overview-row,workspace-header}.tsx`,
+Protected files: `apps/desktop/src/app/chat/sidebar/{index,sessions-section,project-dialog,
+session-actions-menu,session-row}.tsx`, `apps/desktop/src/app/chat/sidebar/projects/
+{overview-row,workspace-header}.tsx`,
 `apps/desktop/src/{lib/desktop-fs.ts,lib/session-source.ts,store/projects.ts}`,
-`apps/desktop/src/app/session/hooks/use-session-list-actions.ts`, the matching
+`apps/desktop/src/app/{session/hooks/use-session-list-actions,shell/hooks/use-statusbar-items}.tsx`, the matching
 Desktop tests/locales/bridge declarations, `hermes_cli/{session_source_policy,
-web_models,web_server}.py`, `tui_gateway/server.py`, and the focused backend
+web_models,web_server}.py`, `tui_gateway/{server,methods_config,methods_session,
+project_tree}.py`, and the focused backend
 tests.
 
 Focused verification:
@@ -117,8 +171,10 @@ cd apps/desktop
 NODE_ENV=test ../../node_modules/.bin/vitest run --project ui \
   src/app/chat/sidebar/project-dialog.test.tsx \
   src/app/chat/sidebar/sessions-section.test.tsx \
+  src/app/chat/sidebar/session-actions-menu.test.tsx \
   src/app/chat/sidebar/projects/overview-row.test.tsx \
   src/app/chat/sidebar/projects/workspace-header.test.tsx \
+  src/app/shell/hooks/use-statusbar-items.test.tsx \
   src/app/session/hooks/use-session-list-actions.test.tsx \
   src/lib/desktop-fs.test.ts src/lib/session-source.test.ts \
   src/store/projects.test.ts
@@ -127,20 +183,44 @@ npm run typecheck
 cd ../..
 scripts/run_tests.sh \
   tests/hermes_cli/test_web_server_fs.py \
+  tests/tui_gateway/test_project_tree.py \
   tests/tui_gateway/test_project_tree_source_policy.py \
   tests/tui_gateway/test_projects_rpc.py -q
 ```
 
 Drop condition: upstream must provide the complete user-visible behavior set together:
-a hybrid Projects + flat-recents overview without nested previews, no global
-recents during drill-in, labeled project-lane paging, an explicit Home creation
-target that clears active-project state, and explicit-submit-only typed-path
+a hybrid Projects + flat-recents overview with bounded/active-safe disclosure
+previews and separate drill-in, complete membership independent of rendering
+limits, no global recents during drill-in, labeled project-lane paging, explicit
+Project/Home identity and reassignment, a Home creation target that clears
+active-project state, and explicit-submit-only typed-path
 creation across both local Electron and authenticated/profile-routed remote
 Desktop, plus source-filter parity that keeps messaging and automation/system
 runs out of Projects/Home without database mutation or title heuristics. Partial
 Projects UI parity is not sufficient to drop the remote mutation or source
 policy seams, and a remote mkdir endpoint alone is not sufficient to drop the
 overview carry.
+
+## Axiom Desktop Project/worktree session lifecycle
+
+Project overview and drill-in expose separate actions for a session in the main
+Project checkout and a session in a newly created isolated worktree. The latter
+must reuse the existing Desktop worktree dialog, Git facade, Project store, and
+`/worktree` backend semantics; do not introduce a parallel worktree manager.
+The focused coding row also offers **Move current session to new worktree**, which
+preserves the current conversation while retargeting its cwd, alongside explicit
+**Return to Project checkout** and existing-worktree entry. Project-level actions
+stay disabled when the folder is not a Git repository, and failures remain visible.
+
+Protected files: `apps/desktop/src/app/chat/sidebar/projects/{project-worktree-actions,
+entered-content,overview-row,workspace-header,worktree-dialog}.tsx`,
+`apps/desktop/src/app/chat/composer/status-stack/coding-row.tsx`,
+`apps/desktop/src/store/{coding-status,projects}.ts`, matching tests/locales, and
+the existing Electron Git bridge declarations they call.
+
+Drop condition: upstream provides equivalent separate new-session/current-session
+worktree flows, project-checkout return, existing-worktree entry, non-Git gating,
+and visible failures through the existing Git/worktree infrastructure.
 
 ## Fork footprint reduction — extracted modules
 

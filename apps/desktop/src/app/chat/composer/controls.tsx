@@ -17,6 +17,7 @@ import {
   Volume2,
   VolumeX
 } from '@/lib/icons'
+import { useKeybindAriaShortcut } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
@@ -286,10 +287,12 @@ function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disa
   const { t } = useI18n()
   const c = t.composer
   const label = active ? c.stopSpeakingReplies : c.speakReplies
+  const shortcut = useKeybindAriaShortcut('composer.autoSpeak')
 
   return (
-    <Tip label={label}>
+    <Tip label={<TipKeybindLabel actionId="composer.autoSpeak" text={label} />}>
       <Button
+        aria-keyshortcuts={shortcut}
         aria-label={label}
         aria-pressed={active}
         className={cn(
@@ -325,6 +328,7 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
   const { t } = useI18n()
   const c = t.composer
   const wake = useStore($wakeWord)
+  const shortcut = useKeybindAriaShortcut('composer.wakeWord')
 
   const phrase = wake.phrase || 'hey hermes'
 
@@ -337,8 +341,9 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
   const tooltip = !pausedForVoice && wake.notice ? `${label} — ${wake.notice}` : label
 
   return (
-    <Tip label={tooltip}>
+    <Tip label={<TipKeybindLabel actionId="composer.wakeWord" text={tooltip} />}>
       <Button
+        aria-keyshortcuts={shortcut}
         aria-label={label}
         aria-pressed={wake.listening && !pausedForVoice}
         className={cn(
@@ -375,13 +380,15 @@ function DictationButton({
   const { t } = useI18n()
   const c = t.composer
   const active = state.active || status !== 'idle'
+  const shortcut = useKeybindAriaShortcut('composer.dictate')
 
   const aria =
     status === 'recording' ? c.stopDictation : status === 'transcribing' ? c.transcribingDictation : c.voiceDictation
 
   return (
-    <Tip label={aria}>
+    <Tip label={<TipKeybindLabel actionId="composer.dictate" text={aria} />}>
       <Button
+        aria-keyshortcuts={shortcut}
         aria-label={aria}
         aria-pressed={active}
         className={cn(

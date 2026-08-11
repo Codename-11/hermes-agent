@@ -47,6 +47,27 @@ export const $activeProjectId = atom<null | string>(null)
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
 
+// Presentation-only quick previews. Keep this per-window preference persisted
+// without turning the bounded row count into product configuration.
+const EXPANDED_PROJECTS_KEY = 'hermes.desktop.expandedProjects'
+export const $expandedProjectIds = persistentAtom<string[]>(EXPANDED_PROJECTS_KEY, [], {
+  decode: raw => {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+    } catch {
+      return []
+    }
+  },
+  encode: value => JSON.stringify(value)
+})
+
+export function toggleProjectExpanded(id: string): void {
+  const current = $expandedProjectIds.get()
+  $expandedProjectIds.set(current.includes(id) ? current.filter(projectId => projectId !== id) : [...current, id])
+}
+
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
 export const $projectsRpcAvailable = atom<boolean | null>(null)
@@ -304,6 +325,15 @@ export function projectNameForCwd(cwd: string): null | string {
   return best
 }
 
+/** User-visible membership for global session rows and the active header. */
+export function projectLabelForCwd(cwd: null | string | undefined): string {
+  const target = (cwd || '').trim()
+  const id = target ? projectIdForCwd(target) : null
+  const project = id ? $projectTree.get().find(node => node.id === id) : undefined
+
+  return project?.label || translateNow('sidebar.projects.home')
+}
+
 // The active session's agent relocated itself (created/entered another repo or
 // worktree via the terminal — backend re-anchors its cwd and emits session.info).
 // Re-pull projects + tree so a freshly created/auto project and the relocated
@@ -402,7 +432,7 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-const PROJECT_TREE_PREVIEW_LIMIT = 3
+export const PROJECT_QUICK_PREVIEW_LIMIT = 5
 // The all-profiles fan-out reads one database per profile, so it is allowed the
 // same headroom as the cross-profile session list rather than the interactive
 // default.
@@ -438,7 +468,8 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
 
   try {
     const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
-      preview_limit: PROJECT_TREE_PREVIEW_LIMIT
+      preview_limit: PROJECT_QUICK_PREVIEW_LIMIT,
+      active_session_id: $selectedStoredSessionId.get()
     })
 
     if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
@@ -485,8 +516,11 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
   $projectTreeLoading.set(true)
 
   try {
+    const activeSessionId = $selectedStoredSessionId.get()
+    const activeQuery = activeSessionId ? `&active_session_id=${encodeURIComponent(activeSessionId)}` : ''
+
     const res = await window.hermesDesktop.api<ProjectTreePayload>({
-      path: `/api/profiles/projects/tree?preview_limit=${PROJECT_TREE_PREVIEW_LIMIT}`,
+      path: `/api/profiles/projects/tree?preview_limit=${PROJECT_QUICK_PREVIEW_LIMIT}${activeQuery}`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
 
@@ -535,17 +569,19 @@ interface WorkspaceMovePayload {
 // and the grouped tree reflect it before the next authoritative refresh.
 export async function moveSessionToProject(
   sessionId: string,
-  projectId: string,
+  projectId: null | string,
   profile?: null | string
 ): Promise<void> {
-  const cwd = projectRootCwd($projectTree.get().find(node => node.id === projectId))
+  const target = projectId ? $projectTree.get().find(node => node.id === projectId) : undefined
+  const unassigned = !projectId || Boolean(target?.isNoProject)
+  const cwd = unassigned ? '' : projectRootCwd(target)
 
-  if (!cwd) {
+  if (!unassigned && !cwd) {
     throw new Error(translateNow('sidebar.projects.moveNoFolder'))
   }
 
   const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
-    cwd,
+    ...(unassigned ? { unassigned: true } : { cwd }),
     session_key: sessionId,
     ...(profile ? { profile } : {})
   })

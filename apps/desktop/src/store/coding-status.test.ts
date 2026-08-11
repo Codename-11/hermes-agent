@@ -7,12 +7,14 @@ import {
   $repoStatusByCwd,
   $repoStatusLoading,
   _resetCodingStatusForTests,
+  openWorktreeDialog,
   refreshAllRepoStatuses,
   refreshRepoStatus,
   registerRepoStatusCwd,
   repoChangeKindForPath,
   repoStatusForCwd
 } from './coding-status'
+import { $worktreeDialog } from './projects'
 import { $currentCwd, $selectedStoredSessionId } from './session'
 
 const sampleStatus: HermesRepoStatus = {
@@ -145,6 +147,17 @@ describe('refreshRepoStatus', () => {
     // instantly — but it must not leak onto the main rail via $repoStatus.
     expect($repoStatus.get()).toBeNull()
     expect(repoStatusForCwd('/repo-a').get()).toEqual(sampleStatus)
+  })
+
+  it('validates an explicit Project repo before opening the worktree dialog', async () => {
+    stubProbe(async cwd => (cwd === '/git-project' ? sampleStatus : null))
+
+    await openWorktreeDialog({ repoPath: '/plain-folder' })
+    expect($worktreeDialog.get()).toBeNull()
+
+    await openWorktreeDialog({ base: 'origin/main', repoPath: '/git-project' })
+    expect($worktreeDialog.get()).toEqual({ base: 'origin/main', repoPath: '/git-project' })
+    $worktreeDialog.set(null)
   })
 
   it('keeps independent statuses for two live worktrees', async () => {

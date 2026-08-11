@@ -1,5 +1,42 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-11 — Project previews, worktree lifecycle, and rebindable voice controls
+
+### Summary
+
+Completed the follow-up Axiom Desktop slice: restored bounded Project/Home quick
+previews without sacrificing full drill-in, made Project/Home ownership explicit
+and reassignable, exposed Project/worktree session lifecycle actions, and added
+separate unbound Desktop actions for dictation, Read replies aloud, and Hey Hermes.
+
+### Protected behavior
+
+- Project/Home chevrons persist independently and render at most five recent
+  sessions, always retaining the active conversation; `View all N sessions`
+  remains a separate drill-in action.
+- Membership now reads the complete compact eligible-session set before any
+  preview limit, so old sessions cannot silently fall out of their Project.
+- Global rows and the focused statusbar show textual Project/Home identity.
+  Reassignment shows the current owner and can legitimately unassign to Home
+  while retaining a valid backend cwd and clearing stale Git metadata.
+- Project overview/drill-in and the focused coding row expose distinct main
+  checkout, new isolated worktree, current-session retarget, existing-worktree,
+  and return-to-Project actions through existing Git/worktree primitives.
+- Dictation uses the active-composer event bus, so one binding starts/stops only
+  the visible owner and respects disabled, unavailable, and transcribing states.
+- Read replies aloud writes the existing profile `voice.auto_tts` setting through
+  its optimistic/revert persistence path; keyboard failures produce a toast.
+- Hey Hermes still delegates mic leases, capture mode, pending state, and
+  persisted truth to the gateway; keyboard refusals/failures are visibly reported.
+- All three buttons discover configured bindings in tooltips and expose
+  `aria-keyshortcuts`; all required Desktop keybind locales include action labels.
+- Registry, routing, persistence/error, wake success/refusal/failure, tooltip,
+  and accessibility behavior have focused regression coverage.
+
+### Verification
+
+- Integrated verification evidence is recorded in the implementation handoff.
+
 ## 2026-08-10 — Carry the hybrid Desktop Projects overview
 
 ### Summary

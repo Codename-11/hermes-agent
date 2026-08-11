@@ -119,10 +119,10 @@ def _(rid, params: dict) -> dict:
 
         tree, active_id = _build_project_tree(
             db,
-            preview_limit=int(params.get("preview_limit") or 3),
+            preview_limit=int(params.get("preview_limit") or 5),
             hydrate=False,
-            session_limit=int(params.get("session_limit") or 2000),
             include_discovered=True,
+            active_session_id=str(params.get("active_session_id") or "") or None,
         )
         return _ok(
             rid,
@@ -149,7 +149,7 @@ def _(rid, params: dict) -> dict:
         # Drill-in only needs the entered project (which has sessions), so skip
         # the zero-session discovery tier entirely.
         tree, _active = _build_project_tree(
-            db, preview_limit=0, hydrate=True, session_limit=int(params.get("session_limit") or 5000),
+            db, preview_limit=0, hydrate=True,
             include_discovered=False,
         )
         proj = next((p for p in tree["projects"] if p["id"] == project_id), None)

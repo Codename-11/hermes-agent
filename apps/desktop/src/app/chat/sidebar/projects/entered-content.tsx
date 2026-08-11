@@ -23,6 +23,7 @@ import { removeWorktreePath } from '@/store/projects'
 import { SidebarRowStack } from '../chrome'
 
 import { useWorkspaceNodeOpen } from './model'
+import { ProjectLifecycleActions } from './project-worktree-actions'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
@@ -63,9 +64,19 @@ export function EnteredProjectContent({
   }
 
   const single = project.repos.length === 1
+  const projectPath = project.path || project.repos.find(repo => repo.path)?.path || null
+  const initialRepoPath = project.repos.find(repo => repo.path)?.path || null
 
   return (
     <>
+      {onNewSession && (
+        <ProjectLifecycleActions
+          onNewSession={onNewSession}
+          projectLabel={project.label}
+          projectPath={projectPath}
+          repoPath={initialRepoPath}
+        />
+      )}
       {project.repos.map(repo => (
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}

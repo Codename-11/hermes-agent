@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -24,7 +24,7 @@ import {
   closeWorktreeDialog,
   listRepoBranches,
   projectIdForCwd,
-  projectRootCwd,
+
   requestStartWorkSession,
   startWorkInRepo,
   switchBranchInRepo
@@ -73,7 +73,7 @@ export function WorktreeDialog() {
 
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
-  const [convertMode, setConvertMode] = useState(false)
+  const [mode, setMode] = useState<'create' | 'existing'>('create')
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [selectedBase, setSelectedBase] = useState('')
@@ -82,23 +82,26 @@ export function WorktreeDialog() {
   // and the user does not reopen the dialog.
   const [repoPath, setRepoPath] = useState('')
   const [projectOpen, setProjectOpen] = useState(false)
+  const branchRequest = useRef(0)
 
   // Every project with a working root is a valid target. The list is deduped by
   // path, because an auto project and a user project can share one folder.
   const projectOptions = useMemo(() => {
     const seen = new Set<string>()
 
-    return projectTree.flatMap(node => {
-      const path = projectRootCwd(node)
+    return projectTree.flatMap(node =>
+      node.repos.flatMap(repo => {
+        const path = repo.path?.trim() || ''
 
-      if (!path || seen.has(path)) {
-        return []
-      }
+        if (!path || seen.has(path)) {
+          return []
+        }
 
-      seen.add(path)
+        seen.add(path)
 
-      return [{ id: node.id, label: node.label, path }]
-    })
+        return [{ id: `${node.id}:${repo.id}`, label: `${node.label} / ${repo.label}`, path, projectId: node.id }]
+      })
+    )
   }, [projectTree])
 
   // The project that owns the target repo. `repoPath` is often a linked
@@ -111,10 +114,10 @@ export function WorktreeDialog() {
   const activeOption = useMemo(() => {
     const owner = projectTree.length > 0 ? projectIdForCwd(repoPath) : null
 
-    return projectOptions.find(o => o.id === owner) ?? projectOptions.find(o => o.path === repoPath) ?? null
+    return projectOptions.find(o => o.path === repoPath) ?? projectOptions.find(o => o.projectId === owner) ?? null
   }, [projectOptions, projectTree, repoPath])
 
-  const activeProjectLabel = activeOption?.label ?? repoPath.split('/').pop() ?? repoPath
+  const activeProjectLabel = activeOption?.label ?? repoPath.split(/[/\\]/).filter(Boolean).pop() ?? repoPath
 
   // Reset to a fresh state each time the dialog opens. Apply the resolved repo
   // and the base branch that the caller selected, for example "branch off from
@@ -122,16 +125,24 @@ export function WorktreeDialog() {
   useEffect(() => {
     if (state) {
       setName('')
-      setConvertMode(false)
+      setMode('create')
       setSelectedBase(state.base ?? '')
       setRepoPath(state.repoPath)
       setBranches([])
     }
   }, [state])
 
+  const close = () => {
+    // A late branch-list response from the repo we just left must not populate
+    // the next open dialog. Invalidate at the lifecycle boundary instead of
+    // mirroring the reactive dialog atom into a ref from an effect.
+    branchRequest.current += 1
+    closeWorktreeDialog()
+  }
+
   const onOpenChange = (next: boolean) => {
     if (!next && !pending) {
-      closeWorktreeDialog()
+      close()
     }
   }
 
@@ -140,21 +151,30 @@ export function WorktreeDialog() {
       return
     }
 
+    const request = ++branchRequest.current
     setBranchesLoading(true)
 
     try {
-      setBranches(await listRepoBranches(repoPath))
+      const next = await listRepoBranches(repoPath)
+
+      if (request === branchRequest.current) {
+        setBranches(next)
+      }
     } catch {
-      setBranches([])
+      if (request === branchRequest.current) {
+        setBranches([])
+      }
     } finally {
-      setBranchesLoading(false)
+      if (request === branchRequest.current) {
+        setBranchesLoading(false)
+      }
     }
   }, [repoPath])
 
   // Give the new worktree to a fresh session, then close the dialog.
   const started = (path: string) => {
     requestStartWorkSession(path)
-    closeWorktreeDialog()
+    close()
   }
 
   const submit = async () => {
@@ -210,7 +230,7 @@ export function WorktreeDialog() {
   }
 
   const enterConvert = () => {
-    setConvertMode(true)
+    setMode('existing')
     void loadBranches()
   }
 
@@ -218,9 +238,18 @@ export function WorktreeDialog() {
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
-          <DialogDescription>{convertMode ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
+          <DialogTitle>{mode === 'existing' ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
+          <DialogDescription>{mode === 'existing' ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
         </DialogHeader>
+
+        <div aria-label={p.worktreeIntentLabel} className="grid grid-cols-2 gap-1" role="group">
+          <Button onClick={() => setMode('create')} type="button" variant={mode === 'create' ? 'secondary' : 'ghost'}>
+            {p.createWorktreeIntent}
+          </Button>
+          <Button onClick={enterConvert} type="button" variant={mode === 'existing' ? 'secondary' : 'ghost'}>
+            {p.openExistingIntent}
+          </Button>
+        </div>
 
         {/* Project picker: change the repo that the worktree is cut from. Show
             it only when there is another project to select. */}
@@ -234,7 +263,7 @@ export function WorktreeDialog() {
                 variant="text"
               >
                 <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder" size="0.8rem" />
-                <span className="shrink-0">{p.worktreeProjectLabel}</span>
+                <span className="shrink-0">{p.worktreeRepositoryLabel}</span>
                 <span className="truncate text-primary underline-offset-4 decoration-current/20 group-hover:underline">
                   {activeProjectLabel}
                 </span>
@@ -255,6 +284,7 @@ export function WorktreeDialog() {
                           // The new repo has its own branches. Drop the old
                           // list and the old base, so nothing stale stays.
                           setBranches([])
+                          branchRequest.current += 1
                           setSelectedBase('')
                           setProjectOpen(false)
                         }}
@@ -274,7 +304,7 @@ export function WorktreeDialog() {
           </Popover>
         )}
 
-        {convertMode ? (
+        {mode === 'existing' ? (
           <Command
             className="rounded-md border border-(--ui-stroke-tertiary)"
             filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
@@ -334,12 +364,12 @@ export function WorktreeDialog() {
           </>
         )}
 
-        {convertMode ? (
+        {mode === 'existing' ? (
           <DialogFooter className="sm:justify-start">
             <Button
               className="px-0 text-(--ui-text-secondary) hover:text-foreground"
               disabled={pending}
-              onClick={() => setConvertMode(false)}
+              onClick={() => setMode('create')}
               type="button"
               variant="link"
             >

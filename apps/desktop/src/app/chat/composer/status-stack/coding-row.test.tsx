@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
 
+const requestComposerSubmit = vi.fn()
+
+vi.mock('@/app/chat/composer/focus', () => ({ requestComposerSubmit }))
+
 vi.mock('@/store/coding-status', () => ({
   registerRepoStatusCwd: () => undefined,
   repoStatusForCwd: () =>
@@ -89,5 +93,17 @@ describe('CodingStatusRow', () => {
     // Confirmation is the button turning into a checkmark, not a notification.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy())
     expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('moves the active conversation through the normal composer slash-command seam', async () => {
+    render(<CodingStatusRow onBranchOff={vi.fn()} repoPath="/repo" />)
+
+    const trigger = screen.getByRole('button', { name: 'New branch' })
+
+    fireEvent.pointerDown(trigger, { button: 0 })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByText('Move current session to new worktree'))
+
+    expect(requestComposerSubmit).toHaveBeenCalledWith('/worktree new')
   })
 })

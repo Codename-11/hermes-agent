@@ -4,7 +4,52 @@ import { $registryVersion } from '@/contrib/registry'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 
 import { KEYBIND_READONLY } from './actions'
-import { formatCombo } from './combo'
+import { formatCombo, IS_MAC } from './combo'
+
+const ARIA_KEYS: Record<string, string> = {
+  down: 'ArrowDown',
+  enter: 'Enter',
+  escape: 'Escape',
+  left: 'ArrowLeft',
+  right: 'ArrowRight',
+  space: 'Space',
+  tab: 'Tab',
+  up: 'ArrowUp'
+}
+
+/** WAI-ARIA spelling for the first configured combo (not the visual glyphs). */
+export function useKeybindAriaShortcut(actionId: string): string | undefined {
+  const bindings = useStore($bindings)
+  useStore($registryVersion)
+  const combo = bindingsFor(actionId, bindings)[0]
+
+  if (!combo) {
+    return undefined
+  }
+
+  return combo
+    .split('+')
+    .map(token => {
+      if (token === 'mod') {
+        return IS_MAC ? 'Meta' : 'Control'
+      }
+
+      if (token === 'ctrl') {
+        return 'Control'
+      }
+
+      if (token === 'alt') {
+        return 'Alt'
+      }
+
+      if (token === 'shift') {
+        return 'Shift'
+      }
+
+      return ARIA_KEYS[token] ?? token.toUpperCase()
+    })
+    .join('+')
+}
 
 // The formatted first combo for `actionId`, or null when unbound. Rebindable
 // actions read live from the store; readonly shortcuts (e.g. `composer.steer`)

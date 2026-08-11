@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { memo, useEffect } from 'react'
 
+import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { PrTag } from '@/app/chat/pr-tag'
 import { StatusRow } from '@/components/chat/status-row'
 import {
@@ -172,6 +173,13 @@ export const CodingStatusRow = memo(function CodingStatusRow({
 
     return (
       <>
+        {renderActionItem(kit, {
+          icon: 'git-branch',
+          key: '__move-current__',
+          label: <span className="truncate">{p.moveCurrentSessionToWorktree}</span>,
+          onSelect: () => requestComposerSubmit('/worktree new')
+        })}
+        <kit.Separator />
         <kit.Label className={MENU_SECTION}>{s.newBranch}</kit.Label>
         {branchItems.map(item => renderActionItem(kit, item))}
         {switchTarget &&

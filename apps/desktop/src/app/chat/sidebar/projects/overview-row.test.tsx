@@ -31,7 +31,21 @@ vi.mock('./project-menu', () => ({
   ProjectMenu: () => null
 }))
 
-const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
+vi.mock('./project-worktree-actions', () => ({
+  ProjectWorktreeMenu: ({ onNewSession, projectLabel, projectPath }: any) => (
+    <span data-slot="tooltip-trigger">
+      <button aria-label={`New session in ${projectLabel}`} onClick={() => onNewSession(projectPath)} type="button" />
+    </span>
+  )
+}))
+
+const project = {
+  id: 'p1',
+  label: 'Test D',
+  path: '/repo/test-d',
+  repos: [],
+  sessionCount: 2
+} as unknown as SidebarProjectTree
 
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 
@@ -43,10 +57,18 @@ describe('ProjectOverviewRow', () => {
     expect(tipTrigger(button)).toBeTruthy()
   })
 
-  it('never nests session previews under project rows', () => {
-    render(<ProjectOverviewRow project={project} />)
+  it('uses a separate disclosure control from the Project drill-in label', () => {
+    const onEnter = vi.fn()
+    const onToggleExpanded = vi.fn()
 
-    expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
+    render(<ProjectOverviewRow onEnter={onEnter} onToggleExpanded={onToggleExpanded} project={project} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Test D sessions' }))
+    expect(onToggleExpanded).toHaveBeenCalledOnce()
+    expect(onEnter).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enter Test D' }))
+    expect(onEnter).toHaveBeenCalledWith('p1')
   })
 
   it('offers the "new session" add button on Home, which starts one with no folder', () => {

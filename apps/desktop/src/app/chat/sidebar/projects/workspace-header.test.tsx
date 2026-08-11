@@ -12,6 +12,8 @@ vi.mock('@/i18n', () => ({
         projects: {
           copyPath: 'Copy path',
           menu: 'Actions',
+          openReview: 'Open review here',
+          openTerminal: 'Open terminal here',
           removeWorktree: 'Remove worktree',
           reveal: 'Reveal in file manager',
           startWork: 'New worktree'
@@ -26,6 +28,10 @@ vi.mock('@/store/projects', () => ({
   copyPath: vi.fn(),
   revealPath: vi.fn()
 }))
+
+vi.mock('@/app/right-sidebar/store', () => ({ setTerminalTakeover: vi.fn() }))
+vi.mock('@/app/right-sidebar/terminal/terminals', () => ({ createTerminal: vi.fn() }))
+vi.mock('@/store/review', () => ({ openReview: vi.fn() }))
 
 // StartWorkButton no longer renders a dialog. It publishes an intent to the one
 // WorktreeDialog that is mounted in the sidebar. Stub the store action, so this
