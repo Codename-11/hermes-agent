@@ -2264,6 +2264,10 @@ def _update_node_dependencies() -> list[str]:
             print(f"    {stderr.splitlines()[-1]}")
         return _partial_update_failure("repo root")
 
+    # `--workspaces=false` can remove Desktop-only packages from node_modules.
+    # Never let a prior Desktop install stamp survive that mutation.
+    _m()._invalidate_desktop_dependency_stamp()
+
     # Step 2: install only the workspaces update needs (ui-tui, web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
     ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
@@ -4713,7 +4717,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_install_intent(desktop_dir)
         if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
-            print("→ Checking if desktop app needs rebuilding...")
+            print("→ Checking Desktop build state...")
             # Consult the content-hash stamp IN-PROCESS first. The spawned
             # `hermes desktop --build-only` subprocess re-imports the whole
             # CLI stack (~1-3 s) just to reach the same _m()._desktop_build_needed
@@ -4731,6 +4735,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _skip_desktop_build:
                 print("  ✓ Desktop app up to date")
             else:
+                print("→ Desktop sources changed; rebuilding packaged app...")
                 _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
                 # Capture the (very loud) Electron/vite build output into
                 # update.log instead of streaming it to the terminal. On the rare
@@ -5194,10 +5199,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception as cfg_exc:
                 logger.debug("Could not read updates.refresh_cua_driver: %s", cfg_exc)
 
+            from tools.computer_use.cua_backend import resolve_cua_driver_cmd
+
             if (
                 refresh_cua_driver
                 and sys.platform in ("darwin", "win32", "linux")
-                and shutil.which("cua-driver")
+                and resolve_cua_driver_cmd()
             ):
                 from hermes_cli.tools_config import install_cua_driver
 

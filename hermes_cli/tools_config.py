@@ -978,6 +978,17 @@ def install_cua_driver(
     driver_cmd = _cua_driver_cmd()
     binary = _resolved_cua_driver_cmd()
 
+    if upgrade and binary and is_windows:
+        try:
+            from tools.computer_use.cua_backend import cua_driver_path_conflict
+            conflict = cua_driver_path_conflict()
+        except Exception:
+            conflict = None
+        if conflict:
+            stale_path, canonical = conflict
+            _print_info(f"    Ignoring competing PATH cua-driver: {stale_path}")
+            _print_info(f"    Using official current install: {canonical}")
+
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
         if not _cua_install_target_writable():

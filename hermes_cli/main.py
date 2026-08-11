@@ -5878,7 +5878,7 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Desktop build stamp — content-hash based skip logic
+# Desktop build stamps — source and dependency skip logic
 # ---------------------------------------------------------------------------
 # The desktop Electron build is expensive.
 # Unlike the web UI (which uses mtime comparison), the desktop uses a
@@ -5897,6 +5897,36 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
 #     "sourceMode": true | false,
 #     "builtAt": "<ISO 8601>"
 #   }
+
+_DESKTOP_NON_BUILD_DIRS = frozenset({"coverage", "e2e", "test", "tests", "__snapshots__"})
+_DESKTOP_NON_BUILD_CONFIG_PREFIXES = ("playwright.", "vitest.")
+
+
+def _desktop_path_affects_build(relative_path: str) -> bool:
+    """Return whether a repository-relative file feeds the Desktop build."""
+    path = Path(relative_path)
+    if path.parts[:2] != ("apps", "desktop"):
+        return True
+
+    desktop_parts = path.parts[2:]
+    if any(part in _DESKTOP_NON_BUILD_DIRS for part in desktop_parts[:-1]):
+        return False
+
+    name = path.name.lower()
+    if name.endswith(".md"):
+        return False
+    if any(name.startswith(prefix) for prefix in _DESKTOP_NON_BUILD_CONFIG_PREFIXES):
+        return False
+    if name == "tsconfig.e2e.json":
+        return False
+    return not any(
+        marker in name
+        for marker in (
+            ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
+            ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx",
+        )
+    )
+
 
 def _compute_desktop_content_hash(project_root: Path) -> str:
     """Return a SHA-256 hex digest of all source files that feed the desktop build.
@@ -5952,7 +5982,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
         for fn in sorted(filenames):
             fp = Path(dirpath) / fn
             rel = str(fp.relative_to(project_root))
-            if not spec.match_file(rel):
+            if not spec.match_file(rel) and _desktop_path_affects_build(rel):
                 _hash_file(fp)
 
     return h.hexdigest()
@@ -5962,6 +5992,69 @@ def _desktop_stamp_path() -> Path:
     """Return the path to the desktop build stamp file under $HERMES_HOME."""
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "desktop-build-stamp.json"
+
+
+def _desktop_dependency_stamp_path() -> Path:
+    """Return the dependency fingerprint path under ``$HERMES_HOME``."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "desktop-dependency-stamp.json"
+
+
+def _compute_desktop_dependency_hash(project_root: Path) -> str:
+    """Hash only manifests that can change Desktop's installed dependencies."""
+    h = hashlib.sha256()
+    for relative in (
+        ".npmrc",
+        "package.json",
+        "package-lock.json",
+        "apps/desktop/package.json",
+    ):
+        path = project_root / relative
+        if not path.is_file():
+            continue
+        h.update(relative.encode())
+        h.update(b"\0")
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _desktop_dependencies_ready(project_root: Path) -> bool:
+    """Return True when the current dependency fingerprint was installed."""
+    if not (project_root / "node_modules" / ".package-lock.json").is_file():
+        return False
+    try:
+        stamp_data = json.loads(
+            _desktop_dependency_stamp_path().read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError, KeyError):
+        return False
+    return stamp_data.get("contentHash") == _compute_desktop_dependency_hash(project_root)
+
+
+def _write_desktop_dependency_stamp(project_root: Path) -> None:
+    """Record a successful deterministic Desktop dependency installation."""
+    stamp_file = _desktop_dependency_stamp_path()
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        stamp_data = {
+            "contentHash": _compute_desktop_dependency_hash(project_root),
+            "installedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Failed to write desktop dependency stamp: %s", exc)
+
+
+def _invalidate_desktop_dependency_stamp() -> None:
+    """Forget Desktop deps after a root-only npm install mutates node_modules."""
+    try:
+        _desktop_dependency_stamp_path().unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("Failed to invalidate desktop dependency stamp: %s", exc)
 
 
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
@@ -7166,7 +7259,7 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
-            print("→ Installing desktop workspace dependencies...")
+            dependencies_ready = _desktop_dependencies_ready(PROJECT_ROOT)
             # Put the Hermes-managed Node on PATH so npm's child scripts (which
             # shell out to bare `node`, e.g. electron-winstaller's
             # select-7z-arch.js) resolve it even when the parent PATH is
@@ -7175,20 +7268,28 @@ def cmd_gui(args: argparse.Namespace):
             # NixOS build env keeps its PYTHON hint while restoring managed Node
             # ahead of a bare PATH (same idiom as the `hermes update` path).
             nixos_env = with_hermes_node_path(_nixos_build_env())
-            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
-            if install_result.returncode != 0:
-                if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
+            if dependencies_ready:
+                print("  ✓ Desktop dependencies unchanged")
+            else:
+                print("→ Installing changed Desktop dependencies...")
+                install_result = _run_npm_install_deterministic(
+                    npm, PROJECT_ROOT, capture_output=False, env=nixos_env
+                )
+                if install_result.returncode == 0:
+                    _write_desktop_dependency_stamp(PROJECT_ROOT)
+                elif not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
                     print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
                     sys.exit(install_result.returncode or 1)
-                repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)
-                if repaired:
-                    print("  ⚠ Dependency install failed with a missing Electron dist; "
-                          "repopulated it and continuing.")
                 else:
-                    print("  ⚠ Dependency install failed with a missing Electron dist; "
-                          "continuing to the build so electron-builder can attempt "
-                          "the Electron fetch itself.")
+                    repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)
+                    if repaired:
+                        print("  ⚠ Dependency install failed with a missing Electron dist; "
+                              "repopulated it and continuing.")
+                    else:
+                        print("  ⚠ Dependency install failed with a missing Electron dist; "
+                              "continuing to the build so electron-builder can attempt "
+                              "the Electron fetch itself.")
 
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")

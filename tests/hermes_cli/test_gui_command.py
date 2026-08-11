@@ -461,6 +461,80 @@ def test_compute_desktop_content_hash_changes_on_edit(tmp_path, monkeypatch):
     assert h1 != h2
 
 
+def test_desktop_content_hash_ignores_non_build_inputs(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop = root / "apps" / "desktop"
+    runtime = desktop / "src" / "app.tsx"
+    test_file = desktop / "src" / "app.test.tsx"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("export const app = 1", encoding="utf-8")
+    test_file.write_text("test('app', () => {})", encoding="utf-8")
+    (desktop / "README.md").write_text("docs v1", encoding="utf-8")
+
+    original = cli_main._compute_desktop_content_hash(root)
+    test_file.write_text("test('changed', () => {})", encoding="utf-8")
+    (desktop / "README.md").write_text("docs v2", encoding="utf-8")
+    assert cli_main._compute_desktop_content_hash(root) == original
+
+    runtime.write_text("export const app = 2", encoding="utf-8")
+    assert cli_main._compute_desktop_content_hash(root) != original
+
+
+def test_desktop_dependency_stamp_tracks_only_install_inputs(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / "package.json").write_text('{"workspaces":["apps/*"]}', encoding="utf-8")
+    (root / "package-lock.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
+    installed_lock = root / "node_modules" / ".package-lock.json"
+    installed_lock.parent.mkdir(parents=True)
+    installed_lock.write_text("{}", encoding="utf-8")
+    stamp = tmp_path / "desktop-dependencies.json"
+    monkeypatch.setattr(cli_main, "_desktop_dependency_stamp_path", lambda: stamp)
+
+    cli_main._write_desktop_dependency_stamp(root)
+    assert cli_main._desktop_dependencies_ready(root) is True
+
+    (root / "apps" / "desktop" / "src.ts").write_text("runtime edit", encoding="utf-8")
+    assert cli_main._desktop_dependencies_ready(root) is True
+
+    (root / "apps" / "desktop" / "package.json").write_text(
+        '{"dependencies":{"react":"latest"}}', encoding="utf-8"
+    )
+    assert cli_main._desktop_dependencies_ready(root) is False
+
+
+def test_desktop_dependency_stamp_can_be_invalidated(tmp_path, monkeypatch):
+    stamp = tmp_path / "desktop-dependencies.json"
+    stamp.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_desktop_dependency_stamp_path", lambda: stamp)
+
+    cli_main._invalidate_desktop_dependency_stamp()
+
+    assert stamp.exists() is False
+
+
+def test_desktop_rebuild_skips_install_when_dependencies_match(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._desktop_dependencies_ready", return_value=True), \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_install.assert_not_called()
+
+
 def test_desktop_build_needed_detects_missing_artifact(tmp_path, monkeypatch):
     """Even with a valid stamp, missing artifact means build is needed."""
     root = _make_desktop_tree(tmp_path)
