@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import {
+  captureLiveSessionStatusBaseline,
   type LiveSessionStatusResponse,
   rehydrateLiveSessionStatuses,
   resetLiveRuntimeTracking
@@ -155,12 +156,13 @@ export function useBackgroundSync({
       }
 
       inFlight = true
+      const baseline = captureLiveSessionStatusBaseline()
 
       try {
         const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
 
         if (!cancelled) {
-          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile)
+          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, false, baseline)
         }
       } catch {
         // Older gateways may not expose session.active_list. Live stream events

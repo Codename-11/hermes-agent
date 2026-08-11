@@ -826,6 +826,7 @@ export function useSessionActions({
                   messages: activatedMessages,
                   busy: running,
                   awaitingResponse: running,
+                  turnStartedAt: running ? (state.turnStartedAt ?? Date.now()) : null,
                   // Adopting someone else's turn: we'll stream its reply
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
@@ -1054,6 +1055,7 @@ export function useSessionActions({
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
+            turnStartedAt: resumedRunning ? (state.turnStartedAt ?? Date.now()) : null,
             ...(inFlightRecovery.applied
               ? {
                   sawAssistantPayload: true,

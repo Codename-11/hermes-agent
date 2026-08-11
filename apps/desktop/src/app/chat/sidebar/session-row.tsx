@@ -25,6 +25,7 @@ import { normalizeProfileKey } from '@/store/profile'
 import { $projectTree, projectLabelForCwd } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { sessionStatusKey } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 
 import { SessionStatusDot } from '../session-status-dot'
@@ -190,7 +191,10 @@ function SidebarSessionRowImpl({
   // The same resolved state the row's dot paints, so the arc and the dot cannot
   // contradict each other. A selector, not a plain useStore: the map is rebuilt
   // whenever any session's status changes, but a row only repaints on its own.
-  const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
+  const dotState = useStoreSelector(
+    $sessionDotStateById,
+    states => states[sessionStatusKey(session.profile, session.id)] ?? 'idle'
+  )
   const liveTurn = hasLiveTurn(dotState)
 
   // An archived session has no live status to paint, so the archive glyph takes

@@ -26,7 +26,11 @@ import {
   touchSecondaryGateways
 } from '@/store/gateway'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
-import { type LiveSessionStatusResponse, rehydrateLiveSessionStatuses } from '@/store/live-session-status'
+import {
+  captureLiveSessionStatusBaseline,
+  type LiveSessionStatusResponse,
+  rehydrateLiveSessionStatuses
+} from '@/store/live-session-status'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
@@ -40,7 +44,12 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
+import {
+  $attentionSessionKeys,
+  $workingSessionKeys,
+  resetTileRuntimeBindings,
+  sessionStatusKey
+} from '@/store/session-states'
 import { windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -154,9 +163,11 @@ export function useGatewayBoot({
     }
 
     const rehydrateLiveStatuses = async (target: HermesGateway, profile: string) => {
+      const baseline = captureLiveSessionStatusBaseline()
+
       try {
         const response = await target.request<LiveSessionStatusResponse>('session.active_list', {})
-        rehydrateLiveSessionStatuses(response, Date.now(), normalizeProfileKey(profile), true)
+        rehydrateLiveSessionStatuses(response, Date.now(), normalizeProfileKey(profile), true, baseline)
       } catch {
         // Older gateways may not expose session.active_list. Stream events and
         // the visible backstop poll continue to provide the legacy behavior.
@@ -527,11 +538,11 @@ export function useGatewayBoot({
     // Once that profile goes idle its socket is dropped and its backend is free
     // to idle-reap. The active profile is always spared.
     const recomputeKeptGateways = () => {
-      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
+      const live = new Set([...$workingSessionKeys.get(), ...$attentionSessionKeys.get()])
       const keep = new Set<string>()
 
       for (const session of $sessions.get()) {
-        if (live.has(session.id)) {
+        if (live.has(sessionStatusKey(session.profile, session.id))) {
           keep.add(normalizeProfileKey(session.profile))
         }
       }
@@ -539,8 +550,8 @@ export function useGatewayBoot({
       pruneSecondaryGateways(keep)
     }
 
-    const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
-    const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
+    const offWorking = $workingSessionKeys.subscribe(() => recomputeKeptGateways())
+    const offAttention = $attentionSessionKeys.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {

@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $selectedStoredSessionId, $unreadFinishedSessionIds, setSessions } from '@/store/session'
+import {
+  captureLiveSessionStatusBaseline,
+  setLiveSessionStateReconciler
+} from '@/store/live-session-status'
+import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds, setSessions } from '@/store/session'
 import {
   $attentionSessionIds,
+  $sessionStates,
   $workingSessionIds,
   clearAllSessionStates,
   publishSessionState
@@ -24,6 +30,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     $selectedStoredSessionId.set(null)
+    $activeSessionId.set(null)
     $unreadFinishedSessionIds.set([])
   })
 
@@ -111,5 +118,62 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'default', true)
 
     expect($workingSessionIds.get()).toEqual(['stored-worker'])
+  })
+
+  it('fully settles an idle row through the cache-owned reconciler', () => {
+    const cache = new Map<string, ClientSessionState>([
+      [
+        'runtime-a',
+        {
+          ...createClientSessionState('stored-a'),
+          adoptedRunningTurn: true,
+          awaitingResponse: true,
+          busy: true,
+          interimBoundaryPending: true,
+          streamId: 'stream-a',
+          turnStartedAt: 123
+        }
+      ]
+    ])
+    $activeSessionId.set('runtime-a')
+    publishSessionState('runtime-a', cache.get('runtime-a')!)
+    const dispose = setLiveSessionStateReconciler((runtimeId, updater, storedSessionId) => {
+      const next = updater(cache.get(runtimeId) ?? createClientSessionState(storedSessionId))
+      cache.set(runtimeId, next)
+      publishSessionState(runtimeId, next)
+
+      return next
+    })
+
+    rehydrateLiveSessionStatuses({ sessions: [{ id: 'runtime-a', session_key: 'stored-a', status: 'idle' }] })
+
+    expect(cache.get('runtime-a')).toMatchObject({
+      adoptedRunningTurn: false,
+      awaitingResponse: false,
+      busy: false,
+      interimBoundaryPending: false,
+      streamId: null,
+      turnStartedAt: null
+    })
+    expect($sessionStates.get()['runtime-a']).toBe(cache.get('runtime-a'))
+    dispose()
+  })
+
+  it('does not let an older active-list snapshot overwrite a newer stream edge', () => {
+    const initial = { ...createClientSessionState('stored-a'), busy: true }
+    publishSessionState('runtime-a', initial)
+    const baseline = captureLiveSessionStatusBaseline()
+    const newer = { ...initial, sawAssistantPayload: true, streamId: 'new-stream' }
+    publishSessionState('runtime-a', newer)
+
+    rehydrateLiveSessionStatuses(
+      { sessions: [{ id: 'runtime-a', session_key: 'stored-a', status: 'idle' }] },
+      Date.now(),
+      'default',
+      false,
+      baseline
+    )
+
+    expect($sessionStates.get()['runtime-a']).toBe(newer)
   })
 })

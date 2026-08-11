@@ -257,7 +257,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     upsertToolCall
   } = deps
 
-  const unscopedStreamSessionIdRef = useRef<string | null>(null)
+  const unscopedStreamSessionIdsRef = useRef(new Map<string, string>())
 
   // session.info arrives in bursts (agent build ready + turn end + title /
   // MCP / compress edges within the same second). Each used to fire its own
@@ -298,15 +298,29 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+      const sourceProfile = normalizeProfileKey(event.profile ?? activeGatewayProfile)
+      const sourceIsActive = sourceProfile === normalizeProfileKey(activeGatewayProfile)
+
+      if (event.type === 'gateway.ready') {
+        // A new socket generation must not inherit an unscoped stream pin from
+        // the connection it replaced.
+        unscopedStreamSessionIdsRef.current.delete(sourceProfile)
+      }
 
       const route = resolveGatewayEventSessionId({
-        activeSessionId: activeSessionIdRef.current,
+        // Never attribute a background profile's unscoped event to whichever
+        // foreground chat happens to be selected.
+        activeSessionId: sourceIsActive ? activeSessionIdRef.current : null,
         eventType: event.type,
         explicitSessionId: explicitSid,
-        unscopedStreamSessionId: unscopedStreamSessionIdRef.current
+        unscopedStreamSessionId: unscopedStreamSessionIdsRef.current.get(sourceProfile) ?? null
       })
 
-      unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+      if (route.nextUnscopedStreamSessionId) {
+        unscopedStreamSessionIdsRef.current.set(sourceProfile, route.nextUnscopedStreamSessionId)
+      } else {
+        unscopedStreamSessionIdsRef.current.delete(sourceProfile)
+      }
 
       if (route.drop) {
         return
@@ -314,6 +328,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+
+      if (sessionId && event.profile) {
+        updateSessionState(sessionId, state =>
+          state.profile === sourceProfile ? state : { ...state, profile: sourceProfile }
+        )
+      }
 
       // Mid-turn compaction does not emit another message.start. The first
       // model output or tool event proves summarization has finished and the
@@ -544,12 +564,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 }
               }
 
-              if (state.awaitingResponse && !state.sawAssistantPayload) {
+              if (state.awaitingResponse && !state.sawAssistantPayload && !state.adoptedRunningTurn) {
                 return state
               }
 
               return {
                 ...state,
+                adoptedRunningTurn: false,
                 awaitingResponse: false,
                 busy,
                 // The turn is over but its streaming bubble may still say
@@ -562,6 +583,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 // empty placeholders; on the normal path message.complete
                 // already settled everything and this is a no-op.
                 messages: finalizeInterruptedMessages(state.messages, state.streamId),
+                interimBoundaryPending: false,
                 pendingBranchGroup: null,
                 streamId: null,
                 turnStartedAt: null

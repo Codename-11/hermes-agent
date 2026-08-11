@@ -5,6 +5,7 @@ import type { SessionInfo } from '@/hermes'
 import { $sidebarOrdering, type SidebarOrdering } from './layout'
 import { $sessions } from './session'
 import { $sessionDotStateById, type SessionDotState, sessionStatusRank } from './session-dot-state'
+import { sessionStatusKey } from './session-states'
 import { sessionCostUsd } from './sidebar-archive'
 
 // Same array on every recompute, so the default (unranked) sidebar never churns
@@ -23,7 +24,7 @@ function rankBy(
       return session => -session.started_at
 
     case 'status':
-      return session => sessionStatusRank(dotStates[session.id])
+      return session => sessionStatusRank(dotStates[sessionStatusKey(session.profile, session.id)])
 
     case 'tokens':
       return session => -(session.input_tokens + session.output_tokens)

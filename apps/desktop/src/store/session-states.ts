@@ -330,6 +330,32 @@ const storedIds = (
   return [...ids]
 }
 
+export const sessionStatusKey = (profile: null | string | undefined, storedSessionId: string): string =>
+  `${profile?.trim() || 'default'}\0${storedSessionId}`
+
+const storedKeys = (
+  states: Record<string, ClientSessionState>,
+  sessions: readonly SessionInfo[],
+  pred: (s: ClientSessionState) => boolean
+) => {
+  const keys = new Set<string>()
+
+  for (const [runtimeId, state] of Object.entries(states)) {
+    if (!pred(state)) {
+      continue
+    }
+
+    const profile = state.profile?.trim() || 'default'
+    const scopedSessions = sessions.filter(session => (session.profile?.trim() || 'default') === profile)
+
+    for (const alias of lineageAliases(state.storedSessionId ?? runtimeId, scopedSessions)) {
+      keys.add(sessionStatusKey(profile, alias))
+    }
+  }
+
+  return [...keys]
+}
+
 let workingIds: readonly string[] = []
 export const $workingSessionIds = computed(
   [$sessionStates, $sessions],
@@ -347,6 +373,26 @@ export const $attentionSessionIds = computed(
     (attentionIds = stableArray(
       attentionIds,
       storedIds(states, sessions, s => s.needsInput)
+    ))
+)
+
+let workingKeys: readonly string[] = []
+export const $workingSessionKeys = computed(
+  [$sessionStates, $sessions],
+  (states, sessions) =>
+    (workingKeys = stableArray(
+      workingKeys,
+      storedKeys(states, sessions, s => s.busy)
+    ))
+)
+
+let attentionKeys: readonly string[] = []
+export const $attentionSessionKeys = computed(
+  [$sessionStates, $sessions],
+  (states, sessions) =>
+    (attentionKeys = stableArray(
+      attentionKeys,
+      storedKeys(states, sessions, s => s.needsInput)
     ))
 )
 

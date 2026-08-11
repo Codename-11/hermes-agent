@@ -174,6 +174,9 @@ export interface SidebarNavItem {
 
 export interface ClientSessionState {
   storedSessionId: string | null
+  /** Normalized gateway profile that owns this runtime. Stored ids may be
+   * duplicated across cloned profiles, so status identity cannot be id-only. */
+  profile?: string
   messages: ChatMessage[]
   branch: string
   cwd: string

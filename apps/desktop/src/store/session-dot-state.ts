@@ -23,7 +23,13 @@ import { stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
-import { $attentionSessionIds, $draftSessionIds, $stalledSessionIds, $workingSessionIds } from './session-states'
+import {
+  $attentionSessionKeys,
+  $draftSessionIds,
+  $stalledSessionIds,
+  $workingSessionKeys,
+  sessionStatusKey
+} from './session-states'
 
 export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
@@ -59,8 +65,8 @@ let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(
   [
-    $attentionSessionIds,
-    $workingSessionIds,
+    $attentionSessionKeys,
+    $workingSessionKeys,
     $stalledSessionIds,
     $backgroundRunningSessionIds,
     $unreadFinishedSessionIds,
@@ -70,11 +76,25 @@ export const $sessionDotStateById = computed(
   (attention, working, stalled, background, unread, draft, sessions) => {
     const next: Record<string, SessionDotState> = {}
 
-    const claim = (ids: readonly string[], state: SessionDotState) => {
-      for (const id of ids) {
-        for (const alias of lineageAliases(id, sessions)) {
-          next[alias] = state
+    const scopedAliases = (session: (typeof sessions)[number]) =>
+      lineageAliases(
+        session.id,
+        sessions.filter(candidate => (candidate.profile?.trim() || 'default') === (session.profile?.trim() || 'default'))
+      )
+
+    const claimBare = (ids: readonly string[], state: SessionDotState) => {
+      const members = new Set(ids)
+
+      for (const session of sessions) {
+        if (scopedAliases(session).some(alias => members.has(alias))) {
+          next[sessionStatusKey(session.profile, session.id)] = state
         }
+      }
+    }
+
+    const claimKeys = (keys: readonly string[], state: SessionDotState) => {
+      for (const key of keys) {
+        next[key] = state
       }
     }
 
@@ -84,24 +104,25 @@ export const $sessionDotStateById = computed(
     //
     // Draft is weakest of all: it says only "no turn has happened here yet", so
     // the first thing that does happen speaks over it.
-    claim(draft, 'draft')
-    claim(unread, 'unread')
-    claim(background, 'background')
-    claim(working, 'working')
+    claimBare(draft, 'draft')
+    claimBare(unread, 'unread')
+    claimBare(background, 'background')
+    claimKeys(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still
     // authoritatively running, it has just gone quiet — so it only downgrades a
     // session already claimed as working. The hint outlives its turn by a tick
     // on some paths; without this it could invent a running session.
-    for (const id of stalled) {
-      for (const alias of lineageAliases(id, sessions)) {
-        if (next[alias] === 'working') {
-          next[alias] = 'stalled'
-        }
+    const stalledIds = new Set(stalled)
+    for (const session of sessions) {
+      const key = sessionStatusKey(session.profile, session.id)
+
+      if (next[key] === 'working' && scopedAliases(session).some(alias => stalledIds.has(alias))) {
+        next[key] = 'stalled'
       }
     }
 
-    claim(attention, 'needs-input')
+    claimKeys(attention, 'needs-input')
 
     return (dotStates = stableRecord(dotStates, next))
   }

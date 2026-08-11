@@ -22,6 +22,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $expandedProjectIds, toggleProjectExpanded } from '@/store/projects'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { sessionStatusKey } from '@/store/session-states'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { orderRowsWithinGroups, reorderableRowIds } from './order'
@@ -344,7 +345,8 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
+              entry =>
+                hasLiveTurn(dotStates[sessionStatusKey(entry.session.profile, entry.session.id)] ?? 'idle'),
               statusDividerLabels
             )
           : toSessionRows(displayEntries)

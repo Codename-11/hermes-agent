@@ -36,6 +36,7 @@ import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
+import { setLiveSessionStateReconciler } from '@/store/live-session-status'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
@@ -254,6 +255,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     setBusy,
     setMessages
   })
+
+  useEffect(() => setLiveSessionStateReconciler(updateSessionState), [updateSessionState])
 
   const { connectionRef, gateway, gatewayRef, requestGateway } = useGatewayRequest()
 

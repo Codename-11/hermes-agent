@@ -1,3 +1,5 @@
+import type { ClientSessionState } from '@/app/types'
+import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { $sessions, sessionMatchesStoredId } from './session'
@@ -14,21 +16,80 @@ export interface LiveSessionStatusResponse {
   sessions?: LiveSessionStatusItem[]
 }
 
-// Runtime ids this poll has seen live, per gateway profile. A profile only
-// ever reaps what its OWN snapshot previously reported: background profiles are
-// served by different gateways and never appear in this profile's active_list.
+export type LiveSessionStatusBaseline = Map<string, ClientSessionState | undefined>
+type SessionStateUpdater = (state: ClientSessionState) => ClientSessionState
+type SessionStateReconciler = (
+  runtimeSessionId: string,
+  updater: SessionStateUpdater,
+  storedSessionId?: string | null
+) => ClientSessionState
+
+let reconcileSessionState: SessionStateReconciler | null = null
 const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
 
+export function setLiveSessionStateReconciler(reconciler: SessionStateReconciler): () => void {
+  reconcileSessionState = reconciler
+
+  return () => {
+    if (reconcileSessionState === reconciler) {
+      reconcileSessionState = null
+    }
+  }
+}
+
+export function captureLiveSessionStatusBaseline(): LiveSessionStatusBaseline {
+  return new Map(Object.entries($sessionStates.get()))
+}
+
+function applySessionState(runtimeSessionId: string, updater: SessionStateUpdater, storedSessionId?: string | null) {
+  if (reconcileSessionState) {
+    return reconcileSessionState(runtimeSessionId, updater, storedSessionId)
+  }
+
+  const previous = $sessionStates.get()[runtimeSessionId] ?? createClientSessionState(storedSessionId)
+  const next = updater(previous)
+  publishSessionState(runtimeSessionId, next)
+
+  return next
+}
+
+function requestStillOwnsRuntime(runtimeSessionId: string, baseline?: LiveSessionStatusBaseline): boolean {
+  return !baseline || baseline.get(runtimeSessionId) === $sessionStates.get()[runtimeSessionId]
+}
+
+function finalizePendingMessages(state: ClientSessionState) {
+  return state.messages
+    .filter(message => !((message.pending || message.id === state.streamId) && !chatMessageText(message).trim()))
+    .map(message => (message.pending || message.id === state.streamId ? { ...message, pending: false } : message))
+}
+
+function settleRuntime(state: ClientSessionState): ClientSessionState {
+  return {
+    ...state,
+    adoptedRunningTurn: false,
+    awaitingResponse: false,
+    busy: false,
+    interimBoundaryPending: false,
+    messages: finalizePendingMessages(state),
+    needsInput: false,
+    pendingBranchGroup: null,
+    streamId: null,
+    turnStartedAt: null
+  }
+}
+
 /** Restore renderer liveness from one gateway's authoritative in-memory
- * session registry. Absence from a profile's next snapshot is a terminal edge:
- * the runtime ended while its WebSocket events were unavailable. */
+ * session registry. A captured baseline fences snapshots that resolve after a
+ * newer stream event changed the same runtime. */
 export function rehydrateLiveSessionStatuses(
   response: LiveSessionStatusResponse,
   nowMs = Date.now(),
   profileKey = 'default',
-  authoritativeReconnect = false
+  authoritativeReconnect = false,
+  baseline?: LiveSessionStatusBaseline
 ): void {
   const seen = new Set<string>()
+  const normalizedProfile = profileKey.trim() || 'default'
 
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
@@ -41,24 +102,33 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
-    const existing = $sessionStates.get()[runtimeSessionId]
-    // A locally submitted turn is newer than the backend's brief pre-start idle
-    // snapshot. Do not darken it before the first assistant payload arrives.
-    const busy = working || Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
 
-    if (
-      !existing ||
-      existing.storedSessionId !== storedSessionId ||
-      existing.busy !== busy ||
-      existing.needsInput !== needsInput
-    ) {
-      publishSessionState(runtimeSessionId, {
-        ...(existing ?? createClientSessionState(storedSessionId)),
-        busy,
-        needsInput,
-        storedSessionId
-      })
+    if (!requestStillOwnsRuntime(runtimeSessionId, baseline)) {
+      continue
     }
+
+    applySessionState(
+      runtimeSessionId,
+      state => {
+        // Only a locally submitted, not-yet-observed turn outranks a brief idle
+        // snapshot. An adopted turn must accept authoritative settlement.
+        const preserveLocalSubmit = state.awaitingResponse && !state.sawAssistantPayload && !state.adoptedRunningTurn
+
+        if (!working && !preserveLocalSubmit) {
+          return { ...settleRuntime(state), profile: normalizedProfile, storedSessionId }
+        }
+
+        return {
+          ...state,
+          busy: working || preserveLocalSubmit,
+          needsInput,
+          profile: normalizedProfile,
+          storedSessionId,
+          turnStartedAt: working ? (state.turnStartedAt ?? Date.now()) : state.turnStartedAt
+        }
+      },
+      storedSessionId
+    )
 
     if (!working) {
       setSessionStalled(storedSessionId, false)
@@ -79,12 +149,7 @@ export function rehydrateLiveSessionStatuses(
 
   const previouslyLive = new Set(liveRuntimeIdsByProfile.get(profileKey) ?? [])
 
-  // A reconnect may be the first active_list snapshot for this profile. Include
-  // stream-seeded busy states whose durable rows belong to this profile, so a
-  // turn that finished while disconnected cannot remain spinning forever.
   if (authoritativeReconnect) {
-    const normalizedProfile = profileKey.trim() || 'default'
-
     for (const [runtimeSessionId, state] of Object.entries($sessionStates.get())) {
       if ((!state.busy && !state.needsInput) || !state.storedSessionId) {
         continue
@@ -104,31 +169,29 @@ export function rehydrateLiveSessionStatuses(
     }
   }
 
-  if (previouslyLive.size > 0) {
-    for (const runtimeSessionId of previouslyLive) {
-      if (seen.has(runtimeSessionId)) {
-        continue
-      }
+  for (const runtimeSessionId of previouslyLive) {
+    if (seen.has(runtimeSessionId)) {
+      continue
+    }
 
-      const existing = $sessionStates.get()[runtimeSessionId]
+    if (!requestStillOwnsRuntime(runtimeSessionId, baseline)) {
+      // Preserve provenance so the next fresh snapshot can still reap it. A
+      // stale response must not both skip settlement and forget the runtime.
+      seen.add(runtimeSessionId)
 
-      if (existing?.busy || existing?.needsInput) {
-        publishSessionState(runtimeSessionId, {
-          ...existing,
-          awaitingResponse: false,
-          busy: false,
-          needsInput: false,
-          streamId: null,
-          turnStartedAt: null
-        })
-      }
+      continue
+    }
+
+    const existing = $sessionStates.get()[runtimeSessionId]
+
+    if (existing?.busy || existing?.needsInput || existing?.awaitingResponse || existing?.streamId) {
+      applySessionState(runtimeSessionId, settleRuntime, existing.storedSessionId)
     }
   }
 
   liveRuntimeIdsByProfile.set(profileKey, seen)
 }
 
-/** Forget profile snapshot provenance after a full gateway wipe. */
 export function resetLiveRuntimeTracking(): void {
   liveRuntimeIdsByProfile.clear()
 }

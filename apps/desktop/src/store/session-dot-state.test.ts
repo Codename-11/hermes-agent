@@ -1,6 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { hasLiveTurn, showsRunningArc } from './session-dot-state'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
+
+import { setSessions } from './session'
+import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from './session-dot-state'
+import { clearAllSessionStates, publishSessionState, sessionStatusKey } from './session-states'
+
+afterEach(() => {
+  clearAllSessionStates()
+  setSessions([])
+})
 
 describe('showsRunningArc', () => {
   it('keeps the arc when an authoritative turn goes quiet', () => {
@@ -33,5 +43,22 @@ describe('hasLiveTurn', () => {
   it('excludes work that outlived the turn', () => {
     expect(hasLiveTurn('background')).toBe(false)
     expect(hasLiveTurn('unread')).toBe(false)
+  })
+})
+
+describe('profile-scoped status identity', () => {
+  it('does not mark a cloned session id working in another profile', () => {
+    setSessions([
+      { id: 'shared-id', profile: 'default' } as SessionInfo,
+      { id: 'shared-id', profile: 'worker' } as SessionInfo
+    ])
+    publishSessionState('runtime-default', {
+      ...createClientSessionState('shared-id'),
+      busy: true,
+      profile: 'default'
+    })
+
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 'shared-id')]).toBe('working')
+    expect($sessionDotStateById.get()[sessionStatusKey('worker', 'shared-id')]).toBeUndefined()
   })
 })
