@@ -64,6 +64,12 @@ The bundled **Update Control** plugin is a read-only cockpit over the existing
 Desktop updater. It reports the local Desktop client and the active backend as
 separate targets because they can update on different hosts and schedules.
 
+Update Control is a singleton `placement: 'main'` pane in the standard Desktop
+tab strip, not a permanent workspace route. Closing its tab dismisses only the
+pane; it must not disable the plugin or remove its status/palette entry points.
+Reopening restores and focuses the same pane through the plugin-scoped
+`ctx.panes.reveal(...)` SDK action.
+
 - **Client freshness** describes the Windows checkout, configured Desktop update
   branch, built Desktop artifact, and running `Hermes.exe`.
 - **Backend freshness** describes the connected `hermes serve` runtime. A current

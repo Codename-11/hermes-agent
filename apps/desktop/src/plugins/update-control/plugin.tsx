@@ -9,10 +9,7 @@ import {
   host,
   PALETTE_AREA,
   type PaletteContribution,
-  type RouteContribution,
-  ROUTES_AREA,
-  SIDEBAR_NAV_AREA,
-  type SidebarNavContribution,
+  PANES_AREA,
   STATUSBAR_AREAS,
   StatusDot,
   type StatusTone,
@@ -23,7 +20,7 @@ import { useState } from 'react'
 
 import { friendlyError, hasUpdate, shortSha } from './model'
 
-const ROUTE = '/update-control'
+const PANE_ID = 'panel'
 const SNAPSHOTS_KEY = ['update-control', 'snapshots'] as const
 
 type UpdateTarget = 'backend' | 'client'
@@ -98,7 +95,7 @@ function statusLabel(snapshots?: UpdateSnapshots): string {
   return 'updates current'
 }
 
-function UpdateStatusIndicator() {
+function UpdateStatusIndicator({ open }: { open: () => void }) {
   const snapshots = useUpdateSnapshots()
   const label = statusLabel(snapshots.data)
 
@@ -109,7 +106,7 @@ function UpdateStatusIndicator() {
           'inline-flex h-full items-center gap-1.5 rounded-none px-1.5 text-[0.6875rem] transition-colors',
           'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
         )}
-        onClick={() => host.navigate(ROUTE)}
+        onClick={open}
         type="button"
       >
         <StatusDot tone={toneFor(snapshots.data)} />
@@ -259,7 +256,7 @@ function TargetCard({
   )
 }
 
-function UpdateControlPage() {
+function UpdateControlPane() {
   const snapshots = useUpdateSnapshots()
   const [openError, setOpenError] = useState<string | null>(null)
 
@@ -347,24 +344,26 @@ const plugin: HermesPlugin = {
   name: 'Update Control',
   defaultEnabled: false,
   register(ctx) {
+    const open = () => ctx.panes.reveal(PANE_ID)
+
     ctx.registerMany([
       {
-        id: 'page',
-        area: ROUTES_AREA,
-        data: { path: ROUTE } satisfies RouteContribution,
-        render: () => <UpdateControlPage />
-      },
-      {
-        id: 'nav',
-        area: SIDEBAR_NAV_AREA,
-        order: 60,
-        data: { codicon: 'cloud-download', label: 'Update Control', path: ROUTE } satisfies SidebarNavContribution
+        id: PANE_ID,
+        area: PANES_AREA,
+        title: 'Update Control',
+        data: {
+          closeBehavior: 'dismiss',
+          minWidth: '22vw',
+          placement: 'main',
+          tabLead: () => <Codicon name="cloud-download" size="0.8rem" />
+        },
+        render: () => <UpdateControlPane />
       },
       {
         id: 'status',
         area: STATUSBAR_AREAS.right,
         order: 85,
-        render: () => <UpdateStatusIndicator />
+        render: () => <UpdateStatusIndicator open={open} />
       },
       {
         id: 'open',
@@ -373,7 +372,7 @@ const plugin: HermesPlugin = {
           id: 'update-control.open',
           label: 'Update Control: Open',
           keywords: ['update', 'version', 'client', 'backend', 'branch'],
-          run: () => host.navigate(ROUTE)
+          run: open
         } satisfies PaletteContribution
       }
     ])

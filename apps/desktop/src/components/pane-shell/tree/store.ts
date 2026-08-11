@@ -762,12 +762,25 @@ export function closeTreePane(paneId: string) {
     return
   }
 
+  const contribution = registry.getArea('panes').find(c => c.id === paneId)
+  const closeBehavior = (contribution?.data as { closeBehavior?: string } | undefined)?.closeBehavior
+
+  // A plugin may opt into normal tab dismissal: its contribution remains
+  // registered and an explicit `ctx.panes.reveal(...)` restores + focuses it.
+  // This is the right lifecycle for singleton main tabs such as Update
+  // Control; closing the tab must not disable its status/palette surfaces.
+  if (closeBehavior === 'dismiss') {
+    dismissTreePane(paneId)
+
+    return
+  }
+
   // A plugin's pane: Close = DISABLE the plugin — the same switch as
   // Settings → Plugins, so recovery is discoverable and symmetric. The
   // contribution unregisters but the pane id STAYS in the tree, so
   // re-enabling restores it exactly where it was. (Dismissal + removal
   // would strand the pane with no way back short of a layout reset.)
-  const source = registry.getArea('panes').find(c => c.id === paneId)?.source
+  const source = contribution?.source
 
   if (source?.startsWith('plugin:')) {
     const pluginId = source.slice('plugin:'.length)

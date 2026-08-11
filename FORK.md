@@ -38,6 +38,37 @@ Operational note: as of 2026-06-17, the `agent/anthropic_adapter.py` / `agent/sy
 5. **If a feature is obsolete because upstream now provides equivalent behavior, mark it retired in this file and add verification evidence.**
 6. **Do not resume the daily sync cron until conflict alerts are deduped and the contract tests cover the protected Axiom behavior.**
 
+## Axiom Desktop tabbed Update Control
+
+The bundled, opt-in **Update Control** plugin is a singleton main-pane tab, not
+a workspace route. It must stack with session tabs, participate in the standard
+tab menu/keyboard lifecycle, and remain explicitly closeable. Closing dismisses
+only `update-control:panel`; it must not disable the plugin or remove its
+status-bar and command-palette reopen actions.
+
+The reusable SDK seam is plugin-scoped: a pane opts into
+`data: { closeBehavior: 'dismiss' }`, and `ctx.panes.reveal(localId)` restores,
+unhides, and focuses the namespaced pane. Generic plugin panes retain the
+existing close-to-disable behavior unless they explicitly opt in.
+
+Protected files: `apps/desktop/src/plugins/update-control/`,
+`apps/desktop/src/contrib/plugin.ts`, and
+`apps/desktop/src/components/pane-shell/tree/store.ts`. Focused verification:
+
+```bash
+cd apps/desktop
+NODE_ENV=test npx vitest run --environment jsdom \
+  src/plugins/update-control/plugin.test.tsx \
+  src/plugins/update-control/model.test.ts \
+  src/contrib/plugin.test.ts \
+  src/components/pane-shell/tree/pane-toggle-visibility.test.ts
+npm run typecheck
+```
+
+Drop condition: upstream provides an equivalent reopenable plugin main-tab
+lifecycle where tab Close does not disable the plugin and explicit plugin entry
+points can restore/focus the same singleton pane.
+
 ## Axiom Desktop voice keybinds
 
 Desktop carries three independent, user-rebindable composer actions:

@@ -243,6 +243,26 @@ data: {
 `'top' | 'bottom' | 'left' | 'right' | 'center'`. Declare a `width`/`height` so
 the pane doesn't claim half the zone.
 
+By default, closing a plugin pane disables that plugin. A singleton tab that
+should remain available through another entry point can opt into dismissal and
+reveal its own namespaced pane later:
+
+```javascript
+ctx.register({
+  id: 'control',
+  area: 'panes',
+  title: 'Control',
+  data: { closeBehavior: 'dismiss', placement: 'main' },
+  render: () => jsx(ControlPane, {})
+})
+
+// Status/palette/keybind handler: restores, unhides, and focuses the same tab.
+const openControl = () => ctx.panes.reveal('control')
+```
+
+`ctx.panes` is plugin-scoped: local id `control` resolves only to that plugin's
+fully namespaced pane id.
+
 ### Pages and sidebar nav
 
 A route mounts a full page in the workspace pane, like any built-in view. Pair it
@@ -597,7 +617,10 @@ enable/disable contract as a disk plugin. The two differences:
 
 The Axiom fork ships **Update Control** from this tree. It uses
 `host.updates.getStatus()` for read-only comparison and `host.updates.open()` to
-delegate the active target to the native update overlay. Demos still live in the
+delegate the active target to the native update overlay. Its main-pane
+contribution opts into `data: { closeBehavior: 'dismiss' }`, then its status and
+palette actions call `ctx.panes.reveal('panel')` to restore and focus the tab
+without disabling the plugin. Demos still live in the
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo.
 
@@ -644,7 +667,7 @@ not treat this pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.updates.getStatus`, `.updates.open`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext` (including plugin-scoped `panes.reveal(localId)`), `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
