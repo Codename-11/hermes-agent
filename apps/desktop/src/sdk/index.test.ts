@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const updateMocks = vi.hoisted(() => ({
+  $backendUpdateApply: { get: vi.fn() },
   $backendUpdateStatus: { get: vi.fn() },
   $updateStatus: { get: vi.fn() },
+  applyBackendUpdate: vi.fn(),
   checkBackendUpdates: vi.fn(),
   checkUpdates: vi.fn(),
   discardDesktopUpdateStage: vi.fn(),
   getDesktopUpdateHistory: vi.fn(),
   getDesktopUpdateStage: vi.fn(),
   prepareDesktopUpdateStage: vi.fn(),
-  restartAndApplyDesktopUpdateStage: vi.fn(),
-  openUpdatesWindow: vi.fn()
+  restartAndApplyDesktopUpdateStage: vi.fn()
 }))
 
 vi.mock('@/store/updates', () => updateMocks)
@@ -53,10 +54,15 @@ describe('host.updates', () => {
     expect(host.updates.getStatus('backend')).toBeNull()
   })
 
-  it('opens the core-owned updater for the active target', () => {
-    host.updates.open()
+  it('exposes detached backend apply state and applies through the core backend updater', async () => {
+    const applyState = { applying: true, stage: 'pull', message: 'Updating backend', percent: 42, error: null, command: null }
+    updateMocks.$backendUpdateApply.get.mockReturnValue(applyState)
+    updateMocks.applyBackendUpdate.mockResolvedValue({ ok: true })
 
-    expect(updateMocks.openUpdatesWindow).toHaveBeenCalledOnce()
+    expect(host.updates.getBackendApply()).toEqual(applyState)
+    expect(host.updates.getBackendApply()).not.toBe(applyState)
+    await expect(host.updates.applyBackend()).resolves.toEqual({ ok: true })
+    expect(updateMocks.applyBackendUpdate).toHaveBeenCalledOnce()
   })
 
   it('maps core stage/history records and rejects failed lifecycle results', async () => {
@@ -105,12 +111,12 @@ describe('host.updates', () => {
 
   it('exposes only the named staged lifecycle, never branch, raw apply, progress, or bridge doors', () => {
     expect(Object.keys(host.updates).sort()).toEqual([
+      'applyBackend',
       'discardStage',
+      'getBackendApply',
       'getHistory',
       'getStage',
       'getStatus',
-      'open',
-      'openNative',
       'prepare',
       'refresh',
       'restartAndApply'

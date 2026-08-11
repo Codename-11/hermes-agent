@@ -438,7 +438,7 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
-### Update status and native-updater handoff
+### Update status and lifecycle
 
 The Axiom fork adds a narrow `host.updates` facade for plugins that need update
 observability and the core-owned staged lifecycle without becoming an updater:
@@ -446,11 +446,13 @@ observability and the core-owned staged lifecycle without becoming an updater:
 ```ts
 const client = host.updates.getStatus('client')
 const backend = host.updates.getStatus('backend')
+const backendApply = host.updates.getBackendApply()
 const stage = await host.updates.getStage()
 const history = await host.updates.getHistory()
 
 await host.updates.prepare()
 await host.updates.restartAndApply()
+await host.updates.applyBackend()
 ```
 
 The client and backend are deliberately separate. `client` describes the
@@ -461,11 +463,13 @@ published one), including `fetchedAt` when available. Mutating a returned object
 cannot change core update state.
 
 The named lifecycle methods are `refresh(target)`, `getStage()`, `prepare()`,
-`discardStage()`, `restartAndApply()`, and `getHistory()`. Core owns target
-pinning, progress, dirty-tree validation, deploy reconciliation, package
-integrity, shutdown, rollback, and relaunch. `open()` / `openNative()` retain the
-core overlay fallback. There are intentionally no plugin-facing branch-write,
-raw apply, arbitrary manifest path, shell, progress-event, or raw IPC methods.
+`discardStage()`, `restartAndApply()`, `getHistory()`, `getBackendApply()`, and
+`applyBackend()`. Core owns target pinning, progress, dirty-tree validation,
+deploy reconciliation, package integrity, shutdown, rollback, reconnection, and
+relaunch. Plugins render the detached lifecycle snapshots themselves; there is
+no native-overlay redirect in this facade. There are intentionally no
+plugin-facing branch-write, arbitrary manifest path, shell, progress-event, or
+raw IPC methods.
 
 ## Data layer — React Query + nanostores
 
@@ -632,11 +636,11 @@ enable/disable contract as a disk plugin. The two differences:
    internals.
 
 The Axiom fork ships **Update Control** from this tree. It uses
-`host.updates.getStatus()` for read-only comparison and `host.updates.open()` to
-delegate the active target to the native update overlay. Its main-pane
-contribution opts into `data: { closeBehavior: 'dismiss' }`, then its status and
-palette actions call `ctx.panes.reveal('panel')` to restore and focus the tab
-without disabling the plugin. Demos still live in the
+`host.updates.getStatus()` for read-only comparison and the named client/backend
+lifecycle methods to perform updates while rendering progress in the plugin. It
+registers a route-backed `/update-control` workspace page and matching sidebar
+row, so it is available without inserting or opening a pane during startup.
+Demos still live in the
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo.
 

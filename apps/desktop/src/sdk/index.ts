@@ -30,16 +30,18 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 import {
+  $backendUpdateApply,
   $backendUpdateStatus,
   $updateStatus,
+  applyBackendUpdate,
   checkBackendUpdates,
   checkUpdates,
   discardDesktopUpdateStage,
   getDesktopUpdateHistory,
   getDesktopUpdateStage,
-  openUpdatesWindow,
   prepareDesktopUpdateStage,
   restartAndApplyDesktopUpdateStage,
+  type UpdateApplyState,
   type UpdateTarget
 } from '@/store/updates'
 
@@ -100,18 +102,26 @@ export interface PluginUpdateHistoryEntry {
   commits?: Array<{ author?: string; at?: number; sha: string; summary: string }>
 }
 
+export interface PluginBackendUpdateApplySnapshot {
+  applying: boolean
+  stage: string
+  message: string
+  percent: number | null
+  error: string | null
+  command: string | null
+}
+
 export interface PluginUpdateManagement {
   /** Detached status for the local client or currently connected backend. */
   getStatus: (target: PluginUpdateTarget) => DesktopUpdateStatus | null
+  getBackendApply: () => PluginBackendUpdateApplySnapshot
   getStage: () => Promise<null | PluginUpdateStageSnapshot>
   getHistory: () => Promise<PluginUpdateHistoryEntry[]>
   refresh: (target: PluginUpdateTarget) => Promise<DesktopUpdateStatus | null>
   prepare: () => ReturnType<typeof prepareDesktopUpdateStage>
   discardStage: () => ReturnType<typeof discardDesktopUpdateStage>
   restartAndApply: () => ReturnType<typeof restartAndApplyDesktopUpdateStage>
-  /** Open the core updater for the active connection target. */
-  open: () => void
-  openNative: () => void
+  applyBackend: () => ReturnType<typeof applyBackendUpdate>
 }
 
 const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateStatus | null =>
@@ -121,6 +131,15 @@ const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateSta
         commits: status.commits?.map(commit => ({ ...commit }))
       }
     : null
+
+const pluginBackendApplySnapshot = (state: UpdateApplyState): PluginBackendUpdateApplySnapshot => ({
+  applying: state.applying,
+  stage: state.stage,
+  message: state.message,
+  percent: state.percent,
+  error: state.error,
+  command: state.command
+})
 
 const pluginStageSnapshot = (status: DesktopUpdateStageStatus): null | PluginUpdateStageSnapshot => {
   if (status.phase === 'idle' && status.supported) {
@@ -200,6 +219,7 @@ export const host = {
   updates: {
     getStatus: (target: PluginUpdateTarget) =>
       cloneUpdateStatus(target === 'client' ? $updateStatus.get() : $backendUpdateStatus.get()),
+    getBackendApply: () => pluginBackendApplySnapshot($backendUpdateApply.get()),
     getStage: async () => pluginStageSnapshot(await getDesktopUpdateStage()),
     getHistory: async () => (await getDesktopUpdateHistory()).map(pluginHistoryEntry),
     refresh: async (target: PluginUpdateTarget) =>
@@ -207,8 +227,7 @@ export const host = {
     prepare: async () => requireUpdateSuccess(await prepareDesktopUpdateStage()),
     discardStage: async () => requireUpdateSuccess(await discardDesktopUpdateStage()),
     restartAndApply: async () => requireUpdateSuccess(await restartAndApplyDesktopUpdateStage()),
-    open: () => openUpdatesWindow(),
-    openNative: () => openUpdatesWindow()
+    applyBackend: async () => requireUpdateSuccess(await applyBackendUpdate())
   } satisfies PluginUpdateManagement,
 
   /** Toast into the app's notification stack. */

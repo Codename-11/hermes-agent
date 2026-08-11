@@ -7,7 +7,8 @@ import {
   host,
   PALETTE_AREA,
   type PaletteContribution,
-  PANES_AREA,
+  type RouteContribution,
+  ROUTES_AREA,
   SegmentedControl,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
@@ -21,8 +22,10 @@ import {
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
+import { BackendUpdateActions } from './backend-actions'
 import { UpdateHistory } from './history'
 import {
+  type BackendUpdateApplySnapshot,
   friendlyError,
   hasUpdate,
   shortSha,
@@ -35,7 +38,7 @@ import {
 import { PendingChanges } from './pending-changes'
 import { UpdateActions } from './update-actions'
 
-const PANE_ID = 'panel'
+const UPDATE_CONTROL_ROUTE = '/update-control'
 const ROOT_KEY = ['update-control'] as const
 
 const TARGET_OPTIONS = [
@@ -43,7 +46,7 @@ const TARGET_OPTIONS = [
   { id: 'backend', label: 'Backend' }
 ] as const
 
-type CompatibleUpdatesApi = Partial<UpdateControlApi> & { open?: () => void }
+type CompatibleUpdatesApi = Partial<UpdateControlApi>
 
 interface UpdateSnapshots {
   backend: UpdateControlStatus | null
@@ -192,6 +195,14 @@ function UpdateControlPane() {
     retry: false
   })
 
+  const backendApplyQuery = useQuery({
+    enabled: target === 'backend',
+    queryFn: async () => (await api?.getBackendApply?.()) ?? null,
+    queryKey: [...ROOT_KEY, 'backend-apply'],
+    refetchInterval: target === 'backend' ? 1_000 : false,
+    retry: false
+  })
+
   const historyQuery = useQuery({
     queryFn: async () => (await api?.getHistory?.()) ?? [],
     queryKey: [...ROOT_KEY, 'history'],
@@ -236,33 +247,36 @@ function UpdateControlPane() {
     onSettled: invalidate
   })
 
-  const openNative = () => {
-    setActionError(null)
+  const backendUpdate = useMutation({
+    mutationFn: async () => {
+      setActionError(null)
 
-    try {
-      const open = api?.openNative ?? api?.open
-
-      if (!open) {
-        throw new Error('The native updater is unavailable in this Desktop build.')
+      if (!api?.applyBackend) {
+        throw new Error('Backend update controls are unavailable in this Desktop build.')
       }
 
-      open()
-    } catch (error) {
-      setActionError(friendlyError(error))
-    }
-  }
+      return api.applyBackend()
+    },
+    onError: error => setActionError(friendlyError(error)),
+    onSettled: invalidate
+  })
 
   const status = statusQuery.data ?? null
   const stage = (stageQuery.data ?? null) as UpdateStageSnapshot | null
   const history = (historyQuery.data ?? []) as UpdateHistoryEntry[]
+  const backendApply = (backendApplyQuery.data ?? null) as BackendUpdateApplySnapshot | null
   const commits = stage?.commits ?? status?.commits ?? []
   const queryError = statusQuery.error || stageQuery.error || historyQuery.error
-  const primaryLoading = statusQuery.isPending || (target === 'client' && stageQuery.isPending)
+
+  const primaryLoading =
+    statusQuery.isPending ||
+    (target === 'client' && stageQuery.isPending) ||
+    (target === 'backend' && backendApplyQuery.isPending)
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
       <main className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 sm:py-7">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <header>
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Codicon className="text-(--ui-text-tertiary)" name="cloud-download" size="1.1rem" />
@@ -275,10 +289,6 @@ function UpdateControlPane() {
               Prepare and verify updates in the background, then finish through a safe restart handoff.
             </p>
           </div>
-          <Button disabled={!api?.openNative && !api?.open} onClick={openNative} size="sm" variant="outline">
-            <Codicon name="link-external" size="0.8rem" />
-            Native updater
-          </Button>
         </header>
 
         <div className="mt-5 flex flex-col gap-3 border-t border-(--ui-stroke-tertiary) pt-4 sm:flex-row sm:items-center sm:justify-between">
@@ -312,17 +322,13 @@ function UpdateControlPane() {
             status={status}
           />
         ) : (
-          <section aria-labelledby="backend-handoff-heading" className="border-t border-(--ui-stroke-tertiary) pt-5">
-            <h2 className="text-sm font-semibold text-(--ui-text-primary)" id="backend-handoff-heading">
-              Backend update handoff
-            </h2>
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-(--ui-text-tertiary)">
-              Backend updates remain core-owned because this connection may be remote. Open the native updater to review and apply its update safely.
-            </p>
-            <Button className="mt-3" disabled={!api?.openNative && !api?.open} onClick={openNative} size="sm" variant="outline">
-              Open native updater
-            </Button>
-          </section>
+          <BackendUpdateActions
+            apply={backendApply}
+            busy={backendUpdate.isPending || refresh.isPending}
+            onApply={() => backendUpdate.mutate()}
+            onRefresh={() => refresh.mutate()}
+            status={status}
+          />
         )}
 
         {stage?.fallbackCommand || status?.fallbackCommand ? (
@@ -351,7 +357,7 @@ function UpdateControlPane() {
 
         {!api?.prepare ? (
           <p className="mt-6 border-t border-(--ui-stroke-tertiary) pt-4 text-xs leading-5 text-(--ui-text-quaternary)">
-            Lifecycle controls require a newer Desktop core. The native updater remains available as a compatibility fallback.
+            Client staging controls require a newer Desktop core.
           </p>
         ) : null}
       </main>
@@ -362,28 +368,22 @@ function UpdateControlPane() {
 const plugin: HermesPlugin = {
   id: 'update-control',
   name: 'Update Control',
-  defaultEnabled: false,
+  defaultEnabled: true,
   register(ctx) {
-    const open = () => ctx.panes.reveal(PANE_ID)
+    const open = () => host.navigate(UPDATE_CONTROL_ROUTE)
 
     ctx.registerMany([
       {
-        id: PANE_ID,
-        area: PANES_AREA,
-        title: 'Update Control',
-        data: {
-          closeBehavior: 'dismiss',
-          minWidth: '22vw',
-          placement: 'main',
-          tabLead: () => <Codicon name="cloud-download" size="0.8rem" />
-        },
+        id: 'page',
+        area: ROUTES_AREA,
+        data: { path: UPDATE_CONTROL_ROUTE } satisfies RouteContribution,
         render: () => <UpdateControlPane />
       },
       {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
         order: 60,
-        data: { codicon: 'cloud-download', label: 'Update Control', onSelect: open } satisfies SidebarNavContribution
+        data: { codicon: 'cloud-download', label: 'Update Control', path: UPDATE_CONTROL_ROUTE } satisfies SidebarNavContribution
       },
       {
         id: 'status',

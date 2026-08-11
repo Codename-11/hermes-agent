@@ -31,13 +31,23 @@ type Awaitable<T> = Promise<T> | T
 /** Narrow renderer capability the core update lane wires onto host.updates. */
 export interface UpdateControlApi {
   getStatus(target: UpdateTarget): Awaitable<UpdateControlStatus | null>
+  getBackendApply(): BackendUpdateApplySnapshot
   getStage(): Awaitable<UpdateStageSnapshot | null>
   getHistory(): Awaitable<UpdateHistoryEntry[]>
   refresh(target: UpdateTarget): Awaitable<UpdateControlStatus | null | void>
   prepare(): Awaitable<unknown>
   discardStage(): Awaitable<unknown>
   restartAndApply(): Awaitable<unknown>
-  openNative(): void
+  applyBackend(): Awaitable<unknown>
+}
+
+export interface BackendUpdateApplySnapshot {
+  applying: boolean
+  stage: string
+  message: string
+  percent: number | null
+  error: string | null
+  command: string | null
 }
 
 export interface UpdateCommit {
