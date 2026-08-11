@@ -18,6 +18,7 @@ import {
 } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $expandedProjectIds, toggleProjectExpanded } from '@/store/projects'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
@@ -100,7 +101,7 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
-  onResumeSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
@@ -211,6 +212,7 @@ export function SidebarSessionsSection({
   showProjectTags = false,
   grouping = 'none'
 }: SidebarSessionsSectionProps) {
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
@@ -250,12 +252,14 @@ export function SidebarSessionsSection({
       const rowProps = {
         branchStem,
         isPinned: pinned,
-        isSelected: session.id === activeSessionId,
+        isSelected:
+          session.id === activeSessionId &&
+          normalizeProfileKey(session.profile) === normalizeProfileKey(activeGatewayProfile),
         onArchive: () => onArchiveSession(session.id),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
-        onResume: () => onResumeSession(session.id),
+        onResume: () => onResumeSession(session.id, session.profile),
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
@@ -263,12 +267,13 @@ export function SidebarSessionsSection({
       }
 
       return draggable && !branchStem ? (
-        <SortableSidebarSessionRow key={session.id} {...rowProps} />
+        <SortableSidebarSessionRow key={`${session.profile || 'default'}:${session.id}`} {...rowProps} />
       ) : (
-        <SidebarSessionRow key={session.id} {...rowProps} />
+        <SidebarSessionRow key={`${session.profile || 'default'}:${session.id}`} {...rowProps} />
       )
     },
     [
+      activeGatewayProfile,
       activeSessionId,
       onArchiveSession,
       onBranchSession,
@@ -376,6 +381,7 @@ export function SidebarSessionsSection({
       const virtual = (
         <VirtualSessionList
           activeSessionId={activeSessionId}
+          activeSessionProfile={activeGatewayProfile}
           className={contentClassName}
           dividerAction={dividerAction}
           onArchiveSession={onArchiveSession}

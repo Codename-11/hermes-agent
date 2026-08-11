@@ -566,9 +566,10 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, requestedProfile?: string) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
+      const requestedProfileKey = requestedProfile ? normalizeProfileKey(requestedProfile) : undefined
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
@@ -622,6 +623,14 @@ export function useSessionActions({
       // mismatch the mapping is cross-wired: purge both sides and report a miss
       // so the caller falls through to a full resume that rebinds a correct id.
       const takeWarmCache = (): { runtimeId: string; state: ClientSessionState } | null => {
+        // Stored session ids are profile-local. An explicit unified-sidebar
+        // resume must bind on that profile's gateway rather than trusting an
+        // unqualified same-id cache entry left by another (often cloned)
+        // profile. Same-profile route/focus resumes keep the fast path.
+        if (requestedProfileKey) {
+          return null
+        }
+
         const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
 
@@ -653,8 +662,8 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
-      const sessionProfile = storedForProfile?.profile
+      const storedForProfile = await resolveStoredSession(storedSessionId, requestedProfileKey)
+      const sessionProfile = requestedProfileKey ?? storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {
         return
@@ -672,7 +681,7 @@ export function useSessionActions({
         const cachedState = warmHit.state
 
         const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+          storedForProfile ?? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
         let cachedViewState =
           !cachedState.model && stored?.model != null
@@ -878,8 +887,7 @@ export function useSessionActions({
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
 
-      const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+      const stored = storedForProfile ?? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId)
 

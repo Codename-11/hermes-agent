@@ -42,6 +42,36 @@ describe('resolveStoredSession profile ownership', () => {
     expect(mockGetSession).not.toHaveBeenCalled()
   })
 
+  it('selects the requested profile when cloned profiles contain the same session id', async () => {
+    $sessions.set([
+      session({ id: 'shared-id', profile: 'default', title: 'Default copy' }),
+      session({ id: 'shared-id', profile: 'meta', title: 'Meta copy' })
+    ])
+
+    const resolved = await resolveStoredSession('shared-id', 'meta')
+
+    expect(resolved?.title).toBe('Meta copy')
+    expect(resolved?.profile).toBe('meta')
+    expect(mockGetSession).not.toHaveBeenCalled()
+  })
+
+  it('queries only the requested profile when no matching cached row exists', async () => {
+    $sessions.set([session({ id: 'shared-id', profile: 'default', title: 'Default copy' })])
+    mockGetSession.mockResolvedValueOnce(session({ id: 'shared-id', profile: 'default', title: 'Remote-local name' }))
+
+    const resolved = await resolveStoredSession('shared-id', 'meta')
+
+    expect(mockGetSession).toHaveBeenCalledOnce()
+    expect(mockGetSession).toHaveBeenCalledWith('shared-id', 'meta')
+    expect(resolved?.profile).toBe('meta')
+    expect($sessions.get()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'shared-id', profile: 'default', title: 'Default copy' }),
+        expect.objectContaining({ id: 'shared-id', profile: 'meta', title: 'Remote-local name' })
+      ])
+    )
+  })
+
   it('treats a profile-less cache hit as unresolved when multiple profiles exist', async () => {
     $sessions.set([session({ id: 's1' })])
     mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))

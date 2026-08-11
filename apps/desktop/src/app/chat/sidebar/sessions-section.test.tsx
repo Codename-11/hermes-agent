@@ -3,11 +3,15 @@ import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $activeGatewayProfile.set('default')
+})
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -44,8 +48,24 @@ vi.mock('./virtual-session-list', () => ({
 }))
 
 vi.mock('./session-row', () => ({
-  SidebarSessionRow: ({ session }: { session: SessionInfo }) => (
-    <div data-testid={`session-row-${session.id}`}>{session.id}</div>
+  SidebarSessionRow: ({
+    isSelected,
+    onResume,
+    session
+  }: {
+    isSelected: boolean
+    onResume: () => void
+    session: SessionInfo
+  }) => (
+    <button
+      data-profile={session.profile}
+      data-selected={isSelected}
+      data-testid={`session-row-${session.id}`}
+      onClick={onResume}
+      type="button"
+    >
+      {session.id}
+    </button>
   )
 }))
 
@@ -67,6 +87,61 @@ function generateSessions(count: number): SessionInfo[] {
 const noop = () => {}
 
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
+  it('preserves the owning profile when opening a session from the unified list', () => {
+    const onResumeSession = vi.fn()
+    const session = { ...makeSession('shared-id'), profile: 'meta' }
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={onResumeSession}
+        onToggle={noop}
+        onTogglePin={noop}
+        open
+        pinned={false}
+        sessions={[session]}
+      />
+    )
+
+    fireEvent.click(screen.getByTestId('session-row-shared-id'))
+
+    expect(onResumeSession).toHaveBeenCalledWith('shared-id', 'meta')
+  })
+
+  it('selects only the active profile copy when two profiles share a session id', () => {
+    $activeGatewayProfile.set('meta')
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId="shared-id"
+        emptyState={<div>Empty</div>}
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        open
+        pinned={false}
+        sessions={[
+          { ...makeSession('shared-id'), profile: 'default' },
+          { ...makeSession('shared-id'), profile: 'meta' }
+        ]}
+      />
+    )
+
+    const rows = screen.getAllByTestId('session-row-shared-id')
+    const defaultRow = rows.find(row => row.dataset.profile === 'default')
+    const metaRow = rows.find(row => row.dataset.profile === 'meta')
+
+    expect(defaultRow?.dataset.selected).toBe('false')
+    expect(metaRow?.dataset.selected).toBe('true')
+  })
+
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {
     mockVirtualListPropsHistory.length = 0
 

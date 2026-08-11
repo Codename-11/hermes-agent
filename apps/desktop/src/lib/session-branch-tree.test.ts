@@ -51,6 +51,16 @@ describe('flattenSessionsWithBranches', () => {
     expect(flattenSessionsWithBranches([branch])).toEqual([{ session: branch }])
   })
 
+  it('keeps same-id sessions from different profiles as distinct rows', () => {
+    const defaultCopy = session('shared-id', { profile: 'default', title: 'Default copy' })
+    const metaCopy = session('shared-id', { profile: 'meta', title: 'Meta copy' })
+
+    expect(flattenSessionsWithBranches([defaultCopy, metaCopy]).map(entry => entry.session)).toEqual([
+      defaultCopy,
+      metaCopy
+    ])
+  })
+
   it('re-sorts roots by group recency by default (pinned-style jumps without preserveOrder)', () => {
     // Stale important chat first in the caller's array; a recently-active
     // background task second. Default path must lift the fresher root — that

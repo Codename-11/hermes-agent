@@ -739,6 +739,31 @@ NODE_ENV=test npx vitest run --environment jsdom \
   src/app/artifacts/index.test.ts
 ```
 
+### Desktop unified multi-profile session identity
+
+The optional **All profiles** sidebar must treat session identity as `(profile, session id)`, not as a globally unique bare id. Profile clones can legitimately contain the same stored session ids.
+
+Required behavior:
+
+- Regular and virtualized sidebar rows preserve `session.profile` through open/resume actions and use profile-qualified React keys.
+- Branch flattening/deduplication remains profile-scoped, so same-id rows from different profiles both remain visible and branches never attach across profiles.
+- Only the active profile's copy of a same-id session is selected.
+- Cross-profile sidebar navigation carries a one-shot profile intent through the route hop, resolves the exact profile row/backend, bypasses an unqualified warm-runtime cache hit, and performs a real resume on the target gateway.
+- Resolving/upserting one profile's session must not remove a same-id row owned by another profile.
+
+Focused checks:
+
+```bash
+cd apps/desktop
+npm run typecheck
+NODE_ENV=test npx vitest run --environment jsdom \
+  src/lib/session-branch-tree.test.ts \
+  src/app/chat/sidebar/sessions-section.test.tsx \
+  src/app/session/hooks/use-session-actions/resolve-stored-session.test.ts \
+  src/app/session/hooks/use-route-resume.test.tsx \
+  src/store/profile.test.ts
+```
+
 ## Current known update/build pitfalls
 
 ### Desktop model picker snap-back — retired 2026-07-31

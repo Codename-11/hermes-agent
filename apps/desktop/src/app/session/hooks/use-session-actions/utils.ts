@@ -829,10 +829,15 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
+  const owner = normalizeProfileKey(session.profile)
 
   setSessions(prev => [
     session,
     ...prev.filter(existing => {
+      if (normalizeProfileKey(existing.profile) !== owner) {
+        return true
+      }
+
       if (sessionMatchesStoredId(existing, storedSessionId)) {
         return false
       }
@@ -842,8 +847,19 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+export async function resolveStoredSession(
+  storedSessionId: string,
+  requestedProfile?: string
+): Promise<SessionInfo | undefined> {
+  const requestedKey = requestedProfile ? normalizeProfileKey(requestedProfile) : null
+
+  const cached = $sessions
+    .get()
+    .find(
+      session =>
+        sessionMatchesStoredId(session, storedSessionId) &&
+        (!requestedKey || normalizeProfileKey(session.profile) === requestedKey)
+    )
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is
@@ -853,6 +869,21 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
 
   if (cached && (cached.profile?.trim() || !multiProfile)) {
     return cached
+  }
+
+  // A unified-sidebar click carries explicit profile ownership. Session ids are
+  // profile-local (cloned profiles can contain the same id), so never let a
+  // same-id row or bare lookup from another profile win this resolution.
+  if (requestedKey) {
+    try {
+      const session = await getSession(storedSessionId, requestedKey)
+      session.profile = requestedKey
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      return undefined
+    }
   }
 
   // Direct by-id on the live backend — one row lookup, no list scan. Covers

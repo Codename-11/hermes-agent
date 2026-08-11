@@ -465,6 +465,47 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
+  // A /:sessionId route cannot encode profile ownership, and cloned profiles
+  // may legitimately contain the same stored id. Unified-sidebar navigation
+  // carries a one-shot profile intent across the route render so resumeSession
+  // can bypass an unqualified warm-cache hit and bind the intended backend.
+  const routedResumeProfilesRef = useRef(new Map<string, string>())
+
+  const resumeRoutedSession = useCallback(
+    (storedSessionId: string, replaceRoute = false) => {
+      const profile = routedResumeProfilesRef.current.get(storedSessionId)
+      routedResumeProfilesRef.current.delete(storedSessionId)
+
+      return resumeSession(storedSessionId, replaceRoute, profile)
+    },
+    [resumeSession]
+  )
+
+  const openSidebarSession = useCallback(
+    (storedSessionId: string, profile?: string) => {
+      const requestedProfile = profile ? normalizeProfileKey(profile) : null
+      const crossesProfile = requestedProfile && requestedProfile !== normalizeProfileKey(activeGatewayProfile)
+
+      if (crossesProfile) {
+        routedResumeProfilesRef.current.set(storedSessionId, requestedProfile)
+
+        // Navigating between cloned-profile copies can keep the exact same URL.
+        // Consume the intent directly in that case; otherwise the route effect
+        // consumes it after normal sidebar navigation.
+        if (routedSessionId === storedSessionId) {
+          void resumeRoutedSession(storedSessionId)
+        } else {
+          navigate(sessionRoute(storedSessionId))
+        }
+
+        return
+      }
+
+      openSession(storedSessionId, navigate)
+    },
+    [activeGatewayProfile, navigate, resumeRoutedSession, routedSessionId]
+  )
+
   // A profile switch/create drops to a fresh new-session draft so the
   // previously open session doesn't bleed across contexts. Skip initial value.
   const freshSessionRequest = useStore($freshSessionRequest)
@@ -673,7 +714,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     freshDraftReady,
     gatewayState,
     locationPathname: location.pathname,
-    resumeSession,
+    resumeSession: resumeRoutedSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     routedSessionId,
@@ -895,7 +936,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
     // otherwise load it into main. Same door every other session link uses.
-    onResumeSession: sessionId => openSession(sessionId, navigate),
+    onResumeSession: openSidebarSession,
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSubmit: submitText,

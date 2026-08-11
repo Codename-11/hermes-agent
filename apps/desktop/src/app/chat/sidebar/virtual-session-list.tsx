@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { type SidebarListRow } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { normalizeProfileKey } from '@/store/profile'
 import { sessionPinId } from '@/store/session'
 
 import { SidebarDateDivider } from './chrome'
@@ -30,6 +31,7 @@ interface SessionRowCommonProps {
 
 export interface VirtualSessionListProps {
   activeSessionId: null | string
+  activeSessionProfile: string
   className?: string
   /** Hover-revealed control for date dividers (the group-level "+"). */
   dividerAction?: React.ReactNode
@@ -37,7 +39,7 @@ export interface VirtualSessionListProps {
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
-  onResumeSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   showProfileTags?: boolean
@@ -50,6 +52,7 @@ const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
+  activeSessionProfile,
   className,
   dividerAction,
   rows: listRows,
@@ -112,12 +115,14 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     const commonProps: SessionRowCommonProps = {
       branchStem,
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
+      isSelected:
+        session.id === activeSessionId &&
+        normalizeProfileKey(session.profile) === normalizeProfileKey(activeSessionProfile),
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id),
+      onResume: () => onResumeSession(session.id, session.profile),
       reorderable,
       showProfile: showProfileTags,
       showProject: showProjectTags
@@ -126,7 +131,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     return reorderable ? (
       <VirtualSortableRow
         index={virtualItem.index}
-        key={session.id}
+        key={`${session.profile || 'default'}:${session.id}`}
         measureRef={virtualizer.measureElement}
         rowProps={commonProps}
         session={session}
@@ -135,7 +140,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       <SidebarSessionRow
         {...commonProps}
         data-index={virtualItem.index}
-        key={session.id}
+        key={`${session.profile || 'default'}:${session.id}`}
         ref={virtualizer.measureElement}
         session={session}
       />
