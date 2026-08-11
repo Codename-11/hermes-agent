@@ -38,6 +38,65 @@ Operational note: as of 2026-06-17, the `agent/anthropic_adapter.py` / `agent/sy
 5. **If a feature is obsolete because upstream now provides equivalent behavior, mark it retired in this file and add verification evidence.**
 6. **Do not resume the daily sync cron until conflict alerts are deduped and the contract tests cover the protected Axiom behavior.**
 
+## Axiom Desktop session convergence and profile-safe live status
+
+Axiom carries a drop-ready Desktop stability layer for concurrent chats and
+multiple gateway profiles. Source carry: `6616b11bef` and `7d37b0ef4a`.
+
+The protected contract is:
+
+- request retry, reconnect, transcript/todo hydration, and gateway events stay
+  bound to the profile/gateway/runtime that originated them; mutable foreground
+  selection must never retarget older asynchronous work;
+- persisted chat identity remains separate from runtime identity, and both live
+  status and unscoped stream routing are profile-qualified so cloned profiles
+  may safely contain the same stored session id;
+- reconnect reconciliation queries `session.active_list` on the exact gateway
+  that reconnected, including background secondary gateways, and updates the
+  cache-owned canonical runtime state—not only the sidebar projection;
+- an idle or vanished authoritative runtime fully settles streaming state
+  (`busy`, `awaitingResponse`, `needsInput`, stream/turn/interim/adoption fields,
+  and pending messages), while a captured state baseline prevents an older
+  snapshot from overwriting a newer local stream edge;
+- delayed transcript/todo hydration and messaging polls are ownership and
+  generation fenced, preserving optimistic or streaming work created after the
+  request began;
+- `session.reclaimed` atomically evicts public state, private runtime state,
+  reverse stored/runtime mappings, todos, and active bindings; and
+- applying a non-primary profile connection notifies the renderer so its
+  profile-owned WebSocket is recreated against the new backend.
+
+Primary protected files: `apps/desktop/src/app/contrib/{wiring.tsx,hooks/
+use-background-sync.ts}`, `apps/desktop/src/app/gateway/hooks/{use-gateway-boot,
+use-gateway-request}.ts`, `apps/desktop/src/app/session/hooks/{use-session-state-cache,
+use-session-actions/index,use-message-stream/{index,gateway-event}}.ts`,
+`apps/desktop/src/store/{gateway,live-session-status,live-sync,session-states,
+session-dot-state}.ts`, `apps/desktop/electron/connection-apply.ts`, and their
+focused tests/bridge declarations.
+
+Focused verification:
+
+```bash
+cd apps/desktop
+NODE_ENV=test npm run test:ui -- \
+  src/app/contrib/hooks/live-status-reap.test.ts \
+  src/app/gateway/hooks/use-gateway-boot.test.tsx \
+  src/app/gateway/hooks/use-gateway-request.test.ts \
+  src/app/session/hooks/use-message-stream/interim-sealing.test.tsx \
+  src/app/session/hooks/use-message-stream/session-reclaimed.test.tsx \
+  src/app/session/hooks/use-session-state-cache.test.tsx \
+  src/store/live-sync.test.ts \
+  src/store/session-dot-state.test.ts
+NODE_ENV=test npm run test:desktop:platforms -- electron/connection-apply.test.ts
+npm run typecheck
+```
+
+Related upstream work includes PRs `#45653` and `#71475` plus issue `#51058`,
+but those references cover narrower reconnect symptoms. Drop this carry only
+after upstream provides equivalent cache ownership, stale-async fencing,
+secondary-profile reconciliation, reclaim eviction, and profile-qualified
+status/event routing, with the focused invariants above still passing.
+
 ## Axiom Desktop tabbed Update Control
 
 The bundled, opt-in **Update Control** plugin is a singleton main-pane tab, not

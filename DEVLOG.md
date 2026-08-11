@@ -1,5 +1,37 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-11 — Harden Desktop session convergence across reconnects and profiles
+
+### Summary
+
+Closed the cross-layer races that let transcript hydration, gateway reconnects,
+runtime reclamation, and live-status snapshots drift apart while switching
+chats or hot-swapping profiles. The protected carry is implemented by
+`6616b11bef` and follow-up `7d37b0ef4a`.
+
+### Protected behavior
+
+- Dispatch-time gateway/profile ownership fences retries and asynchronous
+  transcript/todo/status work from mutable foreground selection.
+- Primary and secondary reconnects reconcile the exact gateway's
+  `session.active_list` through the canonical runtime cache; stale snapshots
+  cannot overwrite newer local stream edges.
+- Idle, vanished, and reclaimed runtimes fully settle or evict public/private
+  status, stream, todo, and reverse-mapping state.
+- Non-primary connection applies recreate the renderer-owned profile socket.
+- Running/attention identity and unscoped stream pins are profile-qualified, so
+  cloned profiles may safely contain the same stored session id.
+
+### Verification
+
+- Full Desktop UI suite: 3,775 tests passed.
+- Full Electron suite: 1,075 passed, 2 skipped.
+- Follow-up focused status/reconnect suite: 61 tests passed.
+- Desktop TypeScript, production build, changed-file ESLint, and diff checks passed.
+- Detailed protected files, upstream overlap (`#45653`, `#71475`, `#51058`),
+  focused commands, and drop conditions are recorded in `FORK.md`; the concise
+  operator contract is in `docs/axiom-fork-contract.md`.
+
 ## 2026-08-11 — Project previews, worktree lifecycle, and rebindable voice controls
 
 ### Summary

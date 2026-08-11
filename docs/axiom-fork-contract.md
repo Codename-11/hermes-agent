@@ -58,6 +58,26 @@ The `axiom` branch is expected to:
 9. A retained handoff is a snapshot, not a permanent merge state. Before launching the resolver, compare the marker's recorded `origin_head` and `upstream_head` against current `origin/<deploy>`. If both recorded refs are already ancestors, clear the stale marker/worktree and start a fresh deploy update; do not compare completion only against the moving current `upstream/main`. The resolver transcript streams live under an explicit advisory banner, while the parent updater remains authoritative: it validates the worktree, runs focused checks, commits, and pushes only after the child exits. Resolver failures also print the exit code plus a bounded transcript tail.
 10. There are no deploy update modes. The first host to observe upstream work publishes the reconciled artifact; any later host fast-forwards to that same `origin/<deploy>` result.
 
+## Desktop session convergence contract
+
+Concurrent Desktop chats and profile gateways must converge without borrowing
+identity or state from whichever chat/profile is currently foregrounded:
+
+- asynchronous retries, transcript/todo hydration, status snapshots, and
+  gateway events remain owned by their dispatch-time profile, gateway, stored
+  chat, and runtime;
+- reconnects reconcile `session.active_list` through the canonical runtime
+  cache on the exact primary or secondary gateway that reconnected;
+- older snapshots and polls cannot overwrite newer optimistic/streaming state;
+- idle, vanished, or reclaimed runtimes fully clear stream/status state and
+  private reverse mappings; and
+- running/attention dots, gateway retention, and unscoped stream pins are
+  profile-qualified, including when cloned profiles share a stored session id.
+
+The detailed protected-file inventory, focused verification commands, upstream
+overlap references, and drop conditions live in `FORK.md` under **Axiom Desktop
+session convergence and profile-safe live status**.
+
 ## Desktop Update Control contract
 
 The bundled **Update Control** plugin is a read-only cockpit over the existing
