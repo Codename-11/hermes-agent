@@ -1135,11 +1135,27 @@ function adoptContributedPanes(): void {
   const panes = registry.getArea('panes')
 
   const dataOf = (paneId: string) =>
-    panes.find(c => c.id === paneId)?.data as { placement?: string; dock?: PaneDockHint } | undefined
+    panes.find(c => c.id === paneId)?.data as
+      | { closeBehavior?: string; placement?: string; dock?: PaneDockHint }
+      | undefined
 
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
+
+  // Generic plugin panes are never dismissed (Close disables the plugin
+  // instead) — drop stale entries left by the old behavior so they re-adopt.
+  // Reopenable singleton tabs explicitly opt into dismissal; that state is
+  // intentional and must survive unrelated registry refreshes.
+  for (const pane of panes) {
+    if (
+      pane.source?.startsWith('plugin:') &&
+      dataOf(pane.id)?.closeBehavior !== 'dismiss' &&
+      $dismissedPanes.get().has(pane.id)
+    ) {
+      setDismissed(pane.id, false)
+    }
+  }
 
   const dismissed = $dismissedPanes.get()
 

@@ -320,8 +320,9 @@ export function ChatSidebar({
     () =>
       navContributions.flatMap(c => {
         const data = c.data as Partial<SidebarNavContribution> | undefined
+        const route = data?.path?.startsWith('/') ? data.path : undefined
 
-        if (!data?.path?.startsWith('/') || !data.label) {
+        if (!data?.label || (!route && !data.onSelect)) {
           return []
         }
 
@@ -332,7 +333,8 @@ export function ChatSidebar({
             id: c.id,
             label: data.label,
             icon: (props: { className?: string }) => <Codicon name={codicon} {...props} />,
-            route: data.path
+            onSelect: data.onSelect,
+            route
           }
         ]
       }),
@@ -1452,7 +1454,7 @@ export function ChatSidebar({
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
               {[...SIDEBAR_NAV, ...contributedNav].map(item => {
-                const isInteractive = Boolean(item.action) || Boolean(item.route)
+                const isInteractive = Boolean(item.action) || Boolean(item.onSelect) || Boolean(item.route)
 
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
@@ -1488,6 +1490,12 @@ export function ChatSidebar({
                       // change which profile that is.
                       if (isNewSession) {
                         $newChatProfile.set(null)
+                      }
+
+                      if (item.onSelect) {
+                        item.onSelect()
+
+                        return
                       }
 
                       onNavigate(item)

@@ -13,7 +13,8 @@ import {
   isPaneVisible,
   revealTreePane,
   setTreeGroupMinimized,
-  togglePaneVisible
+  togglePaneVisible,
+  watchContributedPanes
 } from './store'
 
 // The bug class, across EVERY pane kind — not just the terminal she reported.
@@ -128,7 +129,7 @@ describe('the toggle round-trip', () => {
 })
 
 describe('a dismissible plugin main tab', () => {
-  it('closes without disabling its contribution and reopens focused', () => {
+  it('stays dismissed across later registry changes, then reopens focused', () => {
     const paneId = 'update-control:panel'
 
     disposers.push(
@@ -142,12 +143,24 @@ describe('a dismissible plugin main tab', () => {
       })
     )
     $layoutTree.set(group(['workspace', paneId], { active: paneId, id: 'g-main' }))
+    watchContributedPanes()
 
     closeTreePane(paneId)
 
     expect(allPaneIds($layoutTree.get()!)).not.toContain(paneId)
     expect($dismissedPanes.get()).toContain(paneId)
     expect(registry.getArea('panes').some(contribution => contribution.id === paneId)).toBe(true)
+
+    const disposeLatePane = registry.register({
+      area: 'panes',
+      id: 'late-pane',
+      data: { placement: 'right' },
+      render: () => null
+    })
+
+    expect(allPaneIds($layoutTree.get()!)).not.toContain(paneId)
+    expect($dismissedPanes.get()).toContain(paneId)
+    disposeLatePane()
 
     revealTreePane(paneId)
 
