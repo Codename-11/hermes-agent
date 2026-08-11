@@ -125,7 +125,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
   sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
-  listRemoteProfilesForConnection: payload => ipcRenderer.invoke('hermes:connection-config:list-remote-profiles', payload),
+  listRemoteProfilesForConnection: payload =>
+    ipcRenderer.invoke('hermes:connection-config:list-remote-profiles', payload),
   pinRemoteProfileConnection: payload => ipcRenderer.invoke('hermes:connection-config:pin-remote-profile', payload),
   oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
@@ -371,6 +372,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   updates: {
     check: () => ipcRenderer.invoke('hermes:updates:check'),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
+    status: () => ipcRenderer.invoke('hermes:updates:stage:status'),
+    prepare: () => ipcRenderer.invoke('hermes:updates:stage:prepare'),
+    discard: () => ipcRenderer.invoke('hermes:updates:stage:discard'),
+    restartAndApply: () => ipcRenderer.invoke('hermes:updates:stage:restart-and-apply'),
+    history: () => ipcRenderer.invoke('hermes:updates:history'),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
     onProgress: callback => {

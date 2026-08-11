@@ -116,9 +116,7 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      listRemoteProfilesForConnection: (
-        payload: DesktopConnectionConfigInput
-      ) => Promise<DesktopRemoteProfilesResult>
+      listRemoteProfilesForConnection: (payload: DesktopConnectionConfigInput) => Promise<DesktopRemoteProfilesResult>
       pinRemoteProfileConnection: (payload: DesktopPinRemoteProfileInput) => Promise<DesktopConnectionConfig>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
@@ -330,6 +328,11 @@ declare global {
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
+        status: () => Promise<DesktopUpdateStageStatus>
+        prepare: () => Promise<DesktopUpdatePrepareResult>
+        discard: () => Promise<DesktopUpdateDiscardResult>
+        restartAndApply: () => Promise<DesktopUpdateRestartResult>
+        history: () => Promise<DesktopUpdateHistoryEntry[]>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
@@ -438,6 +441,96 @@ export interface DesktopUpdateCommit {
   summary: string
   author: string
   at: number
+}
+
+export interface DesktopUpdateStageManifest {
+  schemaVersion: 1
+  branch: string
+  baseSha: string
+  targetSha: string
+  installRoot: string
+  artifactPath: string
+  artifactSha256: string
+  createdAt: number
+}
+
+export type DesktopUpdateStagePhase =
+  | 'idle'
+  | 'fetching'
+  | 'preparing-dependencies'
+  | 'building'
+  | 'verifying'
+  | 'ready'
+  | 'applying'
+  | 'invalidated'
+  | 'failed'
+
+export type DesktopUpdateStageInvalidReason =
+  | 'branch-changed'
+  | 'head-changed'
+  | 'target-changed'
+  | 'install-root-changed'
+  | 'missing-artifact'
+  | 'artifact-hash-mismatch'
+
+export interface DesktopUpdateStageProgress {
+  phase: DesktopUpdateStagePhase
+  message?: string
+  percent?: number
+  logPath?: string
+}
+
+export interface DesktopUpdateStageStatus extends DesktopUpdateStageProgress {
+  supported: boolean
+  manifest?: DesktopUpdateStageManifest
+  reason?: DesktopUpdateStageInvalidReason | 'malformed' | 'missing'
+}
+
+export interface DesktopUpdatePrepareResult {
+  ok: boolean
+  status: DesktopUpdateStageStatus
+  error?: string
+}
+
+export interface DesktopUpdateDiscardResult {
+  ok: boolean
+  discarded: boolean
+  error?: string
+}
+
+export interface DesktopUpdateRestartResult {
+  ok: boolean
+  applying?: boolean
+  fallback?: boolean
+  error?: string
+}
+
+export type DesktopUpdateHistoryPhase = 'prepare' | 'apply'
+export type DesktopUpdateHistoryResult = 'completed' | 'failed' | 'cancelled'
+export type DesktopUpdateChangeCategory = 'features' | 'fixes' | 'performance' | 'refactors' | 'docs' | 'other'
+
+export interface DesktopUpdateHistoryCommit {
+  sha: string
+  subject: string
+  author: string
+  at?: number
+  category?: DesktopUpdateChangeCategory
+}
+
+export interface DesktopUpdateHistoryEntry {
+  id: string
+  at: number
+  phase: DesktopUpdateHistoryPhase
+  result: DesktopUpdateHistoryResult
+  branch?: string
+  baseSha?: string
+  targetSha?: string
+  message?: string
+  commits?: DesktopUpdateHistoryCommit[]
+  shortstat?: string
+  filesChanged?: number
+  briefPath?: string
+  logPath?: string
 }
 
 export interface DesktopUpdateStatus {

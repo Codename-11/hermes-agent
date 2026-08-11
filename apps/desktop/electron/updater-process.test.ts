@@ -5,8 +5,10 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  buildStagedHandoffArgs,
   MARKER_SELF_ADOPT_EPOCH_MS,
   resolveStagedUpdaterBinary,
+  resolveStageUpdateScript,
   resolveUpdateScriptHandoff,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
@@ -231,5 +233,65 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
     root,
     '-Branch',
     'main'
+  ])
+})
+
+test('resolveStageUpdateScript builds the repo-owned preparation recipe', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const scriptPath = path.join(root, 'scripts', 'desktop-stage-update.ps1')
+
+  assert.deepEqual(
+    resolveStageUpdateScript(
+      root,
+      {
+        installRoot: root,
+        branch: 'main',
+        baseSha: 'a'.repeat(40),
+        targetSha: 'b'.repeat(40),
+        stageRoot: String.raw`C:\Users\hermes\.hermes\update-stage\desktop`
+      },
+      { isWindows: true, fileExists: candidate => candidate === scriptPath }
+    ),
+    {
+      command: 'powershell',
+      scriptPath,
+      args: [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        scriptPath,
+        '-InstallRoot',
+        root,
+        '-Branch',
+        'main',
+        '-BaseSha',
+        'a'.repeat(40),
+        '-TargetSha',
+        'b'.repeat(40),
+        '-StageRoot',
+        String.raw`C:\Users\hermes\.hermes\update-stage\desktop`
+      ]
+    }
+  )
+})
+
+test('resolveStageUpdateScript is unavailable off Windows or without the stage script', () => {
+  const request = {
+    installRoot: '/opt/hermes',
+    branch: 'main',
+    baseSha: 'a'.repeat(40),
+    targetSha: 'b'.repeat(40),
+    stageRoot: '/home/hermes/.hermes/update-stage/desktop'
+  }
+
+  assert.equal(resolveStageUpdateScript('/opt/hermes', request, { isWindows: false, fileExists: () => true }), null)
+  assert.equal(resolveStageUpdateScript('/opt/hermes', request, { isWindows: true, fileExists: () => false }), null)
+})
+
+test('buildStagedHandoffArgs adds only the pinned manifest argument', () => {
+  assert.deepEqual(buildStagedHandoffArgs('/home/hermes/.hermes/update-stage/desktop/stage.json'), [
+    '-StageManifest',
+    '/home/hermes/.hermes/update-stage/desktop/stage.json'
   ])
 })

@@ -20,6 +20,61 @@ export interface UpdateScriptHandoff {
   scriptPath: string
 }
 
+export interface StageUpdateRequest {
+  installRoot: string
+  branch: string
+  baseSha: string
+  targetSha: string
+  stageRoot: string
+}
+
+/** Build the pure PowerShell recipe used to prepare a pinned stage. */
+export function resolveStageUpdateScript(
+  updateRoot: string,
+  request: StageUpdateRequest,
+  deps: ResolveUpdateScriptHandoffDeps = {}
+): UpdateScriptHandoff | null {
+  const isWindows = deps.isWindows ?? process.platform === 'win32'
+
+  if (!isWindows) {
+    return null
+  }
+
+  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-stage-update.ps1')
+  const exists = deps.fileExists ?? stagedFileExists
+
+  if (!exists(scriptPath)) {
+    return null
+  }
+
+  return {
+    command: 'powershell',
+    scriptPath,
+    args: [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      scriptPath,
+      '-InstallRoot',
+      request.installRoot,
+      '-Branch',
+      request.branch,
+      '-BaseSha',
+      request.baseSha,
+      '-TargetSha',
+      request.targetSha,
+      '-StageRoot',
+      request.stageRoot
+    ]
+  }
+}
+
+/** Extra arguments that make the detached updater consume one verified stage. */
+export function buildStagedHandoffArgs(stageManifestPath: string): string[] {
+  return ['-StageManifest', stageManifestPath]
+}
+
 /**
  * Repo-owned Windows update hand-off (frozen-binary escape hatch).
  *
