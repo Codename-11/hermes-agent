@@ -9,8 +9,12 @@ describe('Update Control plugin registration', () => {
 
     plugin.register({ panes: { reveal }, registerMany } as never)
 
-    expect(plugin.defaultEnabled).toBe(false)
-    expect(plugin.id).toBe('update-control')
+    expect(plugin).toMatchObject({
+      defaultEnabled: false,
+      id: 'update-control',
+      name: 'Update Control'
+    })
+    expect(registerMany).toHaveBeenCalledTimes(1)
 
     const contributions = registerMany.mock.calls[0]?.[0] as Array<{
       area: string
