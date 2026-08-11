@@ -19,7 +19,7 @@
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
-import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { allPaneIds, findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
   $activeTreeGroup,
   $layoutTree,
@@ -670,23 +670,25 @@ export function openSessionTile(
   }
 }
 
-/** ⌘W on the MAIN tab: the next session tab stacked WITH the workspace, to
- *  shift into main. Walks the workspace group's strip from the workspace tab
- *  outward (the tab after it first, then wrapping to the ones before), and
- *  returns the first session tile's stored id. Null when the workspace has no
- *  session tab stacked beside it (⌘W then stays the no-op it was). */
+/** ⌘W on the MAIN tab: the next session tab to shift into main. Prefer the
+ *  workspace's own strip (after it first, then wrapping before it); if that
+ *  strip has none, fall back to the first session tile elsewhere in the tree.
+ *  The fallback prevents a blank workspace tab becoming an uncloseable visual
+ *  trap merely because the other sessions were split into another zone. */
 export function nextSessionTileForWorkspace(): null | string {
   const tree = $layoutTree.get()
   const group = tree ? findGroupOfPane(tree, 'workspace') : null
 
-  if (!group) {
+  if (!tree || !group) {
     return null
   }
 
   const tiles = $sessionTiles.get()
   const idx = group.panes.indexOf('workspace')
   // After the workspace tab first, then the ones before it (nearest-out).
-  const ordered = [...group.panes.slice(idx + 1), ...group.panes.slice(0, idx).reverse()]
+  const local = [...group.panes.slice(idx + 1), ...group.panes.slice(0, idx).reverse()]
+  const elsewhere = allPaneIds(tree).filter(paneId => !group.panes.includes(paneId))
+  const ordered = [...local, ...elsewhere]
 
   for (const paneId of ordered) {
     if (paneId.startsWith(TILE_PANE_PREFIX)) {

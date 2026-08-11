@@ -19,11 +19,15 @@ describe('Update Control plugin registration', () => {
       render?: unknown
     }>
 
-    expect(contributions.map(contribution => contribution.id)).toEqual(['panel', 'status', 'open'])
+    expect(contributions.map(contribution => contribution.id)).toEqual(['panel', 'nav', 'status', 'open'])
     expect(contributions.find(contribution => contribution.id === 'panel')).toMatchObject({
       area: 'panes',
       title: 'Update Control',
       data: { closeBehavior: 'dismiss', placement: 'main' }
+    })
+    expect(contributions.find(contribution => contribution.id === 'nav')).toMatchObject({
+      area: 'sidebar.nav',
+      data: { label: 'Update Control' }
     })
     expect(contributions.find(contribution => contribution.id === 'status')?.render).toBeTypeOf('function')
     expect(contributions.find(contribution => contribution.id === 'open')?.data?.label).toBe('Update Control: Open')

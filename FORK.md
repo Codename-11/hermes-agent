@@ -44,16 +44,25 @@ The bundled, opt-in **Update Control** plugin is a singleton main-pane tab, not
 a workspace route. It must stack with session tabs, participate in the standard
 tab menu/keyboard lifecycle, and remain explicitly closeable. Closing dismisses
 only `update-control:panel`; it must not disable the plugin or remove its
-status-bar and command-palette reopen actions.
+sidebar, status-bar, and command-palette reopen actions. Contribution-registry
+refreshes must preserve the explicit dismissal until one of those actions runs.
 
 The reusable SDK seam is plugin-scoped: a pane opts into
 `data: { closeBehavior: 'dismiss' }`, and `ctx.panes.reveal(localId)` restores,
 unhides, and focuses the namespaced pane. Generic plugin panes retain the
 existing close-to-disable behavior unless they explicitly opt in.
 
+The existing singleton in-app Browser remains directly reachable from the
+sidebar. Its row re-fronts the current URL pane without navigating it away, or
+creates that same singleton at its home page when none exists. Do not add a
+parallel browser surface.
+
 Protected files: `apps/desktop/src/plugins/update-control/`,
-`apps/desktop/src/contrib/plugin.ts`, and
-`apps/desktop/src/components/pane-shell/tree/store.ts`. Focused verification:
+`apps/desktop/src/contrib/plugin.ts`,
+`apps/desktop/src/components/pane-shell/tree/store.ts`,
+`apps/desktop/src/app/chat/sidebar/index.tsx`,
+`apps/desktop/src/store/preview.ts`, and
+`apps/desktop/src/store/session-states.ts`. Focused verification:
 
 ```bash
 cd apps/desktop
@@ -61,7 +70,9 @@ NODE_ENV=test npx vitest run --environment jsdom \
   src/plugins/update-control/plugin.test.tsx \
   src/plugins/update-control/model.test.ts \
   src/contrib/plugin.test.ts \
-  src/components/pane-shell/tree/pane-toggle-visibility.test.ts
+  src/components/pane-shell/tree/pane-toggle-visibility.test.ts \
+  src/store/preview.test.ts \
+  src/store/session-states.test.ts
 npm run typecheck
 ```
 

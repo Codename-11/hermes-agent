@@ -289,6 +289,20 @@ ctx.registerMany([
 `codicon` is a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
 id. Navigate to a route from anywhere with `host.navigate('/my-page')`.
 
+A sidebar row can also be a direct action instead of a route. This is the right
+shape for reopening a dismissible pane without replacing the current workspace
+page:
+
+```javascript
+ctx.register({
+  id: 'control-nav',
+  area: SIDEBAR_NAV_AREA,
+  data: { label: 'Control', codicon: 'settings-gear', onSelect: openControl }
+})
+```
+
+Provide either `path` or `onSelect`; rows with neither are ignored.
+
 ### Status bar and title bar
 
 Status-bar items render into the left or right cluster of the bottom bar.

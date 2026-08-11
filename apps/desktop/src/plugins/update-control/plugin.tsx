@@ -10,6 +10,8 @@ import {
   PALETTE_AREA,
   type PaletteContribution,
   PANES_AREA,
+  SIDEBAR_NAV_AREA,
+  type SidebarNavContribution,
   STATUSBAR_AREAS,
   StatusDot,
   type StatusTone,
@@ -358,6 +360,12 @@ const plugin: HermesPlugin = {
           tabLead: () => <Codicon name="cloud-download" size="0.8rem" />
         },
         render: () => <UpdateControlPane />
+      },
+      {
+        id: 'nav',
+        area: SIDEBAR_NAV_AREA,
+        order: 60,
+        data: { codicon: 'cloud-download', label: 'Update Control', onSelect: open } satisfies SidebarNavContribution
       },
       {
         id: 'status',

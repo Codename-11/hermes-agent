@@ -193,6 +193,7 @@ export const $previewServerRestartStatus = computed($previewServerRestart, resta
  *  rebuilds its webview against the new url. Files and artifacts stay keyed
  *  by identity; only the web surface is a singleton. */
 const BROWSER_TAB_ID: RightRailTabId = 'url:browser'
+const BROWSER_HOME_URL = 'https://duckduckgo.com/'
 
 export function previewTabId(target: PreviewTarget): RightRailTabId {
   return target.kind === 'url' ? BROWSER_TAB_ID : `${target.kind}:${target.url}`
@@ -224,6 +225,21 @@ export function openPreview(target: PreviewTarget, source: PreviewRecordSource =
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)
+}
+
+/** Sidebar/browser intent: re-front the existing singleton without navigating
+ * it away; create it at a useful home page only when no Browser tab exists. */
+export function openBrowser() {
+  const existing = $previewTabs.get().find(tab => tab.target.kind === 'url')
+
+  openPreview(
+    existing?.target ?? {
+      kind: 'url',
+      label: 'Browser',
+      source: BROWSER_HOME_URL,
+      url: BROWSER_HOME_URL
+    }
+  )
 }
 
 export function closeRightRailTab(tabId: string) {

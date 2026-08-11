@@ -6,9 +6,11 @@ import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
+  $sessionTiles,
   blankDraftTile,
   focusedSessionNeedsRoute,
   markSelectionRestore,
+  nextSessionTileForWorkspace,
   orderTilesByTree,
   selectionHomesToWorkspace
 } from '@/store/session-states'
@@ -38,6 +40,27 @@ describe('orderTilesByTree', () => {
     const tree = group(['workspace', tilePane('b')])
 
     expect(orderTilesByTree(tree, [tile('a'), tile('b'), tile('c')])).toEqual([tile('b'), tile('a'), tile('c')])
+  })
+})
+
+describe('nextSessionTileForWorkspace', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+    $layoutTree.set(null)
+  })
+
+  it('prefers a tab stacked directly with workspace', () => {
+    $sessionTiles.set([tile('stacked'), tile('split')])
+    $layoutTree.set(split('row', [group(['workspace', tilePane('stacked')]), group([tilePane('split')])]))
+
+    expect(nextSessionTileForWorkspace()).toBe('stacked')
+  })
+
+  it('falls back to a session tab in another split instead of trapping a blank workspace tab', () => {
+    $sessionTiles.set([tile('split')])
+    $layoutTree.set(split('row', [group(['workspace']), group([tilePane('split')])]))
+
+    expect(nextSessionTileForWorkspace()).toBe('split')
   })
 })
 

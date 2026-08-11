@@ -10,6 +10,7 @@ import {
   closePreviewForSource,
   closeRightRail,
   closeRightRailTab,
+  openBrowser,
   openPreview,
   previewTabId,
   type PreviewTarget,
@@ -80,6 +81,24 @@ describe('preview store', () => {
     expect(urlTabs).toHaveLength(1)
     expect(urlTabs[0].target.url).toBe('https://www.reddit.com')
     expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
+  })
+
+  it('opens the Browser at its home page when the sidebar has no existing browser tab', () => {
+    openBrowser()
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTarget.get()).toMatchObject({ kind: 'url', url: 'https://duckduckgo.com/' })
+    expect($rightRailActiveTabId.get()).toBe('url:browser')
+  })
+
+  it('re-fronts the existing Browser without navigating it away', () => {
+    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    openPreview(fileTarget('/work/demo.html'), 'file-browser')
+
+    openBrowser()
+
+    expect($previewTarget.get()?.url).toBe('https://news.ycombinator.com')
+    expect($rightRailActiveTabId.get()).toBe('url:browser')
   })
 
   it('re-fronts an existing tab instead of duplicating it, refreshing its target', () => {

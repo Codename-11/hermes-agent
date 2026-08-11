@@ -66,9 +66,14 @@ separate targets because they can update on different hosts and schedules.
 
 Update Control is a singleton `placement: 'main'` pane in the standard Desktop
 tab strip, not a permanent workspace route. Closing its tab dismisses only the
-pane; it must not disable the plugin or remove its status/palette entry points.
-Reopening restores and focuses the same pane through the plugin-scoped
-`ctx.panes.reveal(...)` SDK action.
+pane; it must not disable the plugin or remove its sidebar, status, or palette
+entry points. Unrelated contribution-registry refreshes must preserve that
+dismissal. Reopening from any entry point restores and focuses the same pane
+through the plugin-scoped `ctx.panes.reveal(...)` SDK action.
+
+The Desktop sidebar also exposes the existing singleton in-app Browser. Its row
+re-fronts the current Browser tab without changing its URL, or opens the Browser
+home page when no URL tab exists; it must not create a parallel browser surface.
 
 - **Client freshness** describes the Windows checkout, configured Desktop update
   branch, built Desktop artifact, and running `Hermes.exe`.
