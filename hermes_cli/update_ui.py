@@ -16,6 +16,7 @@ Two things live here so `main.cmd_update` can stay focused on git/pip logic:
 from __future__ import annotations
 
 import datetime as _dt
+import json as _json
 import subprocess
 import sys
 import threading
@@ -26,6 +27,42 @@ from typing import Iterable, Optional
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _FRAME_INTERVAL = 0.08  # seconds
+_UPDATE_HISTORY_LIMIT = 50
+
+
+def _write_json_atomic(path: Path, payload) -> bool:
+    """Write Hermes-owned update metadata without exposing partial JSON."""
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            _json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+        return True
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _append_update_history(path: Path, entry: dict) -> bool:
+    """Prepend one result to the bounded Desktop/CLI update history."""
+    existing = []
+    try:
+        loaded = _json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, list):
+            existing = [item for item in loaded if isinstance(item, dict)]
+    except (OSError, ValueError, TypeError):
+        pass
+
+    entry_id = str(entry.get("id") or "")
+    history = [entry]
+    history.extend(item for item in existing if str(item.get("id") or "") != entry_id)
+    return _write_json_atomic(path, history[:_UPDATE_HISTORY_LIMIT])
 
 
 def _stdout_is_tty() -> bool:
@@ -514,6 +551,36 @@ def write_update_brief(
         "repo": str(repo),
         "range": f"{old_sha[:10]}..{new_sha[:10]}",
     }
+
+    history_entry = {
+        "schema": 1,
+        "id": f"{stamp}-{new_sha[:10]}",
+        "status": "completed",
+        "finishedAt": int(now.timestamp() * 1000),
+        "branch": branch,
+        "oldSha": old_sha,
+        "newSha": new_sha,
+        "range": f"{old_sha[:10]}..{new_sha[:10]}",
+        "summary": summary_text,
+        "stat": stat,
+        "filesChanged": files_changed,
+        "briefPath": str(path),
+        "commits": [
+            {
+                "sha": sha,
+                "summary": subject,
+                "author": author,
+                "category": category,
+            }
+            for sha, subject, author, category in commits
+        ],
+    }
+    history_entry_path = path.with_suffix(".json")
+    if _write_json_atomic(history_entry_path, history_entry):
+        meta["history_entry_path"] = str(history_entry_path)
+        history_path = briefs.parent / "update-history.json"
+        if _append_update_history(history_path, history_entry):
+            meta["history_path"] = str(history_path)
 
     return UpdateBrief(path=path, latest=latest, body=body, digest=digest, meta=meta)
 
