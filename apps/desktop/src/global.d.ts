@@ -556,10 +556,14 @@ export interface DesktopUpdateStatus {
   currentVersion?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]
+  /** Deploy branch commits not yet present in the running checkout. */
+  deployCommits?: DesktopUpdateCommit[]
   upstreamBranch?: string
   upstreamSha?: string
   upstreamAhead?: number
   upstreamBehind?: number
+  /** Upstream commits not yet reconciled into the deploy branch. */
+  upstreamCommits?: DesktopUpdateCommit[]
   deployBranch?: string
   deployBehind?: number
   backendMessage?: string

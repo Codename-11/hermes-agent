@@ -1,14 +1,13 @@
-import { host } from '@hermes/plugin-sdk'
 import { describe, expect, it, vi } from 'vitest'
 
 import plugin from './plugin'
 
 describe('Update Control plugin registration', () => {
-  it('ships enabled and contributes a route-backed sidebar page without registering a startup pane', () => {
+  it('ships enabled and contributes a reopenable main tab beside existing sessions', () => {
     const registerMany = vi.fn()
-    const navigate = vi.spyOn(host, 'navigate').mockImplementation(() => undefined)
+    const reveal = vi.fn()
 
-    plugin.register({ registerMany } as never)
+    plugin.register({ panes: { reveal }, registerMany } as never)
 
     expect(plugin).toMatchObject({
       defaultEnabled: true,
@@ -19,25 +18,28 @@ describe('Update Control plugin registration', () => {
 
     const contributions = registerMany.mock.calls[0]?.[0] as Array<{
       area: string
-      data?: { label?: string; path?: string; run?: () => void }
+      data?: { label?: string; onSelect?: () => void; path?: string; run?: () => void }
       id: string
       render?: unknown
+      title?: string
     }>
 
-    expect(contributions.map(contribution => contribution.id)).toEqual(['page', 'nav', 'status', 'open'])
-    expect(contributions.find(contribution => contribution.id === 'page')).toMatchObject({
-      area: 'routes',
-      data: { path: '/update-control' }
+    expect(contributions.map(contribution => contribution.id)).toEqual(['panel', 'nav', 'status', 'open'])
+    expect(contributions.find(contribution => contribution.id === 'panel')).toMatchObject({
+      area: 'panes',
+      data: { closeBehavior: 'dismiss', placement: 'main' },
+      title: 'Update Control'
     })
-    expect(contributions.some(contribution => contribution.area === 'panes')).toBe(false)
     expect(contributions.find(contribution => contribution.id === 'nav')).toMatchObject({
       area: 'sidebar.nav',
-      data: { label: 'Update Control', path: '/update-control' }
+      data: { label: 'Update Control' }
     })
     expect(contributions.find(contribution => contribution.id === 'status')?.render).toBeTypeOf('function')
     expect(contributions.find(contribution => contribution.id === 'open')?.data?.label).toBe('Update Control: Open')
 
+    contributions.find(contribution => contribution.id === 'nav')?.data?.onSelect?.()
     contributions.find(contribution => contribution.id === 'open')?.data?.run?.()
-    expect(navigate).toHaveBeenCalledWith('/update-control')
+    expect(reveal).toHaveBeenNthCalledWith(1, 'panel')
+    expect(reveal).toHaveBeenNthCalledWith(2, 'panel')
   })
 })

@@ -29,9 +29,11 @@ function CommitRow({ commit }: { commit: ReturnType<typeof categorizeCommits>[nu
   )
 }
 
-export function PendingChanges({ commits, filesChanged, shortstat }: {
+export function PendingChanges({ commits, description, filesChanged, heading = 'Pending changes', shortstat }: {
   commits: readonly UpdateCommit[]
+  description?: string
   filesChanged?: number
+  heading?: string
   shortstat?: string
 }) {
   const headingId = useId()
@@ -43,10 +45,10 @@ export function PendingChanges({ commits, filesChanged, shortstat }: {
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold text-(--ui-text-primary)" id={headingId}>
-            Pending changes
+            {heading}
           </h2>
           <p className="mt-1 text-xs text-(--ui-text-tertiary)">
-            {commits.length} commit{commits.length === 1 ? '' : 's'}
+            {description ?? `${commits.length} commit${commits.length === 1 ? '' : 's'}`}
             {filesChanged != null ? ` · ${filesChanged} changed files` : ''}
             {shortstat ? ` · ${shortstat}` : ''}
           </p>

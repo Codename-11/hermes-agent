@@ -128,7 +128,9 @@ const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateSta
   status
     ? {
         ...status,
-        commits: status.commits?.map(commit => ({ ...commit }))
+        commits: status.commits?.map(commit => ({ ...commit })),
+        deployCommits: status.deployCommits?.map(commit => ({ ...commit })),
+        upstreamCommits: status.upstreamCommits?.map(commit => ({ ...commit }))
       }
     : null
 

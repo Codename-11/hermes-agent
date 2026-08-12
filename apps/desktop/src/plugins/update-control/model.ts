@@ -18,9 +18,12 @@ export interface UpdateControlStatus extends UpdateSummary {
   message?: string
   backendMessage?: string
   commits?: UpdateCommit[]
+  deployCommits?: UpdateCommit[]
   fetchedAt?: number
   upstreamBranch?: string
+  upstreamSha?: string
   upstreamBehind?: number
+  upstreamCommits?: UpdateCommit[]
   deployBranch?: string
   deployBehind?: number
   fallbackCommand?: string

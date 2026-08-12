@@ -4426,13 +4426,15 @@ def _backend_deploy_update_breakdown(limit: int = 20) -> Dict[str, Any]:
     upstream_behind = max(upstream_count or 0, 0)
 
     total = deploy_behind + upstream_behind
-    commits: List[Dict[str, Any]] = []
-    remaining = limit
-    if deploy_behind > 0 and remaining > 0:
-        commits.extend(_commit_log_range("HEAD", remote_ref, remaining))
-        remaining = max(0, limit - len(commits))
-    if upstream_behind > 0 and remaining > 0:
-        commits.extend(_commit_log_range(remote_ref, "upstream/main", remaining))
+    deploy_commits = (
+        _commit_log_range("HEAD", remote_ref, limit) if deploy_behind > 0 else []
+    )
+    upstream_commits = (
+        _commit_log_range(remote_ref, "upstream/main", limit)
+        if upstream_behind > 0
+        else []
+    )
+    commits = (deploy_commits + upstream_commits)[:limit]
 
     if total <= 0:
         message = "You're on the latest version."
@@ -4457,6 +4459,8 @@ def _backend_deploy_update_breakdown(limit: int = 20) -> Dict[str, Any]:
         "update_available": total > 0,
         "message": message,
         "commits": commits,
+        "deploy_commits": deploy_commits,
+        "upstream_commits": upstream_commits,
     }
 
 

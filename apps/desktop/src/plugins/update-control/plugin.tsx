@@ -7,8 +7,6 @@ import {
   host,
   PALETTE_AREA,
   type PaletteContribution,
-  type RouteContribution,
-  ROUTES_AREA,
   SegmentedControl,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
@@ -38,7 +36,6 @@ import {
 import { PendingChanges } from './pending-changes'
 import { UpdateActions } from './update-actions'
 
-const UPDATE_CONTROL_ROUTE = '/update-control'
 const ROOT_KEY = ['update-control'] as const
 
 const TARGET_OPTIONS = [
@@ -136,41 +133,58 @@ function UpdateStatusIndicator({ open }: { open: () => void }) {
 }
 
 function TargetSummary({ status, target }: { status: UpdateControlStatus | null; target: UpdateTarget }) {
-  const branch = status?.currentBranch ?? status?.branch ?? '—'
-  const current = status?.currentSha ?? status?.currentVersion
   const message = status?.message ?? status?.backendMessage ?? status?.reason
+  const localRevision = status?.currentSha ? shortSha(status.currentSha) : status?.currentVersion ?? '—'
+  const deployBranch = status?.deployBranch ?? status?.branch ?? 'Axiom deploy branch'
+  const deploySha = status?.targetSha
+  const upstreamBranch = status?.upstreamBranch ?? 'upstream/main'
+  const upstreamSha = status?.upstreamSha
+
+  const layers = [
+    {
+      detail: `${status?.upstreamBehind ?? 0} awaiting reconciliation`,
+      label: 'Hermes upstream',
+      ref: upstreamBranch,
+      revision: shortSha(upstreamSha),
+      tone: (status?.upstreamBehind ?? 0) > 0 ? 'warn' : 'good'
+    },
+    {
+      detail: `${status?.deployBehind ?? status?.behind ?? 0} awaiting local apply`,
+      label: 'Axiom',
+      ref: deployBranch,
+      revision: shortSha(deploySha),
+      tone: (status?.deployBehind ?? status?.behind ?? 0) > 0 ? 'warn' : 'good'
+    },
+    {
+      detail: target === 'client' ? 'This Desktop checkout' : 'Connected backend',
+      label: 'Local',
+      ref: status?.currentBranch ?? status?.branch ?? 'running install',
+      revision: localRevision,
+      tone: status?.error ? 'bad' : status?.supported ? 'good' : 'muted'
+    }
+  ] as const
 
   return (
     <section aria-label={`${target} status`} className="py-4">
-      <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
-        <div>
-          <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-(--ui-text-quaternary)">Current</p>
-          <p className="mt-1 truncate font-mono text-xs text-(--ui-text-primary)">{shortSha(current)}</p>
-        </div>
-        <div>
-          <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-(--ui-text-quaternary)">Target</p>
-          <p className="mt-1 truncate font-mono text-xs text-(--ui-text-primary)">{shortSha(status?.targetSha)}</p>
-        </div>
-        <div>
-          <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-(--ui-text-quaternary)">Branch</p>
-          <p className="mt-1 truncate text-xs text-(--ui-text-primary)">{branch}</p>
-        </div>
-        <div>
-          <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-(--ui-text-quaternary)">Behind</p>
-          <p className="mt-1 text-xs text-(--ui-text-primary)">{status?.supported ? (status.behind ?? 0) : '—'}</p>
-        </div>
+      <div className="grid gap-px overflow-hidden rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-stroke-tertiary) md:grid-cols-3">
+        {layers.map((layer, index) => (
+          <div className="min-w-0 bg-(--ui-surface-background) p-3.5" key={layer.label}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <StatusDot tone={layer.tone} />
+                <h2 className="truncate text-xs font-semibold text-(--ui-text-primary)">{layer.label}</h2>
+              </div>
+              <span className="text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
+                {index + 1} / 3
+              </span>
+            </div>
+            <p className="mt-3 truncate text-xs text-(--ui-text-secondary)">{layer.ref}</p>
+            <p className="mt-1 font-mono text-[0.6875rem] text-(--ui-text-tertiary)">{layer.revision}</p>
+            <p className="mt-2 text-[0.6875rem] leading-4 text-(--ui-text-quaternary)">{layer.detail}</p>
+          </div>
+        ))}
       </div>
       {message ? <p className="mt-3 text-xs leading-5 text-(--ui-text-tertiary)">{message}</p> : null}
-      {status?.deployBehind != null || status?.upstreamBehind != null ? (
-        <p className="mt-2 text-[0.6875rem] text-(--ui-text-quaternary)">
-          {[
-            status.deployBehind != null ? `${status.deployBranch || 'deploy'}: ${status.deployBehind} behind` : null,
-            status.upstreamBehind != null ? `${status.upstreamBranch || 'upstream'}: ${status.upstreamBehind} behind` : null
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        </p>
-      ) : null}
     </section>
   )
 }
@@ -265,7 +279,8 @@ function UpdateControlPane() {
   const stage = (stageQuery.data ?? null) as UpdateStageSnapshot | null
   const history = (historyQuery.data ?? []) as UpdateHistoryEntry[]
   const backendApply = (backendApplyQuery.data ?? null) as BackendUpdateApplySnapshot | null
-  const commits = stage?.commits ?? status?.commits ?? []
+  const deployCommits = stage?.commits ?? status?.deployCommits ?? status?.commits ?? []
+  const upstreamCommits = status?.upstreamCommits ?? []
   const queryError = statusQuery.error || stageQuery.error || historyQuery.error
 
   const primaryLoading =
@@ -342,7 +357,22 @@ function UpdateControlPane() {
 
         {!primaryLoading && statusQuery.isSuccess ? (
           <div className="mt-6">
-            <PendingChanges commits={commits} filesChanged={stage?.filesChanged} shortstat={stage?.shortstat} />
+            <PendingChanges
+              commits={deployCommits}
+              description={`${status?.deployBehind ?? deployCommits.length} commit${(status?.deployBehind ?? deployCommits.length) === 1 ? '' : 's'} between Local and Axiom`}
+              filesChanged={stage?.filesChanged}
+              heading="Axiom changes"
+              shortstat={stage?.shortstat}
+            />
+          </div>
+        ) : null}
+        {!primaryLoading && statusQuery.isSuccess ? (
+          <div className="mt-6">
+            <PendingChanges
+              commits={upstreamCommits}
+              description={`${status?.upstreamBehind ?? upstreamCommits.length} commit${(status?.upstreamBehind ?? upstreamCommits.length) === 1 ? '' : 's'} between Axiom and Hermes upstream${upstreamCommits.length > 0 && (status?.upstreamBehind ?? 0) > upstreamCommits.length ? ` · showing latest ${upstreamCommits.length}` : ''}`}
+              heading="Hermes upstream history"
+            />
           </div>
         ) : null}
         <div className="mt-6">
@@ -370,20 +400,21 @@ const plugin: HermesPlugin = {
   name: 'Update Control',
   defaultEnabled: true,
   register(ctx) {
-    const open = () => host.navigate(UPDATE_CONTROL_ROUTE)
+    const open = () => ctx.panes.reveal('panel')
 
     ctx.registerMany([
       {
-        id: 'page',
-        area: ROUTES_AREA,
-        data: { path: UPDATE_CONTROL_ROUTE } satisfies RouteContribution,
+        id: 'panel',
+        area: 'panes',
+        title: 'Update Control',
+        data: { closeBehavior: 'dismiss', placement: 'main' },
         render: () => <UpdateControlPane />
       },
       {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
         order: 60,
-        data: { codicon: 'cloud-download', label: 'Update Control', path: UPDATE_CONTROL_ROUTE } satisfies SidebarNavContribution
+        data: { codicon: 'cloud-download', label: 'Update Control', onSelect: open } satisfies SidebarNavContribution
       },
       {
         id: 'status',

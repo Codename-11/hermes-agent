@@ -883,6 +883,8 @@ class TestUpdateCheckEndpoint:
                 "update_available": True,
                 "message": "Pending backend update: 1 deploy branch commit, 6 upstream commits.",
                 "commits": [{"sha": "def5678", "summary": "fix: y", "author": "b", "at": 2}],
+                "deploy_commits": [{"sha": "def5678", "summary": "fix: y", "author": "b", "at": 2}],
+                "upstream_commits": [{"sha": "up12345", "summary": "feat: upstream", "author": "Nous", "at": 3}],
             },
         )
 
@@ -895,6 +897,8 @@ class TestUpdateCheckEndpoint:
         assert body["update_available"] is True
         assert "upstream commits" in body["message"]
         assert body["commits"][0]["summary"] == "fix: y"
+        assert body["deploy_commits"][0]["summary"] == "fix: y"
+        assert body["upstream_commits"][0]["summary"] == "feat: upstream"
 
     def test_up_to_date_omits_commits(self, monkeypatch):
         import hermes_cli.web_server as ws

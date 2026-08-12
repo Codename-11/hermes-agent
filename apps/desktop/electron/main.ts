@@ -2630,7 +2630,7 @@ async function resolveHealedBranch(updateRoot, branch) {
   return 'main'
 }
 
-async function readUpstreamDivergence(updateRoot) {
+async function readUpstreamDivergence(updateRoot, deployRef) {
   const remote = await runGit(['remote', 'get-url', 'upstream'], { cwd: updateRoot })
   if (remote.code !== 0) {
     return null
@@ -2645,17 +2645,20 @@ async function readUpstreamDivergence(updateRoot) {
   const git = args => runGit(args, { cwd: updateRoot }).then(r => (r.code === 0 ? r.stdout.trim() : ''))
   const [upstreamSha, counts] = await Promise.all([
     git(['rev-parse', 'upstream/main']),
-    git(['rev-list', '--left-right', '--count', 'upstream/main...HEAD'])
+    git(['rev-list', '--left-right', '--count', `upstream/main...${deployRef}`])
   ])
   const [behindStr, aheadStr] = counts.split(/\s+/)
   const upstreamBehind = Number.parseInt(behindStr, 10) || 0
   const upstreamAhead = Number.parseInt(aheadStr, 10) || 0
+  const upstreamCommits =
+    upstreamBehind > 0 ? await readCommitRange(updateRoot, deployRef, 'upstream/main') : []
 
   return {
     upstreamBranch: 'upstream/main',
     upstreamSha: upstreamSha || undefined,
     upstreamAhead,
-    upstreamBehind
+    upstreamBehind,
+    upstreamCommits
   }
 }
 
@@ -2760,7 +2763,7 @@ async function checkUpdates() {
   })
 
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
-  const upstream = await readUpstreamDivergence(updateRoot)
+  const upstream = await readUpstreamDivergence(updateRoot, `origin/${branch}`)
 
   return {
     supported: true,
@@ -2770,6 +2773,7 @@ async function checkUpdates() {
     currentSha,
     targetSha,
     commits,
+    deployCommits: commits,
     ...(upstream ?? {}),
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
@@ -2778,11 +2782,15 @@ async function checkUpdates() {
 }
 
 async function readCommitLog(cwd, branch) {
+  return readCommitRange(cwd, 'HEAD', `origin/${branch}`)
+}
+
+async function readCommitRange(cwd, base, target) {
   const SEP = '\x1f'
   const REC = '\x1e'
 
   const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
+    ['log', `${base}..${target}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
   )
 

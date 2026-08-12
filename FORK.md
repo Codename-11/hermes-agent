@@ -126,7 +126,15 @@ Plugins may control this lifecycle only through the typed `host.updates` methods
 
 Update history is the bounded Hermes-owned `logs/update-history.json` index. Successful CLI updates retain Markdown briefs plus structured sidecars; failed preparation and detached apply results are reconciled into the same index. Update Control presents categorized pending commits, staged progress/recovery, and completed/failed history from this contract.
 
+Every selected install (Desktop client or connected backend) must expose the update lineage as three distinct authorities: **Hermes upstream** (`upstream/main`) → **Axiom** (`origin/<deploy>`) → **Local** (the running checkout). The status contract keeps deploy commits (`Local..Axiom`) separate from upstream commits (`Axiom..upstream/main`); Update Control renders both ranges independently so upstream activity is readable at a glance without double-counting deploy-only work.
+
 Protected files: `apps/desktop/src/plugins/update-control/`,
+`apps/desktop/electron/main.ts`,
+`apps/desktop/src/global.d.ts`,
+`apps/desktop/src/sdk/index.ts`,
+`apps/desktop/src/store/updates.ts`,
+`apps/desktop/src/types/hermes.ts`,
+`hermes_cli/web_server.py`,
 `apps/desktop/src/contrib/plugin.ts`,
 `apps/desktop/src/components/pane-shell/tree/store.ts`,
 `apps/desktop/src/app/chat/sidebar/index.tsx`,

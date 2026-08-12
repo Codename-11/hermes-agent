@@ -1198,6 +1198,8 @@ export interface BackendUpdateCheckResponse {
   deploy_behind?: number
   upstream_branch?: string
   upstream_behind?: number
+  deploy_commits?: BackendUpdateCommit[]
+  upstream_commits?: BackendUpdateCommit[]
   commits?: BackendUpdateCommit[]
 }
 
