@@ -1,5 +1,6 @@
-# desktop-update.ps1 -- repo-owned Windows Desktop update hand-off.
-#
+# Axiom staged-apply hand-off. Ordinary updates use
+# scripts/desktop-update/windows.ps1; this path retains the pinned manifest,
+# package adoption, and rollback contract used by Desktop Update Control.
 # WHY THIS EXISTS (the frozen-binary problem): the Desktop's Update button
 # used to hand off exclusively to the staged Tauri binary
 # (%HERMES_HOME%\hermes-setup.exe). That binary has no self-update path --
