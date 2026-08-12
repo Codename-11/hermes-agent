@@ -23,6 +23,7 @@ import {
   sessionPinId,
   setCurrentCwd,
   setCurrentCwdTransient,
+  setDefaultProjectCwd,
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
@@ -312,12 +313,16 @@ describe('touchSessionActivity', () => {
 describe('workspaceCwdForNewSession', () => {
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
+    setDefaultProjectCwd(null)
     $connection.set(null)
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
+    window.localStorage.removeItem('hermes.desktop.default-project-cwd')
+    window.localStorage.removeItem('hermes.desktop.default-project-cwd.remote.http%3A%2F%2Fbackend-a.victor')
+    window.localStorage.removeItem('hermes.desktop.default-project-cwd.remote.http%3A%2F%2Fbackend-a.sentinel')
   })
 
   it('prefers the configured default over the sticky remembered workspace', () => {
@@ -325,6 +330,27 @@ describe('workspaceCwdForNewSession', () => {
     applyConfiguredDefaultProjectDir('/home/user/configured')
 
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('prefers a saved project root over the local folder fallback', () => {
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+    setDefaultProjectCwd('/home/user/project')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/project')
+  })
+
+  it('keeps saved project roots isolated by remote connection and profile', () => {
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote', profile: 'victor' } as never)
+    setDefaultProjectCwd('/srv/victor/project')
+    expect(workspaceCwdForNewSession()).toBe('/srv/victor/project')
+
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote', profile: 'sentinel' } as never)
+    expect(workspaceCwdForNewSession()).toBe('')
+    setDefaultProjectCwd('/srv/sentinel/project')
+    expect(workspaceCwdForNewSession()).toBe('/srv/sentinel/project')
+
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote', profile: 'victor' } as never)
+    expect(workspaceCwdForNewSession()).toBe('/srv/victor/project')
   })
 
   it('keeps the configured default separate from a selected workspace', () => {

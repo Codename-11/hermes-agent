@@ -69,6 +69,16 @@ export const $expandedProjectIds = persistentAtom<string[]>(EXPANDED_PROJECTS_KE
   encode: value => JSON.stringify(value)
 })
 
+const PROJECT_OVERVIEW_OPEN_KEY = 'hermes.desktop.projectOverviewOpen'
+export const $projectOverviewOpen = persistentAtom<boolean>(PROJECT_OVERVIEW_OPEN_KEY, true, {
+  decode: raw => raw !== 'false',
+  encode: value => String(value)
+})
+
+export function toggleProjectOverview(): void {
+  $projectOverviewOpen.set(!$projectOverviewOpen.get())
+}
+
 export function toggleProjectExpanded(id: string): void {
   const current = $expandedProjectIds.get()
   $expandedProjectIds.set(current.includes(id) ? current.filter(projectId => projectId !== id) : [...current, id])

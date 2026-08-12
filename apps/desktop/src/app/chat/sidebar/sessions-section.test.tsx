@@ -26,7 +26,10 @@ vi.mock('@/i18n', () => ({
           yesterday: 'Yesterday'
         },
         newSessionIn: (label: string) => `New session in ${label}`,
+        showProjects: 'Show projects',
         projects: {
+          hideOverview: 'Hide projects',
+          sectionLabel: 'Projects',
           enter: (label: string) => `Open ${label}`,
           reorder: (label: string) => `Reorder ${label}`,
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
@@ -299,6 +302,60 @@ describe('SidebarSessionsSection hybrid project overview', () => {
     )
     expect(screen.getByTestId('session-row-recent-1')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Show Home sessions' })).toBeNull()
+  })
+
+  it('collapses only the project overview while keeping Recent Sessions visible', () => {
+    const onToggleProjectOverview = vi.fn()
+
+    const { rerender } = render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        grouping="date"
+        label="Projects"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleProjectOverview={onToggleProjectOverview}
+        open
+        pinned={false}
+        projectOverview={[homeProject] as never}
+        projectOverviewOpen
+        projectOverviewRecentsLabel="Recent Sessions"
+        sessions={[makeSession('recent-1')]}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide projects' }))
+    expect(onToggleProjectOverview).toHaveBeenCalledOnce()
+
+    rerender(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        grouping="date"
+        label="Projects"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleProjectOverview={onToggleProjectOverview}
+        open
+        pinned={false}
+        projectOverview={[homeProject] as never}
+        projectOverviewOpen={false}
+        projectOverviewRecentsLabel="Recent Sessions"
+        sessions={[makeSession('recent-1')]}
+      />
+    )
+
+    expect(screen.queryByText('Home')).toBeNull()
+    expect(screen.getByText('Recent Sessions')).toBeTruthy()
+    expect(screen.getByTestId('session-row-recent-1')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Show projects' })).toBeTruthy()
   })
 
   it('expands a bounded five-session Home preview and keeps full drill-in separate', () => {

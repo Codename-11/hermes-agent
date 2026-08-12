@@ -1137,9 +1137,12 @@ export const zh: Translations = {
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
       defaultDirUpdated: '默认项目目录已更新',
+      defaultProjectSelect: '新会话的默认项目',
+      defaultProjectPlaceholder: '选择已保存的项目',
       defaultsTo: label => `默认使用 ${label}。`,
       change: '更改',
       choose: '选择',
+      chooseFolder: '选择文件夹',
       clear: '清除',
       notSet: '未设置',
       failedLoad: '无法加载已归档会话',
@@ -2098,6 +2101,7 @@ export const zh: Translations = {
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
     projects: {
+      hideOverview: '隐藏项目',
       sectionLabel: '项目',
       home: '主页',
       newButton: '新建项目',
@@ -3117,6 +3121,8 @@ export const zh: Translations = {
 
   desktop: {
     audioReadFailed: '无法读取录制的音频',
+    liveSessionRunning: '处理中…',
+    liveSessionWaiting: '等待你的输入',
     sessionUnavailable: '会话不可用',
     createSessionFailed: '无法创建新会话',
     promptFailed: '提示词发送失败',

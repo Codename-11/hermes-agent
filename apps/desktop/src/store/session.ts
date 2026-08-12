@@ -12,6 +12,7 @@ type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
+const DEFAULT_PROJECT_CWD_KEY = 'hermes.desktop.default-project-cwd'
 
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
 // (that lives in Settings → Model). Persisting it in localStorage makes a pick
@@ -162,6 +163,23 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
   const profile = encodeURIComponent(connection.profile || 'default')
 
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
+}
+
+function defaultProjectCwdKey(connection: HermesConnection | null = $connection.get()): string {
+  if (connection?.mode !== 'remote') {
+    return DEFAULT_PROJECT_CWD_KEY
+  }
+
+  const base = encodeURIComponent(connection.baseUrl || 'remote')
+  const profile = encodeURIComponent(connection.profile || 'default')
+
+  return `${DEFAULT_PROJECT_CWD_KEY}.remote.${base}.${profile}`
+}
+
+export const getDefaultProjectCwd = (): string => storedString(defaultProjectCwdKey())?.trim() || ''
+
+export function setDefaultProjectCwd(cwd: null | string): void {
+  persistString(defaultProjectCwdKey(), cwd?.trim() || null)
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
@@ -800,6 +818,12 @@ export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number 
 }
 
 export const workspaceCwdForNewSession = (): string => {
+  const projectDefault = getDefaultProjectCwd()
+
+  if (projectDefault) {
+    return projectDefault
+  }
+
   if ($connection.get()?.mode === 'remote') {
     return getRememberedWorkspaceCwd()
   }

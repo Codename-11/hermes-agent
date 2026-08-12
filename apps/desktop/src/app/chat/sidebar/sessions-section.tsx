@@ -47,6 +47,7 @@ interface SidebarSectionHeaderProps {
   open: boolean
   onToggle: () => void
   action?: React.ReactNode
+  ariaLabel?: string
   meta?: React.ReactNode
   icon?: React.ReactNode
   // When false the section can't be collapsed: the label renders static (no
@@ -60,6 +61,7 @@ function SidebarSectionHeader({
   open,
   onToggle,
   action,
+  ariaLabel,
   meta,
   icon,
   collapsible = true
@@ -76,6 +78,7 @@ function SidebarSectionHeader({
     <div className="group/section flex shrink-0 items-center justify-between gap-1 pb-1 pt-1.5">
       {collapsible ? (
         <button
+          aria-label={ariaLabel}
           // min-w-0 lets the label truncate at narrow sidebar widths instead of
           // pushing the header's trailing action icons out of view.
           className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-left leading-none"
@@ -122,6 +125,8 @@ interface SidebarSessionsSectionProps {
   // which then passes `projectContent` on the next render. Takes precedence
   // over `tree` / `groups`.
   projectOverview?: SidebarProjectTree[]
+  projectOverviewOpen?: boolean
+  onToggleProjectOverview?: () => void
   // Hybrid overview: a separate flat recents lane rendered after Projects.
   // Omitted in project drill-in and flat Sessions mode.
   projectOverviewRecentsLabel?: string
@@ -192,6 +197,8 @@ export function SidebarSessionsSection({
   footer,
   groups,
   projectOverview,
+  projectOverviewOpen = true,
+  onToggleProjectOverview,
   projectOverviewRecentsLabel,
   projectsLoading = false,
   onEnterProject,
@@ -489,17 +496,21 @@ export function SidebarSessionsSection({
 
     inner = (
       <>
-        {home && projectRow(home, ProjectOverviewRow)}
-        {projectsDraggable && onReorderProjects ? (
-          <ReorderableList
-            ids={sortableProjects.map(project => project.id)}
-            onReorder={onReorderProjects}
-            sensors={dndSensors}
-          >
-            {rows}
-          </ReorderableList>
-        ) : (
-          rows
+        {projectOverviewOpen && (
+          <>
+            {home && projectRow(home, ProjectOverviewRow)}
+            {projectsDraggable && onReorderProjects ? (
+              <ReorderableList
+                ids={sortableProjects.map(project => project.id)}
+                onReorder={onReorderProjects}
+                sensors={dndSensors}
+              >
+                {rows}
+              </ReorderableList>
+            ) : (
+              rows
+            )}
+          </>
         )}
         {projectOverviewRecentsLabel && (
           <>
@@ -536,12 +547,13 @@ export function SidebarSessionsSection({
     <SidebarGroup className={rootClassName}>
       <SidebarSectionHeader
         action={headerAction}
+        ariaLabel={projectOverview ? (projectOverviewOpen ? t.sidebar.projects.hideOverview : t.sidebar.showProjects) : undefined}
         collapsible={collapsible}
         icon={labelIcon}
         label={label}
         meta={labelMeta}
-        onToggle={onToggle}
-        open={sectionOpen}
+        onToggle={projectOverview && onToggleProjectOverview ? onToggleProjectOverview : onToggle}
+        open={projectOverview ? projectOverviewOpen : sectionOpen}
       />
       {sectionOpen && (
         <SidebarGroupContent className={resolvedContentClassName}>

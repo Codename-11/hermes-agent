@@ -799,9 +799,12 @@ export interface Translations {
       defaultDirTitle: string
       defaultDirDesc: string
       defaultDirUpdated: string
+      defaultProjectSelect: string
+      defaultProjectPlaceholder: string
       defaultsTo: (label: string) => string
       change: string
       choose: string
+      chooseFolder: string
       clear: string
       notSet: string
       failedLoad: string
@@ -1594,6 +1597,7 @@ export interface Translations {
     noSessions: string
     noFilterMatches: string
     projects: {
+      hideOverview: string
       sectionLabel: string
       home: string
       newButton: string
@@ -2502,6 +2506,8 @@ export interface Translations {
 
   desktop: {
     audioReadFailed: string
+    liveSessionRunning: string
+    liveSessionWaiting: string
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string

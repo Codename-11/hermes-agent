@@ -889,6 +889,36 @@ Drop condition: upstream provides equivalent persisted profile visibility contro
 and a profile-icon context action whose new session is explicitly bound to the
 clicked profile, with hidden profiles still recoverable and their data untouched.
 
+### Desktop project overview, default project, and in-chat live status — local carry pending upstream equivalent
+
+Axiom keeps Project-mode navigation compact without conflating the project tree
+with its Recent Sessions lane, and makes new-session workspace selection explicit.
+It also keeps live activity visible inside the selected conversation instead of
+relying on the sidebar highlight or pane-tab dot alone.
+
+Protected behavior:
+
+- the existing Projects chevron collapses only the project overview rows; Recent
+  Sessions remains mounted and visible, and the disclosure state persists locally;
+- Settings -> Sessions can choose a saved project as the default for new sessions,
+  displaying both its name and resolved root; the saved root is qualified by
+  connection and profile so remote paths never pass through the local Electron
+  filesystem setter, while the existing manual-folder picker remains available;
+- explicit project scope still wins over the configured default, and selecting a
+  named project replaces rather than stacks with a stale manual-folder default;
+- every busy selected/tiled chat surface renders a persistent **Working…** strip
+  above its composer, transitioning to **Waiting for your input** for blocking
+  prompts and clearing when the session settles.
+
+Primary files: `apps/desktop/src/store/{projects,session}.ts`,
+`apps/desktop/src/app/chat/{index,live-session-status}.tsx`,
+`apps/desktop/src/app/chat/sidebar/{index,sessions-section}.tsx`, and
+`apps/desktop/src/app/settings/default-project-setting.tsx`.
+
+Drop condition: upstream provides equivalent project-only disclosure, a
+connection/profile-safe saved-project default that governs new-session cwd, and
+a persistent session-scoped live indicator in the main chat surface.
+
 ### Desktop native OAuth orchestration — local carry pending upstream equivalent
 
 Axiom keeps native RFC 8252 sign-in single-flight per normalized gateway in Electron main. Multiple renderer surfaces share one pending login instead of opening competing loopback listeners and overwriting browser PKCE state. A gateway that advertises `native_pkce` never silently changes to the embedded cookie flow after timeout, cancellation, or token-exchange failure; the error surfaces and an explicit Retry starts a fresh exchange. Embedded login remains the compatibility path only for gateways that do not advertise native PKCE.

@@ -84,6 +84,7 @@ import {
 } from '@/store/profile'
 import {
   $activeProjectId,
+  $projectOverviewOpen,
   $projects,
   $projectScope,
   $projectTree,
@@ -98,7 +99,8 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
-  scanAndRecordRepos
+  scanAndRecordRepos,
+  toggleProjectOverview
 } from '@/store/projects'
 import {
   $prBranchBySession,
@@ -400,6 +402,7 @@ export function ChatSidebar({
   const removedSessionIds = useStore($removedSessionIds)
   const reposScanning = useStore($reposScanning)
   const activeProjectId = useStore($activeProjectId)
+  const projectOverviewOpen = useStore($projectOverviewOpen)
   const projectScope = useStore($projectScope)
   const currentCwd = useStore($currentCwd)
   const gatewayState = useStore($gatewayState)
@@ -1698,6 +1701,7 @@ export function ChatSidebar({
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
                 onTogglePin={pinSession}
+                onToggleProjectOverview={projectOverview ? toggleProjectOverview : undefined}
                 open={agentsOpen}
                 pinned={false}
                 projectBackRow={
@@ -1705,6 +1709,7 @@ export function ChatSidebar({
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
+                projectOverviewOpen={projectOverviewOpen}
                 projectOverviewRecentsLabel={projectOverview ? s.recentSessions : undefined}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}

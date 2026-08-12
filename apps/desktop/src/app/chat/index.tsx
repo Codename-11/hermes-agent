@@ -58,6 +58,7 @@ import { useComposerScope } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
+import { LiveSessionStatus } from './live-session-status'
 import { ProfileTag } from './profile-tag'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
@@ -599,6 +600,14 @@ export const ChatView = memo(function ChatView({
           <ChatDropOverlay kind={overlayKind} />
           <ChatSwapOverlay profile={gatewaySwapTarget} />
         </div>
+        {showChatBar && (
+          <LiveSessionStatus
+            awaitingResponse={awaitingResponse}
+            busy={busy}
+            runningLabel={t.desktop.liveSessionRunning}
+            waitingLabel={t.desktop.liveSessionWaiting}
+          />
+        )}
         {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
             that wrapper is a containing block for — and clips — position:fixed
             descendants, so the popped-out (fixed) composer would anchor to the

@@ -939,9 +939,12 @@ export const en: Translations = {
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
       defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
+      defaultProjectSelect: 'Default project for new sessions',
+      defaultProjectPlaceholder: 'Choose a saved project',
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
+      chooseFolder: 'Choose folder',
       clear: 'Clear',
       notSet: 'Not set',
       failedLoad: 'Could not load archived sessions',
@@ -1906,6 +1909,7 @@ export const en: Translations = {
     noSessions: 'No sessions yet',
     noFilterMatches: 'No sessions match these filters',
     projects: {
+      hideOverview: 'Hide projects',
       sectionLabel: 'Projects',
       home: 'Home',
       newButton: 'New project',
@@ -2956,6 +2960,8 @@ export const en: Translations = {
 
   desktop: {
     audioReadFailed: 'Could not read recorded audio',
+    liveSessionRunning: 'Working…',
+    liveSessionWaiting: 'Waiting for your input',
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
