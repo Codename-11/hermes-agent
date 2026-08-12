@@ -61,6 +61,11 @@ The protected contract is:
 - delayed transcript/todo hydration and messaging polls are ownership and
   generation fenced, preserving optimistic or streaming work created after the
   request began;
+- a warm cached runtime accepted by the primary pane is made active and
+  synchronously republished before `session.activate` is awaited; the public
+  `$sessionStates` slice may have been evicted while idle even though the private
+  runtime cache remains valid, and `PRIMARY_SESSION_VIEW` cannot rehydrate from
+  the legacy global message mirror alone;
 - `session.reclaimed` atomically evicts public state, private runtime state,
   reverse stored/runtime mappings, todos, and active bindings; and
 - applying a non-primary profile connection notifies the renderer so its
@@ -84,6 +89,7 @@ NODE_ENV=test npm run test:ui -- \
   src/app/gateway/hooks/use-gateway-request.test.ts \
   src/app/session/hooks/use-message-stream/interim-sealing.test.tsx \
   src/app/session/hooks/use-message-stream/session-reclaimed.test.tsx \
+  src/app/session/hooks/use-session-actions.test.tsx \
   src/app/session/hooks/use-session-state-cache.test.tsx \
   src/store/live-sync.test.ts \
   src/store/session-dot-state.test.ts

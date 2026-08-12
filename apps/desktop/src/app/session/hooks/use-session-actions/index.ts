@@ -701,7 +701,6 @@ export function useSessionActions({
 
         if (cachedViewState !== cachedState) {
           sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
-          publishSessionState(cachedRuntimeId, cachedViewState)
         }
 
         if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
@@ -726,6 +725,18 @@ export function useSessionActions({
           selectedStoredSessionIdRef.current = storedSessionId
           setActiveSessionId(cachedRuntimeId)
           activeSessionIdRef.current = cachedRuntimeId
+          // The private warm cache can outlive its public `$sessionStates`
+          // projection: once a settled session is no longer referenced by main
+          // or a tile, a later idle heartbeat intentionally evicts the public
+          // slice to cap transcript memory while retaining the private cache for
+          // fast switching. PRIMARY_SESSION_VIEW renders from that public slice,
+          // not the legacy `$messages` mirror, so accepting the warm cache without
+          // re-publishing it leaves the main pane blank until session.activate
+          // settles (and indefinitely if activation stalls). Establish active
+          // ownership first so publishSessionState cannot classify this settled
+          // state as unreferenced and evict it again, then restore the slice
+          // synchronously before any network await.
+          publishSessionState(cachedRuntimeId, cachedViewState)
           syncSessionStateToView(cachedRuntimeId, cachedViewState)
           setCurrentCwdTransient(cachedViewState.cwd)
           // The warm cache IS this conversation's own workspace truth, so the

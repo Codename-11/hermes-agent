@@ -35,7 +35,7 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, clearAllSessionStates } from '@/store/session-states'
 
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
@@ -1360,6 +1360,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    clearAllSessionStates()
     vi.restoreAllMocks()
   })
 
@@ -1463,6 +1464,61 @@ describe('resumeSession warm-cache mapping integrity', () => {
       expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
     )
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('republishes an evicted warm cache before session.activate settles', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'still here?' }] },
+      { id: 'cached-assistant', role: 'assistant', parts: [{ type: 'text', text: 'yes' }] }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    // Model the real A → B → A failure: A's settled heartbeat evicted its
+    // unreferenced public slice, but the private warm cache remained intact.
+    clearAllSessionStates()
+    setSessions([storedSession({ id: 'stored-A', message_count: 2 })])
+
+    const activation = deferred<never>()
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return activation.promise
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockReturnValue(new Promise(() => undefined))
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    void resume!('stored-A', true)
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.any(Object)))
+
+    // PRIMARY_SESSION_VIEW reads this public slice, not the private cache or the
+    // legacy $messages mirror. It must exist immediately while activation is
+    // still pending, or the primary pane remains blank indefinitely.
+    expect($sessionStates.get()['rt-A']?.messages.map(message => message.id)).toEqual([
+      'cached-user',
+      'cached-assistant'
+    ])
   })
 
   it('preserves cached image attachments through an idle persisted transcript refresh', async () => {
