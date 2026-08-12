@@ -41,7 +41,9 @@ Operational note: as of 2026-06-17, the `agent/anthropic_adapter.py` / `agent/sy
 ## Axiom Desktop session convergence and profile-safe live status
 
 Axiom carries a drop-ready Desktop stability layer for concurrent chats and
-multiple gateway profiles. Source carry: `6616b11bef` and `7d37b0ef4a`.
+multiple gateway profiles. Source carries: `6616b11bef`, `7d37b0ef4a`,
+`5705aa6ab8`, and `4510638d86`. The steer-ordering carry is a narrow extension
+of upstream PR `#69739`, not a replacement steering subsystem.
 
 The protected contract is:
 
@@ -104,11 +106,12 @@ NODE_ENV=test npm run test:desktop:platforms -- electron/connection-apply.test.t
 npm run typecheck
 ```
 
-Related upstream work includes PRs `#45653` and `#71475` plus issue `#51058`,
+Related upstream work includes PRs `#45653`, `#69739`, and `#71475` plus issue `#51058`,
 but those references cover narrower reconnect symptoms. Drop this carry only
 after upstream provides equivalent cache ownership, stale-async fencing,
 secondary-profile reconciliation, reclaim eviction, and profile-qualified
-status/event routing, with the focused invariants above still passing.
+status/event routing, plus causal steer ordering for both stable and temporarily
+non-canonical live tails, with the focused invariants above still passing.
 
 ## Axiom Desktop tabbed Update Control
 
@@ -180,6 +183,10 @@ delegates to the gateway-owned wake listener. All three ship unbound. They must
 remain separate from `composer.voice` (the full voice-conversation toggle), and
 Desktop's keybind registry—not `voice.record_key`—is authoritative.
 
+Source carry for conversation-owned read-aloud: `633be55974`. This extends the
+existing upstream voice/composer path; it does not introduce a second playback
+engine or redefine gateway-wide messaging `voice.auto_tts`.
+
 Dictation routing must retain the composer event-bus ownership filter so tiled
 composers do not all record. Wake shortcuts must preserve backend mic ownership,
 pending/capture state, persisted config truth, and surface refusals or failures
@@ -204,9 +211,10 @@ npm run typecheck
 ```
 
 Drop condition: upstream provides equivalent distinct rebindable actions with
-active-composer dictation routing, profile-authoritative auto-TTS persistence,
-gateway-authoritative wake behavior with keyboard-visible failures, and matching
-tooltip/accessibility discovery.
+active-composer dictation routing, profile + durable-conversation-lineage
+read-aloud ownership enforced at the playback trigger (including tiles and
+runtime-id collisions), gateway-authoritative wake behavior with keyboard-visible
+failures, and matching tooltip/accessibility discovery.
 
 ## Axiom shared cron registry and generic profile ownership
 
@@ -246,7 +254,8 @@ Drop condition: upstream scopes dashboard PTY keep-alive identity by profile, or
 ## Axiom Desktop hybrid Projects overview and typed project paths
 
 Axiom carries a focused Desktop information-architecture and session-ownership
-layer while upstream's Projects UX remains in flux:
+layer while upstream's Projects UX remains in flux. Source carry for pinned
+remote-profile discovery: `001f984b5c`.
 
 - Projects stay the primary lane in grouped mode, followed by a separate flat
   **Recent Sessions** lane in the same overview. The recent lane reuses the
@@ -337,7 +346,9 @@ Desktop, plus source-filter parity that keeps messaging and automation/system
 runs out of Projects/Home without database mutation or title heuristics. Partial
 Projects UI parity is not sufficient to drop the remote mutation or source
 policy seams, and a remote mkdir endpoint alone is not sufficient to drop the
-overview carry.
+overview carry. All Profiles must also discover projects for local profile
+handles pinned to remote gateways through profile-owned background connections,
+without switching the foreground profile or collapsing the local handle identity.
 
 ## Axiom Desktop Project/worktree session lifecycle
 
