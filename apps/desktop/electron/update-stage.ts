@@ -37,6 +37,12 @@ export interface DesktopUpdateStageProgress {
   message?: string
   percent?: number
   logPath?: string
+  updatedAt?: number
+}
+
+export interface UpdateStageProgressOwnership {
+  ownerAlive: boolean
+  installCompletedAfterProgress?: boolean
 }
 
 export interface DesktopUpdateStageStatus extends DesktopUpdateStageProgress {
@@ -99,6 +105,31 @@ export interface UpdateStageReadDeps {
 
 export type DesktopUpdateStageReadResult =
   { kind: 'missing' } | { kind: 'malformed'; error: string } | { kind: 'ready'; manifest: DesktopUpdateStageManifest }
+
+const ACTIVE_STAGE_PHASES = new Set<DesktopUpdateStagePhase>([
+  'fetching',
+  'preparing-dependencies',
+  'building',
+  'verifying',
+  'applying'
+])
+
+export function reconcileUpdateStageProgress(
+  progress: DesktopUpdateStageProgress,
+  ownership: UpdateStageProgressOwnership
+): DesktopUpdateStageProgress {
+  if (!ACTIVE_STAGE_PHASES.has(progress.phase) || ownership.ownerAlive) {
+    return progress
+  }
+
+  return {
+    ...progress,
+    phase: 'failed',
+    message: ownership.installCompletedAfterProgress
+      ? 'This preparation was interrupted and superseded by a completed Desktop update. Discard it before preparing again.'
+      : 'Update preparation was interrupted before it finished. Discard it before preparing again.'
+  }
+}
 
 export interface UpdateStageWriteDeps {
   mkdir?: (dirPath: string) => void

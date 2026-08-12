@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  canSyncUpstream,
   categorizeCommits,
   derivePreparationView,
   formatHistoryEntry,
@@ -12,6 +13,13 @@ import {
 } from './model'
 
 describe('update summaries', () => {
+  it('keeps upstream reconciliation available for a retained handoff after divergence reaches zero', () => {
+    expect(canSyncUpstream({ supported: true, upstreamBehind: 1 })).toBe(true)
+    expect(canSyncUpstream({ supported: true, upstreamBehind: 0, retainedUpstreamHandoff: true })).toBe(true)
+    expect(canSyncUpstream({ supported: true, upstreamBehind: 0 })).toBe(false)
+    expect(canSyncUpstream({ supported: true, upstreamBehind: 1 }, { state: 'ready' })).toBe(false)
+  })
+
   it('treats either the explicit flag or a positive behind count as an update', () => {
     expect(hasUpdate({ supported: true, updateAvailable: true })).toBe(true)
     expect(hasUpdate({ supported: true, behind: 2 })).toBe(true)

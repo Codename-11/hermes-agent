@@ -6,6 +6,7 @@ import {
   type DesktopUpdateStageManifest,
   parseUpdateStageManifest,
   readUpdateStageManifest,
+  reconcileUpdateStageProgress,
   validateUpdateStageManifest,
   writeUpdateStageManifestAtomic
 } from './update-stage'
@@ -186,4 +187,39 @@ test('atomic writer publishes a temp file before rename', () => {
     `write:/stage/stage.json.token.tmp:${TARGET}`,
     'rename:/stage/stage.json.token.tmp:/stage/stage.json'
   ])
+})
+
+describe('stage progress reconciliation', () => {
+  const progress = {
+    phase: 'preparing-dependencies' as const,
+    percent: 25,
+    message: 'Installing dependencies',
+    logPath: 'C:\\hermes\\logs\\desktop-update-stage.log'
+  }
+
+  test('preserves nonterminal progress while its preparation owner is alive', () => {
+    assert.deepEqual(reconcileUpdateStageProgress(progress, { ownerAlive: true }), progress)
+  })
+
+  test('terminates orphaned nonterminal progress instead of replaying it as active', () => {
+    assert.deepEqual(reconcileUpdateStageProgress(progress, { ownerAlive: false }), {
+      phase: 'failed',
+      percent: 25,
+      logPath: progress.logPath,
+      message: 'Update preparation was interrupted before it finished. Discard it before preparing again.'
+    })
+  })
+
+  test('explains when a newer completed Desktop install superseded the orphaned preparation', () => {
+    assert.match(
+      reconcileUpdateStageProgress(progress, { ownerAlive: false, installCompletedAfterProgress: true }).message ?? '',
+      /superseded by a completed Desktop update/i
+    )
+  })
+
+  test('preserves terminal failure diagnostics without rewriting them', () => {
+    const failed = { phase: 'failed' as const, percent: 25, message: 'npm failed' }
+
+    assert.deepEqual(reconcileUpdateStageProgress(failed, { ownerAlive: false }), failed)
+  })
 })

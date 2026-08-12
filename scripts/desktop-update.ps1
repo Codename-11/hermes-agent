@@ -18,7 +18,7 @@
 # OS component -- is "frozen".
 #
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
-#   cmd /d /s /c start "" /min powershell -NoProfile -ExecutionPolicy Bypass
+#   cmd /d /s /c start "" powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass
 #     -File scripts\desktop-update.ps1
 #     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
 #     -Branch <ref>         branch to update against
@@ -53,8 +53,8 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-# Foreground helpers: the script is spawned via `cmd start /min`, so its
-# WinForms window comes up backgrounded unless we explicitly claim focus --
+# Foreground helpers: the script is spawned via hidden `cmd start`, so its
+# WinForms window does not inherit foreground rights unless we explicitly claim focus --
 # and after the update we must hand focus TO the relaunched Desktop (a
 # WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
 # pass our foreground right on to the new Hermes.exe pid.
@@ -85,6 +85,7 @@ $script:StageBuildStamp = Join-Path $HermesHome "desktop-build-stamp.json"
 $script:StageBuildStampBackup = ""
 $script:StageHadBuildStamp = $false
 $script:StageData = $null
+$script:AllowUiClose = $false
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
@@ -98,6 +99,15 @@ function Write-HandoffLog([string]$Message) {
     }
 }
 
+function Set-UpdateStatus([string]$Message) {
+    if ($script:Ui) {
+        try {
+            $script:Ui.Status.Text = $Message
+            [System.Windows.Forms.Application]::DoEvents()
+        } catch {}
+    }
+}
+
 function Show-ProgressWindow {
     if ($NoUi) { return }
     try {
@@ -105,39 +115,91 @@ function Show-ProgressWindow {
         Add-Type -AssemblyName System.Drawing | Out-Null
         $form = New-Object System.Windows.Forms.Form
         $form.Text = "Hermes Update"
-        $form.Size = New-Object System.Drawing.Size(720, 420)
+        $form.Size = New-Object System.Drawing.Size(760, 480)
+        $form.MinimumSize = New-Object System.Drawing.Size(620, 360)
         $form.StartPosition = "CenterScreen"
-        $form.ControlBox = $false
-        $form.TopMost = $true
-        $label = New-Object System.Windows.Forms.Label
-        $label.Text = "Updating Hermes -- do not close this window. Hermes restarts automatically when the update finishes."
-        $label.Dock = "Top"
-        $label.Height = 34
-        $label.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 0)
+        $form.ControlBox = $true
+        $form.MinimizeBox = $true
+        $form.MaximizeBox = $false
+        $form.ShowInTaskbar = $true
+        $form.TopMost = $false
+        $form.BackColor = [System.Drawing.Color]::FromArgb(247, 248, 250)
+        $form.Add_FormClosing({
+            param($sender, $eventArgs)
+            if (-not $script:AllowUiClose) {
+                $eventArgs.Cancel = $true
+            }
+        })
+
+        $header = New-Object System.Windows.Forms.Panel
+        $header.Dock = "Top"
+        $header.Height = 102
+        $header.Padding = New-Object System.Windows.Forms.Padding(18, 14, 18, 8)
+        $header.BackColor = [System.Drawing.Color]::White
+
+        $title = New-Object System.Windows.Forms.Label
+        $title.Text = "Hermes is updating"
+        $title.Dock = "Top"
+        $title.Height = 30
+        $title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 15)
+        $title.ForeColor = [System.Drawing.Color]::FromArgb(30, 34, 42)
+
+        $status = New-Object System.Windows.Forms.Label
+        $status.Text = "Starting the secure update handoff..."
+        $status.Dock = "Top"
+        $status.Height = 28
+        $status.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+        $status.ForeColor = [System.Drawing.Color]::FromArgb(80, 87, 99)
+
         $bar = New-Object System.Windows.Forms.ProgressBar
         $bar.Style = "Marquee"
         $bar.MarqueeAnimationSpeed = 30
         $bar.Dock = "Top"
-        $bar.Height = 18
+        $bar.Height = 8
+
+        $details = New-Object System.Windows.Forms.Label
+        $details.Text = "Technical details"
+        $details.Dock = "Top"
+        $details.Height = 34
+        $details.Padding = New-Object System.Windows.Forms.Padding(18, 10, 0, 0)
+        $details.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+        $details.ForeColor = [System.Drawing.Color]::FromArgb(80, 87, 99)
+
         $box = New-Object System.Windows.Forms.TextBox
         $box.Multiline = $true
         $box.ReadOnly = $true
         $box.ScrollBars = "Vertical"
         $box.Dock = "Fill"
         $box.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $box.BackColor = [System.Drawing.Color]::FromArgb(251, 251, 252)
+        $box.ForeColor = [System.Drawing.Color]::FromArgb(50, 55, 65)
+        $box.BorderStyle = "FixedSingle"
+        $box.Margin = New-Object System.Windows.Forms.Padding(18, 0, 18, 14)
+
+        $footer = New-Object System.Windows.Forms.Label
+        $footer.Text = "You can minimize this window. Hermes will restart automatically when the update finishes."
+        $footer.Dock = "Bottom"
+        $footer.Height = 36
+        $footer.Padding = New-Object System.Windows.Forms.Padding(18, 9, 0, 0)
+        $footer.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+        $footer.ForeColor = [System.Drawing.Color]::FromArgb(100, 106, 117)
+
+        $header.Controls.Add($bar)
+        $header.Controls.Add($status)
+        $header.Controls.Add($title)
         $form.Controls.Add($box)
-        $form.Controls.Add($bar)
-        $form.Controls.Add($label)
+        $form.Controls.Add($details)
+        $form.Controls.Add($header)
+        $form.Controls.Add($footer)
         $form.Show()
-        # `cmd start /min` spawned us backgrounded; TopMost keeps the window
-        # above others but does not take activation. Claim it explicitly so
-        # the progress window is what the user sees during the update.
+        # The hidden console handoff has no foreground rights. Claim the form
+        # once at launch, then leave normal window stacking/minimization alone.
         try {
             $form.Activate()
             if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
         } catch {}
         [System.Windows.Forms.Application]::DoEvents()
-        $script:Ui = [pscustomobject]@{ Form = $form; Box = $box }
+        $script:Ui = [pscustomobject]@{ Form = $form; Box = $box; Status = $status }
     } catch {
         # Headless session / WinForms unavailable: degrade to log-only.
         $script:Ui = $null
@@ -146,7 +208,10 @@ function Show-ProgressWindow {
 
 function Close-ProgressWindow {
     if ($script:Ui) {
-        try { $script:Ui.Form.Close() } catch {}
+        try {
+            $script:AllowUiClose = $true
+            $script:Ui.Form.Close()
+        } catch {}
         $script:Ui = $null
     }
 }
@@ -403,6 +468,7 @@ try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
     Show-ProgressWindow
+    Set-UpdateStatus "Preparing the update handoff..."
     Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
@@ -418,6 +484,7 @@ try {
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     if ($DesktopPid -gt 0) {
+        Set-UpdateStatus "Waiting for Hermes to close safely..."
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
             $proc = Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue
@@ -437,6 +504,7 @@ try {
     }
 
     # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
+    Set-UpdateStatus "Checking that the installation is ready..."
     $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
     if (Test-Path -LiteralPath $shim) {
         $unlocked = $false
@@ -467,6 +535,7 @@ try {
     # Electron validates before quitting so ordinary preflight failures leave
     # the app open. Repeat every check here after exit to close TOCTOU gaps.
     if ($StageManifest) {
+        Set-UpdateStatus "Validating the prepared Desktop package..."
         $expectedStageRoot = Join-Path $HermesHome "update-stage\desktop"
         $expectedManifest = Join-Path $expectedStageRoot "stage.json"
         if (-not [string]::Equals(
@@ -552,6 +621,7 @@ try {
             $script:StageHadBuildStamp = $true
         }
         try {
+            Set-UpdateStatus "Activating the prepared Desktop package..."
             Move-Item -LiteralPath $script:StageLiveDir -Destination $script:StageBackupDir -ErrorAction Stop
             $script:StageSwapped = $true
             Move-Item -LiteralPath $artifactDir -Destination $script:StageLiveDir -ErrorAction Stop
@@ -579,6 +649,7 @@ try {
     if ($script:StageData -and $script:StageData.targetSha) {
         $updateArgs += @("--target-sha", "$($script:StageData.targetSha)")
     }
+    Set-UpdateStatus "Installing Hermes code and dependencies..."
     Write-HandoffLog ("running: hermes " + ($updateArgs -join " "))
     $res = Invoke-StreamedHermes $hermesExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
@@ -586,6 +657,7 @@ try {
     if ($res.Code -ne 0 -and $res.Code -ne 2) {
         # One retry for the update-boundary class (fresh code on disk, stale
         # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
+        Set-UpdateStatus "Retrying with the refreshed updater..."
         Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
         $res = Invoke-StreamedHermes $hermesExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
@@ -597,7 +669,9 @@ try {
     # is fatal: we would relaunch the old exe and call it success. Detect it,
     # retry the build once, and propagate honestly.
     $desktopBuildFailed = $false
+    Set-UpdateStatus "Verifying the Desktop build..."
     if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
+        Set-UpdateStatus "Repairing the Desktop build..."
         Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
         $rebuild = Invoke-StreamedHermes $hermesExe @("desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
@@ -607,6 +681,7 @@ try {
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."
+        Set-UpdateStatus "Update complete. Restarting Hermes..."
     } elseif ($desktopBuildFailed) {
         $finalCode = 6
         $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `hermes desktop --force-build` from a terminal to retry."
@@ -614,6 +689,7 @@ try {
         $finalCode = $res.Code
         $finalMsg = "hermes update failed (exit $($res.Code)). See logs\desktop-update-handoff.log."
     }
+    if ($finalCode -ne 0) { Set-UpdateStatus "The update could not finish. Restoring Hermes..." }
     exit $finalCode
 } finally {
     if ($finalCode -ne 0) {

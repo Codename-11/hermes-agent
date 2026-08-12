@@ -211,12 +211,21 @@ import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeig
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { appendUpdateHistory, readUpdateHistory } from './update-history'
+import { hasRetainedDeployHandoff } from './update-handoff-status'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { createUpdateOperationCoordinator } from './update-operation-coordinator'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   readUpdateStageManifest,
+  reconcileUpdateStageProgress,
   validateUpdateStageManifest
 } from './update-stage'
+import {
+  cancelledStageProgress,
+  cancelledStageResult,
+  commandOwnsStagePreparation,
+  parseStagePreparationOwner
+} from './update-stage-cancel'
 import {
   buildStagedHandoffArgs,
   collectRelaunchArgs,
@@ -230,6 +239,7 @@ import {
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
 } from './updater-process'
+import { runUpstreamSync } from './upstream-sync'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -2776,6 +2786,7 @@ async function checkUpdates() {
     commits,
     deployCommits: commits,
     ...(upstream ?? {}),
+    retainedUpstreamHandoff: hasRetainedDeployHandoff({ branch, hermesHome: HERMES_HOME, repo: updateRoot }),
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
     fetchedAt: Date.now()
@@ -2807,6 +2818,7 @@ async function readCommitRange(cwd, base, target) {
 }
 
 let updateInFlight = false
+const updateOperations = createUpdateOperationCoordinator()
 
 // Set to true when the desktop is about to quit so a detached swap/install/
 // uninstall script can take over. On macOS, app.quit() closes windows but
@@ -3032,7 +3044,7 @@ function readDesktopUpdateHistory() {
         id: `prepare-${finishedAt}-${String(result.targetSha || 'unknown').slice(0, 10)}`,
         at: finishedAt,
         phase: 'prepare',
-        result: 'failed',
+        result: result.cancelled === true || result.phase === 'cancelled' ? 'cancelled' : 'failed',
         targetSha: typeof result.targetSha === 'string' ? result.targetSha : undefined,
         message: typeof result.message === 'string' ? result.message : 'Update preparation failed.',
         logPath: path.join(HERMES_HOME, 'logs', 'desktop-update-stage.log')
@@ -3064,30 +3076,81 @@ function readStageProgress() {
     return {
       phase,
       message: typeof value?.message === 'string' ? value.message : undefined,
-      percent: Number.isFinite(value?.percent) ? value.percent : undefined
+      percent: Number.isFinite(value?.percent) ? value.percent : undefined,
+      updatedAt: Number.isFinite(value?.updatedAt) ? value.updatedAt : undefined
     }
   } catch {
     return null
   }
 }
 
-function stagePreparationIsRunning() {
+function readStagePreparationOwner() {
   try {
-    const owner = JSON.parse(
+    return parseStagePreparationOwner(JSON.parse(
       fs.readFileSync(path.join(desktopUpdateStageRoot(), '.prepare-lock', 'owner.json'), 'utf8')
-    )
-    const pid = Number(owner?.pid)
+    ))
+  } catch {
+    return null
+  }
+}
 
-    if (!Number.isInteger(pid) || pid <= 0) {
-      return false
-    }
+function stagePreparationIsRunning() {
+  const owner = readStagePreparationOwner()
 
-    process.kill(pid, 0)
+  if (!owner) {
+    return false
+  }
+
+  try {
+    process.kill(owner.pid, 0)
 
     return true
   } catch {
     return false
   }
+}
+
+function readWindowsProcessCommandLine(pid) {
+  const query =
+    `$value = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction Stop; ` +
+    'if ($null -ne $value) { [Console]::Out.Write($value.CommandLine) }'
+
+  return execFileSync(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', query],
+    hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] })
+  ).trim()
+}
+
+function desktopInstallCompletedAfter(timestamp) {
+  if (!Number.isFinite(timestamp)) {
+    return false
+  }
+
+  try {
+    const stamp = JSON.parse(
+      fs.readFileSync(path.join(resolveUpdateRoot(), 'apps', 'desktop', 'build', 'install-stamp.json'), 'utf8')
+    )
+    const builtAt = Date.parse(stamp?.builtAt)
+
+    return Number.isFinite(builtAt) && builtAt > timestamp
+  } catch {
+    return false
+  }
+}
+
+async function waitForStagePreparationOwnership(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (stagePreparationIsRunning()) {
+      return true
+    }
+
+    await sleep(100)
+  }
+
+  return false
 }
 
 async function desktopDirtyContentFingerprint(updateRoot) {
@@ -3212,11 +3275,16 @@ async function getDesktopUpdateStageStatus({ refreshTarget = false } = {}) {
   const progress = readStageProgress()
 
   if (progress) {
-    if (progress.phase === 'failed') {
+    const reconciled = reconcileUpdateStageProgress(progress, {
+      ownerAlive: stagePreparationIsRunning(),
+      installCompletedAfterProgress: desktopInstallCompletedAfter(progress.updatedAt)
+    })
+
+    if (reconciled.phase === 'failed') {
       readDesktopUpdateHistory()
     }
 
-    if (progress.phase === 'ready') {
+    if (reconciled.phase === 'ready') {
       return {
         supported: true,
         phase: 'invalidated',
@@ -3225,10 +3293,23 @@ async function getDesktopUpdateStageStatus({ refreshTarget = false } = {}) {
       }
     }
 
-    return { supported: true, ...progress }
+    return { supported: true, ...reconciled }
   }
 
   return { supported: true, phase: 'idle', reason: 'missing' }
+}
+
+async function getDesktopUpdateStageRendererStatus(options = {}) {
+  const status = await getDesktopUpdateStageStatus(options)
+  const ownerActive = stagePreparationIsRunning()
+  const activePhases = new Set(['fetching', 'preparing-dependencies', 'building', 'verifying'])
+
+  return {
+    ...status,
+    checkedAt: Date.now(),
+    ownerActive,
+    cancellable: ownerActive && activePhases.has(status.phase)
+  }
 }
 
 async function prepareDesktopUpdate() {
@@ -3290,14 +3371,110 @@ async function prepareDesktopUpdate() {
   child.unref()
   rememberLog(`[updates] preparing ${update.targetSha.slice(0, 10)} in isolated worktree (pid ${child.pid || 'unknown'})`)
 
+  if (!(await waitForStagePreparationOwnership())) {
+    return {
+      ok: false,
+      error: 'preparation-not-started',
+      status: {
+        supported: true,
+        phase: 'failed',
+        message: 'The detached preparation worker did not claim its stage lock. Nothing was prepared.'
+      }
+    }
+  }
+
   return {
     ok: true,
     status: {
       supported: true,
       phase: 'fetching',
       percent: 0,
-      message: 'Preparing update while Desktop remains available.'
+      message: 'Preparing update while Desktop remains available.',
+      checkedAt: Date.now(),
+      ownerActive: true,
+      cancellable: true
     }
+  }
+}
+
+async function cancelDesktopUpdatePreparation() {
+  if (!IS_WINDOWS) {
+    return { ok: false, cancelled: false, error: 'unsupported' }
+  }
+
+  const owner = readStagePreparationOwner()
+
+  if (!owner || !stagePreparationIsRunning()) {
+    return { ok: false, cancelled: false, error: 'not-running', message: 'No active preparation worker was found.' }
+  }
+
+  const updateRoot = resolveUpdateRoot()
+  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-stage-update.ps1')
+  let commandLine = ''
+
+  try {
+    commandLine = readWindowsProcessCommandLine(owner.pid)
+  } catch (error) {
+    return {
+      ok: false,
+      cancelled: false,
+      error: 'identity-unavailable',
+      message: `Could not verify the preparation worker before cancellation: ${error?.message || String(error)}`
+    }
+  }
+
+  if (!commandOwnsStagePreparation(commandLine, scriptPath, desktopUpdateStageRoot())) {
+    return {
+      ok: false,
+      cancelled: false,
+      error: 'identity-mismatch',
+      message: 'The stage owner no longer matches the Hermes preparation worker. Nothing was terminated.'
+    }
+  }
+
+  forceKillProcessTree(owner.pid)
+
+  const deadline = Date.now() + 5_000
+
+  while (Date.now() < deadline && stagePreparationIsRunning()) {
+    await sleep(100)
+  }
+
+  if (stagePreparationIsRunning()) {
+    return {
+      ok: false,
+      cancelled: false,
+      error: 'worker-still-running',
+      message: 'The preparation worker did not stop. Its stage was left untouched.'
+    }
+  }
+
+  const currentOwner = readStagePreparationOwner()
+
+  if (currentOwner && (currentOwner.token !== owner.token || currentOwner.pid !== owner.pid)) {
+    return {
+      ok: false,
+      cancelled: false,
+      error: 'ownership-changed',
+      message: 'Preparation ownership changed while cancellation was in progress. Stage files were left untouched.'
+    }
+  }
+
+  const now = Date.now()
+  const progressPath = path.join(desktopUpdateStageRoot(), 'progress.json')
+  const resultPath = path.join(desktopUpdateStageRoot(), 'stage-result.json')
+  const lockPath = path.join(desktopUpdateStageRoot(), '.prepare-lock')
+
+  fs.mkdirSync(desktopUpdateStageRoot(), { recursive: true })
+  writeFileAtomic(progressPath, JSON.stringify(cancelledStageProgress(now), null, 2), 'utf8')
+  writeFileAtomic(resultPath, JSON.stringify(cancelledStageResult(owner.targetSha, now), null, 2), 'utf8')
+  fs.rmSync(lockPath, { recursive: true, force: true })
+  readDesktopUpdateHistory()
+
+  return {
+    ok: true,
+    cancelled: true,
+    status: await getDesktopUpdateStageStatus()
   }
 }
 
@@ -12715,32 +12892,88 @@ ipcMain.handle('hermes:updates:check', async () =>
   }))
 )
 
+async function runExclusiveUpdateOperation(name, operation, extra = {}) {
+  const result = await updateOperations.run(name, operation)
+
+  if (!result.acquired) {
+    return {
+      ok: false,
+      error: 'operation-running',
+      message: `Another update operation is already running (${result.active}).`,
+      activeOperation: result.active,
+      ...extra
+    }
+  }
+
+  return result.value
+}
+
+ipcMain.handle('hermes:updates:sync-upstream', async () =>
+  runExclusiveUpdateOperation(
+    'sync-upstream',
+    async () => {
+      const stage = await getDesktopUpdateStageStatus()
+
+      if (stagePreparationIsRunning() || stage.phase !== 'idle') {
+        return {
+          ok: false,
+          state: 'failed',
+          error: 'stage-present',
+          message: 'Discard the current prepared update before syncing Hermes upstream into Axiom.'
+        }
+      }
+
+      const { branch } = readDesktopUpdateConfig()
+
+      return runUpstreamSync({
+        python: getVenvPython(VENV_ROOT),
+        repo: resolveUpdateRoot(),
+        branch,
+        env: { HERMES_HOME }
+      })
+    },
+    { state: 'failed' }
+  )
+)
+
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
-  applyUpdates(payload || {}).catch(error => ({
-    ok: false,
-    error: 'apply-failed',
-    message: error?.message || String(error)
-  }))
+  runExclusiveUpdateOperation('apply', () => applyUpdates(payload || {})).catch(error => ({
+      ok: false,
+      error: 'apply-failed',
+      message: error?.message || String(error)
+    }))
 )
 
 ipcMain.handle('hermes:updates:stage:status', async () =>
-  getDesktopUpdateStageStatus().catch(error => ({
+  getDesktopUpdateStageRendererStatus().catch(error => ({
     supported: IS_WINDOWS,
     phase: 'failed',
+    checkedAt: Date.now(),
+    ownerActive: false,
+    cancellable: false,
     message: error?.message || String(error)
   }))
 )
 
 ipcMain.handle('hermes:updates:stage:prepare', async () =>
-  prepareDesktopUpdate().catch(error => ({
+  runExclusiveUpdateOperation('prepare', prepareDesktopUpdate).catch(error => ({
     ok: false,
     error: 'prepare-failed',
     status: { supported: IS_WINDOWS, phase: 'failed', message: error?.message || String(error) }
   }))
 )
 
+ipcMain.handle('hermes:updates:stage:cancel', async () =>
+  runExclusiveUpdateOperation('cancel-prepare', cancelDesktopUpdatePreparation, { cancelled: false }).catch(error => ({
+    ok: false,
+    cancelled: false,
+    error: 'cancel-failed',
+    message: error?.message || String(error)
+  }))
+)
+
 ipcMain.handle('hermes:updates:stage:discard', async () =>
-  discardDesktopUpdateStage().catch(error => ({
+  runExclusiveUpdateOperation('discard', discardDesktopUpdateStage, { discarded: false }).catch(error => ({
     ok: false,
     discarded: false,
     error: error?.message || String(error)
@@ -12748,7 +12981,7 @@ ipcMain.handle('hermes:updates:stage:discard', async () =>
 )
 
 ipcMain.handle('hermes:updates:stage:restart-and-apply', async () =>
-  restartAndApplyDesktopUpdate().catch(error => ({
+  runExclusiveUpdateOperation('restart-and-apply', restartAndApplyDesktopUpdate, { applying: false }).catch(error => ({
     ok: false,
     applying: false,
     error: error?.message || String(error)

@@ -20,6 +20,14 @@ export interface UpdateScriptHandoff {
   scriptPath: string
 }
 
+export const UPDATER_WINDOW_CONTRACT = {
+  allowCloseWhileRunning: false,
+  minimizeBox: true,
+  maximizeBox: false,
+  showInTaskbar: true,
+  topMost: false
+} as const
+
 export interface StageUpdateRequest {
   installRoot: string
   branch: string
@@ -205,9 +213,10 @@ export function resolvePosixScriptHandoff(
  * the launch side). The same spawn with a visible console, or non-detached,
  * runs fine — so unit tests and foreground use hide the bug.
  *
- * `cmd /c start "" /min powershell ...` was the variant that survived the
- * full detached+hidden production shape in testing: `start` allocates the
- * child its own (minimized) console and fully detaches it from cmd.exe,
+ * `cmd /c start "" powershell -WindowStyle Hidden ...` preserves the variant
+ * that survived the full detached production shape in testing: `start`
+ * allocates the child its own console and fully detaches it from cmd.exe,
+ * while PowerShell hides that console before running the script-owned UI.
  * which exits immediately. The spawned pid is therefore the WRAPPER's —
  * callers must not use it as a marker owner (the script claims the marker
  * itself with its own $PID).
@@ -221,7 +230,18 @@ export function wrapHandoffForDetachedConsole(
 } {
   return {
     command: 'cmd.exe',
-    args: ['/d', '/s', '/c', 'start', '', '/min', handoff.command, ...handoff.args, ...extraArgs]
+    args: [
+      '/d',
+      '/s',
+      '/c',
+      'start',
+      '',
+      handoff.command,
+      '-WindowStyle',
+      'Hidden',
+      ...handoff.args,
+      ...extraArgs
+    ]
   }
 }
 

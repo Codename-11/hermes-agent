@@ -719,6 +719,196 @@ def test_deploy_branch_update_merges_upstream_in_temp_worktree(monkeypatch, tmp_
     assert not parent.exists()
 
 
+def test_deploy_branch_publish_only_pushes_upstream_without_fast_forwarding_live(
+    monkeypatch, tmp_path
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parent = tmp_path / "update-parent"
+    parent.mkdir()
+    worktree_path = parent / "worktree"
+    calls = []
+
+    monkeypatch.setattr(hermes_main.tempfile, "mkdtemp", lambda prefix: str(parent))
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = kwargs.get("cwd")
+        responses = {
+            ("git", "fetch", "upstream", "--quiet"): "",
+            ("git", "fetch", "origin", "axiom:refs/remotes/origin/axiom", "--quiet"): "",
+            ("git", "rev-list", "--count", "HEAD..origin/axiom"): "0\n",
+            ("git", "rev-list", "--count", "origin/axiom..HEAD"): "0\n",
+            ("git", "rev-list", "--count", "origin/axiom..upstream/main"): "2\n",
+        }
+        key = tuple(cmd)
+        if key in responses:
+            return SimpleNamespace(stdout=responses[key], stderr="", returncode=0)
+        if cmd == ["git", "worktree", "add", "--detach", str(worktree_path), "origin/axiom"]:
+            worktree_path.mkdir()
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "merge", "--no-edit", "upstream/main"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="Merge made\n", stderr="", returncode=0)
+        if cmd == ["git", "push", "origin", "HEAD:axiom"] and cwd == worktree_path:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "worktree", "remove", str(worktree_path), "--force"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", publish_only=True
+    )
+
+    commands = [cmd for cmd, _ in calls]
+    assert changed == 2
+    assert ["git", "push", "origin", "HEAD:axiom"] in commands
+    assert ["git", "merge", "--ff-only", "origin/axiom"] not in commands
+    assert not parent.exists()
+
+
+def test_sync_upstream_to_deploy_publishes_origin_without_moving_live_head(tmp_path, monkeypatch):
+    origin = tmp_path / "origin.git"
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+    live = tmp_path / "live"
+
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
+    subprocess.run(["git", "init", "--bare", "-q", str(upstream)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    subprocess.run(["git", "config", "user.name", "E2E Test"], cwd=seed, check=True)
+    subprocess.run(["git", "config", "user.email", "e2e@example.invalid"], cwd=seed, check=True)
+    (seed / "base.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "base.txt"], cwd=seed, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=seed, check=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=seed, text=True).strip()
+    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=seed, check=True)
+    subprocess.run(["git", "remote", "add", "upstream", str(upstream)], cwd=seed, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main:axiom"], cwd=seed, check=True)
+    subprocess.run(["git", "push", "-q", "upstream", "main"], cwd=seed, check=True)
+    (seed / "upstream.txt").write_text("upstream\n", encoding="utf-8")
+    subprocess.run(["git", "add", "upstream.txt"], cwd=seed, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "upstream"], cwd=seed, check=True)
+    subprocess.run(["git", "push", "-q", "upstream", "main"], cwd=seed, check=True)
+
+    subprocess.run(["git", "clone", "-q", "--branch", "axiom", str(origin), str(live)], check=True)
+    subprocess.run(["git", "branch", "main", base], cwd=live, check=True)
+    subprocess.run(["git", "remote", "add", "upstream", str(upstream)], cwd=live, check=True)
+    subprocess.run(["git", "config", "user.name", "E2E Test"], cwd=live, check=True)
+    subprocess.run(["git", "config", "user.email", "e2e@example.invalid"], cwd=live, check=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    before = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=live, text=True).strip()
+    main_before = subprocess.check_output(
+        ["git", "rev-parse", "refs/heads/main"], cwd=live, text=True
+    ).strip()
+    result = hermes_axiom_update.sync_upstream_to_deploy(live, "axiom")
+    after = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=live, text=True).strip()
+    main_after = subprocess.check_output(
+        ["git", "rev-parse", "refs/heads/main"], cwd=live, text=True
+    ).strip()
+    published = subprocess.check_output(
+        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/axiom"], text=True
+    ).strip()
+    subprocess.run(
+        ["git", "--git-dir", str(origin), "fetch", "-q", str(upstream), "main:refs/remotes/check/main"],
+        check=True,
+    )
+    contained = subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(origin),
+            "merge-base",
+            "--is-ancestor",
+            "refs/remotes/check/main",
+            "refs/heads/axiom",
+        ]
+    )
+
+    assert result["ok"] is True
+    assert result["state"] == "completed"
+    assert result["branch"] == "axiom"
+    assert result["reconciled"] == 1
+    assert result["targetSha"] == published[:7]
+    assert before == after == base
+    assert main_before == main_after == base
+    assert published != before
+    assert contained.returncode == 0
+
+
+def test_sync_upstream_to_deploy_retries_retained_handoff_even_without_pending_divergence(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="axiom\n", stderr="", returncode=0)
+        if cmd[:3] == ["git", "remote", "get-url"]:
+            return SimpleNamespace(stdout="local\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_exists_for", lambda *_: True)
+    monkeypatch.setattr(hermes_axiom_update, "_short_git_ref", lambda *args: "oldhead")
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_resolve_deploy_handoff",
+        lambda **kwargs: calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_read_deploy_handoff_payload",
+        lambda *_: {"worktree": "/retained/worktree", "report_path": "/retained/report.md"},
+    )
+
+    result = hermes_axiom_update.sync_upstream_to_deploy(repo, "axiom")
+
+    assert result == {
+        "ok": False,
+        "state": "handoff",
+        "error": "reconciliation-stopped",
+        "message": "Upstream reconciliation stopped safely; the live checkout was not changed.",
+        "worktree": "/retained/worktree",
+        "reportPath": "/retained/report.md",
+    }
+    assert calls[0]["publish_only"] is True
+
+
+def test_sync_upstream_to_deploy_reports_successful_retained_handoff(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="axiom\n", stderr="", returncode=0)
+        if cmd[:3] == ["git", "remote", "get-url"]:
+            return SimpleNamespace(stdout="local\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_exists_for", lambda *_: True)
+    monkeypatch.setattr(hermes_axiom_update, "_short_git_ref", lambda *args: "abc1234")
+    monkeypatch.setattr(hermes_axiom_update, "_resolve_deploy_handoff", lambda **kwargs: 1)
+
+    result = hermes_axiom_update.sync_upstream_to_deploy(repo, "axiom")
+
+    assert result == {
+        "ok": True,
+        "state": "completed",
+        "branch": "axiom",
+        "reconciled": 1,
+        "targetSha": "abc1234",
+        "message": "Resolved the retained handoff and published origin/axiom.",
+    }
+
+
 def test_deploy_branch_update_recovers_when_push_reject_remote_already_contains_merge(
     monkeypatch, tmp_path, capsys
 ):

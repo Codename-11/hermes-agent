@@ -144,7 +144,19 @@ On Windows, Update Control must prepare release updates without mutating the liv
 
 Restart/apply must revalidate the exact branch, live HEAD, dirty fingerprint, remote target, Hermes-owned paths, build stamp, and artifact hash **before** releasing the backend lock or quitting Electron. A failed preflight leaves the current Desktop and relay available. The detached handoff may then adopt the staged package, run the normal deploy-aware CLI updater, and restore the previous packaged app on failure.
 
-Plugins may control this lifecycle only through the typed `host.updates` methods (`refresh`, `getStage`, `prepare`, `discardStage`, `restartAndApply`, and `getHistory`). Do not expose raw IPC, shell execution, arbitrary manifest paths, branch mutation, or the legacy immediate `apply` action to plugins.
+Plugins may control this lifecycle only through the typed `host.updates` methods (`refresh`, `syncUpstream`, `getStage`, `prepare`, `discardStage`, `restartAndApply`, and `getHistory`). Do not expose raw IPC, shell execution, arbitrary manifest paths, branch mutation, or the legacy immediate `apply` action to plugins.
+
+`syncUpstream` is a distinct **Hermes upstream → Axiom deploy** operation. It reuses the deploy-aware `hermes update` reconciliation and guarded resolver in a Hermes-owned isolated worktree, publishes the verified result to `origin/<deploy>`, and must not mutate live `HEAD`, rewrite local `main`, rebuild Desktop, or restart services. A retained conflict handoff remains resumable through the same action even when upstream divergence has since reached zero. Preparing/applying **Axiom deploy → Local** stays a separate explicit lifecycle; a prepared local stage blocks upstream sync because publishing a new deploy target would invalidate that artifact.
+
+Electron main serializes sync, prepare, discard, legacy apply, and restart/apply through one update-operation coordinator. Renderer disabled states are only UX; the main-process coordinator is the correctness boundary. Detached preparation must publish its existing `.prepare-lock` ownership before the coordinator releases the launch operation, after which the on-disk stage lock/status remains authoritative. The upstream subprocess has a bounded deadline, terminates its full process tree, rejects nonzero exits even if output contained a success payload, and clears ownership after every completion/failure so explicit retry remains possible.
+
+Persisted preparation percentages are not proof of active work. Electron must reconcile every nonterminal `progress.json` phase with the `.prepare-lock` owner before returning status to the renderer. A live owner preserves preparing state; a dead or missing owner with no ready manifest becomes a terminal interrupted failure, optionally noting when a newer Desktop build superseded it. Preserve logs and diagnostics for discard/retry, but never replay orphaned progress indefinitely after restart.
+
+Update Control exposes preparation activity only from authoritative Electron status checks. While a verified worker owns the stage lock, poll that status at a bounded interval, show a spinner plus last-check freshness, and offer cancellation. Cancellation must re-verify the PID command line against the exact Hermes stage script and stage root, terminate that worker's process tree, preserve a terminal cancelled result/history entry, and leave staged files available for explicit discard. Never offer cancellation for ready, replacement, apply, or restart phases.
+
+Keep checking and mutation actions explicit. **Check Desktop** refreshes the local/deploy/upstream lineage and remains available for a ready stage; **Check Backend** refreshes the connected backend independently. A ready Desktop stage may be replaced through **Discard & check latest**, after which upstream publication and local preparation remain separate actions. Upstream → Axiom publication is one shared deploy operation shown on the Desktop lane, not a duplicated backend action, and any retained/prepared stage blocks publication until discarded.
+
+The staged Windows handoff owns exactly one visible update surface. Keep the proven detached `cmd start` wrapper, but launch PowerShell with `-WindowStyle Hidden` so its required console never appears beside the script-owned updater window. That window is a normal taskbar surface with Minimize enabled, Maximize disabled, no permanent always-on-top pin, phase-oriented status copy, and technical CLI output as secondary diagnostics. Closing is blocked while the update is active; minimizing must not interrupt the updater, its log, rollback, result, or relaunch behavior.
 
 Update history is the bounded Hermes-owned `logs/update-history.json` index. Successful CLI updates retain Markdown briefs plus structured sidecars; failed preparation and detached apply results are reconciled into the same index. Update Control presents categorized pending commits, staged progress/recovery, and completed/failed history from this contract.
 
@@ -152,6 +164,10 @@ Every selected install (Desktop client or connected backend) must expose the upd
 
 Protected files: `apps/desktop/src/plugins/update-control/`,
 `apps/desktop/electron/main.ts`,
+`apps/desktop/electron/update-handoff-status.ts`,
+`apps/desktop/electron/update-operation-coordinator.ts`,
+`apps/desktop/electron/updater-process.ts`,
+`apps/desktop/electron/upstream-sync.ts`,
 `apps/desktop/src/global.d.ts`,
 `apps/desktop/src/sdk/index.ts`,
 `apps/desktop/src/store/updates.ts`,
@@ -161,11 +177,16 @@ Protected files: `apps/desktop/src/plugins/update-control/`,
 `apps/desktop/src/components/pane-shell/tree/store.ts`,
 `apps/desktop/src/app/chat/sidebar/index.tsx`,
 `apps/desktop/src/store/preview.ts`, and
-`apps/desktop/src/store/session-states.ts`. Focused verification:
+`apps/desktop/src/store/session-states.ts`, plus the publish-only path in
+`hermes_cli/axiom_update.py`. Focused verification:
 
 ```bash
 cd apps/desktop
 NODE_ENV=test npx vitest run --environment jsdom \
+  electron/update-handoff-status.test.ts \
+  electron/update-operation-coordinator.test.ts \
+  electron/updater-process.test.ts \
+  electron/upstream-sync.test.ts \
   src/plugins/update-control/plugin.test.tsx \
   src/plugins/update-control/model.test.ts \
   src/contrib/plugin.test.ts \
@@ -173,6 +194,8 @@ NODE_ENV=test npx vitest run --environment jsdom \
   src/store/preview.test.ts \
   src/store/session-states.test.ts
 npm run typecheck
+cd ../..
+python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py
 ```
 
 Drop condition: upstream provides an equivalent reopenable plugin main-tab

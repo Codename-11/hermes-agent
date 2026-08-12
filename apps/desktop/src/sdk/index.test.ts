@@ -5,13 +5,15 @@ const updateMocks = vi.hoisted(() => ({
   $backendUpdateStatus: { get: vi.fn() },
   $updateStatus: { get: vi.fn() },
   applyBackendUpdate: vi.fn(),
+  cancelDesktopUpdatePreparation: vi.fn(),
   checkBackendUpdates: vi.fn(),
   checkUpdates: vi.fn(),
   discardDesktopUpdateStage: vi.fn(),
   getDesktopUpdateHistory: vi.fn(),
   getDesktopUpdateStage: vi.fn(),
   prepareDesktopUpdateStage: vi.fn(),
-  restartAndApplyDesktopUpdateStage: vi.fn()
+  restartAndApplyDesktopUpdateStage: vi.fn(),
+  syncDesktopUpstream: vi.fn()
 }))
 
 vi.mock('@/store/updates', () => updateMocks)
@@ -133,9 +135,31 @@ describe('host.updates', () => {
     })
   })
 
+  it('publishes Hermes upstream through the named core operation and preserves stopped sync details', async () => {
+    updateMocks.syncDesktopUpstream.mockResolvedValueOnce({
+      ok: true,
+      state: 'completed',
+      message: 'Published 2 Hermes upstream commits to origin/axiom.'
+    })
+    await expect(host.updates.syncUpstream()).resolves.toMatchObject({ ok: true, state: 'completed' })
+
+    updateMocks.syncDesktopUpstream.mockResolvedValueOnce({
+      ok: false,
+      state: 'handoff',
+      error: 'reconciliation-stopped',
+      message: 'Upstream reconciliation stopped safely.'
+    })
+    await expect(host.updates.syncUpstream()).resolves.toMatchObject({
+      ok: false,
+      state: 'handoff',
+      message: 'Upstream reconciliation stopped safely.'
+    })
+  })
+
   it('exposes only the named staged lifecycle, never branch, raw apply, progress, or bridge doors', () => {
     expect(Object.keys(host.updates).sort()).toEqual([
       'applyBackend',
+      'cancelPreparation',
       'discardStage',
       'getBackendApply',
       'getHistory',
@@ -143,7 +167,8 @@ describe('host.updates', () => {
       'getStatus',
       'prepare',
       'refresh',
-      'restartAndApply'
+      'restartAndApply',
+      'syncUpstream'
     ])
     expect(host.updates).not.toHaveProperty('apply')
     expect(host.updates).not.toHaveProperty('setBranch')

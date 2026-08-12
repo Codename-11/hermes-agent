@@ -194,6 +194,7 @@ try {
         pid = $PID
         token = $lockToken
         startedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        targetSha = $TargetSha
     }
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
 

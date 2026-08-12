@@ -34,6 +34,7 @@ import {
   $backendUpdateStatus,
   $updateStatus,
   applyBackendUpdate,
+  cancelDesktopUpdatePreparation,
   checkBackendUpdates,
   checkUpdates,
   discardDesktopUpdateStage,
@@ -41,6 +42,7 @@ import {
   getDesktopUpdateStage,
   prepareDesktopUpdateStage,
   restartAndApplyDesktopUpdateStage,
+  syncDesktopUpstream,
   type UpdateApplyState,
   type UpdateTarget
 } from '@/store/updates'
@@ -79,6 +81,9 @@ export interface PluginUpdateStageSnapshot {
   phase: string
   percent: number | null
   message?: string
+  checkedAt?: number
+  ownerActive?: boolean
+  cancellable?: boolean
   invalidationReason?: string
   currentSha?: string
   targetSha?: string
@@ -119,9 +124,11 @@ export interface PluginUpdateManagement {
   getHistory: () => Promise<PluginUpdateHistoryEntry[]>
   refresh: (target: PluginUpdateTarget) => Promise<DesktopUpdateStatus | null>
   prepare: () => Promise<null | PluginUpdateStageSnapshot>
+  cancelPreparation: () => ReturnType<typeof cancelDesktopUpdatePreparation>
   discardStage: () => ReturnType<typeof discardDesktopUpdateStage>
   restartAndApply: () => ReturnType<typeof restartAndApplyDesktopUpdateStage>
   applyBackend: () => ReturnType<typeof applyBackendUpdate>
+  syncUpstream: () => ReturnType<typeof syncDesktopUpstream>
 }
 
 const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateStatus | null =>
@@ -164,6 +171,9 @@ const pluginStageSnapshot = (status: DesktopUpdateStageStatus): null | PluginUpd
     phase: status.phase,
     percent: status.percent ?? null,
     message: status.message,
+    checkedAt: status.checkedAt,
+    ownerActive: status.ownerActive,
+    cancellable: status.cancellable,
     invalidationReason: status.reason,
     currentSha: status.manifest?.baseSha,
     targetSha: status.manifest?.targetSha,
@@ -231,9 +241,11 @@ export const host = {
 
       return pluginStageSnapshot(result.status)
     },
+    cancelPreparation: async () => requireUpdateSuccess(await cancelDesktopUpdatePreparation()),
     discardStage: async () => requireUpdateSuccess(await discardDesktopUpdateStage()),
     restartAndApply: async () => requireUpdateSuccess(await restartAndApplyDesktopUpdateStage()),
-    applyBackend: async () => requireUpdateSuccess(await applyBackendUpdate())
+    applyBackend: async () => requireUpdateSuccess(await applyBackendUpdate()),
+    syncUpstream: async () => syncDesktopUpstream()
   } satisfies PluginUpdateManagement,
 
   /** Toast into the app's notification stack. */

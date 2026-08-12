@@ -24,6 +24,7 @@ export interface UpdateControlStatus extends UpdateSummary {
   upstreamSha?: string
   upstreamBehind?: number
   upstreamCommits?: UpdateCommit[]
+  retainedUpstreamHandoff?: boolean
   deployBranch?: string
   deployBehind?: number
   fallbackCommand?: string
@@ -39,10 +40,29 @@ export interface UpdateControlApi {
   getHistory(): Awaitable<UpdateHistoryEntry[]>
   refresh(target: UpdateTarget): Awaitable<UpdateControlStatus | null | void>
   prepare(): Awaitable<UpdateStageSnapshot | null>
+  cancelPreparation(): Awaitable<unknown>
   discardStage(): Awaitable<unknown>
   restartAndApply(): Awaitable<unknown>
   applyBackend(): Awaitable<unknown>
+  syncUpstream(): Awaitable<UpstreamSyncSnapshot>
 }
+
+export interface UpstreamSyncSnapshot {
+  ok: boolean
+  state: 'completed' | 'failed' | 'handoff'
+  message: string
+  error?: string
+  branch?: string
+  reconciled?: number
+  targetSha?: string
+  worktree?: string
+  reportPath?: string
+}
+
+export const canSyncUpstream = (
+  status: UpdateControlStatus | null,
+  stage: UpdateStageSnapshot | null = null
+) => stage == null && ((status?.upstreamBehind ?? 0) > 0 || status?.retainedUpstreamHandoff === true)
 
 export interface BackendUpdateApplySnapshot {
   applying: boolean
@@ -86,6 +106,9 @@ export interface UpdateStageSnapshot {
   phase?: string
   percent?: number | null
   message?: string
+  checkedAt?: number
+  ownerActive?: boolean
+  cancellable?: boolean
   error?: string
   invalidationReason?: string
   currentSha?: string

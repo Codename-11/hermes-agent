@@ -28,6 +28,7 @@ module per the fork contract's drop-review process rather than letting it rot.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ logger = logging.getLogger("hermes_cli.axiom_update")
 # handoff marker. Not referenced upstream.
 DEPLOY_HANDOFF_FILE = ".update_handoff.json"
 UPDATE_REVIEW_DIR = "update-reports"
+DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
 FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
@@ -691,13 +693,27 @@ def _generate_update_conflict_review(
     return review
 
 
+def _count_commits_between(git_cmd: list[str], cwd: Path, older: str, newer: str) -> int:
+    result = subprocess.run(
+        git_cmd + ["rev-list", "--count", f"{older}..{newer}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return -1
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return -1
+
+
 def _count_changed_from_pre_update(
     git_cmd: list[str],
     cwd: Path,
     pre_update_head: str,
     fallback: int,
 ) -> int:
-    from hermes_cli.main import _count_commits_between  # lazy: avoid circular import at module load
     if pre_update_head:
         changed = _count_commits_between(git_cmd, cwd, pre_update_head, "HEAD")
         if changed >= 0:
@@ -789,7 +805,6 @@ def _completed_deploy_handoff_requires_post_update(
     repo: Path,
     branch: str,
 ) -> bool:
-    from hermes_cli.main import _count_commits_between  # lazy: avoid circular import at module load
     marker = _deploy_handoff_marker_path()
     if not marker.exists():
         return False
@@ -1208,6 +1223,7 @@ def _resolve_deploy_handoff(
     repo: Path,
     branch: str,
     pre_update_head: str,
+    publish_only: bool = False,
 ) -> Optional[int]:
     """Autonomously resolve a retained deploy update handoff.
 
@@ -1282,6 +1298,14 @@ def _resolve_deploy_handoff(
             f"→ Retained handoff snapshot is already published on origin/{branch}; "
             "starting a fresh deploy update."
         )
+        if publish_only:
+            return _run_deploy_branch_update(
+                git_cmd,
+                repo,
+                branch,
+                pre_update_head,
+                publish_only=True,
+            )
         return _run_deploy_branch_update(git_cmd, repo, branch, pre_update_head)
 
     if not worktree_raw or not worktree.exists():
@@ -1376,6 +1400,19 @@ def _resolve_deploy_handoff(
         return None
 
     status.advance("sync live")
+    if publish_only:
+        marker_cleared = False
+        try:
+            _deploy_handoff_marker_path().unlink()
+            marker_cleared = True
+        except OSError:
+            logger.debug("Failed to clear deploy handoff marker", exc_info=True)
+        if marker_cleared:
+            _remove_managed_update_worktree(git_cmd, repo, worktree)
+        status.finish(note="resolved and published handoff")
+        print(f"✓ Resolved deploy handoff and pushed origin/{branch}; live checkout was not changed.")
+        return 1
+
     changed = _fast_forward_live_deploy_checkout(git_cmd, repo, branch, pre_update_head, 1)
     if changed is None:
         status.fail(note="live fast-forward failed")
@@ -1398,7 +1435,6 @@ def _resolve_deploy_handoff(
 
 
 def _sync_deploy_main_to_upstream(git_cmd: list[str], repo: Path) -> bool:
-    from hermes_cli.main import _count_commits_between  # lazy: avoid circular import at module load
     main_local = _count_commits_between(git_cmd, repo, "upstream/main", "main")
     main_behind = _count_commits_between(git_cmd, repo, "main", "upstream/main")
     if main_local < 0 or main_behind < 0:
@@ -1554,7 +1590,6 @@ def _recover_deploy_push_rejection(
     fast-forward, or whether the temp worktree can merge the new remote tip and
     retry once.
     """
-    from hermes_cli.main import _count_commits_between  # lazy: avoid circular import at module load
 
     remote_ref = f"origin/{branch}"
     print(f"  ⚠ origin/{branch} advanced during update; reconciling once...")
@@ -1692,16 +1727,18 @@ def _run_deploy_branch_update(
     pre_update_head: str,
     *,
     target_sha: str | None = None,
+    publish_only: bool = False,
 ) -> Optional[int]:
     """Update a merge-based deploy branch without mutating live code on conflicts.
 
     The live checkout only fast-forwards to ``origin/<branch>`` after any
     upstream merge has succeeded and been pushed.  Merge conflicts happen in a
     temporary worktree so production source files are not left conflicted.
-    Returns the number of commits that changed the live checkout, ``0`` when no
-    code changed, or ``None`` when a handoff was printed and update should stop.
+    By default, returns the number of commits that changed the live checkout.
+    With ``publish_only=True``, publishes the reconciled deploy branch but leaves
+    the live checkout untouched and returns the number of upstream commits
+    reconciled. ``None`` means a handoff was printed and update should stop.
     """
-    from hermes_cli.main import _count_commits_between  # lazy: avoid circular import at module load
     try:
         from hermes_cli.update_ui import Pipeline
     except ModuleNotFoundError:
@@ -1773,6 +1810,8 @@ def _run_deploy_branch_update(
         return None
 
     if target_sha:
+        if publish_only:
+            raise ValueError("publish_only cannot be combined with target_sha")
         if not re.fullmatch(r"[0-9a-fA-F]{40}", target_sha):
             raise ValueError("target_sha must be a full Git commit SHA")
         resolved = subprocess.run(
@@ -1799,7 +1838,7 @@ def _run_deploy_branch_update(
         _pipe.finish(note=f"fast-forwarded to staged target {target_sha[:12]}")
         return changed
 
-    if not _sync_deploy_main_to_upstream(git_cmd, repo):
+    if not publish_only and not _sync_deploy_main_to_upstream(git_cmd, repo):
         _pipe.fail(note="cannot sync local main")
         _print_deploy_branch_handoff(
             reason="local main cannot be synchronized with upstream/main.",
@@ -1827,6 +1866,10 @@ def _run_deploy_branch_update(
     if upstream_ahead == 0 and local_ahead == 0:
         if origin_ahead == 0:
             _pipe.finish(note="already up to date")
+            return 0
+
+        if publish_only:
+            _pipe.finish(note=f"origin/{branch} already published")
             return 0
 
         _pipe.advance(f"sync {branch}")
@@ -1910,6 +1953,7 @@ def _run_deploy_branch_update(
                 repo=repo,
                 branch=branch,
                 pre_update_head=pre_update_head,
+                publish_only=publish_only,
             )
             if resolved is not None:
                 return resolved
@@ -1947,6 +1991,7 @@ def _run_deploy_branch_update(
                 repo=repo,
                 branch=branch,
                 pre_update_head=pre_update_head,
+                publish_only=publish_only,
             )
             if resolved is not None:
                 return resolved
@@ -1959,6 +2004,21 @@ def _run_deploy_branch_update(
         text=True,
     )
     if push_result.returncode != 0:
+        if publish_only:
+            _pipe.fail(note=f"cannot push {branch}")
+            _print_deploy_branch_handoff(
+                reason=f"push to origin/{branch} failed.",
+                repo=repo,
+                branch=branch,
+                upstream_ahead=upstream_ahead,
+                origin_ahead=origin_ahead,
+                worktree_path=worktree_path,
+                error=(push_result.stderr or "").strip(),
+                git_cmd=git_cmd,
+            )
+            print("  The live checkout was left unchanged; the merged worktree was retained.")
+            return None
+
         recovered = _recover_deploy_push_rejection(
             git_cmd=git_cmd,
             repo=repo,
@@ -2018,6 +2078,12 @@ def _run_deploy_branch_update(
         )
         return None
 
+    if publish_only:
+        _pipe.finish(note=f"published {upstream_ahead} upstream commit(s) to origin/{branch}")
+        if worktree_created:
+            _remove_update_worktree(git_cmd, repo, worktree_path, parent)
+        return upstream_ahead
+
     ff_result = subprocess.run(
         git_cmd + ["merge", "--ff-only", remote_ref],
         cwd=repo,
@@ -2055,6 +2121,153 @@ def _run_deploy_branch_update(
         max(origin_ahead, upstream_ahead),
     )
 
+
+def sync_upstream_to_deploy(repo: Path, branch: str | None = None) -> dict[str, object]:
+    """Publish upstream/main into a fork deploy branch without changing live HEAD."""
+    repo = repo.resolve()
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    current = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    current_branch = current.stdout.strip() if current.returncode == 0 else ""
+    deploy_branch = (branch or current_branch).strip()
+    if deploy_branch not in DEPLOY_BRANCHES:
+        return {
+            "ok": False,
+            "state": "failed",
+            "error": "unsupported-branch",
+            "message": "Upstream sync requires an Axiom or TGI deploy branch checkout.",
+        }
+    if current_branch != deploy_branch:
+        return {
+            "ok": False,
+            "state": "failed",
+            "error": "wrong-live-branch",
+            "message": f"Live checkout is on {current_branch or 'an unknown branch'}, not {deploy_branch}.",
+        }
+
+    for remote in ("origin", "upstream"):
+        probe = subprocess.run(
+            git_cmd + ["remote", "get-url", remote],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode != 0:
+            return {
+                "ok": False,
+                "state": "failed",
+                "error": f"missing-{remote}",
+                "message": f"Required Git remote {remote!r} is unavailable.",
+            }
+
+    if _deploy_handoff_exists_for(repo, deploy_branch):
+        pre_update_head = _short_git_ref(git_cmd, repo, "HEAD")
+        reconciled = _resolve_deploy_handoff(
+            git_cmd=git_cmd,
+            repo=repo,
+            branch=deploy_branch,
+            pre_update_head=pre_update_head,
+            publish_only=True,
+        )
+        if reconciled is None:
+            payload = _read_deploy_handoff_payload(repo, deploy_branch) or {}
+            return {
+                "ok": False,
+                "state": "handoff",
+                "error": "reconciliation-stopped",
+                "message": "Upstream reconciliation stopped safely; the live checkout was not changed.",
+                "worktree": str(payload.get("worktree") or ""),
+                "reportPath": str(payload.get("report_path") or ""),
+            }
+
+        target = _short_git_ref(git_cmd, repo, f"origin/{deploy_branch}")
+        return {
+            "ok": True,
+            "state": "completed",
+            "branch": deploy_branch,
+            "reconciled": reconciled,
+            "targetSha": target,
+            "message": f"Resolved the retained handoff and published origin/{deploy_branch}.",
+        }
+
+    local_compare = subprocess.run(
+        git_cmd + ["rev-list", "--count", f"origin/{deploy_branch}..HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        local_ahead = int(local_compare.stdout.strip()) if local_compare.returncode == 0 else -1
+    except ValueError:
+        local_ahead = -1
+    if local_ahead < 0:
+        return {
+            "ok": False,
+            "state": "failed",
+            "error": "compare-failed",
+            "message": "Could not compare the live checkout with the Axiom deploy branch.",
+        }
+    if local_ahead > 0:
+        return {
+            "ok": False,
+            "state": "failed",
+            "error": "unpublished-local-commits",
+            "message": (
+                f"Live checkout has {local_ahead} unpublished deploy commit(s). "
+                "Publish or discard them before syncing Hermes upstream."
+            ),
+        }
+
+    pre_update_head = _short_git_ref(git_cmd, repo, "HEAD")
+    reconciled = _run_deploy_branch_update(
+        git_cmd,
+        repo,
+        deploy_branch,
+        pre_update_head,
+        publish_only=True,
+    )
+    if reconciled is None:
+        payload = _read_deploy_handoff_payload(repo, deploy_branch) or {}
+        return {
+            "ok": False,
+            "state": "handoff",
+            "error": "reconciliation-stopped",
+            "message": "Upstream reconciliation stopped safely; the live checkout was not changed.",
+            "worktree": str(payload.get("worktree") or ""),
+            "reportPath": str(payload.get("report_path") or ""),
+        }
+
+    target = _short_git_ref(git_cmd, repo, f"origin/{deploy_branch}")
+    return {
+        "ok": True,
+        "state": "completed",
+        "branch": deploy_branch,
+        "reconciled": reconciled,
+        "targetSha": target,
+        "message": (
+            f"Published {reconciled} Hermes upstream commit(s) to origin/{deploy_branch}."
+            if reconciled
+            else f"origin/{deploy_branch} already contains upstream/main."
+        ),
+    }
+
+
+def _sync_upstream_cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Publish Hermes upstream into a deploy branch")
+    parser.add_argument("command", choices=("sync-upstream",))
+    parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--branch", default=None)
+    args = parser.parse_args(argv)
+    result = sync_upstream_to_deploy(args.repo, args.branch)
+    print("HERMES_UPSTREAM_SYNC_RESULT=" + json.dumps(result, separators=(",", ":")), flush=True)
+    return 0 if result.get("ok") else 1
 
 def _detect_windows_gateway_launcher_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None
@@ -2160,3 +2373,7 @@ def _detect_windows_gateway_launcher_instances(
         matches.append((int(pid), str(name), _profile_from_cmdline(cmdline)))
 
     return matches
+
+
+if __name__ == "__main__":
+    raise SystemExit(_sync_upstream_cli())

@@ -4,7 +4,9 @@ import { derivePreparationView, shortSha, type UpdateStageSnapshot, type UpdateS
 
 export function UpdateActions({
   busy,
+  onCancel,
   onDiscard,
+  onDiscardAndRefresh,
   onPrepare,
   onRefresh,
   onRestart,
@@ -12,7 +14,9 @@ export function UpdateActions({
   status
 }: {
   busy: boolean
+  onCancel: () => void
   onDiscard: () => void
+  onDiscardAndRefresh: () => void
   onPrepare: () => void
   onRefresh: () => void
   onRestart: () => void
@@ -21,6 +25,9 @@ export function UpdateActions({
 }) {
   const view = derivePreparationView(status, stage)
   const progress = stage?.state === 'preparing' && stage.percent != null ? Math.max(0, Math.min(100, stage.percent)) : null
+  const activelyPreparing = stage?.state === 'preparing' && stage.ownerActive === true
+  const canCancel = activelyPreparing && stage.cancellable === true
+  const checkedAgo = stage?.checkedAt == null ? null : Math.max(0, Math.floor((Date.now() - stage.checkedAt) / 1_000))
 
   const runPrimary =
     view.action === 'prepare' ? onPrepare : view.action === 'restartAndApply' ? onRestart : view.action === 'refresh' ? onRefresh : null
@@ -41,13 +48,22 @@ export function UpdateActions({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <StatusDot tone={view.tone} />
+            {activelyPreparing ? (
+              <Codicon aria-label="Preparation active" className="animate-spin text-(--ui-accent)" name="loading" size="0.8rem" />
+            ) : (
+              <StatusDot tone={view.tone} />
+            )}
             <h2 className="text-sm font-semibold text-(--ui-text-primary)" id="preparation-heading">
               {view.title}
             </h2>
             <Badge>{view.state}</Badge>
           </div>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-(--ui-text-tertiary)">{view.description}</p>
+          {stage?.state === 'preparing' && checkedAgo != null ? (
+            <p aria-live="polite" className="mt-1 text-[0.6875rem] text-(--ui-text-quaternary)" role="status">
+              {stage.ownerActive ? `Worker verified · status checked ${checkedAgo < 2 ? 'just now' : `${checkedAgo}s ago`}` : 'Worker not verified'}
+            </p>
+          ) : null}
           {stage?.targetSha ? (
             <p className="mt-2 font-mono text-[0.6875rem] text-(--ui-text-quaternary)">
               {shortSha(stage.currentSha || status?.currentSha)} → {shortSha(stage.targetSha)}
@@ -56,7 +72,17 @@ export function UpdateActions({
           ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
-          {view.canDiscard ? (
+          {canCancel ? (
+            <Button disabled={busy} onClick={onCancel} size="sm" variant="outline">
+              {busy ? <Codicon className="animate-spin" name="loading" size="0.8rem" /> : null}
+              Cancel preparation
+            </Button>
+          ) : null}
+          {stage?.state === 'ready' ? (
+            <Button disabled={busy} onClick={onDiscardAndRefresh} size="sm" variant="outline">
+              Discard &amp; check latest
+            </Button>
+          ) : view.canDiscard ? (
             <Button disabled={busy} onClick={onDiscard} size="sm" variant="outline">
               Discard
             </Button>

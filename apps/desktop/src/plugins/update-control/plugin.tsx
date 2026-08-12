@@ -24,6 +24,7 @@ import { BackendUpdateActions } from './backend-actions'
 import { UpdateHistory } from './history'
 import {
   type BackendUpdateApplySnapshot,
+  canSyncUpstream,
   friendlyError,
   hasUpdate,
   shortSha,
@@ -31,7 +32,8 @@ import {
   type UpdateControlStatus,
   type UpdateHistoryEntry,
   type UpdateStageSnapshot,
-  type UpdateTarget
+  type UpdateTarget,
+  type UpstreamSyncSnapshot
 } from './model'
 import { PendingChanges } from './pending-changes'
 import { UpdateActions } from './update-actions'
@@ -189,10 +191,62 @@ function TargetSummary({ status, target }: { status: UpdateControlStatus | null;
   )
 }
 
+function UpstreamSyncActions({
+  busy,
+  onSync,
+  result,
+  stage,
+  status
+}: {
+  busy: boolean
+  onSync: () => void
+  result: UpstreamSyncSnapshot | null
+  stage: UpdateStageSnapshot | null
+  status: UpdateControlStatus | null
+}) {
+  const pending = status?.upstreamBehind ?? 0
+  const blockedByStage = stage != null
+
+  return (
+    <section aria-labelledby="upstream-sync-heading" className="border-t border-(--ui-stroke-tertiary) pt-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusDot tone={result?.state === 'handoff' || result?.state === 'failed' ? 'bad' : pending > 0 ? 'warn' : 'good'} />
+            <h2 className="text-sm font-semibold text-(--ui-text-primary)" id="upstream-sync-heading">
+              Hermes upstream → Axiom
+            </h2>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-(--ui-text-tertiary)">
+            {busy
+              ? 'Reconciling upstream/main in an isolated worktree and publishing the verified result to origin/axiom…'
+              : blockedByStage
+                ? 'Discard the current prepared or retained stage before publishing a newer Axiom deploy target.'
+                : result?.message ||
+                  (pending > 0
+                    ? `${pending} upstream commit${pending === 1 ? '' : 's'} can be reconciled into the Axiom deploy branch.`
+                    : 'The Axiom deploy branch already contains Hermes upstream.')}
+          </p>
+          {result?.worktree || result?.reportPath ? (
+            <p className="mt-2 break-all font-mono text-[0.6875rem] leading-5 text-(--ui-text-quaternary)">
+              {result.reportPath || result.worktree}
+            </p>
+          ) : null}
+        </div>
+        <Button disabled={busy || !canSyncUpstream(status, stage)} onClick={onSync} size="sm" variant="outline">
+          {busy ? <Codicon className="animate-spin" name="loading" size="0.8rem" /> : null}
+          {busy ? 'Syncing…' : 'Sync Hermes into Axiom'}
+        </Button>
+      </div>
+    </section>
+  )
+}
+
 function UpdateControlPane() {
   const queryClient = useQueryClient()
   const [target, setTarget] = useState<UpdateTarget>('client')
   const [actionError, setActionError] = useState<string | null>(null)
+  const [upstreamSyncResult, setUpstreamSyncResult] = useState<UpstreamSyncSnapshot | null>(null)
   const api = updatesApi()
 
   const statusQuery = useQuery({
@@ -234,11 +288,15 @@ function UpdateControlPane() {
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ROOT_KEY })
 
   const lifecycle = useMutation({
-    mutationFn: async (action: 'discard' | 'prepare' | 'restart') => {
+    mutationFn: async (action: 'cancel' | 'discard' | 'prepare' | 'restart') => {
       setActionError(null)
 
       if (action === 'prepare' && api?.prepare) {
         return api.prepare()
+      }
+
+      if (action === 'cancel' && api?.cancelPreparation) {
+        return api.cancelPreparation()
       }
 
       if (action === 'discard' && api?.discardStage) {
@@ -255,6 +313,8 @@ function UpdateControlPane() {
     onSuccess: (result, action) => {
       if (action === 'prepare') {
         queryClient.setQueryData([...ROOT_KEY, 'stage'], result)
+      } else if (action === 'cancel' && result && typeof result === 'object' && 'status' in result) {
+        queryClient.setQueryData([...ROOT_KEY, 'stage'], result.status)
       }
     },
     onSettled: (_result, _error, action) => {
@@ -283,6 +343,21 @@ function UpdateControlPane() {
     onSettled: invalidate
   })
 
+  const discardAndRefresh = useMutation({
+    mutationFn: async () => {
+      setActionError(null)
+
+      if (!api?.discardStage || !api.refresh) {
+        throw new Error('Refresh and staging controls are unavailable in this Desktop build.')
+      }
+
+      await api.discardStage()
+      await api.refresh('client')
+    },
+    onError: error => setActionError(friendlyError(error)),
+    onSettled: invalidate
+  })
+
   const backendUpdate = useMutation({
     mutationFn: async () => {
       setActionError(null)
@@ -297,6 +372,25 @@ function UpdateControlPane() {
     onSettled: invalidate
   })
 
+  const upstreamSync = useMutation({
+    mutationFn: async () => {
+      setActionError(null)
+      setUpstreamSyncResult(null)
+
+      if (!api?.syncUpstream) {
+        throw new Error('Hermes upstream sync is unavailable in this Desktop build.')
+      }
+
+      return api.syncUpstream()
+    },
+    onError: error => setActionError(friendlyError(error)),
+    onSuccess: result => setUpstreamSyncResult(result),
+    onSettled: async () => {
+      await api?.refresh?.('client')
+      invalidate()
+    }
+  })
+
   const status = statusQuery.data ?? null
   const stage = (stageQuery.data ?? null) as UpdateStageSnapshot | null
   const history = (historyQuery.data ?? []) as UpdateHistoryEntry[]
@@ -304,6 +398,7 @@ function UpdateControlPane() {
   const deployCommits = stage?.commits ?? status?.deployCommits ?? status?.commits ?? []
   const upstreamCommits = status?.upstreamCommits ?? []
   const queryError = statusQuery.error || stageQuery.error || historyQuery.error
+  const updateMutationBusy = lifecycle.isPending || upstreamSync.isPending
 
   const primaryLoading =
     statusQuery.isPending ||
@@ -330,9 +425,14 @@ function UpdateControlPane() {
 
         <div className="mt-5 flex flex-col gap-3 border-t border-(--ui-stroke-tertiary) pt-4 sm:flex-row sm:items-center sm:justify-between">
           <SegmentedControl onChange={setTarget} options={TARGET_OPTIONS} value={target} />
-          <Button disabled={refresh.isPending} onClick={() => refresh.mutate()} size="sm" variant="ghost">
+          <Button
+            disabled={refresh.isPending || updateMutationBusy || discardAndRefresh.isPending}
+            onClick={() => refresh.mutate()}
+            size="sm"
+            variant="ghost"
+          >
             <Codicon className={cn(refresh.isPending && 'animate-spin')} name="refresh" size="0.8rem" />
-            {refresh.isPending ? 'Refreshing…' : 'Refresh'}
+            {refresh.isPending ? 'Checking…' : target === 'client' ? 'Check Desktop' : 'Check Backend'}
           </Button>
         </div>
 
@@ -340,6 +440,16 @@ function UpdateControlPane() {
           <p className="py-6 text-xs text-(--ui-text-tertiary)" role="status">Loading update status…</p>
         ) : statusQuery.isSuccess ? (
           <TargetSummary status={status} target={target} />
+        ) : null}
+
+        {!primaryLoading && target === 'client' ? (
+          <UpstreamSyncActions
+            busy={updateMutationBusy}
+            onSync={() => upstreamSync.mutate()}
+            result={upstreamSyncResult}
+            stage={stage}
+            status={status}
+          />
         ) : null}
 
         {actionError || queryError ? (
@@ -350,8 +460,10 @@ function UpdateControlPane() {
 
         {primaryLoading ? null : target === 'client' ? (
           <UpdateActions
-            busy={lifecycle.isPending || refresh.isPending}
+            busy={updateMutationBusy || refresh.isPending || discardAndRefresh.isPending}
+            onCancel={() => lifecycle.mutate('cancel')}
             onDiscard={() => lifecycle.mutate('discard')}
+            onDiscardAndRefresh={() => discardAndRefresh.mutate()}
             onPrepare={() => lifecycle.mutate('prepare')}
             onRefresh={() => refresh.mutate()}
             onRestart={() => lifecycle.mutate('restart')}

@@ -16,10 +16,21 @@ import {
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
+  UPDATER_WINDOW_CONTRACT,
   wrapHandoffForDetachedConsole
 } from './updater-process'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+
+test('updater window is minimizable, taskbar-owned, and cannot be closed mid-update', () => {
+  assert.deepEqual(UPDATER_WINDOW_CONTRACT, {
+    allowCloseWhileRunning: false,
+    minimizeBox: true,
+    maximizeBox: false,
+    showInTaskbar: true,
+    topMost: false
+  })
+})
 
 test('stagedUpdaterSupportsPrewrittenMarker rejects installers predating the self-adopt fix', () => {
   // The real-world trap: an installer staged at first install months ago, never
@@ -220,7 +231,7 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   assert.equal(handoff, null)
 })
 
-test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
+test('wrapHandoffForDetachedConsole keeps the durable cmd handoff but hides the PowerShell console', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
@@ -239,8 +250,9 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
     '/c',
     'start',
     '',
-    '/min',
     'powershell',
+    '-WindowStyle',
+    'Hidden',
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',

@@ -329,9 +329,11 @@ declare global {
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
+        syncUpstream: () => Promise<DesktopUpstreamSyncResult>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         status: () => Promise<DesktopUpdateStageStatus>
         prepare: () => Promise<DesktopUpdatePrepareResult>
+        cancelPreparation: () => Promise<DesktopUpdateCancelResult>
         discard: () => Promise<DesktopUpdateDiscardResult>
         restartAndApply: () => Promise<DesktopUpdateRestartResult>
         history: () => Promise<DesktopUpdateHistoryEntry[]>
@@ -493,6 +495,9 @@ export interface DesktopUpdateStageProgress {
 
 export interface DesktopUpdateStageStatus extends DesktopUpdateStageProgress {
   supported: boolean
+  checkedAt?: number
+  ownerActive?: boolean
+  cancellable?: boolean
   manifest?: DesktopUpdateStageManifest
   reason?: DesktopUpdateStageInvalidReason | 'malformed' | 'missing'
 }
@@ -501,6 +506,14 @@ export interface DesktopUpdatePrepareResult {
   ok: boolean
   status: DesktopUpdateStageStatus
   error?: string
+}
+
+export interface DesktopUpdateCancelResult {
+  ok: boolean
+  cancelled: boolean
+  status?: DesktopUpdateStageStatus
+  error?: string
+  message?: string
 }
 
 export interface DesktopUpdateDiscardResult {
@@ -566,11 +579,25 @@ export interface DesktopUpdateStatus {
   upstreamBehind?: number
   /** Upstream commits not yet reconciled into the deploy branch. */
   upstreamCommits?: DesktopUpdateCommit[]
+  /** A Hermes-owned reconciliation handoff still needs resolution or cleanup. */
+  retainedUpstreamHandoff?: boolean
   deployBranch?: string
   deployBehind?: number
   backendMessage?: string
   dirty?: boolean
   fetchedAt?: number
+}
+
+export interface DesktopUpstreamSyncResult {
+  ok: boolean
+  state: 'completed' | 'failed' | 'handoff'
+  branch?: string
+  reconciled?: number
+  targetSha?: string
+  message: string
+  error?: string
+  worktree?: string
+  reportPath?: string
 }
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'

@@ -8,6 +8,7 @@ import { atom } from 'nanostores'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
+  DesktopUpdateCancelResult,
   DesktopUpdateDiscardResult,
   DesktopUpdateHistoryEntry,
   DesktopUpdatePrepareResult,
@@ -399,6 +400,21 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   }
 }
 
+export async function syncDesktopUpstream() {
+  const bridge = window.hermesDesktop?.updates
+
+  if (!bridge?.syncUpstream) {
+    return {
+      ok: false as const,
+      state: 'failed' as const,
+      error: 'unavailable',
+      message: 'Hermes upstream sync is unavailable in this Desktop build.'
+    }
+  }
+
+  return bridge.syncUpstream()
+}
+
 export async function getDesktopUpdateStage(): Promise<DesktopUpdateStageStatus> {
   const bridge = window.hermesDesktop?.updates
 
@@ -425,6 +441,17 @@ export async function prepareDesktopUpdateStage(): Promise<DesktopUpdatePrepareR
   }
 
   return bridge.prepare()
+}
+
+export async function cancelDesktopUpdatePreparation(): Promise<DesktopUpdateCancelResult> {
+  const bridge = window.hermesDesktop?.updates
+
+  return bridge?.cancelPreparation?.() ?? {
+    ok: false,
+    cancelled: false,
+    error: 'unavailable',
+    message: 'Preparation cancellation is unavailable in this Desktop build.'
+  }
 }
 
 export async function discardDesktopUpdateStage(): Promise<DesktopUpdateDiscardResult> {

@@ -1,0 +1,165 @@
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
+import path from 'node:path'
+
+export interface DesktopUpstreamSyncResult {
+  ok: boolean
+  state: 'completed' | 'failed' | 'handoff'
+  branch?: string
+  reconciled?: number
+  targetSha?: string
+  message: string
+  error?: string
+  worktree?: string
+  reportPath?: string
+}
+
+const RESULT_PREFIX = 'HERMES_UPSTREAM_SYNC_RESULT='
+const MAX_OUTPUT = 24_000
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1_000
+
+let active: Promise<DesktopUpstreamSyncResult> | null = null
+
+function failed(message: string, error = 'sync-failed'): DesktopUpstreamSyncResult {
+  return { ok: false, state: 'failed', error, message }
+}
+
+export function parseUpstreamSyncResult(output: string): DesktopUpstreamSyncResult | null {
+  const line = output
+    .split(/\r?\n/)
+    .reverse()
+    .find(candidate => candidate.startsWith(RESULT_PREFIX))
+
+  if (!line) {
+    return null
+  }
+
+  try {
+    const value = JSON.parse(line.slice(RESULT_PREFIX.length)) as DesktopUpstreamSyncResult
+
+    if (
+      typeof value?.ok !== 'boolean' ||
+      !['completed', 'failed', 'handoff'].includes(value.state) ||
+      typeof value.message !== 'string'
+    ) {
+      return null
+    }
+
+    return value
+  } catch {
+    return null
+  }
+}
+
+export function resolveUpstreamSyncExit(output: string, code: number | null): DesktopUpstreamSyncResult {
+  if (code !== 0) {
+    return failed(`Hermes upstream sync exited ${code ?? 'without a status'}.`, 'sync-exited')
+  }
+
+  return (
+    parseUpstreamSyncResult(output) ??
+    failed('Hermes upstream sync exited successfully without returning a result.', 'missing-result')
+  )
+}
+
+export function stopUpstreamSyncChild(
+  child: Pick<ChildProcess, 'kill' | 'pid'>,
+  options: {
+    isWindows?: boolean
+    killGroup?: (pid: number) => void
+    killTree?: (pid: number) => void
+  } = {}
+) {
+  const pid = child.pid
+  const isWindows = options.isWindows ?? process.platform === 'win32'
+
+  if (!Number.isInteger(pid) || !pid || pid <= 0) {
+    child.kill()
+
+    return
+  }
+
+  try {
+    if (isWindows) {
+      const killTree =
+        options.killTree ??
+        (value => execFileSync('taskkill', ['/PID', String(value), '/T', '/F'], { stdio: 'ignore', windowsHide: true }))
+
+      killTree(pid)
+    } else {
+      ;(options.killGroup ?? (value => process.kill(-value, 'SIGTERM')))(pid)
+    }
+  } catch {
+    child.kill()
+  }
+}
+
+export function runUpstreamSync(options: {
+  python: string
+  repo: string
+  branch: string
+  env?: NodeJS.ProcessEnv
+  timeoutMs?: number
+}): Promise<DesktopUpstreamSyncResult> {
+  if (active) {
+    return active
+  }
+
+  active = new Promise(resolve => {
+    let output = ''
+    let settled = false
+    let timer: NodeJS.Timeout | null = null
+
+    const done = (result: DesktopUpstreamSyncResult) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      active = null
+      resolve(result)
+    }
+
+    const child = spawn(
+      options.python,
+      ['-P', '-m', 'hermes_cli.axiom_update', 'sync-upstream', '--repo', options.repo, '--branch', options.branch],
+      {
+        cwd: options.repo,
+        detached: process.platform !== 'win32',
+        env: {
+          ...process.env,
+          ...options.env,
+          PYTHONPATH: [options.repo, options.env?.PYTHONPATH, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+          PYTHONUNBUFFERED: '1'
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      }
+    )
+
+    const append = (chunk: Buffer | string) => {
+      output = (output + chunk.toString()).slice(-MAX_OUTPUT)
+    }
+
+    child.stdout?.on('data', append)
+    child.stderr?.on('data', append)
+    child.once('error', error => done(failed(error.message, 'spawn-failed')))
+    child.once('close', code => done(resolveUpstreamSyncExit(output, code)))
+    timer = setTimeout(() => {
+      stopUpstreamSyncChild(child)
+      done(
+        failed(
+          `Hermes upstream sync exceeded ${Math.ceil((options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 60_000)} minutes and was stopped.`,
+          'sync-timeout'
+        )
+      )
+    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    timer.unref?.()
+  })
+
+  return active
+}
