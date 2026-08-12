@@ -35,6 +35,7 @@ $LockDir = Join-Path $StageRoot ".prepare-lock"
 $ManifestPath = Join-Path $StageRoot "stage.json"
 $ResultPath = Join-Path $StageRoot "stage-result.json"
 $ProgressPath = Join-Path $StageRoot "progress.json"
+$ContentHashScriptPath = Join-Path $StageRoot "compute-content-hash.py"
 $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-stage.log"
 
@@ -255,7 +256,12 @@ sys.path.insert(0, os.environ["HERMES_STAGE_INSTALL_ROOT"])
 from hermes_cli.main import _compute_desktop_content_hash
 print(_compute_desktop_content_hash(Path(os.environ["HERMES_STAGE_PROJECT_ROOT"])))
 '@
-    $contentHash = Get-LastOutputLine (Invoke-Checked $python @("-c", $hashCode) "content-hash")
+    [System.IO.File]::WriteAllText(
+        $ContentHashScriptPath,
+        $hashCode,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    $contentHash = Get-LastOutputLine (Invoke-Checked $python @($ContentHashScriptPath) "content-hash")
     if ($contentHash -notmatch "^[0-9a-fA-F]{64}$") { throw "Desktop content hash was invalid" }
 
     $buildStampPath = Join-Path $StageRoot "desktop-build-stamp.json"
@@ -326,6 +332,7 @@ print(_compute_desktop_content_hash(Path(os.environ["HERMES_STAGE_PROJECT_ROOT"]
     }
     Remove-Item Env:\HERMES_STAGE_PROJECT_ROOT -ErrorAction SilentlyContinue
     Remove-Item Env:\HERMES_STAGE_INSTALL_ROOT -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $ContentHashScriptPath -Force -ErrorAction SilentlyContinue
     if (-not $ok) {
         Remove-Item -LiteralPath $ManifestPath -Force -ErrorAction SilentlyContinue
     }
