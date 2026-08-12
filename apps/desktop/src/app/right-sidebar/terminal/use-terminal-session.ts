@@ -876,6 +876,11 @@ export function useTerminalSession({
             })
           )
 
+          // start() returns the generated session id; only now can preload bind
+          // the session-scoped IPC channels. Acknowledge those listeners so the
+          // main process flushes any prompt emitted during PTY startup.
+          void terminalApi.subscribe(session.id)
+
           window.requestAnimationFrame(() => {
             term.clearSelection() // drop any selection painted over transient boot rows
           })

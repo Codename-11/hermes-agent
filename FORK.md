@@ -216,6 +216,45 @@ read-aloud ownership enforced at the playback trigger (including tiles and
 runtime-id collisions), gateway-authoritative wake behavior with keyboard-visible
 failures, and matching tooltip/accessibility discovery.
 
+## Axiom Desktop Terminal shortcut and startup delivery
+
+Desktop's built-in navigation rail exposes an idempotent **Terminal** shortcut
+beside **Browser**. It restores/focuses the existing singleton Terminal pane via
+the pane tree; it must not toggle an already visible pane closed or create a
+parallel terminal surface.
+
+Embedded PTY startup uses an explicit renderer-subscription barrier. The main
+process buffers ordered data/exit events emitted after spawn but before
+`terminal:start` returns its generated session id; after preload has attached
+the corresponding session-scoped IPC listeners, `terminal:subscribe` flushes
+that startup buffer exactly once and switches to live delivery. This is required
+for SSH/remote startup, where a prompt or immediate connection failure can
+otherwise be emitted before the renderer knows which channel to observe, leaving
+a live or failed Terminal tab visually blank.
+
+Protected files: `apps/desktop/electron/{main,preload,terminal-output-relay}.ts`,
+`apps/desktop/src/global.d.ts`,
+`apps/desktop/src/app/right-sidebar/terminal/use-terminal-session.ts`, and
+`apps/desktop/src/app/chat/sidebar/index.tsx`. Focused verification:
+
+```bash
+cd apps/desktop
+npm run test:desktop:platforms -- \
+  electron/terminal-output-relay.test.ts \
+  electron/connection-apply.test.ts \
+  electron/windows-remote-lifecycle.test.ts
+NODE_ENV=test npm run test:ui -- \
+  src/components/pane-shell/tree/tool-pane-toggle.test.ts \
+  src/app/right-sidebar/terminal/persistent.test.tsx \
+  src/app/right-sidebar/terminal/terminals.test.ts
+npm run typecheck
+```
+
+Drop condition: upstream provides both an equivalent idempotent built-in
+Terminal navigation entry and lossless ordered PTY startup delivery after the
+renderer has attached session-scoped listeners, including prompt output and
+early exits over SSH/remote startup.
+
 ## Axiom shared cron registry and generic profile ownership
 
 Axiom keeps one inspectable cron registry at the platform root (`<root>/cron/jobs.json`) while every profile-scoped row carries `owner_profile` / `profile` metadata. This is a storage and management carry only; execution must remain generic:

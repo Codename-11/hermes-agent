@@ -296,6 +296,8 @@ declare global {
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
         start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
+        /** Flush startup output after session-scoped listeners are attached. */
+        subscribe: (id: string) => Promise<boolean>
         write: (id: string, data: string) => Promise<boolean>
       }
       onClosePreviewRequested?: (callback: () => void) => () => void

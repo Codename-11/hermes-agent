@@ -206,6 +206,7 @@ import {
   SshConnection
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
+import { createTerminalOutputRelay } from './terminal-output-relay'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
@@ -12618,12 +12619,6 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
       )
     : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
 
-  terminalSessions.set(id, {
-    pty: ptyProcess,
-    webContentsId: event.sender.id,
-    ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
-  })
-
   const send = (suffix, payload) => {
     if (event.sender.isDestroyed()) {
       return
@@ -12632,14 +12627,44 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
     event.sender.send(terminalChannel(id, suffix), payload)
   }
 
-  ptyProcess.onData(data => send('data', data))
+  // The renderer cannot attach its session-scoped listener until this handler
+  // returns `id`. Buffer the shell's startup output until it acknowledges that
+  // listener, otherwise fast prompts (especially across SSH startup) disappear
+  // and leave a live but visually blank terminal tab.
+  const output = createTerminalOutputRelay({
+    onData: data => send('data', data),
+    onExit: payload => {
+      terminalSessions.delete(id)
+      send('exit', payload)
+    }
+  })
+
+  terminalSessions.set(id, {
+    output,
+    pty: ptyProcess,
+    webContentsId: event.sender.id,
+    ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
+  })
+
+  ptyProcess.onData(data => output.emit(data))
   ptyProcess.onExit(({ exitCode, signal }) => {
-    terminalSessions.delete(id)
-    send('exit', { code: exitCode, signal: signal || null })
+    output.exit({ code: exitCode, signal: signal || null })
   })
   event.sender.once('destroyed', () => disposeTerminalSession(id))
 
   return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
+})
+
+ipcMain.handle('hermes:terminal:subscribe', (_event, id) => {
+  const sessionInfo = terminalSessions.get(String(id || ''))
+
+  if (!sessionInfo) {
+    return false
+  }
+
+  sessionInfo.output.subscribe()
+
+  return true
 })
 
 ipcMain.handle('hermes:terminal:write', (_event, id, data) => {

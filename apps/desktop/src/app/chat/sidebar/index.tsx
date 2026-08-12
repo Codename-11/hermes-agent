@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import { restoreTreePane } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -207,6 +208,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     label: 'Browser',
     icon: props => <Codicon name="globe" {...props} />,
     onSelect: openBrowser
+  },
+  {
+    id: 'terminal',
+    label: 'Terminal',
+    icon: props => <Codicon name="terminal" {...props} />,
+    onSelect: () => restoreTreePane('terminal')
   }
 ]
 
