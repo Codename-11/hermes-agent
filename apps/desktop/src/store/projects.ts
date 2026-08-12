@@ -19,10 +19,16 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
-import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import {
+  $gateway,
+  activeGateway,
+  ensureActiveGatewayOpen,
+  gatewayForProfile,
+  openGatewayForProfile
+} from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { $activeGatewayProfile, $profileScope, ALL_PROFILES, requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, requestFreshSession } from '@/store/profile'
 import {
   $selectedStoredSessionId,
   $sessions,
@@ -30,7 +36,7 @@ import {
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
-import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
+import type { ProjectInfo, ProjectsPayload, SessionInfo } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
 // served by the live gateway's `projects.*` JSON-RPC methods, which wrap the
@@ -432,6 +438,85 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
+function tagProjectTreeProfile(projects: SidebarProjectTree[], profile: string): SidebarProjectTree[] {
+  const tag = (session: SessionInfo): SessionInfo => ({
+    ...session,
+    is_default_profile: profile === 'default',
+    profile
+  })
+
+  return projects.map(project => ({
+    ...project,
+    previewSessions: project.previewSessions?.map(tag),
+    repos: project.repos.map(repo => ({
+      ...repo,
+      groups: repo.groups.map(group => ({ ...group, sessions: group.sessions.map(tag) }))
+    }))
+  }))
+}
+
+function mergeProjectTrees(projectSets: SidebarProjectTree[][]): SidebarProjectTree[] {
+  const merged = new Map<string, SidebarProjectTree>()
+
+  for (const project of projectSets.flat()) {
+    const key = project.path || project.id
+    const current = merged.get(key)
+
+    if (!current) {
+      merged.set(key, project)
+
+      continue
+    }
+
+    const preferred = current.isAuto && !project.isAuto ? project : current
+    const other = preferred === current ? project : current
+    const repos = new Map(preferred.repos.map(repo => [repo.id, repo]))
+
+    for (const repo of other.repos) {
+      const existingRepo = repos.get(repo.id)
+
+      if (!existingRepo) {
+        repos.set(repo.id, repo)
+
+        continue
+      }
+
+      const groups = new Map(existingRepo.groups.map(group => [group.id, group]))
+
+      for (const group of repo.groups) {
+        const existingGroup = groups.get(group.id)
+
+        groups.set(
+          group.id,
+          existingGroup ? { ...existingGroup, sessions: [...existingGroup.sessions, ...group.sessions] } : group
+        )
+      }
+
+      repos.set(repo.id, {
+        ...existingRepo,
+        groups: [...groups.values()],
+        sessionCount: (existingRepo.sessionCount || 0) + (repo.sessionCount || 0)
+      })
+    }
+
+    const previews = [...(preferred.previewSessions ?? []), ...(other.previewSessions ?? [])]
+      .sort((a, b) => (b.last_active || b.started_at || 0) - (a.last_active || a.started_at || 0))
+      .slice(0, PROJECT_QUICK_PREVIEW_LIMIT)
+
+    merged.set(key, {
+      ...preferred,
+      lastActive: Math.max(preferred.lastActive || 0, other.lastActive || 0),
+      previewSessions: previews,
+      repos: [...repos.values()],
+      sessionCount: (preferred.sessionCount || 0) + (other.sessionCount || 0),
+      totalCostUsd: (preferred.totalCostUsd || 0) + (other.totalCostUsd || 0),
+      totalTokens: (preferred.totalTokens || 0) + (other.totalTokens || 0)
+    })
+  }
+
+  return [...merged.values()].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))
+}
+
 export const PROJECT_QUICK_PREVIEW_LIMIT = 5
 // The all-profiles fan-out reads one database per profile, so it is allowed the
 // same headroom as the cross-profile session list rather than the interactive
@@ -519,10 +604,59 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
     const activeSessionId = $selectedStoredSessionId.get()
     const activeQuery = activeSessionId ? `&active_session_id=${encodeURIComponent(activeSessionId)}` : ''
 
-    const res = await window.hermesDesktop.api<ProjectTreePayload>({
+    const local = await window.hermesDesktop.api<ProjectTreePayload>({
       path: `/api/profiles/projects/tree?preview_limit=${PROJECT_QUICK_PREVIEW_LIMIT}${activeQuery}`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
+
+    // The local aggregate can only inspect profile databases on this machine.
+    // A profile-pinned remote is merely a local handle; its projects.db lives on
+    // another gateway, so query those handles directly without activating them.
+    const pinnedRemoteProfiles = (
+      await Promise.all(
+        $profiles.get().map(async profile => {
+          const connection = await window.hermesDesktop.getConnection(profile.name).catch(() => null)
+
+          return connection?.mode === 'remote' && connection.source === 'profile' ? profile.name : null
+        })
+      )
+    ).filter((profile): profile is string => Boolean(profile))
+
+    const remotePayloads = await Promise.all(
+      pinnedRemoteProfiles.map(async profile => {
+        try {
+          await openGatewayForProfile(profile)
+          const gateway = gatewayForProfile(profile)
+
+          if (!gateway || gateway.connectionState !== 'open') {
+            return null
+          }
+
+          const payload = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
+            preview_limit: PROJECT_QUICK_PREVIEW_LIMIT,
+            active_session_id: activeSessionId
+          })
+
+          return { payload, profile }
+        } catch {
+          return null
+        }
+      })
+    )
+
+    const remotes = remotePayloads.filter((item): item is NonNullable<typeof item> => Boolean(item))
+
+    const res: ProjectTreePayload = {
+      active_id: local.active_id,
+      projects: mergeProjectTrees([
+        local.projects ?? [],
+        ...remotes.map(({ payload, profile }) => tagProjectTreeProfile(payload.projects ?? [], profile))
+      ]),
+      scoped_session_ids: [
+        ...(local.scoped_session_ids ?? []),
+        ...remotes.flatMap(({ payload }) => payload.scoped_session_ids ?? [])
+      ]
+    }
 
     // A profile switch mid-flight leaves this payload describing the wrong
     // scope; the newer refresh owns the tree.

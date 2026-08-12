@@ -264,6 +264,12 @@ layer while upstream's Projects UX remains in flux:
   remote mode routes through the active profile's authenticated
   `POST /api/fs/ensure-directory`. Typing and directory browsing never mutate
   disk, and failures remain in the dialog with a visible error.
+- In **All Profiles**, the local `/api/profiles/projects/tree` aggregate is only
+  authoritative for profiles whose databases live on that gateway. Local
+  handles pinned to remote gateways are queried through their own background
+  profile sockets and merged into the same tree without changing the foreground
+  profile; their session rows remain tagged with the local handle used by the
+  profile rail.
 
 Protected files: `apps/desktop/src/app/chat/sidebar/{index,sessions-section,project-dialog,
 session-actions-menu,session-row}.tsx`, `apps/desktop/src/app/chat/sidebar/projects/

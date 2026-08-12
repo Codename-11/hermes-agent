@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile, $showAllProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, $showAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
@@ -53,7 +53,9 @@ vi.mock('@/lib/desktop-fs', () => ({
 vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
-  ensureActiveGatewayOpen: vi.fn()
+  ensureActiveGatewayOpen: vi.fn(),
+  gatewayForProfile: vi.fn(),
+  openGatewayForProfile: vi.fn()
 }))
 
 vi.mock('@/lib/desktop-git', () => ({ desktopGit: vi.fn() }))
@@ -74,6 +76,8 @@ const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 const gw = await import('@/store/gateway')
 const activeGateway = vi.mocked(gw.activeGateway)
 const gatewayAtom = gw.$gateway
+const gatewayForProfile = vi.mocked(gw.gatewayForProfile)
+const openGatewayForProfile = vi.mocked(gw.openGatewayForProfile)
 
 const git = await import('@/lib/desktop-git')
 const desktopGit = vi.mocked(git.desktopGit)
@@ -617,6 +621,7 @@ describe('tombstone pruning', () => {
 describe('all-profile project previews', () => {
   afterEach(() => {
     $showAllProfiles.set(false)
+    $profiles.set([])
     $selectedStoredSessionId.set(null)
     Reflect.deleteProperty(window, 'hermesDesktop')
     vi.restoreAllMocks()
@@ -643,5 +648,58 @@ describe('all-profile project previews', () => {
         path: '/api/profiles/projects/tree?preview_limit=5&active_session_id=victor%2Factive%20session'
       })
     )
+  })
+
+  it('merges projects from profile-pinned remote gateways into the local all-profile tree', async () => {
+    const api = vi.fn().mockResolvedValue({
+      active_id: null,
+      projects: [{ id: 'local', label: 'Local', path: '/local', repos: [], sessionCount: 1 }],
+      scoped_session_ids: ['local-session']
+    })
+
+    const getConnection = vi.fn(async (profile: string) => ({
+      mode: profile === 'server-atlas' ? 'remote' : 'local',
+      source: profile === 'server-atlas' ? 'profile' : 'local'
+    }))
+
+    const remoteRequest = vi.fn().mockResolvedValue({
+      active_id: null,
+      projects: [
+        {
+          id: 'remote',
+          label: 'Remote',
+          lastActive: 2,
+          path: '/remote',
+          previewSessions: [{ id: 'remote-session', last_active: 2 }],
+          repos: [],
+          sessionCount: 1
+        }
+      ],
+      scoped_session_ids: ['remote-session']
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api, getConnection }
+    })
+    $profiles.set([
+      { name: 'default', is_default: true } as never,
+      { name: 'server-atlas', is_default: false } as never
+    ])
+    gatewayForProfile.mockReturnValue({ connectionState: 'open', request: remoteRequest } as never)
+    $showAllProfiles.set(true)
+
+    await refreshProjectTree()
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('server-atlas')
+    expect(remoteRequest).toHaveBeenCalledWith('projects.tree', {
+      active_session_id: null,
+      preview_limit: 5
+    })
+    expect($projectTree.get().map(project => project.label)).toEqual(['Remote', 'Local'])
+    expect($projectTree.get()[0]?.previewSessions?.[0]).toMatchObject({
+      id: 'remote-session',
+      profile: 'server-atlas'
+    })
   })
 })
