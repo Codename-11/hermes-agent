@@ -824,7 +824,13 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
 }
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
-  return (session?.message_count ?? 0) > 0
+  // `message_count` is persisted-history metadata and can lag a live turn
+  // running in another Desktop window. Treating an active zero-count row as a
+  // genuine empty draft lets this window accept an empty warm cache, bind with
+  // `session.activate(omit_messages: true)`, and render a busy blank transcript
+  // while the owning window still shows the conversation. Active means there
+  // is live projection to recover even when persistence has not counted it yet.
+  return Boolean(session?.is_active) || (session?.message_count ?? 0) > 0
 }
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {

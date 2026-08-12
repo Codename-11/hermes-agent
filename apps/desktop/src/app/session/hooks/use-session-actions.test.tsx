@@ -1466,6 +1466,77 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 
+  it('rejects an empty warm cache for a session still active in another window', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', clientState('stored-A')]])
+    }
+
+    // The sidebar row can advertise the live turn before its persisted message
+    // count catches up. An empty private cache in this window is therefore not
+    // proof of an empty conversation: another window may own the populated
+    // running projection.
+    setSessions([storedSession({ id: 'stored-A', is_active: true, message_count: 0 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'apply and restart now', role: 'user', timestamp: 1 },
+        { content: 'working on it', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-A'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'rt-A-live',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          messages: [],
+          messages_omitted: true,
+          running: true,
+          info: {}
+        } as never
+      }
+
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          messages: [],
+          messages_omitted: true,
+          running: true,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    const methods = requestGateway.mock.calls.map(([method]) => method)
+
+    expect(methods).toContain('session.resume')
+    expect(methods).not.toContain('session.activate')
+    expect(resumedState?.messages.length).toBeGreaterThan(0)
+  })
+
   it('republishes an evicted warm cache before session.activate settles', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])

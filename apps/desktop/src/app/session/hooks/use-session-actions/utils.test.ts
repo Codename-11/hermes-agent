@@ -225,9 +225,10 @@ describe('sessionMatchesStoredId', () => {
 })
 
 describe('sessionShouldHaveTranscript', () => {
-  it('is true only when the session has messages', () => {
+  it('is true when persisted history exists or the session is still active', () => {
     expect(sessionShouldHaveTranscript(session({ message_count: 3 }))).toBe(true)
     expect(sessionShouldHaveTranscript(session({ message_count: 0 }))).toBe(false)
+    expect(sessionShouldHaveTranscript(session({ is_active: true, message_count: 0 }))).toBe(true)
     expect(sessionShouldHaveTranscript(undefined)).toBe(false)
   })
 })

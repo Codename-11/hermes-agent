@@ -67,7 +67,10 @@ The protected contract is:
   synchronously republished before `session.activate` is awaited; the public
   `$sessionStates` slice may have been evicted while idle even though the private
   runtime cache remains valid, and `PRIMARY_SESSION_VIEW` cannot rehydrate from
-  the legacy global message mirror alone;
+  the legacy global message mirror alone; an empty private cache is not valid
+  warm authority while the stored row is still `is_active`, even when its
+  persisted `message_count` has not caught up—the primary window must take the
+  full resume path and recover the transcript/live projection owned elsewhere;
 - live steer projection preserves causal user ordering even when reconciliation
   briefly places an active assistant shell before the original optimistic user
   prompt: keep upstream's stable `original → steer → reply` redirect ordering,
@@ -83,7 +86,7 @@ The protected contract is:
 Primary protected files: `apps/desktop/src/app/contrib/{wiring.tsx,hooks/
 use-background-sync.ts}`, `apps/desktop/src/app/gateway/hooks/{use-gateway-boot,
 use-gateway-request}.ts`, `apps/desktop/src/app/session/hooks/{use-session-state-cache,
-use-session-actions/index,use-message-stream/{index,gateway-event}}.ts`,
+use-session-actions/{index,utils},use-message-stream/{index,gateway-event}}.ts`,
 `apps/desktop/src/store/{gateway,live-session-status,live-sync,session-states,
 session-dot-state}.ts`, `apps/desktop/electron/connection-apply.ts`, and their
 focused tests/bridge declarations.
@@ -110,8 +113,9 @@ Related upstream work includes PRs `#45653`, `#69739`, and `#71475` plus issue `
 but those references cover narrower reconnect symptoms. Drop this carry only
 after upstream provides equivalent cache ownership, stale-async fencing,
 secondary-profile reconciliation, reclaim eviction, and profile-qualified
-status/event routing, plus causal steer ordering for both stable and temporarily
-non-canonical live tails, with the focused invariants above still passing.
+status/event routing, including active zero-count session recovery across
+windows, plus causal steer ordering for both stable and temporarily non-canonical
+live tails, with the focused invariants above still passing.
 
 ## Axiom Desktop tabbed Update Control
 
