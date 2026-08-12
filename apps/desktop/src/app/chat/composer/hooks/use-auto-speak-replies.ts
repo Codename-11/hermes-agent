@@ -5,7 +5,7 @@ import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplyConversations, autoSpeakConversationKey } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -22,12 +22,15 @@ interface UseAutoSpeakReplies {
   markSpoken: () => void
   /** Latest completed assistant reply, or null; `pending` true while still streaming. */
   pendingReply: () => AutoSpeakReply | null
+  profile?: null | string
+  /** Durable lineage id; survives runtime-id rotation after compression. */
+  conversationId: string | null | undefined
   /** Re-arm on session switch so opening a chat never reads its existing last reply. */
   sessionId: string | null | undefined
 }
 
 /**
- * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
+ * Pure-TTS auto-speak: when this conversation's composer toggle is on, read each completed assistant
  * turn aloud — no dictation, no conversation loop. Stays off while a full voice
  * conversation runs (it speaks replies itself) and never overlaps clips: a reply
  * landing mid-playback is held and spoken on the playback-idle edge. Always reads
@@ -38,9 +41,12 @@ export function useAutoSpeakReplies({
   failureLabel,
   markSpoken,
   pendingReply,
+  profile,
+  conversationId,
   sessionId
 }: UseAutoSpeakReplies) {
-  const enabled = useStore($autoSpeakReplies)
+  const preferences = useStore($autoSpeakReplyConversations)
+  const enabled = Boolean(conversationId && preferences[autoSpeakConversationKey(profile, conversationId)])
   // Wake on THIS composer's transcript: a tile subscribed to the primary's
   // would never fire on its own replies (and would fire on someone else's).
   const { $messages } = useComposerScope()

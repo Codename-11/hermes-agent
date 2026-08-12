@@ -16,7 +16,6 @@ import {
   setIntroPersonality
 } from '@/store/session'
 import {
-  applyAutoSpeakFromConfig,
   applyThinkingSoundFromConfig,
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
@@ -110,7 +109,6 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
-        applyAutoSpeakFromConfig(config)
         applyVoiceStopPhraseFromConfig(config)
         applyThinkingSoundFromConfig(config)
       } catch {

@@ -9,11 +9,15 @@ import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/st
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { $voiceStopPhrase, autoSpeakRepliesEnabled, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import type { ComposerTarget } from '../focus'
-import { onComposerDictationToggleRequest, onComposerVoiceToggleRequest } from '../focus'
+import {
+  onComposerAutoSpeakToggleRequest,
+  onComposerDictationToggleRequest,
+  onComposerVoiceToggleRequest
+} from '../focus'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps, VoiceStatus } from '../types'
 
@@ -24,6 +28,7 @@ import { useVoiceRecorder } from './use-voice-recorder'
 interface UseComposerVoiceArgs {
   busy: boolean
   clearDraft: () => void
+  conversationId: string | null | undefined
   disabled: boolean
   focusInput: () => void
   insertText: (text: string) => void
@@ -33,6 +38,7 @@ interface UseComposerVoiceArgs {
   onInterrupt?: () => Promise<void> | void
   onSubmit: ChatBarProps['onSubmit']
   onTranscribeAudio: ChatBarProps['onTranscribeAudio']
+  profile?: null | string
   sessionId: string | null | undefined
   /** This composer's focus-bus key — voice toggles targeting another
    *  composer (or the active one, when not us) are ignored. */
@@ -60,6 +66,7 @@ export function canToggleDictation({
 export function useComposerVoice({
   busy,
   clearDraft,
+  conversationId,
   disabled,
   focusInput,
   insertText,
@@ -67,6 +74,7 @@ export function useComposerVoice({
   onInterrupt,
   onSubmit,
   onTranscribeAudio,
+  profile,
   sessionId,
   target
 }: UseComposerVoiceArgs) {
@@ -298,16 +306,23 @@ export function useComposerVoice({
   }, [conversation])
 
   const handleToggleAutoSpeak = useCallback(() => {
-    void setAutoSpeakReplies(!$autoSpeakReplies.get()).catch(error =>
+    void setAutoSpeakReplies(!autoSpeakRepliesEnabled(profile, conversationId), conversationId, profile).catch(error =>
       notifyError(error, t.settings.config.autosaveFailed)
     )
-  }, [t])
+  }, [conversationId, profile, t])
+
+  useEffect(
+    () => onComposerAutoSpeakToggleRequest(toggled => toggled === target && handleToggleAutoSpeak()),
+    [handleToggleAutoSpeak, target]
+  )
 
   useAutoSpeakReplies({
+    conversationId,
     conversationActive: voiceConversationActive,
     failureLabel: t.assistant.thread.readAloudFailed,
     markSpoken: consumePendingResponse,
     pendingReply: pendingResponse,
+    profile,
     sessionId
   })
 

@@ -6,10 +6,12 @@ import {
   blurComposerInput,
   getActiveComposer,
   markActiveComposer,
+  onComposerAutoSpeakToggleRequest,
   onComposerDictationToggleRequest,
   onComposerFocusRequest,
   onComposerModelMenuRequest,
   releaseActiveComposer,
+  requestAutoSpeakToggle,
   requestComposerFocus,
   requestDictationToggle,
   requestModelMenuToggle
@@ -242,6 +244,22 @@ describe('requestDictationToggle', () => {
 
     expect(tileToggle).toHaveBeenCalledTimes(2)
     expect(mainToggle).not.toHaveBeenCalled()
+  })
+})
+
+describe('requestAutoSpeakToggle', () => {
+  it('routes only to the active visible conversation composer', async () => {
+    mountSurface('main', true)
+    mountSurface('tile:front')
+    markActiveComposer('tile:front')
+    const saw: string[] = []
+    const off = onComposerAutoSpeakToggleRequest(target => saw.push(target))
+
+    requestAutoSpeakToggle()
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    off()
+
+    expect(saw).toEqual(['tile:front'])
   })
 })
 

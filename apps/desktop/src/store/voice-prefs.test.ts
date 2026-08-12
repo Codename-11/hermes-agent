@@ -1,32 +1,41 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
-
-vi.mock('@/hermes', () => ({
-  getHermesConfigRecord: vi.fn(async () => ({})),
-  saveHermesConfig: vi.fn(async () => undefined)
-}))
-
-import { $autoSpeakReplies, $voiceStopPhrase, applyVoiceStopPhraseFromConfig, setAutoSpeakReplies } from './voice-prefs'
+import {
+  $autoSpeakReplyConversations,
+  $voiceStopPhrase,
+  applyVoiceStopPhraseFromConfig,
+  autoSpeakRepliesEnabled,
+  setAutoSpeakReplies
+} from './voice-prefs'
 
 describe('setAutoSpeakReplies', () => {
-  it('optimistically persists through voice.auto_tts while preserving other voice config', async () => {
-    vi.mocked(getHermesConfigRecord).mockResolvedValueOnce({ voice: { provider: 'openai' } })
-    $autoSpeakReplies.set(false)
+  it('persists independently by profile and durable conversation id', async () => {
+    $autoSpeakReplyConversations.set({})
 
-    await setAutoSpeakReplies(true)
+    await setAutoSpeakReplies(true, 'conversation-1', 'victor')
 
-    expect($autoSpeakReplies.get()).toBe(true)
-    expect(saveHermesConfig).toHaveBeenCalledWith({ voice: { auto_tts: true, provider: 'openai' } })
+    expect(autoSpeakRepliesEnabled('victor', 'conversation-1')).toBe(true)
+    expect(autoSpeakRepliesEnabled('mizu', 'conversation-1')).toBe(false)
+    expect(autoSpeakRepliesEnabled('victor', 'conversation-2')).toBe(false)
   })
 
-  it('reverts the optimistic value when persistence fails', async () => {
-    vi.mocked(getHermesConfigRecord).mockResolvedValueOnce({})
-    vi.mocked(saveHermesConfig).mockRejectedValueOnce(new Error('read-only config'))
-    $autoSpeakReplies.set(false)
+  it('removes only the selected conversation preference', async () => {
+    $autoSpeakReplyConversations.set({})
+    await setAutoSpeakReplies(true, 'conversation-1', 'victor')
+    await setAutoSpeakReplies(true, 'conversation-2', 'victor')
 
-    await expect(setAutoSpeakReplies(true)).rejects.toThrow('read-only config')
-    expect($autoSpeakReplies.get()).toBe(false)
+    await setAutoSpeakReplies(false, 'conversation-1', 'victor')
+
+    expect(autoSpeakRepliesEnabled('victor', 'conversation-1')).toBe(false)
+    expect(autoSpeakRepliesEnabled('victor', 'conversation-2')).toBe(true)
+  })
+
+  it('does not create a global fallback for unsent drafts', async () => {
+    $autoSpeakReplyConversations.set({})
+
+    await setAutoSpeakReplies(true, null, 'victor')
+
+    expect($autoSpeakReplyConversations.get()).toEqual({})
   })
 })
 

@@ -1,15 +1,31 @@
 import { atom } from 'nanostores'
 
-import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { Codecs, persistentAtom } from '@/lib/persisted'
+import { normalizeProfileKey } from '@/store/profile'
 
-// "Read replies aloud" — mirrors the canonical `voice.auto_tts` config key (also
-// in Settings → Voice, honored by the messaging gateway) so the composer toggle
-// and the Settings switch are one source of truth, not two that can disagree.
-export const $autoSpeakReplies = atom<boolean>(false)
+// Desktop's composer control is conversation-local. Gateway `voice.auto_tts`
+// remains a separate Settings preference for messaging surfaces.
+export const $autoSpeakReplyConversations = persistentAtom<Record<string, boolean>>(
+  'hermes.desktop.autoSpeakReplyConversations',
+  {},
+  Codecs.json<Record<string, boolean>>(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return {}
+    }
 
-/** Seed the atom from a loaded config payload (mount / refresh). */
-export function applyAutoSpeakFromConfig(config: { voice?: { auto_tts?: unknown } | null } | null | undefined) {
-  $autoSpeakReplies.set(Boolean(config?.voice?.auto_tts))
+    return Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, boolean] => entry[1] === true))
+  })
+)
+
+export function autoSpeakConversationKey(profile: null | string | undefined, conversationId: string): string {
+  return `${normalizeProfileKey(profile)}\0${conversationId}`
+}
+
+export function autoSpeakRepliesEnabled(
+  profile: null | string | undefined,
+  conversationId: null | string | undefined
+): boolean {
+  return Boolean(conversationId && $autoSpeakReplyConversations.get()[autoSpeakConversationKey(profile, conversationId)])
 }
 
 // First configured `voice.stop_phrases` entry — drives the "Say "stop" to end
@@ -48,27 +64,29 @@ export function applyThinkingSoundFromConfig(
   $thinkingSoundEnabled.set(config?.voice?.thinking_sound !== false)
 }
 
-/**
- * Flip the preference and persist it. Optimistic — the atom updates instantly and
- * reverts if the config write fails. Read-modify-writes the whole record (the
- * same path the Settings page uses; there's no partial-update endpoint).
- */
-export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
-  const previous = $autoSpeakReplies.get()
-
-  if (previous === enabled) {
+export async function setAutoSpeakReplies(
+  enabled: boolean,
+  conversationId: null | string | undefined,
+  profile?: null | string
+): Promise<void> {
+  if (!conversationId) {
     return
   }
 
-  $autoSpeakReplies.set(enabled)
+  const key = autoSpeakConversationKey(profile, conversationId)
+  const current = $autoSpeakReplyConversations.get()
 
-  try {
-    const record = await getHermesConfigRecord()
-    const voice = record.voice && typeof record.voice === 'object' ? (record.voice as Record<string, unknown>) : {}
-
-    await saveHermesConfig({ ...record, voice: { ...voice, auto_tts: enabled } })
-  } catch (error) {
-    $autoSpeakReplies.set(previous)
-    throw error
+  if (Boolean(current[key]) === enabled) {
+    return
   }
+
+  const next = { ...current }
+
+  if (enabled) {
+    next[key] = true
+  } else {
+    delete next[key]
+  }
+
+  $autoSpeakReplyConversations.set(next)
 }

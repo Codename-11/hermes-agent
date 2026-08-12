@@ -35,7 +35,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
-import { notify, notifyError } from '@/store/notifications'
+import { notify } from '@/store/notifications'
 import {
   $newChatProfile,
   cycleProfile,
@@ -60,12 +60,17 @@ import {
   switcherJustClosed
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
-import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestDictationToggle, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import {
+  requestAutoSpeakToggle,
+  requestComposerFocus,
+  requestDictationToggle,
+  requestModelMenuToggle,
+  requestVoiceToggle
+} from '../chat/composer/focus'
 import { openSession } from '../open-session'
 import {
   $workspaceIsPage,
@@ -93,17 +98,6 @@ export interface KeybindRuntimeDeps {
 }
 
 type HandlerMap = Record<string, () => void>
-
-export async function toggleAutoSpeakFromKeyboard(
-  failureLabel: string,
-  persist: (enabled: boolean) => Promise<void> = setAutoSpeakReplies
-): Promise<void> {
-  try {
-    await persist(!$autoSpeakReplies.get())
-  } catch (error) {
-    notifyError(error, failureLabel)
-  }
-}
 
 export async function toggleWakeWordFromKeyboard(
   actionLabel: string,
@@ -231,7 +225,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'composer.voice': requestVoiceToggle,
     'composer.dictate': requestDictationToggle,
-    'composer.autoSpeak': () => void toggleAutoSpeakFromKeyboard(t.settings.config.autosaveFailed),
+    'composer.autoSpeak': requestAutoSpeakToggle,
     'composer.wakeWord': () => void toggleWakeWordFromKeyboard(t.keybinds.actions['composer.wakeWord']),
 
     'nav.commandPalette': toggleCommandPalette,

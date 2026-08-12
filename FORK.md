@@ -153,8 +153,8 @@ points can restore/focus the same singleton pane.
 
 Desktop carries three independent, user-rebindable composer actions:
 `composer.dictate` toggles one-shot dictation in exactly the active visible
-composer, `composer.autoSpeak` persists the existing profile-backed
-`voice.auto_tts` preference with optimistic rollback, and `composer.wakeWord`
+composer, `composer.autoSpeak` persists a profile-qualified setting for exactly
+the active conversation's durable lineage id, and `composer.wakeWord`
 delegates to the gateway-owned wake listener. All three ship unbound. They must
 remain separate from `composer.voice` (the full voice-conversation toggle), and
 Desktop's keybind registry—not `voice.record_key`—is authoritative.

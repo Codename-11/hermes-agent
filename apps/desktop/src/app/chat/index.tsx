@@ -363,6 +363,10 @@ export const ChatView = memo(function ChatView({
     return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
   }, [isPrimary, location.pathname, selectedSessionId, sessions])
 
+  const conversationProfile =
+    sessions.find(session => selectedSessionId && sessionMatchesStoredId(session, selectedSessionId))?.profile ??
+    activeGatewayProfile
+
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
   //
@@ -625,6 +629,7 @@ export const ChatView = memo(function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
+              profile={conversationProfile}
               queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}
