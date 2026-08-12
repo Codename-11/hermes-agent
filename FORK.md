@@ -72,6 +72,10 @@ The protected contract is:
   `is_active` are asynchronous projections and cannot prove emptiness, so the
   primary window must take the full resume path and recover authoritative
   history/live projection instead;
+- the same empty-cache rule applies to session tiles: an idle empty tile cache
+  cannot short-circuit `resumeTile` when the stored row has history or remains
+  active, and focusing an already-open unhealthy tile clears only its runtime
+  binding so the established profile-safe tile resume lifecycle rehydrates it;
 - live steer projection preserves causal user ordering even when reconciliation
   briefly places an active assistant shell before the original optimistic user
   prompt: keep upstream's stable `original → steer → reply` redirect ordering,

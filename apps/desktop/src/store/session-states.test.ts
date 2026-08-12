@@ -11,6 +11,7 @@ import {
   focusedSessionNeedsRoute,
   markSelectionRestore,
   nextSessionTileForWorkspace,
+  openTileNeedsHydration,
   orderTilesByTree,
   selectionHomesToWorkspace
 } from '@/store/session-states'
@@ -124,6 +125,29 @@ describe('focusedSessionNeedsRoute', () => {
   it('never routes for a tile — its pane shows the chat on any route', () => {
     expect(focusedSessionNeedsRoute('tile', true)).toBe(false)
     expect(focusedSessionNeedsRoute('tile', false)).toBe(false)
+  })
+})
+
+describe('openTileNeedsHydration', () => {
+  const state = (over: Partial<ClientSessionState> = {}) =>
+    ({ busy: false, messages: [], storedSessionId: 'stored', ...over }) as ClientSessionState
+
+  it('recovers an idle empty tile when its stored row says history exists', () => {
+    expect(
+      openTileNeedsHydration(
+        { runtimeId: 'runtime', storedSessionId: 'stored' },
+        state(),
+        { message_count: 6 } as never
+      )
+    ).toBe(true)
+  })
+
+  it('leaves healthy, busy, and genuinely empty tiles alone', () => {
+    const bound = { runtimeId: 'runtime', storedSessionId: 'stored' }
+
+    expect(openTileNeedsHydration(bound, state({ messages: [{ id: 'm1' }] as never }), { message_count: 6 } as never)).toBe(false)
+    expect(openTileNeedsHydration(bound, state({ busy: true }), { is_active: true, message_count: 0 } as never)).toBe(false)
+    expect(openTileNeedsHydration(bound, state(), { message_count: 0 } as never)).toBe(false)
   })
 })
 

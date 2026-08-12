@@ -749,6 +749,22 @@ export function nextSessionTileForWorkspace(): null | string {
   return null
 }
 
+export function openTileNeedsHydration(
+  tile: Pick<SessionTile, 'runtimeId' | 'storedSessionId'>,
+  state: ClientSessionState | undefined,
+  stored: SessionInfo | undefined
+): boolean {
+  if (!tile.runtimeId || !state) {
+    return true
+  }
+
+  if (state.busy || state.messages.length > 0) {
+    return false
+  }
+
+  return Boolean(stored?.is_active) || (stored?.message_count ?? 0) > 0
+}
+
 /** If a session is already ON SCREEN — an open tile OR the one loaded in main —
  *  front its tab (and focus its zone) and report WHICH. A sidebar click on an
  *  already-open chat JUMPS to its tab instead of reloading it; `null` means the
@@ -758,7 +774,21 @@ export function nextSessionTileForWorkspace(): null | string {
  *  `'main'` hit only reaches the screen if the workspace pane is actually
  *  showing the chat, whereas a tile renders in its own pane regardless. */
 export function focusOpenSession(storedSessionId: string): 'main' | 'tile' | null {
-  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
+  const tile = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)
+
+  if (tile) {
+    const state = tile.runtimeId ? $sessionStates.get()[tile.runtimeId] : undefined
+    const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
+    // An already-open tab is normally focus-only. If its binding is missing or
+    // its idle projection is empty despite stored history, that shortcut merely
+    // reveals a blank pane. Unbind it so SessionTile's existing resume effect
+    // performs the profile-safe REST + gateway hydrate. Busy first turns and
+    // genuinely empty stored sessions remain instant focus-only hits.
+    if (openTileNeedsHydration(tile, state, stored)) {
+      patchSessionTile(storedSessionId, { error: undefined, runtimeId: undefined })
+    }
+
     const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
     const tree = $layoutTree.get()

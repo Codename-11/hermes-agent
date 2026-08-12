@@ -96,7 +96,16 @@ export function useSessionTileDelegate({
         const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
 
-        if (existing && cached?.storedSessionId === storedSessionId) {
+        // A binding alone does not prove the tile owns a transcript. The
+        // private cache can survive with an idle empty state; accepting it here
+        // leaves an already-open tab permanently blank, while a new window works
+        // because it takes the authoritative resume below. Busy empty state is
+        // a valid first turn, and non-empty state is a valid warm transcript.
+        if (
+          existing &&
+          cached?.storedSessionId === storedSessionId &&
+          (cached.busy || cached.messages.length > 0)
+        ) {
           publishSessionState(existing, cached)
 
           return existing

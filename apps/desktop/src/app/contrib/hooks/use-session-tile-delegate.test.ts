@@ -1,7 +1,9 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { setSessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -33,7 +35,18 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
     ...over
   }) as SessionInfo
 
-function renderTile(requestGateway: ReturnType<typeof vi.fn>) {
+function renderTile(
+  requestGateway: ReturnType<typeof vi.fn>,
+  options: {
+    runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
+    sessionStateByRuntimeIdRef?: { current: Map<string, ClientSessionState> }
+    updateSessionState?: (
+      sessionId: string,
+      updater: (state: ClientSessionState) => ClientSessionState,
+      storedSessionId?: string | null
+    ) => ClientSessionState
+  } = {}
+) {
   renderHook(() =>
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
@@ -41,9 +54,11 @@ function renderTile(requestGateway: ReturnType<typeof vi.fn>) {
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
-      runtimeIdByStoredSessionIdRef: { current: new Map() },
-      sessionStateByRuntimeIdRef: { current: new Map() },
-      updateSessionState: vi.fn()
+      runtimeIdByStoredSessionIdRef: options.runtimeIdByStoredSessionIdRef ?? { current: new Map() },
+      sessionStateByRuntimeIdRef: options.sessionStateByRuntimeIdRef ?? { current: new Map() },
+      updateSessionState:
+        options.updateSessionState ??
+        ((_sessionId, updater, storedSessionId) => updater(createClientSessionState(storedSessionId ?? null)))
     })
   )
 }
@@ -98,5 +113,42 @@ describe('useSessionTileDelegate resumeTile', () => {
       profile: 'default',
       omit_messages: true
     })
+  })
+
+  it('does not reuse an empty cached runtime for a stored session with history', async () => {
+    setSessions([row({ id: 'stored-z', message_count: 4, profile: 'default' })])
+
+    const emptyCached = createClientSessionState('stored-z')
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-z', 'runtime-empty']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-empty', emptyCached]]) }
+
+    const updateSessionState = vi.fn((_sessionId, updater, storedSessionId) =>
+      updater(createClientSessionState(storedSessionId ?? null))
+    )
+
+    const requestGateway = vi.fn(async (method: string) =>
+      method === 'session.resume' ? ({ session_id: 'runtime-rebound', messages: [] } as never) : ({} as never)
+    )
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'hello', role: 'user', timestamp: 1 },
+        { content: 'hi', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-z'
+    } as never)
+
+    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState })
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-z')
+
+    expect(runtimeId).toBe('runtime-rebound')
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-z', 'default')
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored-z',
+      cols: 96,
+      profile: 'default',
+      omit_messages: true
+    })
+    expect(updateSessionState).toHaveBeenCalled()
   })
 })
