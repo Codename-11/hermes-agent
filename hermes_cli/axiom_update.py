@@ -1157,6 +1157,24 @@ def _print_resolver_failure_diagnostics(result: subprocess.CompletedProcess) -> 
             print(f"    {line}")
 
 
+def _focused_check_shell_command(check: str, *, windows: bool) -> str:
+    """Translate POSIX env-prefix syntax for the active platform shell."""
+    if not windows:
+        return check
+
+    segments = check.split("&&")
+    normalized: list[str] = []
+    assignment = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)\s+")
+    for raw_segment in segments:
+        segment = raw_segment.strip()
+        prefixes: list[str] = []
+        while match := assignment.match(segment):
+            prefixes.append(f'set "{match.group(1)}={match.group(2)}"')
+            segment = segment[match.end():]
+        normalized.extend((*prefixes, segment))
+    return " && ".join(normalized)
+
+
 def _run_focused_check(check: str, worktree: Path) -> Optional[bool]:
     """Run one retained-handoff check.
 
@@ -1175,7 +1193,7 @@ def _run_focused_check(check: str, worktree: Path) -> Optional[bool]:
             return None
 
     result = subprocess.run(
-        check,
+        _focused_check_shell_command(check, windows=os.name == "nt"),
         cwd=worktree,
         shell=True,
         text=True,

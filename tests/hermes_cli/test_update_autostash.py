@@ -1596,6 +1596,16 @@ def test_fork_watch_area_pytest_checks_reference_existing_files():
     assert missing == []
 
 
+def test_windows_focused_check_normalizes_posix_env_assignment():
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    check = "cd apps/desktop && NODE_ENV=test npm run typecheck"
+
+    assert hermes_axiom_update._focused_check_shell_command(check, windows=True) == (
+        'cd apps/desktop && set "NODE_ENV=test" && npm run typecheck'
+    )
+
+
 def test_desktop_focused_checks_reference_typescript_sources():
     from hermes_cli import axiom_update as hermes_axiom_update
 
