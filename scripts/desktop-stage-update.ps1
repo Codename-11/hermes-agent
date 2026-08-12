@@ -108,6 +108,12 @@ function Resolve-CommandPath([string]$Explicit, [string[]]$Names) {
     throw "Required command not found: $($Names -join ', ')"
 }
 
+function Get-LastOutputLine([object]$Output) {
+    $lines = @($Output)
+    if ($lines.Count -eq 0) { return "" }
+    return $lines[$lines.Count - 1].ToString().Trim()
+}
+
 function Get-FileSha256([string]$FilePath) {
     $stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -150,7 +156,7 @@ function Get-DirtyContentFingerprint([string]$Git, [string]$Root) {
     foreach ($relative in $paths) {
         $candidate = Join-Path $Root $relative
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $blob = ((Invoke-Checked $Git @("-C", $Root, "hash-object", "--no-filters", "--", $relative) "git-dirty-hash")[-1]).ToString().Trim()
+            $blob = Get-LastOutputLine (Invoke-Checked $Git @("-C", $Root, "hash-object", "--no-filters", "--", $relative) "git-dirty-hash")
         } else {
             $blob = "deleted"
         }
@@ -199,8 +205,8 @@ try {
 
     Write-Progress "fetching" 5 "Fetching origin/$Branch while Desktop remains available"
     Invoke-Checked $git @("-C", $InstallRoot, "fetch", "origin", $Branch, "--prune") "git-fetch" | Out-Null
-    $resolvedTargetSha = ((Invoke-Checked $git @("-C", $InstallRoot, "rev-parse", "refs/remotes/origin/$Branch") "git-target")[-1]).ToString().Trim()
-    $resolvedBaseSha = ((Invoke-Checked $git @("-C", $InstallRoot, "rev-parse", "HEAD") "git-base")[-1]).ToString().Trim()
+    $resolvedTargetSha = Get-LastOutputLine (Invoke-Checked $git @("-C", $InstallRoot, "rev-parse", "refs/remotes/origin/$Branch") "git-target")
+    $resolvedBaseSha = Get-LastOutputLine (Invoke-Checked $git @("-C", $InstallRoot, "rev-parse", "HEAD") "git-base")
     if ($resolvedTargetSha -notmatch "^[0-9a-fA-F]{40}$") { throw "origin/$Branch did not resolve to a commit" }
     if ($resolvedBaseSha -notmatch "^[0-9a-fA-F]{40}$") { throw "live HEAD did not resolve to a commit" }
     if ($TargetSha -and $TargetSha -ne $resolvedTargetSha) { throw "origin/$Branch moved before preparation started. Refresh and prepare again." }
@@ -249,7 +255,7 @@ sys.path.insert(0, os.environ["HERMES_STAGE_INSTALL_ROOT"])
 from hermes_cli.main import _compute_desktop_content_hash
 print(_compute_desktop_content_hash(Path(os.environ["HERMES_STAGE_PROJECT_ROOT"])))
 '@
-    $contentHash = ((Invoke-Checked $python @("-c", $hashCode) "content-hash")[-1]).ToString().Trim()
+    $contentHash = Get-LastOutputLine (Invoke-Checked $python @("-c", $hashCode) "content-hash")
     if ($contentHash -notmatch "^[0-9a-fA-F]{64}$") { throw "Desktop content hash was invalid" }
 
     $buildStampPath = Join-Path $StageRoot "desktop-build-stamp.json"
