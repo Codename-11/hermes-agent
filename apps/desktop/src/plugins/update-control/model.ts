@@ -85,9 +85,17 @@ export interface UpdateCommit {
 }
 
 export type ChangeCategoryKey = 'docs' | 'features' | 'fixes' | 'other' | 'performance' | 'refactors'
+export type CommitScopeKey = 'cli-backend' | 'desktop' | 'other' | 'skills-docs'
 
 export interface CategorizedCommit extends UpdateCommit {
   subject: string
+}
+
+export interface PresentedCommit extends CategorizedCommit {
+  category: ChangeCategoryKey
+  categoryLabel: string
+  scope: CommitScopeKey
+  scopeLabel: string
 }
 
 export interface ChangeCategory {
@@ -165,7 +173,47 @@ const CATEGORY_DEFINITIONS: ReadonlyArray<{
   { key: 'other', label: 'Other', prefixes: [] }
 ]
 
-const CONVENTIONAL_SUBJECT = /^([a-z][a-z0-9-]*)(?:\([^)]*\))?!?:\s*(.+)$/i
+const CONVENTIONAL_SUBJECT = /^([a-z][a-z0-9-]*)(?:\(([^)]*)\))?!?:\s*(.+)$/i
+
+const SCOPE_LABELS: Record<CommitScopeKey, string> = {
+  'cli-backend': 'CLI & backend',
+  desktop: 'Desktop',
+  other: 'Other',
+  'skills-docs': 'Skills & docs'
+}
+
+export function presentCommit(commit: UpdateCommit): PresentedCommit {
+  const match = CONVENTIONAL_SUBJECT.exec(commit.summary.trim())
+  const prefix = match?.[1]?.toLowerCase()
+  const conventionalScope = match?.[2]?.toLowerCase() ?? ''
+
+  const definition =
+    CATEGORY_DEFINITIONS.find(category => prefix && category.prefixes.includes(prefix)) ??
+    CATEGORY_DEFINITIONS[CATEGORY_DEFINITIONS.length - 1]
+
+  const scopeTokens = conventionalScope.split(/[,/\s-]+/).filter(Boolean)
+
+  let scope: CommitScopeKey = 'other'
+
+  if (scopeTokens.some(token => ['desktop', 'electron', 'renderer', 'ui', 'ux'].includes(token))) {
+    scope = 'desktop'
+  } else if (
+    scopeTokens.some(token => ['agent', 'api', 'backend', 'cli', 'gateway', 'model', 'provider', 'proxy', 'terminal'].includes(token))
+  ) {
+    scope = 'cli-backend'
+  } else if (prefix === 'docs' || scopeTokens.some(token => ['docs', 'skill', 'skills', 'website'].includes(token))) {
+    scope = 'skills-docs'
+  }
+
+  return {
+    ...commit,
+    category: definition.key,
+    categoryLabel: definition.label,
+    scope,
+    scopeLabel: SCOPE_LABELS[scope],
+    subject: match?.[3]?.trim() || commit.summary
+  }
+}
 
 export function hasUpdate(status: UpdateSummary | null | undefined): boolean {
   return status?.supported === true && (status.updateAvailable === true || (status.behind ?? 0) > 0)
@@ -193,14 +241,8 @@ export function categorizeCommits(commits: readonly UpdateCommit[] = []): Change
   )
 
   for (const commit of commits) {
-    const match = CONVENTIONAL_SUBJECT.exec(commit.summary.trim())
-    const prefix = match?.[1]?.toLowerCase()
-
-    const definition =
-      CATEGORY_DEFINITIONS.find(category => prefix && category.prefixes.includes(prefix)) ??
-      CATEGORY_DEFINITIONS[CATEGORY_DEFINITIONS.length - 1]
-
-    grouped.get(definition.key)?.push({ ...commit, subject: match?.[2]?.trim() || commit.summary })
+    const presented = presentCommit(commit)
+    grouped.get(presented.category)?.push(presented)
   }
 
   return CATEGORY_DEFINITIONS.map(({ key, label }) => {

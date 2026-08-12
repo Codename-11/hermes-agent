@@ -37,6 +37,7 @@ import {
 } from './model'
 import { PendingChanges } from './pending-changes'
 import { UpdateActions } from './update-actions'
+import { UpstreamHistory } from './upstream-history'
 
 const ROOT_KEY = ['update-control'] as const
 
@@ -502,10 +503,9 @@ function UpdateControlPane() {
         ) : null}
         {!primaryLoading && statusQuery.isSuccess ? (
           <div className="mt-6">
-            <PendingChanges
+            <UpstreamHistory
               commits={upstreamCommits}
               description={`${status?.upstreamBehind ?? upstreamCommits.length} commit${(status?.upstreamBehind ?? upstreamCommits.length) === 1 ? '' : 's'} between Axiom and Hermes upstream${upstreamCommits.length > 0 && (status?.upstreamBehind ?? 0) > upstreamCommits.length ? ` · showing latest ${upstreamCommits.length}` : ''}`}
-              heading="Hermes upstream history"
             />
           </div>
         ) : null}

@@ -22,6 +22,8 @@ export interface UpdateScriptHandoff {
 
 export const UPDATER_WINDOW_CONTRACT = {
   allowCloseWhileRunning: false,
+  autoExpandDetailsOnFailure: true,
+  detailsCollapsedByDefault: true,
   minimizeBox: true,
   maximizeBox: false,
   showInTaskbar: true,

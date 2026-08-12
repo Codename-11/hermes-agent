@@ -25,6 +25,8 @@ const DAY_MS = 24 * 60 * 60 * 1000
 test('updater window is minimizable, taskbar-owned, and cannot be closed mid-update', () => {
   assert.deepEqual(UPDATER_WINDOW_CONTRACT, {
     allowCloseWhileRunning: false,
+    autoExpandDetailsOnFailure: true,
+    detailsCollapsedByDefault: true,
     minimizeBox: true,
     maximizeBox: false,
     showInTaskbar: true,

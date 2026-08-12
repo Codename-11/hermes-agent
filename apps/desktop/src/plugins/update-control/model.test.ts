@@ -7,6 +7,7 @@ import {
   formatHistoryEntry,
   friendlyError,
   hasUpdate,
+  presentCommit,
   shortSha,
   type UpdateHistoryEntry,
   type UpdateStageSnapshot
@@ -70,6 +71,18 @@ describe('pending change categorization', () => {
     ])
 
     expect(categories.find(category => category.key === 'other')?.count).toBe(2)
+  })
+})
+
+describe('upstream commit presentation', () => {
+  it.each([
+    ['feat(desktop): add update controls', 'Features', 'Desktop', 'add update controls'],
+    ['fix(cli): preserve update output', 'Fixes', 'CLI & backend', 'preserve update output'],
+    ['docs: explain profiles', 'Docs', 'Skills & docs', 'explain profiles'],
+    ['feat(skills): add browser workflow', 'Features', 'Skills & docs', 'add browser workflow'],
+    ['chore: refresh lockfile', 'Other', 'Other', 'refresh lockfile']
+  ])('presents %s with clean type and scope labels', (summary, categoryLabel, scopeLabel, subject) => {
+    expect(presentCommit({ sha: summary, summary })).toMatchObject({ categoryLabel, scopeLabel, subject })
   })
 })
 

@@ -108,6 +108,17 @@ function Set-UpdateStatus([string]$Message) {
     }
 }
 
+function Set-DetailsExpanded([bool]$Expanded) {
+    if (-not $script:Ui) { return }
+    try {
+        $script:Ui.Box.Visible = $Expanded
+        $script:Ui.DetailsButton.Text = if ($Expanded) { "Hide terminal output" } else { "Show terminal output" }
+        $script:Ui.Form.MinimumSize = New-Object System.Drawing.Size(620, $(if ($Expanded) { 360 } else { 218 }))
+        $script:Ui.Form.Height = if ($Expanded) { 480 } else { 218 }
+        [System.Windows.Forms.Application]::DoEvents()
+    } catch {}
+}
+
 function Show-ProgressWindow {
     if ($NoUi) { return }
     try {
@@ -115,8 +126,8 @@ function Show-ProgressWindow {
         Add-Type -AssemblyName System.Drawing | Out-Null
         $form = New-Object System.Windows.Forms.Form
         $form.Text = "Hermes Update"
-        $form.Size = New-Object System.Drawing.Size(760, 480)
-        $form.MinimumSize = New-Object System.Drawing.Size(620, 360)
+        $form.Size = New-Object System.Drawing.Size(760, 218)
+        $form.MinimumSize = New-Object System.Drawing.Size(620, 218)
         $form.StartPosition = "CenterScreen"
         $form.ControlBox = $true
         $form.MinimizeBox = $true
@@ -157,13 +168,17 @@ function Show-ProgressWindow {
         $bar.Dock = "Top"
         $bar.Height = 8
 
-        $details = New-Object System.Windows.Forms.Label
-        $details.Text = "Technical details"
+        $details = New-Object System.Windows.Forms.Button
+        $details.Text = "Show terminal output"
         $details.Dock = "Top"
         $details.Height = 34
-        $details.Padding = New-Object System.Windows.Forms.Padding(18, 10, 0, 0)
+        $details.Padding = New-Object System.Windows.Forms.Padding(14, 0, 0, 0)
+        $details.TextAlign = "MiddleLeft"
+        $details.FlatStyle = "Flat"
+        $details.FlatAppearance.BorderSize = 0
         $details.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
         $details.ForeColor = [System.Drawing.Color]::FromArgb(80, 87, 99)
+        $details.BackColor = [System.Drawing.Color]::White
 
         $box = New-Object System.Windows.Forms.TextBox
         $box.Multiline = $true
@@ -175,6 +190,7 @@ function Show-ProgressWindow {
         $box.ForeColor = [System.Drawing.Color]::FromArgb(50, 55, 65)
         $box.BorderStyle = "FixedSingle"
         $box.Margin = New-Object System.Windows.Forms.Padding(18, 0, 18, 14)
+        $box.Visible = $false
 
         $footer = New-Object System.Windows.Forms.Label
         $footer.Text = "You can minimize this window. Hermes will restart automatically when the update finishes."
@@ -191,6 +207,13 @@ function Show-ProgressWindow {
         $form.Controls.Add($details)
         $form.Controls.Add($header)
         $form.Controls.Add($footer)
+        $script:Ui = [pscustomobject]@{
+            Form = $form
+            Box = $box
+            Status = $status
+            DetailsButton = $details
+        }
+        $details.Add_Click({ Set-DetailsExpanded (-not $script:Ui.Box.Visible) })
         $form.Show()
         # The hidden console handoff has no foreground rights. Claim the form
         # once at launch, then leave normal window stacking/minimization alone.
@@ -199,7 +222,6 @@ function Show-ProgressWindow {
             if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
         } catch {}
         [System.Windows.Forms.Application]::DoEvents()
-        $script:Ui = [pscustomobject]@{ Form = $form; Box = $box; Status = $status }
     } catch {
         # Headless session / WinForms unavailable: degrade to log-only.
         $script:Ui = $null
@@ -219,6 +241,7 @@ function Close-ProgressWindow {
 function Write-Result([bool]$Ok, [int]$Code, [string]$Message) {
     # Consumed (read + deleted) by the relaunched Desktop on boot so the
     # user actually SEES how a detached update ended.
+    if (-not $Ok) { Set-DetailsExpanded $true }
     try {
         $obj = @{
             ok         = $Ok
