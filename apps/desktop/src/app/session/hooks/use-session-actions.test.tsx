@@ -1418,8 +1418,11 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['stored-A', 'rt-A']])
     }
 
+    const state = clientState('stored-A')
+    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'cached prompt' }] }]
+
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['rt-A', clientState('stored-A')]])
+      current: new Map([['rt-A', state]])
     }
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -1466,7 +1469,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 
-  it('rejects an empty warm cache for a session still active in another window', async () => {
+  it('rejects an empty warm cache even when sidebar metadata claims the session is empty and inactive', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
@@ -1475,11 +1478,11 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['rt-A', clientState('stored-A')]])
     }
 
-    // The sidebar row can advertise the live turn before its persisted message
-    // count catches up. An empty private cache in this window is therefore not
-    // proof of an empty conversation: another window may own the populated
-    // running projection.
-    setSessions([storedSession({ id: 'stored-A', is_active: true, message_count: 0 })])
+    // Sidebar metadata is an asynchronously refreshed projection. A stale
+    // inactive/zero-count row cannot prove that an empty private cache in this
+    // window is authoritative; another window or a persisted transcript may
+    // still own the conversation.
+    setSessions([storedSession({ id: 'stored-A', is_active: false, message_count: 0 })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       messages: [
         { content: 'apply and restart now', role: 'user', timestamp: 1 },

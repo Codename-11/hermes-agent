@@ -703,7 +703,17 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
         }
 
-        if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
+        // A warm fast-path is valid only when this window actually owns a
+        // transcript to paint. Sidebar `message_count` / `is_active` fields are
+        // asynchronously refreshed projections, so neither a missing row nor an
+        // inactive zero-count row can prove that an empty private cache is the
+        // authoritative conversation state. Accepting one binds through
+        // `session.activate(omit_messages: true)` and can leave the primary view
+        // busy but permanently blank while persisted history or another window
+        // owns the real transcript. Drop every empty warm entry and take the
+        // authoritative full-resume path; genuinely empty stored sessions still
+        // load correctly there, they simply skip this unsafe optimization.
+        if (cachedViewState.messages.length === 0) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           dropSessionState(cachedRuntimeId)

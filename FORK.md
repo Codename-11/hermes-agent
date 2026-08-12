@@ -67,10 +67,11 @@ The protected contract is:
   synchronously republished before `session.activate` is awaited; the public
   `$sessionStates` slice may have been evicted while idle even though the private
   runtime cache remains valid, and `PRIMARY_SESSION_VIEW` cannot rehydrate from
-  the legacy global message mirror alone; an empty private cache is not valid
-  warm authority while the stored row is still `is_active`, even when its
-  persisted `message_count` has not caught up—the primary window must take the
-  full resume path and recover the transcript/live projection owned elsewhere;
+  the legacy global message mirror alone; an empty private cache is never valid
+  warm transcript authority for a stored session—sidebar `message_count` and
+  `is_active` are asynchronous projections and cannot prove emptiness, so the
+  primary window must take the full resume path and recover authoritative
+  history/live projection instead;
 - live steer projection preserves causal user ordering even when reconciliation
   briefly places an active assistant shell before the original optimistic user
   prompt: keep upstream's stable `original → steer → reply` redirect ordering,
@@ -113,9 +114,10 @@ Related upstream work includes PRs `#45653`, `#69739`, and `#71475` plus issue `
 but those references cover narrower reconnect symptoms. Drop this carry only
 after upstream provides equivalent cache ownership, stale-async fencing,
 secondary-profile reconciliation, reclaim eviction, and profile-qualified
-status/event routing, including active zero-count session recovery across
-windows, plus causal steer ordering for both stable and temporarily non-canonical
-live tails, with the focused invariants above still passing.
+status/event routing, including rejection of empty warm transcript caches across
+windows and stale sidebar metadata, plus causal steer ordering for both stable
+and temporarily non-canonical live tails, with the focused invariants above
+still passing.
 
 ## Axiom Desktop tabbed Update Control
 
