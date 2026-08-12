@@ -38,7 +38,7 @@ export interface UpdateControlApi {
   getStage(): Awaitable<UpdateStageSnapshot | null>
   getHistory(): Awaitable<UpdateHistoryEntry[]>
   refresh(target: UpdateTarget): Awaitable<UpdateControlStatus | null | void>
-  prepare(): Awaitable<unknown>
+  prepare(): Awaitable<UpdateStageSnapshot | null>
   discardStage(): Awaitable<unknown>
   restartAndApply(): Awaitable<unknown>
   applyBackend(): Awaitable<unknown>

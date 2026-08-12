@@ -118,7 +118,7 @@ export interface PluginUpdateManagement {
   getStage: () => Promise<null | PluginUpdateStageSnapshot>
   getHistory: () => Promise<PluginUpdateHistoryEntry[]>
   refresh: (target: PluginUpdateTarget) => Promise<DesktopUpdateStatus | null>
-  prepare: () => ReturnType<typeof prepareDesktopUpdateStage>
+  prepare: () => Promise<null | PluginUpdateStageSnapshot>
   discardStage: () => ReturnType<typeof discardDesktopUpdateStage>
   restartAndApply: () => ReturnType<typeof restartAndApplyDesktopUpdateStage>
   applyBackend: () => ReturnType<typeof applyBackendUpdate>
@@ -226,7 +226,11 @@ export const host = {
     getHistory: async () => (await getDesktopUpdateHistory()).map(pluginHistoryEntry),
     refresh: async (target: PluginUpdateTarget) =>
       cloneUpdateStatus(await (target === 'client' ? checkUpdates() : checkBackendUpdates())),
-    prepare: async () => requireUpdateSuccess(await prepareDesktopUpdateStage()),
+    prepare: async () => {
+      const result = requireUpdateSuccess(await prepareDesktopUpdateStage())
+
+      return pluginStageSnapshot(result.status)
+    },
     discardStage: async () => requireUpdateSuccess(await discardDesktopUpdateStage()),
     restartAndApply: async () => requireUpdateSuccess(await restartAndApplyDesktopUpdateStage()),
     applyBackend: async () => requireUpdateSuccess(await applyBackendUpdate())

@@ -64,8 +64,29 @@ function Write-Progress([string]$Phase, [int]$Percent, [string]$Message) {
 
 function Invoke-Checked([string]$Exe, [string[]]$Arguments, [string]$Label) {
     Write-StageLog ("running {0}: {1} {2}" -f $Label, $Exe, ($Arguments -join " "))
-    $output = & $Exe @Arguments 2>&1
-    $code = $LASTEXITCODE
+    # Native tools routinely use stderr for successful progress (notably
+    # `git fetch`). Under PowerShell 7, the script-level Stop preference can
+    # promote that native stderr into a terminating ErrorRecord before we can
+    # inspect $LASTEXITCODE. Native success is defined by its exit code, so
+    # temporarily keep stderr collectable and restore both preferences after.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $hasNativeErrorPreference = Test-Path Variable:\PSNativeCommandUseErrorActionPreference
+    if ($hasNativeErrorPreference) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    }
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        $output = & $Exe @Arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($hasNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
     foreach ($line in $output) {
         if ("$line".Trim()) { Write-StageLog ("{0}| {1}" -f $Label, $line) }
     }

@@ -113,6 +113,26 @@ describe('host.updates', () => {
     })
   })
 
+  it('returns the initial preparing snapshot so Update Control can poll before the worker writes progress', async () => {
+    updateMocks.prepareDesktopUpdateStage.mockResolvedValue({
+      ok: true,
+      status: {
+        supported: true,
+        phase: 'fetching',
+        percent: 0,
+        message: 'Preparing update while Desktop remains available.'
+      }
+    })
+
+    await expect(host.updates.prepare()).resolves.toMatchObject({
+      supported: true,
+      state: 'preparing',
+      phase: 'fetching',
+      percent: 0,
+      message: 'Preparing update while Desktop remains available.'
+    })
+  })
+
   it('exposes only the named staged lifecycle, never branch, raw apply, progress, or bridge doors', () => {
     expect(Object.keys(host.updates).sort()).toEqual([
       'applyBackend',

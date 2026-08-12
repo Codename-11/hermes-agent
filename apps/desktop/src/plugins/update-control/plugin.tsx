@@ -202,7 +202,15 @@ function UpdateControlPane() {
   })
 
   const stageQuery = useQuery({
-    queryFn: async () => (await api?.getStage?.()) ?? null,
+    queryFn: async () => {
+      const stage = (await api?.getStage?.()) ?? null
+
+      if (stage && stage.state !== 'preparing') {
+        void queryClient.invalidateQueries({ queryKey: [...ROOT_KEY, 'history'] })
+      }
+
+      return stage
+    },
     queryKey: [...ROOT_KEY, 'stage'],
     refetchInterval: query =>
       (query.state.data as UpdateStageSnapshot | null)?.state === 'preparing' ? 2_000 : false,
@@ -244,7 +252,21 @@ function UpdateControlPane() {
       throw new Error('Staged update controls are unavailable in this Desktop build.')
     },
     onError: error => setActionError(friendlyError(error)),
-    onSettled: invalidate
+    onSuccess: (result, action) => {
+      if (action === 'prepare') {
+        queryClient.setQueryData([...ROOT_KEY, 'stage'], result)
+      }
+    },
+    onSettled: (_result, _error, action) => {
+      if (action === 'prepare') {
+        void queryClient.invalidateQueries({ queryKey: [...ROOT_KEY, 'snapshots'] })
+        void queryClient.invalidateQueries({ queryKey: [...ROOT_KEY, 'status'] })
+
+        return
+      }
+
+      invalidate()
+    }
   })
 
   const refresh = useMutation({
