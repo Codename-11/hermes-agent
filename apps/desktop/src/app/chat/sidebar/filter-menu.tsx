@@ -48,8 +48,10 @@ import {
   toggleSidebarStatusFilter
 } from '@/store/layout'
 import {
+  $hiddenProfiles,
   $profiles,
   $showAllProfiles,
+  filterVisibleProfiles,
   normalizeProfileKey,
   requestProfileCreate,
   toggleShowAllProfiles
@@ -154,7 +156,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const projectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
   const showAllProfiles = useStore($showAllProfiles)
-  const profileNames = useStore($profiles).map(profile => normalizeProfileKey(profile.name))
+  const profiles = useStore($profiles)
+  const hiddenProfiles = useStore($hiddenProfiles)
+  const profileNames = filterVisibleProfiles(profiles, hiddenProfiles).map(profile => normalizeProfileKey(profile.name))
   const narrowsByProfile = showAllProfiles && profileNames.length > 1
   const prFilter = useStore($sidebarPrFilter)
   const showArchived = useStore($sidebarShowArchived)

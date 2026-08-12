@@ -1339,6 +1339,11 @@ export interface Translations {
     search: string
     loading: string
     newProfile: string
+    newChat: string
+    visibilityTitle: string
+    visibilityDesc: string
+    showProfileInUi: (name: string) => string
+    showProfileInUiDesc: string
     importProfile: string
     exportProfile: string
     imported: string

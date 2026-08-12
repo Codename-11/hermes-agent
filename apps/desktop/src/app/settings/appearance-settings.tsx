@@ -14,7 +14,11 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $profiles,
+  normalizeProfileKey
+} from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
@@ -27,6 +31,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 import { MODE_OPTIONS } from './constants'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { ProfileVisibilitySettings } from './profile-visibility-settings'
 import { TerminalFontSetting } from './terminal-font-setting'
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
@@ -539,6 +544,10 @@ export function AppearanceSettings() {
             title={a.embedsTitle}
           />
         </div>
+      </div>
+
+      <div className="mt-6">
+        <ProfileVisibilitySettings />
       </div>
 
       <div className="mt-6">

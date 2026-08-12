@@ -19,8 +19,17 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $hiddenProfiles,
+  $profiles,
+  ensureGatewayProfile,
+  filterVisibleProfiles,
+  prewarmProfileBackend,
+  refreshProfiles,
+  setProfileHidden,
+  switchProfileToSlot
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -52,6 +61,7 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
+  $hiddenProfiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
@@ -276,6 +286,28 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     openGatewayForProfile.mockRejectedValueOnce(new Error('spawn failed'))
 
     expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
+  })
+})
+
+describe('profile rail visibility', () => {
+  it('keeps default visible and filters only explicitly hidden named profiles', () => {
+    const profiles = [profile('default', true), profile('coder'), profile('ops')]
+
+    setProfileHidden('default', true)
+    setProfileHidden('coder', true)
+
+    expect($hiddenProfiles.get()).toEqual(['coder'])
+    expect(filterVisibleProfiles(profiles, $hiddenProfiles.get()).map(item => item.name)).toEqual(['default', 'ops'])
+  })
+
+  it('skips hidden profiles in positional keyboard navigation', async () => {
+    $profiles.set([profile('default', true), profile('coder'), profile('ops')])
+    setProfileHidden('coder', true)
+    getConnection.mockResolvedValue({ ...localConn(), profile: 'ops' })
+
+    switchProfileToSlot(1)
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledWith('ops'))
   })
 })
 

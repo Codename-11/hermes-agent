@@ -62,6 +62,40 @@ export function setProfileOrder(names: string[]): void {
   }
 }
 
+// ── Rail visibility ────────────────────────────────────────────────────────
+// Local presentation preference only: hiding a profile never mutates, disables,
+// or disconnects its Hermes environment. The default profile stays visible so
+// users cannot hide the rail's stable way home.
+const HIDDEN_PROFILES_STORAGE_KEY = 'hermes.desktop.hiddenProfiles'
+
+export const $hiddenProfiles = atom<string[]>(storedStringArray(HIDDEN_PROFILES_STORAGE_KEY))
+
+$hiddenProfiles.subscribe(value => persistStringArray(HIDDEN_PROFILES_STORAGE_KEY, [...value]))
+
+export function setProfileHidden(name: string, hidden: boolean): void {
+  const key = normalizeProfileKey(name)
+
+  if (key === 'default') {
+    return
+  }
+
+  const current = $hiddenProfiles.get()
+  const next = hidden ? [...new Set([...current, key])] : current.filter(item => item !== key)
+
+  if (!arraysEqual(current, next)) {
+    $hiddenProfiles.set(next)
+  }
+}
+
+export function filterVisibleProfiles<T extends { is_default: boolean; name: string }>(
+  profiles: T[],
+  hidden: string[]
+): T[] {
+  const hiddenKeys = new Set(hidden.map(normalizeProfileKey))
+
+  return profiles.filter(profile => profile.is_default || !hiddenKeys.has(normalizeProfileKey(profile.name)))
+}
+
 // Sort items by the stored order; unordered names alphabetise at the tail.
 export function sortByProfileOrder<T extends { name: string }>(items: T[], order: string[]): T[] {
   const rank = new Map(order.map((name, index) => [name, index]))
@@ -396,7 +430,7 @@ export function toggleShowAllProfiles(): void {
 // when the slot is empty so unused ⌘N keys stay harmless.
 
 function orderedProfileKeys(): string[] {
-  const profiles = $profiles.get()
+  const profiles = filterVisibleProfiles($profiles.get(), $hiddenProfiles.get())
 
   const named = sortByProfileOrder(
     profiles.filter(profile => !profile.is_default),
@@ -418,7 +452,7 @@ export function switchToDefaultProfile(): void {
 // Switch to the Nth named (non-default) profile in rail order (1-based).
 export function switchProfileToSlot(slot: number): void {
   const named = sortByProfileOrder(
-    $profiles.get().filter(profile => !profile.is_default),
+    filterVisibleProfiles($profiles.get(), $hiddenProfiles.get()).filter(profile => !profile.is_default),
     $profileOrder.get()
   )
 

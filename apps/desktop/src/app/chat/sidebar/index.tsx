@@ -73,11 +73,13 @@ import {
 } from '@/store/layout'
 import { openBrowser } from '@/store/preview'
 import {
+  $hiddenProfiles,
   $newChatProfile,
   $profileColors,
   $profiles,
   $profileScope,
   ALL_PROFILES,
+  filterVisibleProfiles,
   normalizeProfileKey
 } from '@/store/profile'
 import {
@@ -370,11 +372,19 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const profiles = useStore($profiles)
+  const hiddenProfiles = useStore($hiddenProfiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+  const visibleProfiles = filterVisibleProfiles(profiles, hiddenProfiles)
+
+  const visibleProfileKeys = useMemo(
+    () => new Set(visibleProfiles.map(profile => normalizeProfileKey(profile.name))),
+    [visibleProfiles]
+  )
+
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
-  const multiProfile = profiles.length > 1
+  const multiProfile = visibleProfiles.length > 1
   // Gate ALL-profiles grouping on multiProfile too: if a user drops back to one
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
@@ -453,8 +463,10 @@ export function ChatSidebar({
   const scopedSessions = useMemo(() => {
     const pool = showArchived ? archivedSessions : sessions
 
-    return showAllProfiles ? pool : pool.filter(s => normalizeProfileKey(s.profile) === profileScope)
-  }, [sessions, archivedSessions, showArchived, showAllProfiles, profileScope])
+    return showAllProfiles
+      ? pool.filter(session => visibleProfileKeys.has(normalizeProfileKey(session.profile)))
+      : pool.filter(session => normalizeProfileKey(session.profile) === profileScope)
+  }, [sessions, archivedSessions, showArchived, showAllProfiles, profileScope, visibleProfileKeys])
 
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded

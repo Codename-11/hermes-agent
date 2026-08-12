@@ -862,6 +862,33 @@ NODE_ENV=test npx vitest run --project electron electron/connection-config.test.
 NODE_ENV=test npx vitest run --environment jsdom src/app/settings/gateway-settings.remote-profiles.test.ts
 ```
 
+### Desktop profile visibility and profile-scoped new chat — local carry pending upstream equivalent
+
+Axiom lets operators hide named profiles from Desktop browsing without deleting,
+disabling, or disconnecting them. The preference is Desktop-local presentation
+state: Settings -> Appearance can restore every hidden profile, while Manage
+Profiles and Gateway Settings continue exposing the complete profile inventory.
+The default profile cannot be hidden.
+
+Protected behavior:
+
+- hidden profiles are excluded consistently from the profile rail, condensed
+  picker, rail keyboard slots/cycling, All Profiles browsing/groups, and the
+  sidebar profile filter;
+- profile data, sessions, direct links, explicit search results, ownership tags,
+  connection settings, and Manage Profiles remain intact and addressable;
+- right-clicking a named profile rail icon offers **New chat** and calls the
+  existing profile-qualified new-session flow for that icon's profile, regardless
+  of the currently foregrounded profile or All Profiles browse state.
+
+Primary files: `apps/desktop/src/store/profile.ts`,
+`apps/desktop/src/app/chat/sidebar/{profile-switcher,index,filter-menu}.tsx`, and
+`apps/desktop/src/app/settings/profile-visibility-settings.tsx`.
+
+Drop condition: upstream provides equivalent persisted profile visibility controls
+and a profile-icon context action whose new session is explicitly bound to the
+clicked profile, with hidden profiles still recoverable and their data untouched.
+
 ### Desktop native OAuth orchestration — local carry pending upstream equivalent
 
 Axiom keeps native RFC 8252 sign-in single-flight per normalized gateway in Electron main. Multiple renderer surfaces share one pending login instead of opening competing loopback listeners and overwriting browser PKCE state. A gateway that advertises `native_pkce` never silently changes to the embedded cookie flow after timeout, cancellation, or token-exchange failure; the error surfaces and an explicit Retry starts a fresh exchange. Embedded login remains the compatibility path only for gateways that do not advertise native PKCE.

@@ -46,12 +46,15 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $hiddenProfiles,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
   $profiles,
   $profileScope,
   ALL_PROFILES,
+  filterVisibleProfiles,
+  newSessionInProfile,
   normalizeProfileKey,
   refreshActiveProfile,
   selectProfile,
@@ -110,6 +113,7 @@ export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
   const profiles = useStore($profiles)
+  const hiddenProfiles = useStore($hiddenProfiles)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
@@ -124,7 +128,8 @@ export function ProfileRail() {
 
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
-  const condensed = profiles.length > PROFILE_DROPDOWN_THRESHOLD
+  const railProfiles = filterVisibleProfiles(profiles, hiddenProfiles)
+  const condensed = railProfiles.length > PROFILE_DROPDOWN_THRESHOLD
 
   // A plain mouse wheel only emits deltaY; map it to horizontal scroll so the
   // rail is navigable without a trackpad. Trackpad x-scroll (deltaX) passes
@@ -154,15 +159,15 @@ export function ProfileRail() {
 
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
-  const defaultProfile = profiles.find(profile => profile.is_default)
+  const defaultProfile = railProfiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 
   const named = sortByProfileOrder(
-    profiles.filter(profile => !profile.is_default),
+    railProfiles.filter(profile => !profile.is_default),
     order
   )
 
-  const multiProfile = profiles.length > 1
+  const multiProfile = railProfiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
   const sensors = useSensors(
@@ -247,7 +252,7 @@ export function ProfileRail() {
       {/* Single-profile: the active default's home icon next to the create +. */}
       {!multiProfile && defaultProfile && (
         <ProfilePill
-          active
+          active={onDefault}
           glyph="home"
           label={defaultProfile.name}
           onSelect={() => selectProfile(defaultProfile.name)}
@@ -294,6 +299,7 @@ export function ProfileRail() {
                       label={profile.name}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
+                      onNewChat={() => newSessionInProfile(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
                       onSelect={() => selectProfile(profile.name)}
@@ -546,6 +552,7 @@ interface ProfileSquareProps {
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
+  onNewChat: () => void
   onDelete: () => void
 }
 
@@ -566,6 +573,7 @@ function ProfileSquare({
   label,
   onDelete,
   onEditSoul,
+  onNewChat,
   onRecolor,
   onRename,
   onSelect
@@ -695,6 +703,10 @@ function ProfileSquare({
           // Suppress the refocus and the picker survives.
           onCloseAutoFocus={event => event.preventDefault()}
         >
+          <ContextMenuItem onSelect={onNewChat}>
+            <Codicon name="add" size="0.875rem" />
+            <span>{p.newChat}</span>
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
             <span>{p.color}</span>
