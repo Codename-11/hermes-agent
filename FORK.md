@@ -66,6 +66,13 @@ The protected contract is:
   `$sessionStates` slice may have been evicted while idle even though the private
   runtime cache remains valid, and `PRIMARY_SESSION_VIEW` cannot rehydrate from
   the legacy global message mirror alone;
+- live steer projection preserves causal user ordering even when reconciliation
+  briefly places an active assistant shell before the original optimistic user
+  prompt: keep upstream's stable `original → steer → reply` redirect ordering,
+  but advance the steer boundary past user rows already visible at or after the
+  shell so a later correction never paints above the prompt that started the
+  turn; build-window queued redirects may still move to the tail after the RPC
+  classifies them as the next turn;
 - `session.reclaimed` atomically evicts public state, private runtime state,
   reverse stored/runtime mappings, todos, and active bindings; and
 - applying a non-primary profile connection notifies the renderer so its

@@ -2140,6 +2140,46 @@ describe('usePromptActions redirectPrompt', () => {
     })
   })
 
+  it('never inserts a steer before the original optimistic prompt when the live projection is temporarily ahead', async () => {
+    let resolveRedirect!: (value: { status: 'redirected' }) => void
+
+    const redirectPending = new Promise<{ status: 'redirected' }>(resolve => {
+      resolveRedirect = resolve
+    })
+
+    const requestGateway = vi.fn(async () => (await redirectPending) as never)
+    const capturedStates: Record<string, unknown>[] = []
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          {
+            id: 'assistant-stream-rt-test',
+            role: 'assistant',
+            parts: [textPart('working')],
+            pending: true
+          },
+          { id: 'user-original-optimistic', role: 'user', parts: [textPart('original prompt')] }
+        ]}
+      />
+    )
+
+    const redirect = handle!.redirectPrompt('steer after original')
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.redirect', expect.anything()))
+    expect(
+      (capturedStates.at(-1)?.messages as { parts: { text?: string }[] }[]).map(message => message.parts[0]?.text)
+    ).toEqual(['working', 'original prompt', 'steer after original'])
+
+    resolveRedirect({ status: 'redirected' })
+    await expect(redirect).resolves.toBe(true)
+  })
+
   it('reports rejection so the caller queues when the turn already ended', async () => {
     const requestGateway = vi.fn(async () => ({ status: 'rejected' }) as never)
 
