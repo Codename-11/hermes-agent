@@ -1,6 +1,7 @@
+import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import plugin from './plugin'
+import plugin, { CliOutput } from './plugin'
 
 describe('Update Control plugin registration', () => {
   it('ships enabled and contributes a reopenable main tab beside existing sessions', () => {
@@ -41,5 +42,21 @@ describe('Update Control plugin registration', () => {
     contributions.find(contribution => contribution.id === 'open')?.data?.run?.()
     expect(reveal).toHaveBeenNthCalledWith(1, 'panel')
     expect(reveal).toHaveBeenNthCalledWith(2, 'panel')
+  })
+})
+
+describe('Update Control CLI output', () => {
+  it('opens immediately during sync and shows a placeholder before the first CLI line', () => {
+    render(<CliOutput defaultOpen label="Reconcile CLI output" />)
+
+    expect(screen.getByRole('button', { name: /Reconcile CLI output/ }).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('log').textContent).toContain('Waiting for CLI output…')
+  })
+
+  it('renders the current live transcript in the open panel', () => {
+    render(<CliOutput defaultOpen label="Reconcile CLI output" output={'→ Fetching upstream…\n✓ Worktree ready'} />)
+
+    expect(screen.getByRole('log').textContent).toContain('→ Fetching upstream…')
+    expect(screen.getByRole('log').textContent).toContain('✓ Worktree ready')
   })
 })

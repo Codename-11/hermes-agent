@@ -12,6 +12,7 @@ const updateMocks = vi.hoisted(() => ({
   discardDesktopUpdateStage: vi.fn(),
   getDesktopUpdateHistory: vi.fn(),
   getDesktopUpdateStage: vi.fn(),
+  getDesktopUpstreamSyncStatus: vi.fn(),
   prepareDesktopUpdateStage: vi.fn(),
   restartAndApplyDesktopUpdateStage: vi.fn(),
   syncDesktopUpstream: vi.fn()
@@ -182,6 +183,17 @@ describe('host.updates', () => {
     })
     await expect(host.updates.syncUpstream()).resolves.toMatchObject({ ok: true, state: 'completed' })
 
+    updateMocks.getDesktopUpstreamSyncStatus.mockResolvedValue({
+      running: true,
+      startedAt: 10,
+      output: '→ Fetching upstream…'
+    })
+    await expect(host.updates.getUpstreamSyncStatus()).resolves.toEqual({
+      running: true,
+      startedAt: 10,
+      output: '→ Fetching upstream…'
+    })
+
     updateMocks.syncDesktopUpstream.mockResolvedValueOnce({
       ok: false,
       state: 'handoff',
@@ -204,6 +216,7 @@ describe('host.updates', () => {
       'getHistory',
       'getStage',
       'getStatus',
+      'getUpstreamSyncStatus',
       'prepare',
       'refresh',
       'restartAndApply',

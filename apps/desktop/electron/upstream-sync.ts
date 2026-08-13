@@ -14,11 +14,19 @@ export interface DesktopUpstreamSyncResult {
   output?: string
 }
 
+export interface DesktopUpstreamSyncStatus {
+  running: boolean
+  startedAt?: number
+  output?: string
+  result?: DesktopUpstreamSyncResult
+}
+
 const RESULT_PREFIX = 'HERMES_UPSTREAM_SYNC_RESULT='
 const MAX_OUTPUT = 24_000
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000
 
 let active: Promise<DesktopUpstreamSyncResult> | null = null
+let status: DesktopUpstreamSyncStatus = { running: false }
 
 function cleanOutput(output: string): string | undefined {
   const cleaned = output
@@ -28,6 +36,20 @@ function cleanOutput(output: string): string | undefined {
     .trim()
 
   return cleaned || undefined
+}
+
+export function getUpstreamSyncStatus(): DesktopUpstreamSyncStatus {
+  return {
+    ...status,
+    result: status.result ? { ...status.result } : undefined
+  }
+}
+
+export function appendUpstreamSyncOutput(current: string, chunk: Buffer | string): string {
+  const output = (current + chunk.toString()).slice(-MAX_OUTPUT)
+  status = { ...status, output: cleanOutput(output) }
+
+  return output
 }
 
 function failed(message: string, error = 'sync-failed', output = ''): DesktopUpstreamSyncResult {
@@ -116,6 +138,8 @@ export function runUpstreamSync(options: {
     return active
   }
 
+  status = { running: true, startedAt: Date.now() }
+
   active = new Promise(resolve => {
     let output = ''
     let settled = false
@@ -133,6 +157,12 @@ export function runUpstreamSync(options: {
       }
 
       active = null
+      status = {
+        running: false,
+        startedAt: status.startedAt,
+        output: result.output,
+        result: { ...result }
+      }
       resolve(result)
     }
 
@@ -154,7 +184,7 @@ export function runUpstreamSync(options: {
     )
 
     const append = (chunk: Buffer | string) => {
-      output = (output + chunk.toString()).slice(-MAX_OUTPUT)
+      output = appendUpstreamSyncOutput(output, chunk)
     }
 
     child.stdout?.on('data', append)

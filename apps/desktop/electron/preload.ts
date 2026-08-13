@@ -374,6 +374,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   updates: {
     check: () => ipcRenderer.invoke('hermes:updates:check'),
     syncUpstream: () => ipcRenderer.invoke('hermes:updates:sync-upstream'),
+    getUpstreamSyncStatus: () => ipcRenderer.invoke('hermes:updates:sync-upstream:status'),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
     status: () => ipcRenderer.invoke('hermes:updates:stage:status'),
     prepare: () => ipcRenderer.invoke('hermes:updates:stage:prepare'),

@@ -34,7 +34,8 @@ import {
   type UpdateHistoryEntry,
   type UpdateStageSnapshot,
   type UpdateTarget,
-  type UpstreamSyncSnapshot
+  type UpstreamSyncSnapshot,
+  type UpstreamSyncStatusSnapshot
 } from './model'
 import { PendingChanges } from './pending-changes'
 import { UpdateActions } from './update-actions'
@@ -195,12 +196,14 @@ function TargetSummary({ status, target }: { status: UpdateControlStatus | null;
 
 function UpstreamSyncActions({
   busy,
+  liveStatus,
   onSync,
   result,
   stage,
   status
 }: {
   busy: boolean
+  liveStatus: UpstreamSyncStatusSnapshot | null
   onSync: () => void
   result: UpstreamSyncSnapshot | null
   stage: UpdateStageSnapshot | null
@@ -240,15 +243,17 @@ function UpstreamSyncActions({
           {busy ? 'Syncing…' : 'Sync Hermes into Axiom'}
         </Button>
       </div>
-      <CliOutput label="Reconcile CLI output" output={result?.output} />
+      <CliOutput defaultOpen={busy} label="Reconcile CLI output" output={liveStatus?.output || result?.output} />
     </section>
   )
 }
 
-function CliOutput({ label, output }: { label: string; output?: null | string }) {
-  const [open, setOpen] = useState(false)
+export function CliOutput({ defaultOpen = false, label, output }: { defaultOpen?: boolean; label: string; output?: null | string }) {
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null)
+  const open = manualOpen ?? defaultOpen
+  const content = output?.trim() || (defaultOpen ? 'Waiting for CLI output…' : '')
 
-  if (!output?.trim()) {
+  if (!content) {
     return null
   }
 
@@ -257,7 +262,7 @@ function CliOutput({ label, output }: { label: string; output?: null | string })
       <button
         aria-expanded={open}
         className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs font-medium text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover)"
-        onClick={() => setOpen(value => !value)}
+        onClick={() => setManualOpen(!open)}
         type="button"
       >
         <span className="flex items-center gap-2">
@@ -268,7 +273,7 @@ function CliOutput({ label, output }: { label: string; output?: null | string })
       </button>
       {open ? (
         <LogView className="max-h-72 rounded-none border-x-0 border-b-0" role="log">
-          {output}
+          {content}
         </LogView>
       ) : null}
     </div>
@@ -421,12 +426,21 @@ function UpdateControlPane() {
 
       return api.syncUpstream()
     },
+    onMutate: () => queryClient.setQueryData([...ROOT_KEY, 'upstream-sync'], { running: true }),
     onError: error => setActionError(friendlyError(error)),
     onSuccess: result => setUpstreamSyncResult(result),
     onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: [...ROOT_KEY, 'upstream-sync'] })
       await api?.refresh?.('client')
       invalidate()
     }
+  })
+
+  const upstreamSyncStatusQuery = useQuery({
+    queryFn: async () => (await api?.getUpstreamSyncStatus?.()) ?? { running: false },
+    queryKey: [...ROOT_KEY, 'upstream-sync'],
+    refetchInterval: query => ((query.state.data as UpstreamSyncStatusSnapshot | undefined)?.running ? 1_000 : false),
+    retry: false
   })
 
   const standardUpdate = async () => {
@@ -443,10 +457,12 @@ function UpdateControlPane() {
   const stage = (stageQuery.data ?? null) as UpdateStageSnapshot | null
   const history = (historyQuery.data ?? []) as UpdateHistoryEntry[]
   const backendApply = (backendApplyQuery.data ?? null) as BackendUpdateApplySnapshot | null
+  const upstreamSyncStatus = (upstreamSyncStatusQuery.data ?? null) as UpstreamSyncStatusSnapshot | null
+  const upstreamSyncRunning = upstreamSync.isPending || upstreamSyncStatus?.running === true
   const deployCommits = stage?.commits ?? status?.deployCommits ?? status?.commits ?? []
   const upstreamCommits = status?.upstreamCommits ?? []
   const queryError = statusQuery.error || stageQuery.error || historyQuery.error
-  const updateMutationBusy = lifecycle.isPending || upstreamSync.isPending
+  const updateMutationBusy = lifecycle.isPending || upstreamSyncRunning
 
   const primaryLoading =
     statusQuery.isPending ||
@@ -504,8 +520,9 @@ function UpdateControlPane() {
         {!primaryLoading && target === 'client' ? (
           <UpstreamSyncActions
             busy={updateMutationBusy}
+            liveStatus={upstreamSyncStatus}
             onSync={() => upstreamSync.mutate()}
-            result={upstreamSyncResult}
+            result={upstreamSyncStatus?.result ?? upstreamSyncResult}
             stage={stage}
             status={status}
           />

@@ -46,6 +46,14 @@ export interface UpdateControlApi {
   standardUpdate(): Awaitable<unknown>
   applyBackend(): Awaitable<unknown>
   syncUpstream(): Awaitable<UpstreamSyncSnapshot>
+  getUpstreamSyncStatus(): Awaitable<UpstreamSyncStatusSnapshot>
+}
+
+export interface UpstreamSyncStatusSnapshot {
+  running: boolean
+  startedAt?: number
+  output?: string
+  result?: UpstreamSyncSnapshot
 }
 
 export interface UpstreamSyncSnapshot {
