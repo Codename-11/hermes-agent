@@ -205,7 +205,8 @@ import {
   createSessionWindowRegistry,
   instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  sessionWindowKey
 } from './session-windows'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
@@ -9670,7 +9671,9 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
+function spawnSecondaryWindow(
+  { profile, sessionId, watch }: { profile?: string; sessionId?: string; watch?: boolean } = {}
+) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -9730,6 +9733,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     win,
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
+      profile,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch
     }),
@@ -9740,8 +9744,13 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+function createSessionWindow(
+  sessionId,
+  { profile, watch = false }: { profile?: string; watch?: boolean } = {}
+) {
+  const key = sessionWindowKey(sessionId, profile)
+
+  return sessionWindows.openOrFocus(key, () => spawnSecondaryWindow({ profile, sessionId, watch }))
 }
 
 // Additional full "instance" windows — peers of the primary that render the
@@ -10918,7 +10927,10 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+  createSessionWindow(sessionId.trim(), {
+    profile: typeof opts?.profile === 'string' ? opts.profile.trim() : undefined,
+    watch: opts?.watch === true
+  })
 
   return { ok: true }
 })

@@ -186,8 +186,13 @@ describe('openSession', () => {
 
   it('window pops out when the bridge supports it', () => {
     openSession('s1', navigate, 'window')
-    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1', undefined)
     expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('window carries the owning profile for duplicate stored ids', () => {
+    openSession('shared', navigate, 'window', 'sentinel')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('shared', { profile: 'sentinel' })
   })
 
   it('window falls back to a tab when pop-out is unavailable', () => {

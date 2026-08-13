@@ -1,6 +1,7 @@
 import { atom, type WritableAtom } from 'nanostores'
 
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile-scope'
+import { windowProfileOverride } from '@/store/windows'
 
 import type { Codec } from './persisted'
 import { readJson, readKey, writeJson, writeKey } from './storage'
@@ -69,7 +70,7 @@ export function profilePersistentAtom<T>({
     }
   }
 
-  const windowProfile = normalizeProfileKey($activeGatewayProfile.get())
+  const windowProfile = normalizeProfileKey(windowProfileOverride() ?? $activeGatewayProfile.get())
   let settingExplicitly = false
   const $value = atom<T>(decode(windowProfile))
 

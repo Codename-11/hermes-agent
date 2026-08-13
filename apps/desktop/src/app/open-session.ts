@@ -83,7 +83,7 @@ export function openSession(
 
   if (resolved === 'window') {
     if (canOpenSessionWindow()) {
-      void openSessionInNewWindow(storedSessionId)
+      void openSessionInNewWindow(storedSessionId, profile ? { profile } : undefined)
 
       return
     }

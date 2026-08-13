@@ -102,4 +102,18 @@ describe('profilePersistentAtom', () => {
     $value.persistCurrent()
     expect(window.localStorage.getItem('profiles')).toContain('drag-frame')
   })
+
+  it('binds a helper window workspace to its query-string startup profile', async () => {
+    window.localStorage.setItem('profiles', JSON.stringify({ default: 'default-value', worker: 'worker-value' }))
+    window.history.replaceState({}, '', '/?profile=worker#/')
+
+    const { $activeGatewayProfile, Codecs, profilePersistentAtom } = await load()
+    const $value = profilePersistentAtom({ codec: Codecs.text, fallback: () => 'fresh', key: 'profiles' })
+
+    expect($value.get()).toBe('worker-value')
+    $activeGatewayProfile.set('other')
+    expect($value.get()).toBe('worker-value')
+
+    window.history.replaceState({}, '', '/')
+  })
 })

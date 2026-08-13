@@ -105,6 +105,7 @@ import { prettyName } from '../settings/helpers'
 import { usePaletteContributions } from './contrib'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
+import { sessionPaletteItemId } from './session-item-id'
 
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
@@ -1073,7 +1074,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         heading: t.commandCenter.sections.sessions,
         items: sessions.map(session => ({
           icon: MessageCircle,
-          id: `session-${session.id}`,
+          id: sessionPaletteItemId(session),
           keywords: [
             'chat',
             'session',

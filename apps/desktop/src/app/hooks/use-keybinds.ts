@@ -55,7 +55,7 @@ import {
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
-  slotSessionId,
+  slotSession,
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
@@ -172,9 +172,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
-  const goToSession = (sessionId: null | string) => {
-    if (sessionId) {
-      openSession(sessionId, navigate)
+  const goToSession = (session: null | { id: string; profile?: string }) => {
+    if (session) {
+      openSession(session.id, navigate, 'in-place', session.profile)
     }
   }
 
@@ -184,7 +184,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   for (let slot = 1; slot <= SESSION_SLOT_COUNT; slot += 1) {
     sessionSlotHandlers[`session.slot.${slot}`] = () => {
       closeSwitcher()
-      goToSession(slotSessionId(slot))
+      goToSession(slotSession(slot))
     }
   }
 

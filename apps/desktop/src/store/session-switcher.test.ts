@@ -12,14 +12,14 @@ import {
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
-  slotSessionId,
+  slotSession,
   SWITCHER_REVEAL_MS
 } from './session-switcher'
 
-const session = (id: string): SessionInfo => ({ id }) as SessionInfo
+const session = (id: string, profile?: string): SessionInfo => ({ id, profile }) as SessionInfo
 
 const seed = (ids: string[], selected: null | string) => {
-  $sessions.set(ids.map(session))
+  $sessions.set(ids.map(id => session(id)))
   $selectedStoredSessionId.set(selected)
 }
 
@@ -53,7 +53,7 @@ describe('openOrAdvanceSwitcher', () => {
   it('jumps immediately on a quick Tab tap without opening the HUD', () => {
     seed(['a', 'b', 'c'], 'a')
 
-    expect(tabTap()).toBe('b')
+    expect(tabTap()).toEqual({ id: 'b', profile: undefined })
     expect($switcherOpen.get()).toBe(false)
     expect(commitOnCtrlUp()).toBeNull()
   })
@@ -83,7 +83,7 @@ describe('openOrAdvanceSwitcher', () => {
   it('opens on a second Tab while Ctrl is still down', () => {
     seed(['a', 'b', 'c'], 'a')
 
-    expect(tabTap()).toBe('b')
+    expect(tabTap()).toEqual({ id: 'b', profile: undefined })
     onSwitcherTabDown()
     openOrAdvanceSwitcher(1)
     onSwitcherTabUp()
@@ -95,21 +95,36 @@ describe('openOrAdvanceSwitcher', () => {
   it('commits the HUD highlight on Ctrl up', () => {
     seed(['a', 'b', 'c'], 'a')
 
-    expect(tabTap()).toBe('b')
+    expect(tabTap()).toEqual({ id: 'b', profile: undefined })
     onSwitcherTabDown()
     openOrAdvanceSwitcher(1)
     onSwitcherTabUp()
 
-    expect(commitOnCtrlUp()).toBe('c')
+    expect(commitOnCtrlUp()).toEqual({ id: 'c', profile: undefined })
+  })
+
+  it('preserves profile identity for duplicate session ids', () => {
+    $sessions.set([session('shared', 'victor'), session('shared', 'sentinel')])
+    $selectedStoredSessionId.set('shared')
+
+    expect(tabTap()).toEqual({ id: 'shared', profile: 'sentinel' })
   })
 })
 
-describe('slotSessionId', () => {
+describe('slotSession', () => {
   it('reads the armed snapshot while browsing is pending', () => {
     seed(['a', 'b', 'c'], 'a')
     tabTap()
     $sessions.set([session('x')])
 
-    expect(slotSessionId(2)).toBe('b')
+    expect(slotSession(2)).toEqual({ id: 'b', profile: undefined })
+  })
+
+  it('preserves the profile from the armed snapshot', () => {
+    $sessions.set([session('shared', 'victor'), session('shared', 'sentinel')])
+    $selectedStoredSessionId.set('shared')
+    tabTap()
+
+    expect(slotSession(2)).toEqual({ id: 'shared', profile: 'sentinel' })
   })
 })

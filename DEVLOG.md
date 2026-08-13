@@ -1,5 +1,31 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Qualify every mixed-profile Desktop navigation path
+
+### Summary
+
+Closed four late-review identity gaps left after the shared mixed-profile chat
+workspace landed. Keyboard switching, session pop-out windows, command-palette
+rows, and helper-window workspace restore now preserve the owning profile when
+cloned profiles share a stored session ID.
+
+### Details
+
+- Session switcher quick-jump, delayed commit, and numbered slots now return
+  `(profile, sessionId)` targets instead of bare IDs.
+- Session pop-out IPC carries the profile through preload and Electron into the
+  renderer URL, and the native window registry uses a profile-qualified key.
+- Command-palette row IDs are profile-qualified, preventing duplicate cmdk values
+  and React keys for cloned-profile sessions.
+- Window-owned workspace atoms bind to the query-string startup profile once,
+  while remaining stable across later live gateway/profile routing changes.
+
+### Verification
+
+- Desktop renderer/Electron/E2E TypeScript typecheck.
+- Focused UI and Electron regression suites for all four identity boundaries.
+- Changed-file ESLint and production Desktop build.
+
 ## 2026-08-13 — Make Desktop chat workspaces profile-mixed and owner-routed
 
 ### Summary

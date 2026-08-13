@@ -7,7 +7,8 @@ import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
-  instanceWindowBounds
+  instanceWindowBounds,
+  sessionWindowKey
 } from './session-windows'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
@@ -87,6 +88,19 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', watch: true })
 
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
+})
+
+test('buildSessionWindowUrl carries the owning profile before the hash', () => {
+  const url = buildSessionWindowUrl('shared', {
+    devServer: 'http://localhost:5173',
+    profile: 'sentinel profile'
+  })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&profile=sentinel%20profile#/shared')
+})
+
+test('sessionWindowKey separates cloned-profile copies of the same session id', () => {
+  assert.notEqual(sessionWindowKey('shared', 'victor'), sessionWindowKey('shared', 'sentinel'))
 })
 
 test('buildInstanceWindowUrl carries a requested profile before the hash route', () => {

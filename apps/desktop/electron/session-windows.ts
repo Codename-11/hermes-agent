@@ -57,8 +57,9 @@ function chatWindowWebPreferences(preloadPath: string) {
 // onboarding overlays and the global session sidebar. `watch=1` marks a
 // spectator window (e.g. a running subagent's session): the renderer resumes it
 // lazily so the gateway never builds an agent just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch }: any = {}) {
-  const query = `?win=secondary${watch ? '&watch=1' : ''}`
+function buildSessionWindowUrl(sessionId: string, { devServer, profile, rendererIndexPath, watch }: any = {}) {
+  const target = typeof profile === 'string' ? profile.trim() : ''
+  const query = `?win=secondary${watch ? '&watch=1' : ''}${target ? `&profile=${encodeURIComponent(target)}` : ''}`
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
@@ -68,6 +69,12 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   }
 
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+}
+
+function sessionWindowKey(sessionId: string, profile?: string) {
+  const target = typeof profile === 'string' ? profile.trim() : ''
+
+  return target ? `${target}\u0000${sessionId}` : sessionId
 }
 
 // Full peer windows normally load the plain renderer URL. A profile-icon
@@ -176,5 +183,6 @@ export {
   createSessionWindowRegistry,
   instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  sessionWindowKey
 }
