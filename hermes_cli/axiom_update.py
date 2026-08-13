@@ -370,6 +370,17 @@ def _git_output(git_cmd: list[str], cwd: Path, args: list[str], *, limit: int = 
     return text
 
 
+def _full_git_ref(git_cmd: list[str], cwd: Path, ref: str) -> str:
+    """Return a full commit object id or an empty string when unavailable."""
+    value = _git_output(
+        git_cmd,
+        cwd,
+        ["rev-parse", "--verify", f"{ref}^{{commit}}"],
+        limit=128,
+    ).strip()
+    return value if re.fullmatch(r"[0-9a-fA-F]{40,64}", value) else ""
+
+
 def _matched_fork_watch_areas(paths: list[str]) -> list[dict[str, object]]:
     normalized = [p.replace("\\", "/") for p in paths]
     matched: list[dict[str, object]] = []
@@ -735,6 +746,9 @@ def _record_deploy_handoff(
     worktree_path: Optional[Path] = None,
     conflict_files: str | list[str] = "",
     review: dict[str, object] | None = None,
+    phase: str = "resolve_pending",
+    resolved_head: str = "",
+    error: str = "",
 ) -> None:
     try:
         marker = _deploy_handoff_marker_path()
@@ -781,7 +795,7 @@ def _record_deploy_handoff(
                     if check not in focused_checks:
                         focused_checks.append(check)
         payload = {
-            "schema": 2,
+            "schema": 3,
             "repo": str(repo),
             "branch": branch,
             "reason": reason,
@@ -790,6 +804,9 @@ def _record_deploy_handoff(
             "report_path": str(review.get("report_path") or "") if review else "",
             "watch_areas": watch_areas,
             "focused_checks": focused_checks,
+            "phase": phase,
+            "resolved_head": resolved_head,
+            "error": error[-4000:],
             "live_head": _short_git_ref(["git"], repo, "HEAD"),
             "origin_head": _short_git_ref(["git"], repo, f"origin/{branch}"),
             "upstream_head": _short_git_ref(["git"], repo, "upstream/main"),
@@ -798,6 +815,39 @@ def _record_deploy_handoff(
         marker.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     except Exception:
         logger.debug("Failed to write deploy handoff marker", exc_info=True)
+
+
+def _print_push_recovery_handoff(
+    *, repo: Path, branch: str, worktree: Path, resolved_head: str, error: str
+) -> None:
+    """Persist and print a focused recovery handoff after resolution succeeded."""
+    try:
+        redact_module = __import__("agent.redact", fromlist=["redact_sensitive_text"])
+        safe_error = redact_module.redact_sensitive_text(error, force=True)
+    except Exception:
+        safe_error = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", error)
+    details = "\n".join(_resolver_output_tail(safe_error, max_lines=30, max_chars=4000))
+    _record_deploy_handoff(
+        repo=repo,
+        branch=branch,
+        reason=f"push resolved deploy branch origin/{branch} failed.",
+        worktree_path=worktree,
+        phase="push_pending",
+        resolved_head=resolved_head,
+        error=details,
+    )
+    marker = _deploy_handoff_marker_path()
+    print("  Resolution and validation succeeded; the committed worktree was retained.")
+    if details:
+        print("  Git push diagnostics:")
+        for line in details.splitlines():
+            print(f"    {line}")
+    print("  Rerun `hermes update` to retry this exact commit without rerunning resolution.")
+    print("  Or start a focused recovery chat:")
+    print(
+        f'    hermes chat -q "Read {marker} and recover the pending origin/{branch} push. '
+        'Do not rerun conflict resolution or mutate the live checkout."'
+    )
 
 
 def _completed_deploy_handoff_requires_post_update(
@@ -1288,6 +1338,48 @@ def _resolve_deploy_handoff(
                 print(f"    {line}")
         return None
 
+    if payload.get("phase") == "push_pending":
+        resolved_head = str(payload.get("resolved_head") or "").strip()
+        actual_head = _full_git_ref(git_cmd, worktree, "HEAD") if worktree.exists() else ""
+        if not resolved_head or actual_head != resolved_head:
+            status.fail(note="retained commit changed")
+            print("✗ Pending push worktree no longer matches its validated commit; stopping safely.")
+            return None
+        status.advance("push")
+        push = subprocess.run(
+            git_cmd + ["push", "origin", f"{resolved_head}:{branch}"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode != 0:
+            status.fail(note="push retry failed")
+            print(f"✗ Could not publish retained commit {resolved_head[:12]} to origin/{branch}.")
+            _print_push_recovery_handoff(
+                repo=repo,
+                branch=branch,
+                worktree=worktree,
+                resolved_head=resolved_head,
+                error=push.stderr or push.stdout or "",
+            )
+            return None
+        status.advance("sync live")
+        if publish_only:
+            _discard_published_handoff(git_cmd, repo, worktree)
+            status.finish(note="published retained commit")
+            print(f"✓ Published retained commit to origin/{branch}; live checkout was not changed.")
+            return 1
+        changed = _fast_forward_live_deploy_checkout(git_cmd, repo, branch, pre_update_head, 1)
+        if changed is None:
+            status.fail(note="live fast-forward failed")
+            print(f"✗ Commit was pushed, but live checkout could not fast-forward to origin/{branch}.")
+            return None
+        status.advance("cleanup")
+        _discard_published_handoff(git_cmd, repo, worktree)
+        status.finish(note="published retained commit")
+        print(f"✓ Published retained commit and fast-forwarded live checkout to origin/{branch}.")
+        return changed or 1
+
     if _handoff_snapshot_is_published(git_cmd, repo, branch, payload):
         if not _discard_published_handoff(git_cmd, repo, worktree):
             status.fail(note="stale marker cleanup failed")
@@ -1395,8 +1487,14 @@ def _resolve_deploy_handoff(
     if push.returncode != 0:
         status.fail(note="push failed")
         print(f"✗ Could not push resolved deploy branch origin/{branch}.")
-        if push.stderr.strip():
-            print(f"  {push.stderr.strip().splitlines()[0]}")
+        resolved_head = _full_git_ref(git_cmd, worktree, "HEAD")
+        _print_push_recovery_handoff(
+            repo=repo,
+            branch=branch,
+            worktree=worktree,
+            resolved_head=resolved_head,
+            error=push.stderr or push.stdout or "",
+        )
         return None
 
     status.advance("sync live")

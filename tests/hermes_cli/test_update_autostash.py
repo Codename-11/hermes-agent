@@ -1151,7 +1151,7 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
     assert "Deploy-branch-safe updater" in report_text
     marker_text = marker.read_text(encoding="utf-8")
     marker_payload = json.loads(marker_text)
-    assert marker_payload["schema"] == 2
+    assert marker_payload["schema"] == 3
     assert marker_payload["conflict_files"] == ["hermes_cli/main.py"]
     assert marker_payload["report_path"]
     assert marker_payload["focused_checks"]
@@ -1402,6 +1402,174 @@ def test_published_handoff_snapshot_is_discarded_before_agent_resolve(
     out = capsys.readouterr().out
     assert "already published" in out
     assert "starting a fresh deploy update" in out
+
+
+def test_push_recovery_handoff_preserves_diagnostics_and_fresh_chat_command(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    worktree.mkdir()
+    marker = tmp_path / ".update_handoff.json"
+    resolved_head = "a" * 40
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_short_git_ref",
+        lambda _git, _cwd, ref: {
+            "HEAD": "resolved123",
+            "origin/axiom": "origin123",
+            "upstream/main": "upstream123",
+        }[ref],
+    )
+
+    hermes_axiom_update._print_push_recovery_handoff(
+        repo=repo,
+        branch="axiom",
+        worktree=worktree,
+        resolved_head=resolved_head,
+        error=(
+            "To https://secret-token@github.com/Codename-11/hermes-agent.git\n"
+            " ! [rejected] HEAD -> axiom (non-fast-forward)\n"
+            "error: failed to push some refs\n"
+        ),
+    )
+
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["schema"] == 3
+    assert payload["phase"] == "push_pending"
+    assert payload["resolved_head"] == resolved_head
+    assert "non-fast-forward" in payload["error"]
+    assert "secret-token" not in payload["error"]
+    assert "github.com/Codename-11/hermes-agent.git" in payload["error"]
+    out = capsys.readouterr().out
+    assert "non-fast-forward" in out
+    assert "retry this exact commit without rerunning resolution" in out
+    assert f'hermes chat -q "Read {marker}' in out
+
+
+def test_push_pending_handoff_retries_exact_commit_without_resolver(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    worktree.mkdir()
+    marker = tmp_path / ".update_handoff.json"
+    resolved_head = "a" * 40
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 3,
+                "repo": str(repo),
+                "branch": "axiom",
+                "worktree": str(worktree),
+                "phase": "push_pending",
+                "resolved_head": resolved_head,
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    discarded = []
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail("push retry must not rerun resolution"),
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_full_git_ref",
+        lambda _git, cwd, ref: resolved_head if cwd == worktree and ref == "HEAD" else "",
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_discard_published_handoff",
+        lambda _git, _repo, retained: discarded.append(retained) or marker.unlink() or True,
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs.get("cwd")))
+        if cmd in (
+            ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+            ["git", "push", "origin", f"{resolved_head}:axiom"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+
+    changed = hermes_axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"],
+        repo=repo,
+        branch="axiom",
+        pre_update_head="live123",
+        publish_only=True,
+    )
+
+    assert changed == 1
+    assert (["git", "push", "origin", f"{resolved_head}:axiom"], worktree) in calls
+    assert discarded == [worktree]
+    assert not marker.exists()
+    assert "Published retained commit" in capsys.readouterr().out
+
+
+def test_push_pending_handoff_stops_when_retained_head_changed(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    worktree.mkdir()
+    marker = tmp_path / ".update_handoff.json"
+    validated_head = "a" * 40
+    changed_head = "b" * 40
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 3,
+                "repo": str(repo),
+                "branch": "axiom",
+                "worktree": str(worktree),
+                "phase": "push_pending",
+                "resolved_head": validated_head,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_full_git_ref",
+        lambda _git, cwd, ref: changed_head if cwd == worktree and ref == "HEAD" else "",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd in (
+            ["git", "fetch", "origin", "axiom:refs/remotes/origin/axiom"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_axiom_update.subprocess, "run", fake_run)
+
+    changed = hermes_axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="axiom", pre_update_head="live123"
+    )
+
+    assert changed is None
+    assert marker.exists()
+    assert "no longer matches its validated commit" in capsys.readouterr().out
 
 
 def test_discard_published_handoff_does_not_remove_non_temp_path(

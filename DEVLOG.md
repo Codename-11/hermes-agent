@@ -1,5 +1,27 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Preserve validated deploy resolutions across push failures
+
+### Summary
+
+Made the deploy updater treat a failed post-resolution push as a resumable
+publication failure rather than another merge-resolution problem.
+
+### Details
+
+- Handoff schema 3 records `push_pending`, the exact full resolved commit ID,
+  and a bounded, force-redacted Git diagnostic tail.
+- The next `hermes update` retries that exact commit directly and never reruns
+  the resolver agent; a changed retained HEAD stops safely.
+- Failure output now includes the useful multi-line Git reason plus a focused
+  fresh-chat command, while leaving the live checkout untouched.
+
+### Verification
+
+- Full deploy updater and command-level update pytest suites.
+- Python syntax compilation, whitespace/conflict-marker checks, and focused
+  handoff state-machine invariants.
+
 ## 2026-08-13 — Qualify every mixed-profile Desktop navigation path
 
 ### Summary

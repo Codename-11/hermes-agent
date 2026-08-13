@@ -159,6 +159,14 @@ Plugins may control this lifecycle only through the typed `host.updates` methods
 
 `syncUpstream` is a distinct **Hermes upstream → Axiom deploy** operation. It reuses the deploy-aware `hermes update` reconciliation and guarded resolver in a Hermes-owned isolated worktree, publishes the verified result to `origin/<deploy>`, and must not mutate live `HEAD`, rewrite local `main`, rebuild Desktop, or restart services. A retained conflict handoff remains resumable through the same action even when upstream divergence has since reached zero. Preparing/applying **Axiom deploy → Local** stays a separate explicit lifecycle; a prepared local stage blocks upstream sync because publishing a new deploy target would invalidate that artifact.
 
+If deploy resolution and parent validation succeed but the final push fails, the
+handoff advances to `push_pending` instead of returning to conflict resolution.
+Persist the exact full commit ID plus a bounded, redacted Git diagnostic tail,
+retain the worktree, and let the next update retry that exact commit without
+launching the resolver agent again. If the retained HEAD changed, stop safely.
+The CLI must also print a focused fresh-chat command for auth, remote divergence,
+hook rejection, or network diagnosis; it must not auto-nest another agent session.
+
 Electron main serializes sync, prepare, discard, legacy apply, and restart/apply through one update-operation coordinator. Renderer disabled states are only UX; the main-process coordinator is the correctness boundary. Detached preparation must publish its existing `.prepare-lock` ownership before the coordinator releases the launch operation, after which the on-disk stage lock/status remains authoritative. The upstream subprocess has a bounded deadline, terminates its full process tree, rejects nonzero exits even if output contained a success payload, and clears ownership after every completion/failure so explicit retry remains possible.
 
 Upstream reconciliation output is observable while that exclusive operation is still running. Electron owns a bounded, sanitized in-memory snapshot and exposes it through a read-only status handler outside the mutation coordinator; the renderer polls only while `running` is true. Update Control must open the Reconcile CLI output disclosure immediately on Sync, show a waiting placeholder before the first byte, update it as output arrives, survive pane remounts, and retain the final transcript/result after exit.
