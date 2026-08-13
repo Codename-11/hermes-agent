@@ -199,6 +199,7 @@ import {
 import { fetchRemoteProfilesJson } from './remote-profile-auth'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -9759,7 +9760,7 @@ function nextInstanceBounds() {
 // primary: it never overwrites the mainWindow global, doesn't start the backend
 // (the renderer's getConnection() joins the already-running one), and loads the
 // plain renderer URL so the full app renders.
-function createInstanceWindow() {
+function createInstanceWindow(profile = undefined) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -9815,7 +9816,11 @@ function createInstanceWindow() {
   })
 
   attachRendererConsoleCapture(win, 'instance', rememberLog)
-  loadWindowUrl(win, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Instance window')
+  loadWindowUrl(
+    win,
+    buildInstanceWindowUrl({ devServer: DEV_SERVER, profile, rendererIndexPath: resolveRendererIndex() }),
+    'Instance window'
+  )
 
   return win
 }
@@ -10906,8 +10911,8 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openInstance', async () => {
-  createInstanceWindow()
+ipcMain.handle('hermes:window:openInstance', async (_event, profile) => {
+  createInstanceWindow(typeof profile === 'string' ? profile.trim() : undefined)
 
   return { ok: true }
 })

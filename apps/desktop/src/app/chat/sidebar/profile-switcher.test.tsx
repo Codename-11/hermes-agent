@@ -50,6 +50,14 @@ const stores = vi.hoisted(() => {
 })
 
 const newSessionInProfile = vi.hoisted(() => vi.fn())
+const newSessionTabAction = vi.hoisted(() => vi.fn())
+const openNewWindow = vi.hoisted(() => vi.fn())
+
+const newSessionTabActionStore = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof Nanostores
+
+  return atom<((profile?: string) => void) | null>(newSessionTabAction)
+})
 
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: stores.active,
@@ -72,6 +80,9 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: ProfileInfo[]) => profiles
 }))
 
+vi.mock('@/components/pane-shell/tree/store', () => ({ $newSessionTabAction: newSessionTabActionStore }))
+vi.mock('@/store/windows', () => ({ openNewWindow }))
+
 vi.mock('@/hermes', () => ({ getProfileSoul: vi.fn(), updateProfileSoul: vi.fn() }))
 vi.mock('@/store/profile-share', () => ({ runExportProfileFlow: vi.fn(), runImportProfileFlow: vi.fn() }))
 vi.mock('./use-profile-prewarm', () => ({ useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() }) }))
@@ -83,6 +94,8 @@ vi.mock('@/components/chat/code-editor', () => ({ CodeEditor: () => null }))
 afterEach(() => {
   cleanup()
   newSessionInProfile.mockClear()
+  newSessionTabAction.mockClear()
+  openNewWindow.mockClear()
 })
 
 describe('ProfileRail profile visibility and actions', () => {
@@ -97,7 +110,7 @@ describe('ProfileRail profile visibility and actions', () => {
     expect(screen.queryByRole('button', { name: 'hidden-agent' })).toBeNull()
   })
 
-  it('opens a new chat for the right-clicked profile', async () => {
+  it('opens a new chat tab in the current window for the right-clicked profile', async () => {
     render(
       <MemoryRouter>
         <ProfileRail />
@@ -109,6 +122,22 @@ describe('ProfileRail profile visibility and actions', () => {
     fireEvent.contextMenu(icon, { button: 2 })
     fireEvent.click(await screen.findByRole('menuitem', { name: 'New chat' }))
 
-    expect(newSessionInProfile).toHaveBeenCalledWith('visible-agent')
+    expect(newSessionTabAction).toHaveBeenCalledWith('visible-agent')
+    expect(newSessionInProfile).not.toHaveBeenCalled()
+  })
+
+  it('offers a separate new window action for the right-clicked profile', async () => {
+    render(
+      <MemoryRouter>
+        <ProfileRail />
+      </MemoryRouter>
+    )
+
+    const icon = screen.getByRole('button', { name: 'visible-agent' })
+    fireEvent.pointerDown(icon, { button: 2, pointerType: 'mouse' })
+    fireEvent.contextMenu(icon, { button: 2 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New window' }))
+
+    expect(openNewWindow).toHaveBeenCalledWith('visible-agent')
   })
 })

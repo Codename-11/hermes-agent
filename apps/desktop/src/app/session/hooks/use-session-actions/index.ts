@@ -158,7 +158,7 @@ function reconcileAuthoritativeMessages(
 // A no-op for single-profile/local-pooled users (a backend resolves its own launch
 // profile to None). The sticky UI model/effort/fast ride as per-session overrides,
 // never the profile default (that lives in Settings → Model).
-async function desktopSessionCreateParams(cwd: string): Promise<Record<string, unknown>> {
+async function desktopSessionCreateParams(cwd: string, requestedProfile?: null | string): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
   // refreshes to finish; reading atoms afterward would silently create the
@@ -170,7 +170,10 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     provider: $currentProvider.get().trim()
   }
 
-  const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+  const profile = requestedProfile
+    ? normalizeProfileKey(requestedProfile)
+    : ($newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get()))
+
   await ensureGatewayProfile(profile)
 
   return {
@@ -494,14 +497,14 @@ export function useSessionActions({
    *  list (Cursor-style draft tab); it surfaces on the next refresh once the
    *  first message persists a turn. "Open in split" keeps the listed behavior. */
   const openNewSessionTile = useCallback(
-    async (dir: TileDock = 'right', options?: { cwd?: null | string; listed?: boolean }) => {
+    async (dir: TileDock = 'right', options?: { cwd?: null | string; listed?: boolean; profile?: null | string }) => {
       const listed = options?.listed ?? true
 
       try {
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
         // (project scope → configured default).
-        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
+        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim(), options?.profile)
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 

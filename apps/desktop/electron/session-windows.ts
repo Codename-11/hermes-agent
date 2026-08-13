@@ -70,6 +70,23 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
+// Full peer windows normally load the plain renderer URL. A profile-icon
+// opener carries its target before the hash so the new renderer joins that
+// profile immediately instead of inheriting an unrelated last-used profile.
+function buildInstanceWindowUrl({ devServer, profile, rendererIndexPath }: any = {}) {
+  const target = typeof profile === 'string' ? profile.trim() : ''
+
+  if (devServer) {
+    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
+
+    return target ? `${base}/?profile=${encodeURIComponent(target)}#/` : `${base}/`
+  }
+
+  const base = pathToFileURL(rendererIndexPath).toString()
+
+  return target ? `${base}?profile=${encodeURIComponent(target)}#/` : base
+}
+
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app
 // peer, not a compact chat. Cascade each one off its source window's bounds so a
 // new window doesn't land exactly on top of the one it was spawned from. Pure so
@@ -153,6 +170,7 @@ function createSessionWindowRegistry() {
 }
 
 export {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,

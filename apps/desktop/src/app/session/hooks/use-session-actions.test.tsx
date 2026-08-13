@@ -78,7 +78,7 @@ function deferred<T>() {
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'openNewSessionTile' | 'selectSidebarItem' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -496,6 +496,34 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'analyst' })
+  })
+
+  it('routes a profile-icon new tab through the clicked profile explicitly', async () => {
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'runtime-worker-tab', stored_session_id: 'stored-worker-tab' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set(null)
+    render(<Harness onReady={next => (handle = next)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { listed: false, profile: 'worker' })
+    })
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('worker')
+    expect(createParams).toMatchObject({ profile: 'worker', source: 'desktop' })
   })
 
   it('passes the default profile for single-profile users (backend resolves it to launch)', async () => {

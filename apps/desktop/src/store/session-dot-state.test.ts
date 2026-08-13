@@ -61,4 +61,29 @@ describe('profile-scoped status identity', () => {
     expect($sessionDotStateById.get()[sessionStatusKey('default', 'shared-id')]).toBe('working')
     expect($sessionDotStateById.get()[sessionStatusKey('worker', 'shared-id')]).toBeUndefined()
   })
+
+  it('uses the unique stored-session owner when a live state has no profile yet', () => {
+    setSessions([{ id: 'stored-worker', profile: 'worker' } as SessionInfo])
+    publishSessionState('runtime-worker', {
+      ...createClientSessionState('stored-worker'),
+      busy: true
+    })
+
+    expect($sessionDotStateById.get()[sessionStatusKey('worker', 'stored-worker')]).toBe('working')
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 'stored-worker')]).toBeUndefined()
+  })
+
+  it('does not guess an owner when the same stored id exists in multiple profiles', () => {
+    setSessions([
+      { id: 'shared-id', profile: 'default' } as SessionInfo,
+      { id: 'shared-id', profile: 'worker' } as SessionInfo
+    ])
+    publishSessionState('runtime-unknown', {
+      ...createClientSessionState('shared-id'),
+      busy: true
+    })
+
+    expect($sessionDotStateById.get()[sessionStatusKey('worker', 'shared-id')]).toBeUndefined()
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 'shared-id')]).toBeUndefined()
+  })
 })

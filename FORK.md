@@ -888,17 +888,27 @@ Protected behavior:
   sidebar profile filter;
 - profile data, sessions, direct links, explicit search results, ownership tags,
   connection settings, and Manage Profiles remain intact and addressable;
-- right-clicking a named profile rail icon offers **New chat** and calls the
-  existing profile-qualified new-session flow for that icon's profile, regardless
-  of the currently foregrounded profile or All Profiles browse state.
+- right-clicking a named profile rail icon offers **New chat**, which creates an
+  unlisted session tab in the current window and sends the clicked profile
+  explicitly through `session.create`, regardless of the currently foregrounded
+  profile or All Profiles browse state;
+- the same context menu exposes a separate **New window** action. Its optional
+  profile travels through the typed preload/IPC bridge and a pre-hash renderer
+  query so gateway boot adopts the clicked profile before connecting; generic
+  File/keyboard New Window remains unqualified.
 
 Primary files: `apps/desktop/src/store/profile.ts`,
-`apps/desktop/src/app/chat/sidebar/{profile-switcher,index,filter-menu}.tsx`, and
+`apps/desktop/src/app/chat/sidebar/{profile-switcher,index,filter-menu}.tsx`,
+`apps/desktop/src/app/session/hooks/use-session-actions/index.ts`,
+`apps/desktop/src/components/pane-shell/tree/store.ts`,
+`apps/desktop/src/store/windows.ts`, `apps/desktop/electron/{main,preload,
+session-windows}.ts`, and
 `apps/desktop/src/app/settings/profile-visibility-settings.tsx`.
 
 Drop condition: upstream provides equivalent persisted profile visibility controls
-and a profile-icon context action whose new session is explicitly bound to the
-clicked profile, with hidden profiles still recoverable and their data untouched.
+and profile-icon context actions whose current-window tab and peer window are
+explicitly bound to the clicked profile, with hidden profiles still recoverable
+and their data untouched.
 
 ### Desktop project overview, default project, and in-chat live status — local carry pending upstream equivalent
 
@@ -919,16 +929,22 @@ Protected behavior:
   named project replaces rather than stacks with a stale manual-folder default;
 - every busy selected/tiled chat surface renders a persistent **Working…** strip
   above its composer, transitioning to **Waiting for your input** for blocking
-  prompts and clearing when the session settles.
+  prompts and clearing when the session settles;
+- sidebar live-status keys remain profile-qualified even when a stream-seeded
+  runtime publishes before its profile metadata arrives: a missing state profile
+  may adopt the unique owning profile from the authoritative stored-session row,
+  but duplicate IDs across profiles never guess or leak status between profiles.
 
-Primary files: `apps/desktop/src/store/{projects,session}.ts`,
+Primary files: `apps/desktop/src/store/{projects,session,session-states,
+session-dot-state}.ts`,
 `apps/desktop/src/app/chat/{index,live-session-status}.tsx`,
 `apps/desktop/src/app/chat/sidebar/{index,sessions-section}.tsx`, and
 `apps/desktop/src/app/settings/default-project-setting.tsx`.
 
 Drop condition: upstream provides equivalent project-only disclosure, a
 connection/profile-safe saved-project default that governs new-session cwd, and
-a persistent session-scoped live indicator in the main chat surface.
+a persistent session-scoped live indicator in the main chat surface, including
+profile-safe sidebar status while live metadata is still converging.
 
 ### Desktop native OAuth orchestration — local carry pending upstream equivalent
 

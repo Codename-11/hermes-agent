@@ -150,6 +150,15 @@ describe('openNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
+  it('forwards a requested profile to the peer window', async () => {
+    const openWindow = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(undefined, openWindow)
+
+    await openNewWindow('worker')
+
+    expect(openWindow).toHaveBeenCalledWith('worker')
+  })
+
   it('notifies on an ok:false result', async () => {
     installBridge(undefined, vi.fn().mockResolvedValue({ ok: false, error: 'nope' }))
 

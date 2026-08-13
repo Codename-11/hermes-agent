@@ -142,10 +142,10 @@ export async function openSessionInNewWindow(sessionId: string, opts?: { watch?:
 
 // Open a new full-chrome app window — a peer instance of the primary that
 // renders the complete app against the shared backend. No-ops outside Electron.
-export async function openNewWindow(): Promise<void> {
+export async function openNewWindow(profile?: string): Promise<void> {
   if (!canOpenNewWindow()) {
     return
   }
 
-  await runWindowOpen(() => window.hermesDesktop.openWindow(), 'Could not open a new window')
+  await runWindowOpen(() => window.hermesDesktop.openWindow(profile), 'Could not open a new window')
 }

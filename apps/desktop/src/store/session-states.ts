@@ -340,12 +340,37 @@ const storedKeys = (
 ) => {
   const keys = new Set<string>()
 
+  const resolvedProfile = (state: ClientSessionState, runtimeId: string): null | string => {
+    if (state.profile?.trim()) {
+      return state.profile.trim()
+    }
+
+    const storedSessionId = state.storedSessionId ?? runtimeId
+
+    const owners = new Set(
+      sessions
+        .filter(session => sessionMatchesStoredId(session, storedSessionId))
+        .map(session => session.profile?.trim() || 'default')
+    )
+
+    if (owners.size === 1) {
+      return [...owners][0]
+    }
+
+    return owners.size === 0 ? 'default' : null
+  }
+
   for (const [runtimeId, state] of Object.entries(states)) {
     if (!pred(state)) {
       continue
     }
 
-    const profile = state.profile?.trim() || 'default'
+    const profile = resolvedProfile(state, runtimeId)
+
+    if (!profile) {
+      continue
+    }
+
     const scopedSessions = sessions.filter(session => (session.profile?.trim() || 'default') === profile)
 
     for (const alias of lineageAliases(state.storedSessionId ?? runtimeId, scopedSessions)) {

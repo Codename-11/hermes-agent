@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -86,6 +87,17 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', watch: true })
 
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
+})
+
+test('buildInstanceWindowUrl carries a requested profile before the hash route', () => {
+  assert.equal(
+    buildInstanceWindowUrl({ devServer: 'http://localhost:5173', profile: 'worker profile' }),
+    'http://localhost:5173/?profile=worker%20profile#/'
+  )
+})
+
+test('buildInstanceWindowUrl stays plain when no profile is requested', () => {
+  assert.equal(buildInstanceWindowUrl({ devServer: 'http://localhost:5173' }), 'http://localhost:5173/')
 })
 
 test('instanceWindowBounds cascades a new window off its source bounds', () => {

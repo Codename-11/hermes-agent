@@ -23,6 +23,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { CodeEditor } from '@/components/chat/code-editor'
+import { $newSessionTabAction } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
@@ -54,7 +55,6 @@ import {
   $profileScope,
   ALL_PROFILES,
   filterVisibleProfiles,
-  newSessionInProfile,
   normalizeProfileKey,
   refreshActiveProfile,
   selectProfile,
@@ -64,6 +64,7 @@ import {
   sortByProfileOrder
 } from '@/store/profile'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { openNewWindow } from '@/store/windows'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -118,6 +119,7 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const newSessionTabAction = useStore($newSessionTabAction)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -299,7 +301,8 @@ export function ProfileRail() {
                       label={profile.name}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
-                      onNewChat={() => newSessionInProfile(profile.name)}
+                      onNewChat={() => newSessionTabAction?.(profile.name)}
+                      onNewWindow={() => void openNewWindow(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
                       onSelect={() => selectProfile(profile.name)}
@@ -553,6 +556,7 @@ interface ProfileSquareProps {
   onRename: () => void
   onEditSoul: () => void
   onNewChat: () => void
+  onNewWindow: () => void
   onDelete: () => void
 }
 
@@ -574,6 +578,7 @@ function ProfileSquare({
   onDelete,
   onEditSoul,
   onNewChat,
+  onNewWindow,
   onRecolor,
   onRename,
   onSelect
@@ -706,6 +711,10 @@ function ProfileSquare({
           <ContextMenuItem onSelect={onNewChat}>
             <Codicon name="add" size="0.875rem" />
             <span>{p.newChat}</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onNewWindow}>
+            <Codicon name="multiple-windows" size="0.875rem" />
+            <span>{t.sidebar.row.newWindow}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />

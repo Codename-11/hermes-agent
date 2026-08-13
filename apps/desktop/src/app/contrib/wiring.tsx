@@ -951,8 +951,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // the sidebar until its first message persists a turn and a refresh surfaces
   // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
   // empty tabs are fine since none touch the session list).
-  const openNewSessionTab = useCallback(() => {
-    void openNewSessionTile('center', { listed: false })
+  const openNewSessionTab = useCallback((profile?: string) => {
+    void openNewSessionTile('center', { listed: false, profile })
   }, [openNewSessionTile])
 
   // Single global listener for every rebindable hotkey plus the on-screen

@@ -583,7 +583,7 @@ export function treePanesWithPrefix(prefix: string): string[] {
  *  empty sessions). The app wiring registers the concrete action so this
  *  generic renderer stays session-agnostic; null until wired (the "+" hides).
  *  An atom so the strip re-renders when the action becomes available. */
-export const $newSessionTabAction = atom<(() => void) | null>(null)
+export const $newSessionTabAction = atom<((profile?: string) => void) | null>(null)
 
 /**
  * Keyboard slots (⌘1…⌘9, ⌃Tab) must index the SAME tabs the strip paints —
