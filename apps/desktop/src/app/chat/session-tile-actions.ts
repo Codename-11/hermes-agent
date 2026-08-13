@@ -23,6 +23,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
 import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
 import { $connection, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
@@ -71,21 +72,36 @@ export function listTileSessionRow(deps: {
   cwd?: string
   model?: string
   preview: string
+  profile: string
   runtimeId: string
   sessions: readonly SessionInfo[]
   storedSessionId: string
 }): boolean {
   const preview = deps.preview.trim()
 
-  if (!preview || deps.sessions.some(session => sessionMatchesStoredId(session, deps.storedSessionId))) {
+  if (
+    !preview ||
+    deps.sessions.some(
+      session =>
+        sessionMatchesStoredId(session, deps.storedSessionId) &&
+        normalizeProfileKey(session.profile) === normalizeProfileKey(deps.profile)
+    )
+  ) {
     return false
   }
 
   upsertOptimisticSession(
-    { info: { cwd: deps.cwd, model: deps.model }, session_id: deps.runtimeId, stored_session_id: deps.storedSessionId },
+    {
+      info: { cwd: deps.cwd, model: deps.model },
+      session_id: deps.runtimeId,
+      stored_session_id: deps.storedSessionId
+    },
     deps.storedSessionId,
     null,
-    preview
+    preview,
+    null,
+    undefined,
+    deps.profile
   )
   broadcastSessionsChanged()
 
@@ -93,15 +109,24 @@ export function listTileSessionRow(deps: {
 }
 
 interface SessionTileActionsArgs {
+  profile: string
   runtimeId: string
   scope: ComposerScope
   storedSessionId: string
 }
 
-export function useSessionTileActions({ runtimeId, scope, storedSessionId }: SessionTileActionsArgs) {
+export function useSessionTileActions({ profile, runtimeId, scope, storedSessionId }: SessionTileActionsArgs) {
   const { t } = useI18n()
   const copy = t.desktop
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway: requestActiveGateway } = useGatewayRequest()
+  const requestGateway = useCallback(
+    async <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+      await ensureGatewayProfile(profile)
+
+      return requestActiveGateway<T>(method, params, timeoutMs, signal)
+    },
+    [profile, requestActiveGateway]
+  )
 
   const runtimeIdRef = useRef(runtimeId)
   runtimeIdRef.current = runtimeId
@@ -139,19 +164,23 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // A ⌘T tab's session is unlisted until its first turn persists — seed the
   // row from the user's first message so the tab and sidebar name it right
   // away (see listTileSessionRow).
-  const listTileSession = useCallback((preview: string) => {
-    const runtimeId = runtimeIdRef.current
-    const state = $sessionStates.get()[runtimeId]
+  const listTileSession = useCallback(
+    (preview: string) => {
+      const runtimeId = runtimeIdRef.current
+      const state = $sessionStates.get()[runtimeId]
 
-    listTileSessionRow({
-      cwd: state?.cwd,
-      model: state?.model,
-      preview,
-      runtimeId,
-      sessions: $sessions.get(),
-      storedSessionId: storedIdRef.current
-    })
-  }, [])
+      listTileSessionRow({
+        cwd: state?.cwd,
+        model: state?.model,
+        preview,
+        profile,
+        runtimeId,
+        sessions: $sessions.get(),
+        storedSessionId: storedIdRef.current
+      })
+    },
+    [profile]
+  )
 
   // Tile-side attachment staging: same upload rules as the primary submit
   // (skip synced/pathless, byte-upload files+images), against the tile scope.
@@ -245,14 +274,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
-        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
+        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current, profile)
 
         return true
       }
 
       return await submitPromptText(rawText, options)
     },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
+    [listTileSession, profile, scope.attachments.$attachments, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {

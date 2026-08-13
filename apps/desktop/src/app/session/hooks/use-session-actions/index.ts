@@ -61,14 +61,16 @@ import {
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
+  findSessionTile,
   openSessionTile,
   patchSessionTile,
   publishSessionState,
+  sessionTilePaneId,
   type TileDock
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -158,7 +160,10 @@ function reconcileAuthoritativeMessages(
 // A no-op for single-profile/local-pooled users (a backend resolves its own launch
 // profile to None). The sticky UI model/effort/fast ride as per-session overrides,
 // never the profile default (that lives in Settings → Model).
-async function desktopSessionCreateParams(cwd: string, requestedProfile?: null | string): Promise<Record<string, unknown>> {
+async function desktopSessionCreateParams(
+  cwd: string,
+  requestedProfile?: null | string
+): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
   // refreshes to finish; reading atoms afterward would silently create the
@@ -501,10 +506,15 @@ export function useSessionActions({
       const listed = options?.listed ?? true
 
       try {
+        await ensureGatewayProfile(options?.profile)
+        const ownerProfile = normalizeProfileKey(options?.profile ?? $activeGatewayProfile.get())
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
         // (project scope → configured default).
-        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim(), options?.profile)
+        const params = await desktopSessionCreateParams(
+          (options?.cwd || resolveNewSessionCwd()).trim(),
+          options?.profile
+        )
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 
@@ -532,17 +542,21 @@ export function useSessionActions({
         // Project "+" created a session while the main chat was occupied
         // (#76696). Split/side tiles deliberately stay isolated.
         const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false })
-        updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
+        updateSessionState(
+          created.session_id,
+          state => ({ ...state, ...(runtimeInfo ?? {}), profile: ownerProfile }),
+          stored
+        )
 
-        openSessionTile(stored, dir)
-        patchSessionTile(stored, { runtimeId: created.session_id })
+        openSessionTile(stored, dir, undefined, undefined, ownerProfile)
+        patchSessionTile(stored, { runtimeId: created.session_id }, ownerProfile)
 
         if (dir === 'center' && runtimeInfo?.cwd) {
           setCurrentCwdTransient(runtimeInfo.cwd)
           setWorkspaceCwdOwner(stored)
         }
 
-        revealTreePane(`session-tile:${stored}`)
+        revealTreePane(sessionTilePaneId(ownerProfile, stored))
 
         if (listed) {
           broadcastSessionsChanged()
@@ -603,7 +617,7 @@ export function useSessionActions({
       // before the selection listener homes focus) so the tile is gone the same tick
       // the route takes over; the warm cache/runtime binding survives for main to reuse.
       if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
-        closeSessionTile(storedSessionId)
+        closeSessionTile(storedSessionId, requestedProfileKey ?? $activeGatewayProfile.get())
       }
 
       // Optimistically clear any prior resume-failure latch for this session:
@@ -912,7 +926,8 @@ export function useSessionActions({
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
 
-      const stored = storedForProfile ?? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const stored =
+        storedForProfile ?? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId)
 
@@ -1290,9 +1305,10 @@ export function useSessionActions({
         // chat exactly where it is. Prime the tile with the create runtime so it
         // skips a redundant resume. Do NOT select it as the primary session
         // first — openSessionTile no-ops when the id is already primary.
-        openSessionTile(routedSessionId, 'center')
-        patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
-        revealTreePane(`session-tile:${routedSessionId}`)
+        const branchProfile = normalizeProfileKey($activeGatewayProfile.get())
+        openSessionTile(routedSessionId, 'center', undefined, undefined, branchProfile)
+        patchSessionTile(routedSessionId, { runtimeId: branched.session_id }, branchProfile)
+        revealTreePane(sessionTilePaneId(branchProfile, routedSessionId))
         broadcastSessionsChanged()
 
         return true
@@ -1367,10 +1383,14 @@ export function useSessionActions({
 
       // Right-clicking a session outside the paginated sidebar window is a cache
       // miss: resolve it (cache → active backend → cross-profile) so the branch
-      // is created on the parent's OWNING profile, not whichever is live (#67603).
       const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
-        (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
+        $sessions
+          .get()
+          .find(
+            session =>
+              sessionMatchesStoredId(session, storedSessionId) &&
+              (sessionProfile == null || normalizeProfileKey(session.profile) === normalizeProfileKey(sessionProfile))
+          ) ?? (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
 
       const profile = sessionProfile ?? stored?.profile
 
@@ -1396,11 +1416,19 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, sessionProfile?: string) => {
       clearNotifications()
 
-      const removed = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const wasSelected = selectedStoredSessionId === storedSessionId
+      const ownsTarget = (session: SessionInfo) =>
+        sessionMatchesStoredId(session, storedSessionId) &&
+        (sessionProfile == null || normalizeProfileKey(session.profile) === normalizeProfileKey(sessionProfile))
+      const removed = $sessions.get().find(ownsTarget)
+      const primaryProfile = activeSessionId
+        ? sessionStateByRuntimeIdRef.current.get(activeSessionId)?.profile
+        : undefined
+      const wasSelected =
+        selectedStoredSessionId === storedSessionId &&
+        (sessionProfile == null || normalizeProfileKey(primaryProfile) === normalizeProfileKey(sessionProfile))
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
@@ -1409,7 +1437,7 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
       const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
 
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      setSessions(prev => prev.filter(session => !ownsTarget(session)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep. Pin the tombstone against the projects.tree prune while
@@ -1439,8 +1467,8 @@ export function useSessionActions({
         // A tiled copy of this session must not outlive it: collapse the pane
         // and evict its mirrored runtime state so nothing submits to (or renders)
         // a deleted session.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        const tiledRuntimeId = findSessionTile(storedSessionId, sessionProfile ?? removed?.profile)?.runtimeId
+        closeSessionTile(storedSessionId, sessionProfile ?? removed?.profile)
 
         if (tiledRuntimeId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -1497,11 +1525,19 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, sessionProfile?: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const wasSelected = selectedStoredSessionId === storedSessionId
+      const ownsTarget = (session: SessionInfo) =>
+        sessionMatchesStoredId(session, storedSessionId) &&
+        (sessionProfile == null || normalizeProfileKey(session.profile) === normalizeProfileKey(sessionProfile))
+      const archived = $sessions.get().find(ownsTarget)
+      const primaryProfile = activeSessionId
+        ? sessionStateByRuntimeIdRef.current.get(activeSessionId)?.profile
+        : undefined
+      const wasSelected =
+        selectedStoredSessionId === storedSessionId &&
+        (sessionProfile == null || normalizeProfileKey(primaryProfile) === normalizeProfileKey(sessionProfile))
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -1509,7 +1545,7 @@ export function useSessionActions({
       const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      setSessions(prev => prev.filter(session => !ownsTarget(session)))
       tombstoneSessions(archivedIds)
       beginSessionMutation(archivedIds)
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
@@ -1521,8 +1557,8 @@ export function useSessionActions({
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
         // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        const tiledRuntimeId = findSessionTile(storedSessionId, sessionProfile ?? archived?.profile)?.runtimeId
+        closeSessionTile(storedSessionId, sessionProfile ?? archived?.profile)
 
         if (tiledRuntimeId) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
@@ -1533,7 +1569,7 @@ export function useSessionActions({
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
+          setSessions(prev => [archived, ...prev.filter(session => !ownsTarget(session))])
         }
 
         untombstoneSessions(archivedIds)

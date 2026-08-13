@@ -34,9 +34,12 @@ function loadEncodedProfiles(key: string): Record<string, string> {
   )
 }
 
-/** A writable atom whose visible value follows the active Desktop profile.
- * Values are kept in one profile map so switching is synchronous and does not
- * briefly expose another profile's workspace state. */
+/** A writable atom whose visible value belongs to this window's startup
+ * profile. Gateway profile activation is a request-routing concern: changing
+ * it must not replace the window's layout, tabs, or surrounding workspace.
+ *
+ * The full per-profile map remains available through getForProfile /
+ * setForProfile for profile bundle import/export. */
 export function profilePersistentAtom<T>({
   autoPersist = true,
   codec,
@@ -66,9 +69,9 @@ export function profilePersistentAtom<T>({
     }
   }
 
-  let activeProfile = normalizeProfileKey($activeGatewayProfile.get())
-  let switching = false
-  const $value = atom<T>(decode(activeProfile))
+  const windowProfile = normalizeProfileKey($activeGatewayProfile.get())
+  let settingExplicitly = false
+  const $value = atom<T>(decode(windowProfile))
 
   const persistForProfile = (profile: string, value: T) => {
     const encoded = codec.encode(value)
@@ -87,38 +90,25 @@ export function profilePersistentAtom<T>({
   }
 
   const persistValue = (value: T) => {
-    if (autoPersist && !switching) {
-      persistForProfile(activeProfile, value)
+    if (autoPersist && !settingExplicitly) {
+      persistForProfile(windowProfile, value)
     }
   }
 
   $value.listen(persistValue)
 
-  $activeGatewayProfile.listen(profile => {
-    const nextProfile = normalizeProfileKey(profile)
-
-    if (nextProfile === activeProfile) {
-      return
-    }
-
-    activeProfile = nextProfile
-    switching = true
-    $value.set(decode(activeProfile))
-    switching = false
-  })
-
   return Object.assign($value, {
     getForProfile: (profile: string) => decode(normalizeProfileKey(profile)),
-    persistCurrent: () => persistForProfile(activeProfile, $value.get()),
+    persistCurrent: () => persistForProfile(windowProfile, $value.get()),
     setForProfile: (profile: string, value: T) => {
       const key = normalizeProfileKey(profile)
 
       persistForProfile(key, value)
 
-      if (key === activeProfile) {
-        switching = true
+      if (key === windowProfile) {
+        settingExplicitly = true
         $value.set(value)
-        switching = false
+        settingExplicitly = false
       }
     }
   })

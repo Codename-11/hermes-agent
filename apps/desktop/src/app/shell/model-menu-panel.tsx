@@ -36,6 +36,7 @@ export interface ModelSelection {
 }
 
 interface ModelMenuPanelProps {
+  catalogRequestGateway?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   gateway?: HermesGateway
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
   profile?: string
@@ -48,7 +49,13 @@ interface ModelMenuPanelProps {
  * surface's session, remember the pick as a global preset, keep the optimistic
  * stores honest, and roll back on a failed gateway write.
  */
-export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', requestGateway }: ModelMenuPanelProps) {
+export function ModelMenuPanel({
+  catalogRequestGateway,
+  gateway,
+  onSelectModel,
+  profile = 'default',
+  requestGateway
+}: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const [refreshing, setRefreshing] = useState(false)
@@ -73,7 +80,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId),
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId: activeSessionId })
+    queryFn: (): Promise<ModelOptionsResponse> =>
+      requestModelOptions({ gateway, requestGateway: catalogRequestGateway, sessionId: activeSessionId }),
+    retry: 2
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
@@ -95,7 +104,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     try {
       const queryKey = modelOptionsQueryKey(profile, activeSessionId)
 
-      const next = await requestModelOptions({ gateway, refresh: true, sessionId: activeSessionId })
+      const next = await requestModelOptions({
+        gateway,
+        refresh: true,
+        requestGateway: catalogRequestGateway,
+        sessionId: activeSessionId
+      })
 
       queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
     } catch {
@@ -238,6 +252,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       gateway={gateway}
       includeMoa
       profile={profile}
+      requestGateway={catalogRequestGateway}
       sessionId={activeSessionId}
     />
   )

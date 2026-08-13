@@ -159,6 +159,7 @@ interface SessionEntry {
   git_branch?: null | string
   id: string
   preview?: string
+  profile?: string
   title: string
 }
 
@@ -379,6 +380,7 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
   git_branch: session.git_branch ?? null,
   id: session.id,
   preview: session.preview ?? undefined,
+  profile: session.profile,
   title: sessionTitle(session)
 })
 
@@ -647,8 +649,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // ⌘/⌃-select / ⌘-Enter = force a new tab; ⇧⌘ = own window. Same door as the
   // sidebar, minus the sidebar's licence to spend main.
   const goSession = useCallback(
-    (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
-      openSession(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
+    (sessionId: string, profile?: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+      openSession(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'), profile)
     },
     [navigate]
   )
@@ -1079,7 +1081,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             ...(session.git_branch ? [session.git_branch] : [])
           ],
           label: session.title,
-          runWithEvent: goSession(session.id)
+          runWithEvent: goSession(session.id, session.profile)
         }))
       })
     }

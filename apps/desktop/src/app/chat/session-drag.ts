@@ -49,7 +49,7 @@ import {
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
-import { openSessionTile, type TileDock } from '@/store/session-states'
+import { openSessionTile, sessionTilePaneId, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './composer/inline-refs'
@@ -163,7 +163,7 @@ export function startSessionDrag(
       if (strip) {
         // Exclude the tile's OWN tab from the slots so re-dropping it in its
         // home strip reorders cleanly (a no-op for a sidebar-row drag).
-        const stack = slotBefore(strip.slots, x, `session-tile:${payload.id}`)
+        const stack = slotBefore(strip.slots, x, sessionTilePaneId(payload.profile, payload.id))
         split = { anchor: host.pane, before: stack.before, pos: 'center' }
         link = null
 
@@ -193,11 +193,11 @@ export function startSessionDrag(
 
     onCommit() {
       if (split) {
-        openSessionTile(payload.id, split.pos, split.anchor, split.before)
+        openSessionTile(payload.id, split.pos, split.anchor, split.before, payload.profile)
         // A tile for this session may already exist (openSessionTile is
         // idempotent — e.g. persisted from an earlier run): a drop must never
         // feel dead, so front/unhide/un-dismiss it either way.
-        revealTreePane(`session-tile:${payload.id}`)
+        revealTreePane(sessionTilePaneId(payload.profile, payload.id))
       } else if (link) {
         // The "link to chat" drop: an @session chip in that surface's composer.
         requestComposerInsertRefs([sessionInlineRef(payload)], { target: link })

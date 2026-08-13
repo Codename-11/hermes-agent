@@ -26,6 +26,7 @@ import { resolveStoredSession } from '@/app/session/hooks/use-session-actions/ut
 import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupHeaderHidden } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
@@ -36,7 +37,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
@@ -50,10 +51,15 @@ import {
   $sessionStates,
   $sessionTiles,
   closeSessionTile,
+  decodeSessionTileKey,
   discardSessionTile,
   patchSessionTile,
   type SessionTile,
-  sessionTileDelegate
+  sessionTileDelegate,
+  sessionTileKey,
+  sessionTileMatches,
+  sessionTilePaneId,
+  TILE_PANE_PREFIX
 } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -75,10 +81,10 @@ const NO_MESSAGES: ChatMessage[] = []
 
 /** The tile's SessionView: the same atom shape the primary chat renders
  *  from, computed from this session's slice of `$sessionStates`. */
-function buildTileView(storedSessionId: string): SessionView {
+function buildTileView(profile: string, storedSessionId: string): SessionView {
   const $runtimeId = computed(
     $sessionTiles,
-    tiles => tiles.find(t => t.storedSessionId === storedSessionId)?.runtimeId ?? null
+    tiles => tiles.find(tile => sessionTileMatches(tile, storedSessionId, profile))?.runtimeId ?? null
   )
 
   const $state = computed([$runtimeId, $sessionStates], (runtimeId, states) =>
@@ -97,6 +103,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $messages,
     $messagesEmpty: computed($messages, messages => messages.length === 0),
     $model: computed($state, state => state?.model ?? ''),
+    $profile: atom(normalizeProfileKey(profile)),
     $provider: computed($state, state => state?.provider ?? ''),
     $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
     $runtimeId,
@@ -113,18 +120,27 @@ const tileTranscribeAudio = async (audio: Blob) =>
   (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
 
 function TileChat({
+  profile,
   runtimeId,
   storedSessionId,
   view
 }: {
+  profile: string
   runtimeId: string
   storedSessionId: string
   view: SessionView
 }) {
   const { gateway, requestGateway } = useGatewayRequest()
+  const requestOwnerGateway = useCallback(
+    async <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+      await ensureGatewayProfile(profile)
+
+      return requestGateway<T>(method, params, timeoutMs, signal)
+    },
+    [profile, requestGateway]
+  )
   const queryClient = useQueryClient()
-  const { selectModel } = useModelControls({ queryClient, requestGateway })
-  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const { selectModel } = useModelControls({ queryClient, requestGateway: requestOwnerGateway })
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
 
@@ -136,19 +152,19 @@ function TileChat({
       $awaitingInput: sessionAwaitingInput(runtimeId),
       $messages: view.$messages,
       attachments,
-      target: `tile:${storedSessionId}`
+      target: `tile:${sessionTileKey(profile, storedSessionId)}`
     }),
-    [attachments, runtimeId, storedSessionId, view.$messages]
+    [attachments, profile, runtimeId, storedSessionId, view.$messages]
   )
 
-  const actions = useSessionTileActions({ runtimeId, scope, storedSessionId })
+  const actions = useSessionTileActions({ profile, runtimeId, scope, storedSessionId })
 
   // The same attach/pick/paste/drop pipeline the primary composer uses,
   // pointed at this tile's chips + session.
   const composer = useComposerActions({
     activeSessionId: runtimeId,
     currentCwd: cwd,
-    requestGateway,
+    requestGateway: requestOwnerGateway,
     scope: { add: attachments.add, remove: attachments.remove, target: scope.target, update: attachments.update }
   })
 
@@ -173,7 +189,10 @@ function TileChat({
   const onPickFolders = useCallback(() => void pickContextPaths('folder'), [pickContextPaths])
   const onPickImages = useCallback(() => void pickImages(), [pickImages])
   const onRemoveAttachment = useCallback((id: string) => void removeAttachment(id), [removeAttachment])
-  const onRetryResume = useCallback(() => patchSessionTile(storedSessionId, { error: undefined }), [storedSessionId])
+  const onRetryResume = useCallback(
+    () => patchSessionTile(storedSessionId, { error: undefined }, profile),
+    [profile, storedSessionId]
+  )
 
   // Per-tile model menu — rendered under this tile's SessionView so the pill
   // + switch target THIS runtime, not the primary (which may be mid-turn).
@@ -181,13 +200,14 @@ function TileChat({
     () =>
       gatewayOpen ? (
         <ModelMenuPanel
+          catalogRequestGateway={requestOwnerGateway}
           gateway={gateway || undefined}
           onSelectModel={selectModel}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
+          profile={profile}
+          requestGateway={requestOwnerGateway}
         />
       ) : null,
-    [activeGatewayProfile, gateway, gatewayOpen, requestGateway, selectModel]
+    [gateway, gatewayOpen, profile, requestOwnerGateway, selectModel]
   )
 
   return (
@@ -224,28 +244,49 @@ function TileChat({
   )
 }
 
-export function SessionTilePane({ storedSessionId }: { storedSessionId: string }) {
+export function SessionTilePane({ tileKey }: { tileKey: string }) {
+  const identity = useMemo(() => decodeSessionTileKey(tileKey), [tileKey])
   const tiles = useStore($sessionTiles)
-  const tile = tiles.find(t => t.storedSessionId === storedSessionId)
-  const runtimeId = tile?.runtimeId ?? null
+  const visible = usePaneVisible()
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayOpen = useStore($gatewayState) === 'open'
   const resumingRef = useRef(false)
-  const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
+  const profile = identity?.profile ?? 'default'
+  const storedSessionId = identity?.storedSessionId ?? ''
+  const tile = identity ? tiles.find(candidate => sessionTileMatches(candidate, storedSessionId, profile)) : undefined
+  const runtimeId = tile?.runtimeId ?? null
+  const ownerGatewayOpen =
+    visible && normalizeProfileKey(activeGatewayProfile) === normalizeProfileKey(profile) && gatewayOpen
+  const view = useMemo(() => buildTileView(profile, storedSessionId), [profile, storedSessionId])
 
-  // A tab-strip "+"/⌘T tab is created UNLISTED — its session stays out of
-  // $sessions (no sidebar clutter) until it's actually used, so the tab shows
-  // "New session". The moment this tile has a message, pull its row into
-  // $sessions via the lightweight by-id lookup so the tab (and a sidebar row)
-  // resolve the real title. `resolveStoredSession` no-ops when it's already
-  // listed, and 404s harmlessly for an in-memory draft that hasn't persisted a
-  // turn yet — so we retry across that brief persist lag and stop as soon as it
-  // lands (a global turn-complete refresh may beat us to it).
+  const activateOwner = useCallback(() => {
+    if (identity) {
+      void ensureGatewayProfile(profile)
+    }
+  }, [identity, profile])
+
+  // Only a pane becoming visible activates its owner. Keep-alive mounted hidden
+  // tabs do not subscribe to profile changes and therefore cannot create a
+  // profile-switch loop between split/tab surfaces.
+  useEffect(() => {
+    if (visible) {
+      activateOwner()
+    }
+  }, [activateOwner, visible])
+
   const hasMessages = useStore(view.$messagesEmpty) === false
 
   useEffect(() => {
-    const alreadyListed = () => $sessions.get().some(s => sessionMatchesStoredId(s, storedSessionId))
+    const alreadyListed = () =>
+      $sessions
+        .get()
+        .some(
+          session =>
+            sessionMatchesStoredId(session, storedSessionId) &&
+            normalizeProfileKey(session.profile) === normalizeProfileKey(profile)
+        )
 
-    if (!runtimeId || !hasMessages || alreadyListed()) {
+    if (!ownerGatewayOpen || !runtimeId || !hasMessages || alreadyListed()) {
       return
     }
 
@@ -257,7 +298,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         return
       }
 
-      void resolveStoredSession(storedSessionId)
+      void resolveStoredSession(storedSessionId, profile)
         .then(resolved => {
           if (cancelled || resolved || remaining <= 0) {
             return
@@ -277,15 +318,11 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         window.clearTimeout(timer)
       }
     }
-  }, [hasMessages, runtimeId, storedSessionId])
+  }, [hasMessages, ownerGatewayOpen, profile, runtimeId, storedSessionId])
 
-  // Same gating as the primary's route resume (use-route-resume): never fire
-  // session.resume before the gateway is OPEN. Persisted tiles mount at boot
-  // while it's still connecting — an ungated resume rejected there and
-  // latched every restored tile into the error card.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  // eslint-disable-next-line no-restricted-syntax -- process-local in-flight lock, not mirrored atom state
   useEffect(() => {
-    if (!gatewayOpen || runtimeId || tile?.error || resumingRef.current) {
+    if (!ownerGatewayOpen || runtimeId || tile?.error || resumingRef.current || !identity) {
       return
     }
 
@@ -298,61 +335,61 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     resumingRef.current = true
 
     delegate
-      .resumeTile(storedSessionId)
-      .then(id => patchSessionTile(storedSessionId, { error: undefined, runtimeId: id }))
+      .resumeTile(storedSessionId, profile)
+      .then(id => patchSessionTile(storedSessionId, { error: undefined, runtimeId: id }, profile))
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
 
-        // A gone session (404 / "Session not found") is terminal — a stale or
-        // cross-profile persisted tile. Discard it instead of latching an error
-        // that re-retries on every reconnect (the "Session not found" spam).
         if (/session not found|\b404\b/i.test(message)) {
-          discardSessionTile(storedSessionId)
+          discardSessionTile(storedSessionId, profile)
         } else {
-          patchSessionTile(storedSessionId, { error: message })
+          patchSessionTile(storedSessionId, { error: message }, profile)
         }
       })
       .finally(() => {
         resumingRef.current = false
       })
-  }, [gatewayOpen, runtimeId, storedSessionId, tile?.error])
+  }, [identity, ownerGatewayOpen, profile, runtimeId, storedSessionId, tile?.error])
 
-  // The gateway (re)opening invalidates any latched error — it likely came
-  // from a not-yet-open gateway or the previous connection. Clearing it
-  // retriggers the resume effect: one bounded auto-retry per (re)connect,
-  // mirroring the primary path's became-open resync.
   useEffect(() => {
-    if (gatewayOpen && tile?.error) {
-      patchSessionTile(storedSessionId, { error: undefined })
+    if (ownerGatewayOpen && tile?.error) {
+      patchSessionTile(storedSessionId, { error: undefined }, profile)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gatewayOpen, storedSessionId])
+  }, [ownerGatewayOpen, profile, storedSessionId, tile?.error])
+
+  let content: React.ReactNode
 
   if (tile?.error) {
-    return (
+    content = (
       <div className="grid h-full place-items-center p-4">
         <div className="max-w-[24rem] space-y-2 text-center font-mono text-[11px]">
-          <div className="text-(--ui-danger,#f87171)">Couldn't open this session</div>
+          <div className="text-(--ui-danger,#f87171)">Could not open this session</div>
           <div className="break-words text-(--ui-text-quaternary)">{tile.error}</div>
-          <Button onClick={() => patchSessionTile(storedSessionId, { error: undefined })} size="sm" variant="outline">
+          <Button
+            onClick={() => patchSessionTile(storedSessionId, { error: undefined }, profile)}
+            size="sm"
+            variant="outline"
+          >
             Retry
           </Button>
         </div>
       </div>
     )
-  }
-
-  if (!runtimeId) {
-    // The SAME session loader the primary thread shows (Thread's
-    // loading === 'session' branch) — one loading language everywhere.
-    return (
+  } else if (!runtimeId) {
+    content = (
       <div className="relative h-full">
         <CenteredThreadSpinner />
       </div>
     )
+  } else {
+    content = <TileChat profile={profile} runtimeId={runtimeId} storedSessionId={storedSessionId} view={view} />
   }
 
-  return <TileChat runtimeId={runtimeId} storedSessionId={storedSessionId} view={view} />
+  return (
+    <div className="h-full" onFocusCapture={activateOwner} onPointerDownCapture={activateOwner}>
+      {content}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -364,63 +401,60 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
  *  the paginated recents page, so it has no `$sessions` row at all until new
  *  activity lands it there — resolving through the tree keeps its tab titled
  *  and tinted instead of a grey "Session" placeholder. */
-export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
-  const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
+export function tileStoredRow(storedSessionId: string, profile: string): SessionInfo | undefined {
+  const match = (session: SessionInfo) =>
+    sessionMatchesStoredId(session, storedSessionId) &&
+    normalizeProfileKey(session.profile) === normalizeProfileKey(profile)
 
   return (
     $sessions.get().find(match) ??
     $projectTree
       .get()
-      .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
+      .flatMap(project => [
+        ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions)),
+        ...(project.previewSessions ?? [])
+      ])
       .find(match)
   )
 }
 
-/** The tab's REGISTERED name. Deliberately the bare placeholder for a draft
- *  rather than its live composer title (`tabTitle` renders that): re-registering
- *  per keystroke would re-render the strip, and holding the draft's text here
- *  would let the registered name already match the row that lands on send —
- *  skipping the re-register that hands the tab back to this string. */
-function tileTitle(storedSessionId: string): string {
-  const stored = tileStoredRow(storedSessionId)
+const tileIdentity = (key: string) => decodeSessionTileKey(key) ?? { profile: 'default', storedSessionId: key }
+
+function tileTitle(key: string): string {
+  const identity = tileIdentity(key)
+  const stored = tileStoredRow(identity.storedSessionId, identity.profile)
 
   return stored ? sessionTitle(stored) : NEW_SESSION_TITLE
 }
 
-/** The `@session` link payload for a tile tab drag — id + owning profile + title.
- *  Resolved at drag time, so an unsent tab drags under its draft name. */
-function tileDragPayload(storedSessionId: string): SessionDragPayload {
-  const stored = tileStoredRow(storedSessionId)
-  const title = stored ? sessionTitle(stored) : draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
+function tileDragPayload(key: string): SessionDragPayload {
+  const identity = tileIdentity(key)
+  const stored = tileStoredRow(identity.storedSessionId, identity.profile)
+  const title = stored ? sessionTitle(stored) : draftTitleFor(key) || NEW_SESSION_TITLE
 
-  return { id: storedSessionId, profile: stored?.profile ?? '', title }
+  return { id: identity.storedSessionId, profile: identity.profile, title }
 }
 
-// ---------------------------------------------------------------------------
-// Close confirmation — a BUSY tab (streaming, or blocked on clarify/approval
-// input) doesn't close silently.
-// ---------------------------------------------------------------------------
-
-/** Stored id awaiting close confirmation (null = no dialog). */
+// Qualified tile key awaiting close confirmation (null = no dialog).
 const $confirmCloseTile = atom<null | string>(null)
 
-/** The tile closer, gated: a quiet session closes immediately; a busy or
- *  input-blocked one asks first. One state read — the tile's runtime slice. */
-export function requestCloseSessionTile(storedSessionId: string): void {
-  const runtimeId = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)?.runtimeId
-  const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
+export function requestCloseSessionTile(key: string): void {
+  const identity = tileIdentity(key)
+  const tile = $sessionTiles
+    .get()
+    .find(candidate => sessionTileMatches(candidate, identity.storedSessionId, identity.profile))
+  const state = tile?.runtimeId ? $sessionStates.get()[tile.runtimeId] : undefined
 
   if (state?.busy || state?.awaitingResponse || state?.needsInput) {
-    $confirmCloseTile.set(storedSessionId)
+    $confirmCloseTile.set(key)
   } else {
-    closeSessionTile(storedSessionId)
+    closeSessionTile(identity.storedSessionId, identity.profile)
   }
 }
 
-/** Mounted once at the shell root: the "Close running tab?" confirmation. */
 export function SessionTileCloseConfirm() {
   const { t } = useI18n()
-  const storedSessionId = useStore($confirmCloseTile)
+  const key = useStore($confirmCloseTile)
 
   return (
     <ConfirmDialog
@@ -429,44 +463,33 @@ export function SessionTileCloseConfirm() {
       destructive
       onClose={() => $confirmCloseTile.set(null)}
       onConfirm={() => {
-        if (storedSessionId) {
-          closeSessionTile(storedSessionId)
+        if (key) {
+          const identity = tileIdentity(key)
+          closeSessionTile(identity.storedSessionId, identity.profile)
         }
       }}
-      open={storedSessionId !== null}
+      open={key !== null}
       title={t.zones.closeRunningTitle}
     />
   )
 }
 
-/** Layout reset → every session tile collapses into the MAIN zone as a tab
- *  after the workspace (the primary session stays the first tab), the "smart"
- *  reset: N scattered tiles become one tab bar over the chat instead of
- *  re-docking to their old edges.
- *
- *  Runs BEFORE generic adoption (see registerLayoutResetHandler) — the tiles
- *  aren't in the fresh tree yet, so each `moveTreePane` ADDS the tile into the
- *  workspace group as a tab (append). The main group id is re-read each pass
- *  because appending returns a new tree. */
 export function stackSessionTilesIntoMain(): void {
   for (const tile of $sessionTiles.get()) {
     const tree = $layoutTree.get()
     const mainGroup = tree ? findGroupOfPane(tree, 'workspace')?.id : null
 
     if (mainGroup) {
-      moveTreePane(`session-tile:${tile.storedSessionId}`, { groupId: mainGroup, pos: 'center' })
+      moveTreePane(sessionTilePaneId(tile.profile, tile.storedSessionId), { groupId: mainGroup, pos: 'center' })
     }
   }
 }
 
-/** The three scalars the tab menu actually renders, derived from the stored
- *  row. Subscribing to `$sessions` + `$projectTree` wholesale re-rendered
- *  every tab's menu wrapper on ANY session-list or tree churn (polls, title
- *  updates in other sessions) — for a context menu that's almost never open.
- *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
- *  the derived values change. */
-function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; title: string } {
-  const cache = useRef<{ key: string; value: { pinId: string; profile?: string; title: string } } | null>(null)
+function useTileMenuRow(
+  storedSessionId: string,
+  ownerProfile?: string
+): { pinId: string; profile: string; title: string } {
+  const cache = useRef<{ key: string; value: { pinId: string; profile: string; title: string } } | null>(null)
 
   const subscribe = useCallback((onChange: () => void) => {
     const offSessions = $sessions.listen(onChange)
@@ -479,11 +502,11 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
   }, [])
 
   return useSyncExternalStore(subscribe, () => {
-    const stored = tileStoredRow(storedSessionId)
+    const profile = normalizeProfileKey(ownerProfile ?? $activeGatewayProfile.get())
+    const stored = tileStoredRow(storedSessionId, profile)
     const pinId = stored ? sessionPinId(stored) : storedSessionId
-    const title = tileTitle(storedSessionId)
-    const profile = stored?.profile
-    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}`
+    const title = stored ? sessionTitle(stored) : NEW_SESSION_TITLE
+    const key = pinId + '\u0000' + title + '\u0000' + profile
 
     if (cache.current?.key !== key) {
       cache.current = { key, value: { pinId, profile, title } }
@@ -493,43 +516,37 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
   })
 }
 
-/** A session TAB's context menu: the full session verb set (pin, copy id, new
- *  window, branch, rename, archive, delete) — the SAME menu a sidebar row
- *  gets, targeted through the tile delegate (whose verbs are generic over
- *  stored ids, primary included). The wrapper stops the contextmenu from also
- *  opening the zone strip's menu. Shared by tile tabs AND the main tab. */
 export function SessionTabMenu({
   children,
   onClose,
   onHideTabBar,
+  ownerProfile,
   storedSessionId,
   tabPaneId
 }: {
   children: React.ReactElement
-  /** Close this tab (tiles; the main tab passes nothing). */
   onClose?: () => void
-  /** Hide the zone's tab bar (main tab only — the sticky bar's off switch). */
   onHideTabBar?: () => void
+  ownerProfile?: string
   storedSessionId: string
-  /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  const { pinId, profile, title } = useTileMenuRow(storedSessionId)
+  const { pinId, profile, title } = useTileMenuRow(storedSessionId, ownerProfile)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
   return (
     <span className="contents" onContextMenu={event => event.stopPropagation()}>
       <SessionContextMenu
-        onArchive={() => void sessionTileDelegate()?.archiveSession(storedSessionId)}
-        onBranch={() => void sessionTileDelegate()?.branchSession(storedSessionId)}
+        onArchive={() => void sessionTileDelegate()?.archiveSession(storedSessionId, profile)}
+        onBranch={() => void sessionTileDelegate()?.branchSession(storedSessionId, profile)}
         onClose={onClose}
-        onDelete={() => void sessionTileDelegate()?.deleteSession(storedSessionId)}
+        onDelete={() => void sessionTileDelegate()?.deleteSession(storedSessionId, profile)}
         onHideTabBar={onHideTabBar}
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         onReload={
-          tabPaneId.startsWith('session-tile:')
-            ? () => sessionTileDelegate()?.rehydrateTile(storedSessionId)
+          tabPaneId.startsWith(TILE_PANE_PREFIX)
+            ? () => sessionTileDelegate()?.rehydrateTile(storedSessionId, profile)
             : undefined
         }
         pinned={pinned}
@@ -545,13 +562,10 @@ export function SessionTabMenu({
   )
 }
 
-/** The MAIN tab's menu: the same session verbs targeting the primary's loaded
- *  session, plus Close (the tab empties to a fresh draft — the workspace pane
- *  itself never leaves the tree) and the bar's off switch (the bar sticky-shows
- *  once a tab is ever gained; this is the explicit way back). A fresh draft has
- *  no session — no menu. */
+/** The main tab retains its existing hide/show context-menu behavior. */
 export function WorkspaceTabMenu({ children }: { children: React.ReactElement }) {
   const selected = useStore($selectedStoredSessionId)
+  const profile = useStore($activeGatewayProfile)
 
   const hideTabBar = () => {
     const tree = $layoutTree.get()
@@ -570,6 +584,7 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
     <SessionTabMenu
       onClose={() => closeTreePane('workspace')}
       onHideTabBar={hideTabBar}
+      ownerProfile={profile}
       storedSessionId={selected}
       tabPaneId="workspace"
     >
@@ -578,45 +593,48 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
   )
 }
 
-/** Keep pane contributions mirroring `$sessionTiles` (+ titles from
- *  `$sessions`). Tiles dock against main on the chosen edge, flex width. */
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
-  // $projectTree: a tile whose session is older than the recents page resolves
-  // its title through the tree, which loads after the tiles register. (The tab's
-  // status dot subscribes to color/state itself, so it needs no `also` entry.)
   also: [$sessions, $projectTree],
-  key: t => t.storedSessionId,
+  key: tile => sessionTileKey(tile.profile, tile.storedSessionId),
   prefix: 'session-tile',
-  dir: t => t.dir,
-  anchor: t => t.anchor,
-  before: t => t.before,
+  dir: tile => tile.dir,
+  anchor: tile => tile.anchor,
+  before: tile => tile.before,
   minWidth: '20rem',
   title: tileTitle,
-  // The tab's status dot — the SAME primitive the sidebar row renders, keyed by
-  // the stored id, so a session's status/color can never disagree between the
-  // two surfaces. Self-subscribing (live state + resolved color), so the strip
-  // needn't re-sync when it changes.
-  tabLead: storedSessionId => (
-    <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
-  ),
-  // Until the first turn lists a row there is no title to register, so the tab
-  // takes its name from the composer instead — live, without re-registering.
-  tabTitle: storedSessionId => (tileStoredRow(storedSessionId) ? null : <SessionDraftTitle scope={storedSessionId} />),
-  render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
-  tabWrap: (storedSessionId, tab) => (
-    <SessionTabMenu
-      onClose={() => requestCloseSessionTile(storedSessionId)}
-      storedSessionId={storedSessionId}
-      tabPaneId={`session-tile:${storedSessionId}`}
-    >
-      {tab}
-    </SessionTabMenu>
-  ),
-  // A tile's tab drags like a sidebar row — stack / split / drop-to-link — with
-  // its tap (activate) + double-tap (hide bar) preserved. Always takes the drag.
-  tabDrag: (storedSessionId, event, onTap, double) => {
-    startSessionDrag(tileDragPayload(storedSessionId), event, { double, onTap })
+  tabLead: key => {
+    const identity = tileIdentity(key)
+
+    return (
+      <SessionStatusDot
+        session={tileStoredRow(identity.storedSessionId, identity.profile)}
+        storedSessionId={identity.storedSessionId}
+      />
+    )
+  },
+  tabTitle: key => {
+    const identity = tileIdentity(key)
+
+    return tileStoredRow(identity.storedSessionId, identity.profile) ? null : <SessionDraftTitle scope={key} />
+  },
+  render: key => <SessionTilePane tileKey={key} />,
+  tabWrap: (key, tab) => {
+    const identity = tileIdentity(key)
+
+    return (
+      <SessionTabMenu
+        onClose={() => requestCloseSessionTile(key)}
+        ownerProfile={identity.profile}
+        storedSessionId={identity.storedSessionId}
+        tabPaneId={sessionTilePaneId(identity.profile, identity.storedSessionId)}
+      >
+        {tab}
+      </SessionTabMenu>
+    )
+  },
+  tabDrag: (key, event, onTap, double) => {
+    startSessionDrag(tileDragPayload(key), event, { double, onTap })
 
     return true
   },

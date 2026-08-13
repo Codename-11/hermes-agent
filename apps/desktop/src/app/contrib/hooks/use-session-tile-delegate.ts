@@ -2,22 +2,29 @@ import { useEffect } from 'react'
 
 import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
-import { dropSessionState, patchSessionTile, publishSessionState, setSessionTileDelegate } from '@/store/session-states'
+import { ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  dropSessionState,
+  findSessionTile,
+  patchSessionTile,
+  publishSessionState,
+  setSessionTileDelegate
+} from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
-import { appendLiveSessionProjection, resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
+import { appendLiveSessionProjection } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
 
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 interface SessionTileDelegateParams {
-  archiveSession: (storedSessionId: string) => Promise<unknown>
-  branchStoredSession: (storedSessionId: string) => Promise<unknown>
+  archiveSession: (storedSessionId: string, profile?: string) => Promise<unknown>
+  branchStoredSession: (storedSessionId: string, profile?: string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
-  removeSession: (storedSessionId: string) => Promise<unknown>
+  removeSession: (storedSessionId: string, profile?: string) => Promise<unknown>
   requestGateway: GatewayRequester
   runtimeIdByStoredSessionIdRef: SessionStateCache['runtimeIdByStoredSessionIdRef']
   sessionStateByRuntimeIdRef: SessionStateCache['sessionStateByRuntimeIdRef']
@@ -72,19 +79,24 @@ export function useSessionTileDelegate({
     }
 
     setSessionTileDelegate({
-      archiveSession: async storedSessionId => {
-        await archiveSession(storedSessionId)
+      archiveSession: async (storedSessionId, profile) => {
+        await ensureGatewayProfile(profile)
+        await archiveSession(storedSessionId, profile)
       },
-      branchSession: async storedSessionId => {
-        await branchStoredSession(storedSessionId)
+      branchSession: async (storedSessionId, profile) => {
+        await ensureGatewayProfile(profile)
+        await branchStoredSession(storedSessionId, profile)
       },
-      deleteSession: async storedSessionId => {
-        await removeSession(storedSessionId)
+      deleteSession: async (storedSessionId, profile) => {
+        await ensureGatewayProfile(profile)
+        await removeSession(storedSessionId, profile)
       },
-      executeSlash: async (rawCommand, sessionId) => {
+      executeSlash: async (rawCommand, sessionId, profile) => {
+        await ensureGatewayProfile(profile)
         await executeSlashCommand(rawCommand, { sessionId })
       },
-      interruptSession: async runtimeId => {
+      interruptSession: async (runtimeId, profile) => {
+        await ensureGatewayProfile(profile)
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionIdForRuntime(runtimeId),
@@ -92,10 +104,13 @@ export function useSessionTileDelegate({
           { requestGateway, onRecovered: rebindTileRuntime(runtimeId) }
         )
       },
-      rehydrateTile: storedSessionId => {
-        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      rehydrateTile: (storedSessionId, profile) => {
+        const runtimeId = findSessionTile(storedSessionId, profile)?.runtimeId
+        const mapped = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
 
-        runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        if (runtimeId && mapped === runtimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        }
 
         if (runtimeId) {
           sessionStateByRuntimeIdRef.current.delete(runtimeId)
@@ -104,10 +119,11 @@ export function useSessionTileDelegate({
 
         // Re-arm SessionTilePane's bounded resume effect without interrupting
         // the backend turn. Only this renderer's broken projection is discarded.
-        patchSessionTile(storedSessionId, { error: undefined, runtimeId: undefined })
+        patchSessionTile(storedSessionId, { error: undefined, runtimeId: undefined }, profile)
       },
-      resumeTile: async storedSessionId => {
-        const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      resumeTile: async (storedSessionId, profile) => {
+        await ensureGatewayProfile(profile)
+        const existing = findSessionTile(storedSessionId, profile)?.runtimeId
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
 
         // A binding alone does not prove the tile owns a transcript. The
@@ -116,18 +132,16 @@ export function useSessionTileDelegate({
         // because it takes the authoritative resume below. As in the primary
         // pane, no empty cache is valid transcript authority — `busy` only says
         // the backend turn is running, not that this renderer owns its history.
-        if (existing && cached?.storedSessionId === storedSessionId && cached.messages.length > 0) {
+        if (
+          existing &&
+          cached?.storedSessionId === storedSessionId &&
+          normalizeProfileKey(cached.profile) === normalizeProfileKey(profile) &&
+          cached.messages.length > 0
+        ) {
           publishSessionState(existing, cached)
 
           return existing
         }
-
-        // Resolve the owning profile before binding a runtime. A tile can open a
-        // session from any profile, not just the active one; resuming (or
-        // reading messages) without a profile lets the gateway fall back to the
-        // launch-profile DB and fork the conversation into the wrong profile —
-        // the same cross-profile bleed the recovery resumes had (#67603).
-        const profile = await resolveSessionProfile(storedSessionId)
 
         const [prefetch, resumed] = await Promise.all([
           getLatestSessionMessages(storedSessionId, profile).catch(() => null),
@@ -153,14 +167,16 @@ export function useSessionTileDelegate({
           state => ({
             ...state,
             busy: Boolean(resumed?.info?.running),
-            messages: state.messages.length > 0 ? state.messages : hydratedMessages
+            messages: state.messages.length > 0 ? state.messages : hydratedMessages,
+            profile: normalizeProfileKey(profile)
           }),
           storedSessionId
         )
 
         return runtimeId
       },
-      submitToSession: async (runtimeId, text) => {
+      submitToSession: async (runtimeId, text, profile) => {
+        await ensureGatewayProfile(profile)
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionIdForRuntime(runtimeId),

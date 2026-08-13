@@ -20,7 +20,7 @@ import { useEffect, useRef } from 'react'
 import { reloadPersistedDrafts, requestComposerDraftSync } from '@/store/composer'
 import { reportHudSession, watchHudState } from '@/store/hud'
 import { $selectedStoredSessionId } from '@/store/session'
-import { focusOpenSession, sessionTileDelegate } from '@/store/session-states'
+import { findSessionTile, focusOpenSession, sessionTileDelegate } from '@/store/session-states'
 import { isHudWindow } from '@/store/windows'
 
 import { getActiveComposer } from '../chat/composer/focus'
@@ -81,10 +81,11 @@ export function useHudHandoff({ navigate, resumeSession }: HudHandoffParams): vo
       // — route to it and let the route resume do the rest, including loading
       // its draft as the composer's scope swaps.
       if (target && target !== selected) {
-        const delegate = focusOpenSession(target) === 'tile' ? sessionTileDelegate() : null
+        const tile = findSessionTile(target)
+        const delegate = tile && focusOpenSession(target, tile.profile) === 'tile' ? sessionTileDelegate() : null
 
-        if (delegate) {
-          void delegate.resumeTile(target).catch(() => undefined)
+        if (delegate && tile) {
+          void delegate.resumeTile(target, tile.profile).catch(() => undefined)
 
           return
         }

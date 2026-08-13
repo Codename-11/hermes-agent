@@ -46,6 +46,7 @@ import {
 } from '@/store/session'
 import {
   $attentionSessionKeys,
+  $sessionTiles,
   $workingSessionKeys,
   resetTileRuntimeBindings,
   sessionStatusKey
@@ -541,6 +542,10 @@ export function useGatewayBoot({
       const live = new Set([...$workingSessionKeys.get(), ...$attentionSessionKeys.get()])
       const keep = new Set<string>()
 
+      for (const tile of $sessionTiles.get()) {
+        keep.add(normalizeProfileKey(tile.profile))
+      }
+
       for (const session of $sessions.get()) {
         if (live.has(sessionStatusKey(session.profile, session.id))) {
           keep.add(normalizeProfileKey(session.profile))
@@ -553,6 +558,7 @@ export function useGatewayBoot({
     const offWorking = $workingSessionKeys.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionKeys.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
+    const offTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -715,6 +721,7 @@ export function useGatewayBoot({
       offWorking()
       offAttention()
       offActiveProfile()
+      offTiles()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       offPowerResume?.()

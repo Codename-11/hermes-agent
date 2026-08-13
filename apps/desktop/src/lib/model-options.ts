@@ -40,6 +40,12 @@ interface ModelOptionsRequest {
    *  providers are listed (#56974). */
   explicitOnly?: boolean
   gateway?: HermesGateway
+  requestGateway?: <T>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<T>
   refresh?: boolean
   sessionId?: null | string
 }
@@ -53,24 +59,29 @@ export function modelOptionsQueryKey(profile: null | string | undefined, session
 export function requestModelOptions({
   explicitOnly = true,
   gateway,
+  requestGateway,
   refresh = false,
   sessionId
 }: ModelOptionsRequest): Promise<ModelOptionsResponse> {
+  const params: Record<string, unknown> = {}
+
+  if (sessionId) {
+    params.session_id = sessionId
+  }
+
+  if (refresh) {
+    params.refresh = true
+  }
+
+  if (explicitOnly) {
+    params.explicit_only = true
+  }
+
+  if (requestGateway) {
+    return requestGateway<ModelOptionsResponse>('model.options', params)
+  }
+
   if (gateway) {
-    const params: Record<string, unknown> = {}
-
-    if (sessionId) {
-      params.session_id = sessionId
-    }
-
-    if (refresh) {
-      params.refresh = true
-    }
-
-    if (explicitOnly) {
-      params.explicit_only = true
-    }
-
     return gateway.request<ModelOptionsResponse>('model.options', params)
   }
 

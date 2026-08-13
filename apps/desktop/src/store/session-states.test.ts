@@ -8,16 +8,82 @@ import type { SessionTile } from '@/store/session-states'
 import {
   $sessionTiles,
   blankDraftTile,
+  closeSessionTile,
+  decodeSessionTileKey,
+  decodeSessionTilePaneId,
+  discardSessionTile,
   focusedSessionNeedsRoute,
   markSelectionRestore,
   nextSessionTileForWorkspace,
   openTileNeedsHydration,
   orderTilesByTree,
-  selectionHomesToWorkspace
+  patchSessionTile,
+  selectionHomesToWorkspace,
+  sessionTileKey,
+  sessionTilePaneId
 } from '@/store/session-states'
 
-const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
-const tilePane = (id: string) => `session-tile:${id}`
+const tile = (storedSessionId: string, profile = 'default'): SessionTile => ({ profile, storedSessionId })
+const tilePane = (id: string, profile = 'default') => sessionTilePaneId(profile, id)
+
+describe('profile-qualified tile identity', () => {
+  it('is reversible and collision-safe for profile and session punctuation', () => {
+    const first = sessionTileKey('team:a/b%20', 'session:a/b%20')
+    const second = sessionTileKey('team', 'a/b%20:session:a/b%20')
+
+    expect(first).not.toBe(second)
+    expect(decodeSessionTileKey(first)).toEqual({ profile: 'team:a/b%20', storedSessionId: 'session:a/b%20' })
+    expect(decodeSessionTilePaneId(sessionTilePaneId('team:a/b%20', 'session:a/b%20'))).toEqual({
+      legacy: false,
+      profile: 'team:a/b%20',
+      storedSessionId: 'session:a/b%20'
+    })
+  })
+
+  it('keeps the same stored id distinct across profiles', () => {
+    const tiles = [tile('same', 'default'), tile('same', 'worker')]
+    const tree = group([tilePane('same', 'worker'), tilePane('same', 'default')])
+
+    expect(orderTilesByTree(tree, tiles)).toEqual([tiles[1], tiles[0]])
+  })
+
+  it('recognizes legacy pane ids for migration', () => {
+    expect(decodeSessionTilePaneId('session-tile:legacy-id')).toEqual({
+      legacy: true,
+      profile: 'default',
+      storedSessionId: 'legacy-id'
+    })
+  })
+
+  it('legacy bare-id mutations resolve one owner without touching its cloned-profile sibling', () => {
+    $sessionTiles.set([tile('same', 'default'), tile('same', 'worker')])
+
+    patchSessionTile('same', { error: 'default-only' })
+    expect($sessionTiles.get()).toEqual([
+      { error: 'default-only', profile: 'default', storedSessionId: 'same' },
+      tile('same', 'worker')
+    ])
+
+    closeSessionTile('same')
+    expect($sessionTiles.get()).toEqual([tile('same', 'worker')])
+
+    discardSessionTile('same')
+    expect($sessionTiles.get()).toEqual([])
+  })
+
+  it('explicit mutations target the requested profile when cloned ids coexist', () => {
+    $sessionTiles.set([tile('same', 'default'), tile('same', 'worker')])
+
+    patchSessionTile('same', { error: 'worker-only' }, 'worker')
+    expect($sessionTiles.get()).toEqual([
+      tile('same', 'default'),
+      { error: 'worker-only', profile: 'worker', storedSessionId: 'same' }
+    ])
+
+    closeSessionTile('same', 'worker')
+    expect($sessionTiles.get()).toEqual([tile('same', 'default')])
+  })
+})
 
 describe('orderTilesByTree', () => {
   it('no-ops (null) without a tree or below two tiles', () => {
@@ -54,14 +120,14 @@ describe('nextSessionTileForWorkspace', () => {
     $sessionTiles.set([tile('stacked'), tile('split')])
     $layoutTree.set(split('row', [group(['workspace', tilePane('stacked')]), group([tilePane('split')])]))
 
-    expect(nextSessionTileForWorkspace()).toBe('stacked')
+    expect(nextSessionTileForWorkspace()).toEqual(tile('stacked'))
   })
 
   it('falls back to a session tab in another split instead of trapping a blank workspace tab', () => {
     $sessionTiles.set([tile('split')])
     $layoutTree.set(split('row', [group(['workspace']), group([tilePane('split')])]))
 
-    expect(nextSessionTileForWorkspace()).toBe('split')
+    expect(nextSessionTileForWorkspace()).toEqual(tile('split'))
   })
 })
 
@@ -134,25 +200,31 @@ describe('openTileNeedsHydration', () => {
 
   it('recovers an idle empty tile when its stored row says history exists', () => {
     expect(
-      openTileNeedsHydration(
-        { runtimeId: 'runtime', storedSessionId: 'stored' },
-        state(),
-        { message_count: 6 } as never
-      )
+      openTileNeedsHydration({ runtimeId: 'runtime', storedSessionId: 'stored' }, state(), {
+        message_count: 6
+      } as never)
     ).toBe(true)
   })
 
   it('recovers busy empty history but leaves healthy and genuinely empty tiles alone', () => {
     const bound = { runtimeId: 'runtime', storedSessionId: 'stored' }
 
-    expect(openTileNeedsHydration(bound, state({ messages: [{ id: 'm1' }] as never }), { message_count: 6 } as never)).toBe(false)
-    expect(openTileNeedsHydration(bound, state({ busy: true }), { is_active: true, message_count: 0 } as never)).toBe(true)
+    expect(
+      openTileNeedsHydration(bound, state({ messages: [{ id: 'm1' }] as never }), { message_count: 6 } as never)
+    ).toBe(false)
+    expect(openTileNeedsHydration(bound, state({ busy: true }), { is_active: true, message_count: 0 } as never)).toBe(
+      true
+    )
     expect(openTileNeedsHydration(bound, state(), { message_count: 0 } as never)).toBe(false)
   })
 })
 
 describe('blankDraftTile', () => {
-  const bound = (storedSessionId: string, runtimeId: string): SessionTile => ({ runtimeId, storedSessionId })
+  const bound = (storedSessionId: string, runtimeId: string): SessionTile => ({
+    profile: 'default',
+    runtimeId,
+    storedSessionId
+  })
 
   const state = (messages: number, busy = false) =>
     ({ busy, messages: Array.from({ length: messages }, (_, i) => ({ id: `m${i}` })) }) as ClientSessionState

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const closeFocusedSessionTab = vi.fn(() => false)
 const closeFocusedToolTab = vi.fn(() => false)
-const nextSessionTileForWorkspace = vi.fn<() => null | string>(() => null)
+const nextSessionTileForWorkspace = vi.fn<() => null | { profile: string; storedSessionId: string }>(() => null)
 const closeSessionTile = vi.fn()
 const requestFreshSession = vi.fn()
 
@@ -92,11 +92,11 @@ describe('closeActiveTab', () => {
 describe('closeWorkspaceTab', () => {
   it('shifts the next stacked session into main', () => {
     loadedMainOnly()
-    nextSessionTileForWorkspace.mockReturnValue('stored-b')
+    nextSessionTileForWorkspace.mockReturnValue({ profile: 'work', storedSessionId: 'stored-b' })
     const load = vi.fn()
 
     expect(closeWorkspaceTab(load)).toBe(true)
-    expect(closeSessionTile).toHaveBeenCalledWith('stored-b')
+    expect(closeSessionTile).toHaveBeenCalledWith('stored-b', 'work')
     expect(load).toHaveBeenCalledWith('stored-b')
     // Promotion refills main — it must not ALSO blank it.
     expect(requestFreshSession).not.toHaveBeenCalled()

@@ -1,5 +1,38 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Make Desktop chat workspaces profile-mixed and owner-routed
+
+### Summary
+
+Changed Desktop from profile-swapped workspaces to one window-owned pane layout
+whose chat tabs carry explicit `(profile, storedSessionId)` identity. Chats from
+multiple profiles can now coexist without replacing the tab strip or sidebar
+browse scope, while each visible pane routes resume, model, prompt, and session
+actions through its owning profile connection.
+
+### Details
+
+- Migrated persisted session-tile descriptors and pane IDs to profile-qualified
+  identities, including cloned profiles that share stored session IDs.
+- Kept sidebar browse scope separate from active gateway routing, so focusing a
+  cross-profile chat no longer changes the sidebar or swaps the pane layout.
+- Preserved owner profile identity in chat headers and existing pane-header
+  right-click visibility controls.
+- Kept pooled gateways alive for every open chat profile, preventing the repeated
+  reap/reconnect cycle that produced avoidable spinners and tab-switch latency.
+- Fixed intermittent model-picker loading by aligning its query key and RPC with
+  the owning tile profile instead of a stale globally active gateway; retries are
+  bounded and picker remounts do not force redundant catalog refetches.
+- Retired legacy tile persistence after one-shot migration, and made optimistic
+  session-row replacement profile-qualified so cloned-profile siblings survive.
+
+### Verification
+
+- Desktop renderer/Electron/E2E TypeScript typecheck.
+- Focused mixed-profile, tile lifecycle, model-menu, workspace persistence, and
+  session-action tests.
+- Changed-file ESLint and production renderer build.
+
 ## 2026-08-13 — Stream upstream reconciliation output inside Update Control
 
 ### Summary

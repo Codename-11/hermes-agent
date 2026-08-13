@@ -781,13 +781,14 @@ export function upsertOptimisticSession(
   title: string | null = null,
   preview: string | null = null,
   parentSessionId: string | null = null,
-  lastActive?: number
+  lastActive?: number,
+  ownerProfile?: string
 ) {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on (= the live gateway's
   // profile) so the scoped sidebar shows the new row immediately instead of
   // filtering it out as "default" until the aggregator re-fetches.
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  const profileKey = normalizeProfileKey(ownerProfile ?? $activeGatewayProfile.get())
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -812,7 +813,18 @@ export function upsertOptimisticSession(
     tool_call_count: 0
   }
 
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  setSessions(prev => mergeOptimisticSession(prev, session))
+}
+
+export function mergeOptimisticSession(sessions: SessionInfo[], optimistic: SessionInfo): SessionInfo[] {
+  const owner = normalizeProfileKey(optimistic.profile)
+
+  return [
+    optimistic,
+    ...sessions.filter(
+      existing => existing.id !== optimistic.id || normalizeProfileKey(existing.profile) !== owner
+    )
+  ]
 }
 
 export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {

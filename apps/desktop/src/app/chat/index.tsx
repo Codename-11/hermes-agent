@@ -29,7 +29,7 @@ import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
+import { $gatewaySwapTarget, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -43,6 +43,7 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
+import { sessionTileKey, sessionTilePaneId } from '@/store/session-states'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -101,6 +102,7 @@ interface ChatHeaderProps {
   isRoutedSessionView: boolean
   onDeleteSelectedSession: () => void
   onToggleSelectedPin: () => void
+  profile: string
   selectedSessionId: null | string
 }
 
@@ -109,6 +111,7 @@ function ChatHeader({
   isRoutedSessionView,
   onDeleteSelectedSession,
   onToggleSelectedPin,
+  profile,
   selectedSessionId
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
@@ -116,7 +119,13 @@ function ChatHeader({
   const profiles = useStore($profiles)
 
   const activeStoredSession =
-    (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
+    (selectedSessionId &&
+      sessions.find(
+        session =>
+          sessionMatchesStoredId(session, selectedSessionId) &&
+          normalizeProfileKey(session.profile) === normalizeProfileKey(profile)
+      )) ||
+    null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
 
@@ -320,10 +329,10 @@ export const ChatView = memo(function ChatView({
   const storedId = useStore(view.$storedId)
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
-  const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
+  const ownerProfile = useStore(view.$profile)
+  const sessionAnchor = isPrimary ? 'workspace' : sessionTilePaneId(ownerProfile, storedId ?? '')
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
-  const activeGatewayProfile = useStore($activeGatewayProfile)
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
   // from the view slice, not the global atoms (which track the primary only).
@@ -363,12 +372,12 @@ export const ChatView = memo(function ChatView({
       ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
       : selectedSessionId
 
-    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
-  }, [isPrimary, location.pathname, selectedSessionId, sessions])
-
-  const conversationProfile =
-    sessions.find(session => selectedSessionId && sessionMatchesStoredId(session, selectedSessionId))?.profile ??
-    activeGatewayProfile
+    return isPrimary
+      ? resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
+      : effectiveSelectedSessionId
+        ? sessionTileKey(ownerProfile, effectiveSelectedSessionId)
+        : ''
+  }, [isPrimary, location.pathname, ownerProfile, selectedSessionId, sessions])
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
@@ -442,7 +451,7 @@ export const ChatView = memo(function ChatView({
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
+    queryKey: modelOptionsQueryKey(ownerProfile, activeSessionId),
     queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
     enabled: gatewayOpen
   })
@@ -534,6 +543,7 @@ export const ChatView = memo(function ChatView({
           isRoutedSessionView={isRoutedSessionView}
           onDeleteSelectedSession={onDeleteSelectedSession}
           onToggleSelectedPin={onToggleSelectedPin}
+          profile={ownerProfile}
           selectedSessionId={selectedSessionId}
         />
       )}
@@ -641,7 +651,7 @@ export const ChatView = memo(function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
-              profile={conversationProfile}
+              profile={ownerProfile}
               queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}

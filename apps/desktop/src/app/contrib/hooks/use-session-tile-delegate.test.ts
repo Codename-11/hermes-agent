@@ -5,8 +5,9 @@ import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
 import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type * as ProfileModule from '@/store/profile'
 import { setSessions } from '@/store/session'
-import { sessionTileDelegate } from '@/store/session-states'
+import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
@@ -14,6 +15,11 @@ import { useSessionTileDelegate } from './use-session-tile-delegate'
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
   getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' }))
+}))
+
+vi.mock('@/store/profile', async importActual => ({
+  ...(await importActual<typeof ProfileModule>()),
+  ensureGatewayProfile: vi.fn(async () => undefined)
 }))
 
 const { getLatestSessionMessages } = await import('@/hermes')
@@ -67,11 +73,13 @@ function renderTile(
 describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
     setSessions([])
+    $sessionTiles.set([])
     vi.mocked(getLatestSessionMessages).mockClear()
   })
 
   afterEach(() => {
     setSessions([])
+    $sessionTiles.set([])
   })
 
   it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {
@@ -86,7 +94,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     )
 
     renderTile(requestGateway)
-    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x', 'ai-engineer')
 
     expect(runtimeId).toBe('runtime-1')
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer')
@@ -106,7 +114,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     )
 
     renderTile(requestGateway)
-    await sessionTileDelegate()!.resumeTile('stored-y')
+    await sessionTileDelegate()!.resumeTile('stored-y', 'default')
 
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-y',
@@ -140,7 +148,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     } as never)
 
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState })
-    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-z')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-z', 'default')
 
     expect(runtimeId).toBe('runtime-rebound')
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-z', 'default')
@@ -161,18 +169,19 @@ describe('useSessionTileDelegate resumeTile', () => {
       updater(createClientSessionState(storedSessionId ?? null))
     )
 
-    const requestGateway = vi.fn(async () =>
-      ({
-        inflight: { assistant: 'Still working', streaming: true, user: 'Continue OpenShelf' },
-        info: { running: true },
-        messages: [],
-        messages_omitted: true,
-        session_id: 'runtime-running'
-      }) as never
+    const requestGateway = vi.fn(
+      async () =>
+        ({
+          inflight: { assistant: 'Still working', streaming: true, user: 'Continue OpenShelf' },
+          info: { running: true },
+          messages: [],
+          messages_omitted: true,
+          session_id: 'runtime-running'
+        }) as never
     )
 
     renderTile(requestGateway, { updateSessionState })
-    await sessionTileDelegate()!.resumeTile('stored-running')
+    await sessionTileDelegate()!.resumeTile('stored-running', 'default')
 
     const updater = updateSessionState.mock.calls[0]?.[1]
     const hydrated = updater?.(createClientSessionState('stored-running'))
@@ -187,8 +196,9 @@ describe('useSessionTileDelegate resumeTile', () => {
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-reload', cached]]) }
     const requestGateway = vi.fn()
 
+    $sessionTiles.set([{ profile: 'default', runtimeId: 'runtime-reload', storedSessionId: 'stored-reload' }])
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
-    sessionTileDelegate()!.rehydrateTile('stored-reload')
+    sessionTileDelegate()!.rehydrateTile('stored-reload', 'default')
 
     expect(runtimeIdByStoredSessionIdRef.current.has('stored-reload')).toBe(false)
     expect(sessionStateByRuntimeIdRef.current.has('runtime-reload')).toBe(false)

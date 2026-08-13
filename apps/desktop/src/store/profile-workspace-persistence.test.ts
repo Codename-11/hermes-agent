@@ -24,13 +24,13 @@ const fileTarget = (path: string) => ({
   url: `file://${path}`
 })
 
-describe('profile-scoped Desktop workspace persistence', () => {
+describe('window-scoped Desktop workspace persistence', () => {
   beforeEach(() => {
     window.localStorage.clear()
     vi.resetModules()
   })
 
-  it('keeps layout, pane geometry, page tabs, and previews isolated by profile', async () => {
+  it('keeps layout, pane geometry, page tabs, and previews stable while the gateway profile changes', async () => {
     const { composerPopout, layout, model, panes, preview, profile, review, routeTiles, terminal, tree } =
       await loadWorkspaceStores()
 
@@ -64,27 +64,6 @@ describe('profile-scoped Desktop workspace persistence', () => {
 
     profile.$activeGatewayProfile.set('worker')
 
-    expect(tree.$layoutTree.get()).toEqual(defaultTree)
-    expect(tree.$activePresetId.get()).toBe('default')
-    expect(panes.getPaneStateSnapshot('chat-sidebar')).toEqual({ open: true, widthOverride: undefined })
-    expect(routeTiles.$routeTiles.get()).toEqual([])
-    expect(preview.$previewTabs.get()).toEqual([])
-    expect(layout.$rightRailActiveTabId.get()).toBeNull()
-    expect(layout.$panesFlipped.get()).toBe(false)
-    expect(terminal.$terminalTakeover.get()).toBe(false)
-    expect(review.$reviewOpen.get()).toBe(false)
-    expect(review.$reviewSelectedPath.get()).toBeNull()
-    expect(composerPopout.$composerPopoutZones.get()).toEqual({})
-
-    tree.applyTree(workerCustom, 'terminal-deck')
-    panes.setPaneOpen('chat-sidebar', true)
-    panes.setPaneWidthOverride('chat-sidebar', 260)
-    routeTiles.openRouteTile('/artifacts', 'left')
-    preview.openPreview(fileTarget('/worker/notes.md'))
-    composerPopout.setComposerPopoutPosition('grp-worker-main', { bottom: 32, right: 48 }, { persist: true })
-
-    profile.$activeGatewayProfile.set('default')
-
     expect(tree.$layoutTree.get()).toEqual(defaultCustom)
     expect(tree.$activePresetId.get()).toBe('custom')
     expect(panes.getPaneStateSnapshot('chat-sidebar')).toEqual({ open: false, widthOverride: 301 })
@@ -97,18 +76,33 @@ describe('profile-scoped Desktop workspace persistence', () => {
     expect(review.$reviewSelectedPath.get()).toBe('/default/app.ts')
     expect(composerPopout.$composerPopoutZones.get()['grp-default-main']?.poppedOut).toBe(true)
 
-    profile.$activeGatewayProfile.set('worker')
+    tree.applyTree(workerCustom, 'terminal-deck')
+    panes.setPaneOpen('chat-sidebar', true)
+    panes.setPaneWidthOverride('chat-sidebar', 260)
+    routeTiles.openRouteTile('/artifacts', 'left')
+    preview.openPreview(fileTarget('/worker/notes.md'))
+    composerPopout.setComposerPopoutPosition('grp-worker-main', { bottom: 32, right: 48 }, { persist: true })
 
-    expect(tree.$layoutTree.get()).toEqual(workerCustom)
+    // Applying a tree adopts every currently registered pane into it before a
+    // profile change happens. Snapshot that settled window state; the behavior
+    // under test is that gateway routing does not replace it.
+    const settledTree = tree.$layoutTree.get()
+
+    profile.$activeGatewayProfile.set('default')
+
+    expect(tree.$layoutTree.get()).toEqual(settledTree)
     expect(tree.$activePresetId.get()).toBe('terminal-deck')
     expect(panes.getPaneStateSnapshot('chat-sidebar')).toEqual({ open: true, widthOverride: 260 })
-    expect(routeTiles.$routeTiles.get()).toEqual([{ dir: 'left', path: '/artifacts' }])
-    expect(preview.$previewTabs.get().map(tab => tab.target.path)).toEqual(['/worker/notes.md'])
+    expect(routeTiles.$routeTiles.get()).toEqual([
+      { dir: 'right', path: '/skills' },
+      { dir: 'left', path: '/artifacts' }
+    ])
+    expect(preview.$previewTabs.get().map(tab => tab.target.path)).toEqual(['/default/readme.md', '/worker/notes.md'])
     expect(layout.$rightRailActiveTabId.get()).toContain('/worker/notes.md')
-    expect(layout.$panesFlipped.get()).toBe(false)
-    expect(terminal.$terminalTakeover.get()).toBe(false)
-    expect(review.$reviewOpen.get()).toBe(false)
-    expect(review.$reviewSelectedPath.get()).toBeNull()
-    expect(composerPopout.$composerPopoutZones.get()['grp-worker-main']?.position).toEqual({ bottom: 32, right: 48 })
+    expect(layout.$panesFlipped.get()).toBe(true)
+    expect(terminal.$terminalTakeover.get()).toBe(true)
+    expect(review.$reviewOpen.get()).toBe(true)
+    expect(review.$reviewSelectedPath.get()).toBe('/default/app.ts')
+    expect(composerPopout.$composerPopoutZones.get()['grp-default-main']?.poppedOut).toBe(true)
   })
 })

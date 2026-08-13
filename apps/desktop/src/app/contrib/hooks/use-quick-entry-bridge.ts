@@ -8,7 +8,7 @@ import {
   setQuickEntrySubmitHandler
 } from '@/store/quick-entry'
 import { $gatewayState, $sessions } from '@/store/session'
-import { sessionTileDelegate } from '@/store/session-states'
+import { findSessionTile, sessionTileDelegate } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 interface QuickEntryBridgeParams {
@@ -75,11 +75,12 @@ export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: Quic
         // A picked stored session: resume + submit in the background through
         // the session-tile delegate so the primary view stays where it is.
         const delegate = sessionTileDelegate()
+        const tile = findSessionTile(target)
 
-        if (delegate) {
+        if (delegate && tile) {
           void delegate
-            .resumeTile(target)
-            .then(runtimeId => delegate.submitToSession(runtimeId, text))
+            .resumeTile(target, tile.profile)
+            .then(runtimeId => delegate.submitToSession(runtimeId, text, tile.profile))
             // A dead/undeliverable target must not swallow the prompt.
             .catch(() => void submitTextRef.current(text))
 

@@ -34,6 +34,7 @@ function seed(preview: string, sessions: SessionInfo[] = $sessions.get()) {
     cwd: '/work/repo',
     model: 'claude-opus-5',
     preview,
+    profile: 'default',
     runtimeId: RUNTIME,
     sessions,
     storedSessionId: STORED

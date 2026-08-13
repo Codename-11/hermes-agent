@@ -34,8 +34,8 @@ export function closeWorkspaceTab(loadSessionIntoWorkspace?: (storedSessionId: s
     const next = nextSessionTileForWorkspace()
 
     if (next) {
-      closeSessionTile(next)
-      loadSessionIntoWorkspace(next)
+      closeSessionTile(next.storedSessionId, next.profile)
+      loadSessionIntoWorkspace(next.storedSessionId)
 
       return true
     }

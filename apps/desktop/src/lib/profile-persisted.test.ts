@@ -14,7 +14,7 @@ describe('profilePersistentAtom', () => {
     vi.resetModules()
   })
 
-  it('migrates the legacy value into default while named profiles start from fallback', async () => {
+  it('keeps the startup workspace live while preserving named profile values', async () => {
     window.localStorage.setItem('legacy', 'legacy-default')
 
     const { $activeGatewayProfile, Codecs, profilePersistentAtom } = await load()
@@ -29,11 +29,11 @@ describe('profilePersistentAtom', () => {
     expect($value.get()).toBe('legacy-default')
 
     $activeGatewayProfile.set('worker')
-    expect($value.get()).toBe('fresh')
-
-    $value.set('worker-value')
-    $activeGatewayProfile.set('default')
     expect($value.get()).toBe('legacy-default')
+
+    $value.setForProfile('worker', 'worker-value')
+    expect($value.get()).toBe('legacy-default')
+    expect($value.getForProfile('worker')).toBe('worker-value')
 
     const encoded = JSON.parse(window.localStorage.getItem('profiles') ?? '{}') as Record<string, string>
 
@@ -51,7 +51,7 @@ describe('profilePersistentAtom', () => {
 
     $first.set('default-value')
     first.$activeGatewayProfile.set('worker')
-    $first.set('worker-value')
+    $first.setForProfile('worker', 'worker-value')
 
     vi.resetModules()
 
@@ -65,9 +65,8 @@ describe('profilePersistentAtom', () => {
 
     expect($second.get()).toBe('default-value')
     second.$activeGatewayProfile.set('worker')
-    expect($second.get()).toBe('worker-value')
-    second.$activeGatewayProfile.set('default')
     expect($second.get()).toBe('default-value')
+    expect($second.getForProfile('worker')).toBe('worker-value')
   })
 
   it('adds a missing default migration even when named profile data already exists', async () => {

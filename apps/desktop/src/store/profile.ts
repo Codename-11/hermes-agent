@@ -364,19 +364,19 @@ export const ALL_PROFILES = '__all__'
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
-// Opt-in unified view. When false, scope follows the live gateway profile, so
-// single-profile users (who never see the switcher) are completely unaffected.
+// Opt-in unified view. Request routing and browsing are deliberately separate:
+// focusing a mixed-profile chat tab may activate its gateway, but must not
+// replace the sidebar list the user is browsing.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
+export const $browsedProfile = atom<string>(normalizeProfileKey($activeGatewayProfile.get()))
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 
-// The profile context the sidebar is currently showing: a concrete profile key,
-// or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
-// gateway so opening/selecting a profile (which swaps the gateway) moves the
-// whole sidebar with it — a real context switch, not a separate filter to keep
-// in sync.
-export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+// The profile context the sidebar is currently showing: a concrete browse key,
+// or ALL_PROFILES for the unified grouped view. It changes only through explicit
+// profile navigation, never as a side effect of a chat pane routing an RPC.
+export const $profileScope = computed([$showAllProfiles, $browsedProfile], (showAll, browsed) =>
+  showAll ? ALL_PROFILES : normalizeProfileKey(browsed)
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
@@ -386,8 +386,9 @@ export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
-  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
+  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($browsedProfile.get())
   $showAllProfiles.set(false)
+  $browsedProfile.set(target)
   $newChatProfile.set(target)
 
   if (switching) {

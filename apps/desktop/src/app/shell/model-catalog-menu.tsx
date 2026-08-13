@@ -89,6 +89,9 @@ interface ModelCatalogMenuProps {
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
   profile?: string
+  /** Owner-aware requester for mixed-profile chat panes. When provided it is
+   * authoritative over the render-time gateway object. */
+  requestGateway?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /** Session whose catalog to fetch. A live session's catalog can differ from
    *  the profile-global one, and the app invalidates the SESSION-scoped query
    *  key on model changes — a surface bound to a session must pass it or its
@@ -114,6 +117,7 @@ export function ModelCatalogMenu({
   gateway,
   includeMoa = false,
   profile = 'default',
+  requestGateway,
   sessionId = null
 }: ModelCatalogMenuProps) {
   const { t } = useI18n()
@@ -133,7 +137,8 @@ export function ModelCatalogMenu({
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId })
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, requestGateway, sessionId }),
+    retry: 2
   })
 
   const loading = modelOptions.isPending && !modelOptions.data

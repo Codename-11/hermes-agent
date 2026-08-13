@@ -72,7 +72,8 @@ export function openSessionIntentFromModifiers(
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
-  intent: OpenSessionIntent = 'in-place'
+  intent: OpenSessionIntent = 'in-place',
+  profile?: string
 ): void {
   if (!storedSessionId) {
     return
@@ -106,18 +107,25 @@ export function openSession(
     // Already on screen? Front it. openSessionTile would no-op on main without
     // focusing, or try to relocate an existing tile — neither is right for a
     // soft "open beside" link.
-    if (focusOpenSession(storedSessionId)) {
+    if (profile === undefined ? focusOpenSession(storedSessionId) : focusOpenSession(storedSessionId, profile)) {
       return
     }
 
     // Nothing to jump to, but an open tab may still be an empty "New session" —
     // that's the tab the user would have typed into, so spend it rather than
     // stacking a second blank one beside it.
-    if (spendBlankDraft && reuseBlankDraftTile(storedSessionId)) {
+    if (
+      spendBlankDraft &&
+      (profile === undefined ? reuseBlankDraftTile(storedSessionId) : reuseBlankDraftTile(storedSessionId, profile))
+    ) {
       return
     }
 
-    openSessionTile(storedSessionId, 'center')
+    if (profile === undefined) {
+      openSessionTile(storedSessionId, 'center')
+    } else {
+      openSessionTile(storedSessionId, 'center', undefined, undefined, profile)
+    }
 
     return
   }
@@ -126,7 +134,9 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId), $workspaceIsPage.get())) {
+  const focused = profile === undefined ? focusOpenSession(storedSessionId) : focusOpenSession(storedSessionId, profile)
+
+  if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

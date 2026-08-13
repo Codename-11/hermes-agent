@@ -119,7 +119,7 @@ describe('open_preview', () => {
     const { $sessionTiles } = await import('@/store/session-states')
     const tiles = $sessionTiles.get()
 
-    $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
+    $sessionTiles.set([{ dir: 'right', profile: 'default', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
     render(<Harness />)
 
     try {

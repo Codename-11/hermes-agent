@@ -1326,7 +1326,7 @@ describe('resumeSession drops a redundant tile when the session loads into main'
 
   it('closes the tile so the session is not open in both main and its own tab', async () => {
     // The session is already an open tile (e.g. persisted across a restart)...
-    $sessionTiles.set([{ storedSessionId: 'stored-1' }])
+    $sessionTiles.set([{ profile: 'default', storedSessionId: 'stored-1' }])
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.resume') {
@@ -1351,7 +1351,10 @@ describe('resumeSession drops a redundant tile when the session loads into main'
   })
 
   it('leaves OTHER sessions tiles untouched', async () => {
-    $sessionTiles.set([{ storedSessionId: 'stored-1' }, { storedSessionId: 'stored-2' }])
+    $sessionTiles.set([
+      { profile: 'default', storedSessionId: 'stored-1' },
+      { profile: 'default', storedSessionId: 'stored-2' }
+    ])
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.resume') {

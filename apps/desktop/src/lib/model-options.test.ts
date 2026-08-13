@@ -42,6 +42,22 @@ describe('requestModelOptions', () => {
     })
   })
 
+  it('prefers an owner-aware requester over a stale render-time gateway', async () => {
+    const staleGateway = { request: vi.fn() }
+    const ownerPayload = { model: 'owner-model', provider: 'owner', providers: [] }
+    const requestGateway = vi.fn(() => Promise.resolve(ownerPayload))
+
+    await expect(
+      requestModelOptions({ gateway: staleGateway as never, requestGateway: requestGateway as never, sessionId: 'owner-session' })
+    ).resolves.toBe(ownerPayload)
+
+    expect(requestGateway).toHaveBeenCalledWith('model.options', {
+      explicit_only: true,
+      session_id: 'owner-session'
+    })
+    expect(staleGateway.request).not.toHaveBeenCalled()
+  })
+
   it('falls back to REST when no gateway is connected', async () => {
     await requestModelOptions({ refresh: true })
 
