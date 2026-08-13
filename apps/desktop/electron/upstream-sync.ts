@@ -11,16 +11,27 @@ export interface DesktopUpstreamSyncResult {
   error?: string
   worktree?: string
   reportPath?: string
+  output?: string
 }
 
 const RESULT_PREFIX = 'HERMES_UPSTREAM_SYNC_RESULT='
 const MAX_OUTPUT = 24_000
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1_000
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000
 
 let active: Promise<DesktopUpstreamSyncResult> | null = null
 
-function failed(message: string, error = 'sync-failed'): DesktopUpstreamSyncResult {
-  return { ok: false, state: 'failed', error, message }
+function cleanOutput(output: string): string | undefined {
+  const cleaned = output
+    .split(/\r?\n/)
+    .filter(line => !line.startsWith(RESULT_PREFIX))
+    .join('\n')
+    .trim()
+
+  return cleaned || undefined
+}
+
+function failed(message: string, error = 'sync-failed', output = ''): DesktopUpstreamSyncResult {
+  return { ok: false, state: 'failed', error, message, output: cleanOutput(output) }
 }
 
 export function parseUpstreamSyncResult(output: string): DesktopUpstreamSyncResult | null {
@@ -52,13 +63,14 @@ export function parseUpstreamSyncResult(output: string): DesktopUpstreamSyncResu
 
 export function resolveUpstreamSyncExit(output: string, code: number | null): DesktopUpstreamSyncResult {
   if (code !== 0) {
-    return failed(`Hermes upstream sync exited ${code ?? 'without a status'}.`, 'sync-exited')
+    return failed(`Hermes upstream sync exited ${code ?? 'without a status'}.`, 'sync-exited', output)
   }
 
-  return (
-    parseUpstreamSyncResult(output) ??
-    failed('Hermes upstream sync exited successfully without returning a result.', 'missing-result')
-  )
+  const result = parseUpstreamSyncResult(output)
+
+  return result
+    ? { ...result, output: cleanOutput(output) }
+    : failed('Hermes upstream sync exited successfully without returning a result.', 'missing-result', output)
 }
 
 export function stopUpstreamSyncChild(
@@ -147,14 +159,15 @@ export function runUpstreamSync(options: {
 
     child.stdout?.on('data', append)
     child.stderr?.on('data', append)
-    child.once('error', error => done(failed(error.message, 'spawn-failed')))
+    child.once('error', error => done(failed(error.message, 'spawn-failed', output)))
     child.once('close', code => done(resolveUpstreamSyncExit(output, code)))
     timer = setTimeout(() => {
       stopUpstreamSyncChild(child)
       done(
         failed(
           `Hermes upstream sync exceeded ${Math.ceil((options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 60_000)} minutes and was stopped.`,
-          'sync-timeout'
+          'sync-timeout',
+          output
         )
       )
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)

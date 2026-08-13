@@ -62,11 +62,31 @@ describe('host.updates', () => {
   })
 
   it('exposes detached backend apply state and applies through the core backend updater', async () => {
-    const applyState = { applying: true, stage: 'pull', message: 'Updating backend', percent: 42, error: null, command: null }
+    const applyState = {
+      applying: true,
+      stage: 'pull',
+      message: 'Updating backend',
+      percent: 42,
+      error: null,
+      command: null,
+      log: [
+        { at: 1, message: 'Fetching upstream…', stage: 'pull' },
+        { at: 2, message: 'Installing dependencies…', stage: 'pull' }
+      ]
+    }
+
     updateMocks.$backendUpdateApply.get.mockReturnValue(applyState)
     updateMocks.applyBackendUpdate.mockResolvedValue({ ok: true })
 
-    expect(host.updates.getBackendApply()).toEqual(applyState)
+    expect(host.updates.getBackendApply()).toEqual({
+      applying: true,
+      stage: 'pull',
+      message: 'Updating backend',
+      percent: 42,
+      error: null,
+      command: null,
+      output: 'Fetching upstream…\nInstalling dependencies…'
+    })
     expect(host.updates.getBackendApply()).not.toBe(applyState)
     await expect(host.updates.applyBackend()).resolves.toEqual({ ok: true })
     expect(updateMocks.applyBackendUpdate).toHaveBeenCalledOnce()
@@ -89,6 +109,7 @@ describe('host.updates', () => {
     updateMocks.getDesktopUpdateStage.mockResolvedValue({
       supported: true,
       phase: 'ready',
+      output: 'Fetching Axiom…\nBuilding Desktop…',
       manifest: { baseSha: 'a'.repeat(40), targetSha: 'b'.repeat(40), branch: 'axiom', createdAt: 10 }
     })
     updateMocks.getDesktopUpdateHistory.mockResolvedValue([
@@ -108,7 +129,11 @@ describe('host.updates', () => {
       status: { message: 'Close the second Desktop window before preparing again.' }
     })
 
-    await expect(host.updates.getStage()).resolves.toMatchObject({ state: 'ready', branch: 'axiom' })
+    await expect(host.updates.getStage()).resolves.toMatchObject({
+      state: 'ready',
+      branch: 'axiom',
+      output: 'Fetching Axiom…\nBuilding Desktop…'
+    })
     await expect(host.updates.getHistory()).resolves.toMatchObject([
       { id: 'one', result: 'completed', commits: [{ summary: 'fix: update' }] }
     ])

@@ -58,6 +58,7 @@ export interface UpstreamSyncSnapshot {
   targetSha?: string
   worktree?: string
   reportPath?: string
+  output?: string
 }
 
 export const canSyncUpstream = (
@@ -72,6 +73,7 @@ export interface BackendUpdateApplySnapshot {
   percent: number | null
   error: string | null
   command: string | null
+  output?: string
 }
 
 export interface UpdateCommit {
@@ -129,6 +131,7 @@ export interface UpdateStageSnapshot {
   shortstat?: string
   filesChanged?: number
   fallbackCommand?: string
+  output?: string
 }
 
 export type UpdateHistoryResult = 'cancelled' | 'completed' | 'failed'

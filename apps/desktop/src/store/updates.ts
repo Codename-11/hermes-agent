@@ -570,12 +570,12 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 }
 
 const BACKEND_ACTION_POLL_MS = 1500
-const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
 function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   if (returned) {
-    $backendUpdateApply.set(IDLE)
+    const output = $backendUpdateApply.get().log
+    $backendUpdateApply.set({ ...IDLE, log: output })
     setUpdateOverlayOpen(false)
     void checkBackendUpdates()
 
@@ -674,13 +674,14 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     })
 
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
-    // Backups, dependency repair, and builds can legitimately take several
-    // minutes. Keep the generous cap only as a guard against a stuck action.
-    const actionDeadline = Date.now() + BACKEND_ACTION_MAX_MS
-    let deadline = actionDeadline
+    // The action endpoint is the durable receipt. As long as it confirms that
+    // the updater is still running, do not invent a renderer-side deadline —
+    // upstream reconciliation and dependency rebuilds can legitimately exceed
+    // ten minutes. A missing backend is different and remains recovery-bounded.
+    let reconnectDeadline: number | null = null
     let reconnecting = false
 
-    while (Date.now() < deadline) {
+    while (reconnectDeadline == null || Date.now() < reconnectDeadline) {
       await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_ACTION_POLL_MS))
 
       try {
@@ -689,7 +690,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       } catch {
         if (!reconnecting) {
           reconnecting = true
-          deadline = Date.now() + BACKEND_RETURN_MAX_MS
+          reconnectDeadline = Date.now() + BACKEND_RETURN_MAX_MS
           $backendUpdateApply.set({
             ...$backendUpdateApply.get(),
             applying: true,
@@ -704,7 +705,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       if (last.running) {
         if (reconnecting) {
           reconnecting = false
-          deadline = actionDeadline
+          reconnectDeadline = null
           $backendUpdateApply.set({
             ...$backendUpdateApply.get(),
             applying: true,

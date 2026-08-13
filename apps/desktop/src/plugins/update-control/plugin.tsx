@@ -5,6 +5,7 @@ import {
   Codicon,
   type HermesPlugin,
   host,
+  LogView,
   PALETTE_AREA,
   type PaletteContribution,
   SegmentedControl,
@@ -239,7 +240,38 @@ function UpstreamSyncActions({
           {busy ? 'Syncing…' : 'Sync Hermes into Axiom'}
         </Button>
       </div>
+      <CliOutput label="Reconcile CLI output" output={result?.output} />
     </section>
+  )
+}
+
+function CliOutput({ label, output }: { label: string; output?: null | string }) {
+  const [open, setOpen] = useState(false)
+
+  if (!output?.trim()) {
+    return null
+  }
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-md border border-(--ui-stroke-tertiary)">
+      <button
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs font-medium text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover)"
+        onClick={() => setOpen(value => !value)}
+        type="button"
+      >
+        <span className="flex items-center gap-2">
+          <Codicon name="terminal" size="0.8rem" />
+          {label}
+        </span>
+        <Codicon name={open ? 'chevron-down' : 'chevron-right'} size="0.75rem" />
+      </button>
+      {open ? (
+        <LogView className="max-h-72 rounded-none border-x-0 border-b-0" role="log">
+          {output}
+        </LogView>
+      ) : null}
+    </div>
   )
 }
 
@@ -330,7 +362,7 @@ function UpdateControlPane() {
     }
   })
 
-  const refresh = useMutation({
+  const recheck = useMutation({
     mutationFn: async () => {
       setActionError(null)
 
@@ -343,6 +375,11 @@ function UpdateControlPane() {
     onError: error => setActionError(friendlyError(error)),
     onSettled: invalidate
   })
+
+  const refreshView = () => {
+    setActionError(null)
+    invalidate()
+  }
 
   const discardAndRefresh = useMutation({
     mutationFn: async () => {
@@ -436,15 +473,26 @@ function UpdateControlPane() {
 
         <div className="mt-5 flex flex-col gap-3 border-t border-(--ui-stroke-tertiary) pt-4 sm:flex-row sm:items-center sm:justify-between">
           <SegmentedControl onChange={setTarget} options={TARGET_OPTIONS} value={target} />
-          <Button
-            disabled={refresh.isPending || updateMutationBusy || discardAndRefresh.isPending}
-            onClick={() => refresh.mutate()}
-            size="sm"
-            variant="ghost"
-          >
-            <Codicon className={cn(refresh.isPending && 'animate-spin')} name="refresh" size="0.8rem" />
-            {refresh.isPending ? 'Checking…' : target === 'client' ? 'Check Desktop' : 'Check Backend'}
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              disabled={recheck.isPending || updateMutationBusy || discardAndRefresh.isPending}
+              onClick={refreshView}
+              size="sm"
+              variant="ghost"
+            >
+              <Codicon name="sync" size="0.8rem" />
+              Refresh view
+            </Button>
+            <Button
+              disabled={recheck.isPending || updateMutationBusy || discardAndRefresh.isPending}
+              onClick={() => recheck.mutate()}
+              size="sm"
+              variant="outline"
+            >
+              <Codicon className={cn(recheck.isPending && 'animate-spin')} name="refresh" size="0.8rem" />
+              {recheck.isPending ? 'Rechecking…' : target === 'client' ? 'Recheck Desktop' : 'Recheck Backend'}
+            </Button>
+          </div>
         </div>
 
         {statusQuery.isPending ? (
@@ -471,12 +519,12 @@ function UpdateControlPane() {
 
         {primaryLoading ? null : target === 'client' ? (
           <UpdateActions
-            busy={updateMutationBusy || refresh.isPending || discardAndRefresh.isPending}
+            busy={updateMutationBusy || recheck.isPending || discardAndRefresh.isPending}
             onCancel={() => lifecycle.mutate('cancel')}
             onDiscard={() => lifecycle.mutate('discard')}
             onDiscardAndRefresh={() => discardAndRefresh.mutate()}
             onPrepare={() => lifecycle.mutate('prepare')}
-            onRefresh={() => refresh.mutate()}
+            onRefresh={() => recheck.mutate()}
             onRestart={() => lifecycle.mutate('restart')}
             onStandardUpdate={standardUpdate}
             stage={stage}
@@ -485,12 +533,13 @@ function UpdateControlPane() {
         ) : (
           <BackendUpdateActions
             apply={backendApply}
-            busy={backendUpdate.isPending || refresh.isPending}
+            busy={backendUpdate.isPending || recheck.isPending}
             onApply={() => backendUpdate.mutate()}
-            onRefresh={() => refresh.mutate()}
+            onRefresh={() => recheck.mutate()}
             status={status}
           />
         )}
+        {target === 'client' ? <CliOutput label="Desktop CLI output" output={stage?.output} /> : null}
 
         {stage?.fallbackCommand || status?.fallbackCommand ? (
           <div className="mt-4 border-l-2 border-(--ui-accent) pl-3 text-xs leading-5 text-(--ui-text-tertiary)">

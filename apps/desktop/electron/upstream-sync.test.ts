@@ -25,6 +25,18 @@ describe('upstream sync result parsing', () => {
 })
 
 describe('upstream sync process outcomes', () => {
+  test('preserves clean CLI output beside a successful structured result', () => {
+    const output =
+      '→ Fetching upstream…\n✓ Validated deploy branch\nHERMES_UPSTREAM_SYNC_RESULT={"ok":true,"state":"completed","message":"Published."}\n'
+
+    assert.deepEqual(resolveUpstreamSyncExit(output, 0), {
+      ok: true,
+      state: 'completed',
+      message: 'Published.',
+      output: '→ Fetching upstream…\n✓ Validated deploy branch'
+    })
+  })
+
   test('rejects a success payload when the process later exits unsuccessfully', () => {
     const output = 'HERMES_UPSTREAM_SYNC_RESULT={"ok":true,"state":"completed","message":"Published."}\n'
 
@@ -32,7 +44,8 @@ describe('upstream sync process outcomes', () => {
       ok: false,
       state: 'failed',
       error: 'sync-exited',
-      message: 'Hermes upstream sync exited 1.'
+      message: 'Hermes upstream sync exited 1.',
+      output: undefined
     })
   })
 
@@ -41,7 +54,8 @@ describe('upstream sync process outcomes', () => {
       ok: false,
       state: 'failed',
       error: 'missing-result',
-      message: 'Hermes upstream sync exited successfully without returning a result.'
+      message: 'Hermes upstream sync exited successfully without returning a result.',
+      output: 'normal output'
     })
   })
 

@@ -1,4 +1,5 @@
-import { Badge, Button, cn, Codicon, StatusDot } from '@hermes/plugin-sdk'
+import { Badge, Button, cn, Codicon, LogView, StatusDot } from '@hermes/plugin-sdk'
+import { useState } from 'react'
 
 import { type BackendUpdateApplySnapshot, hasUpdate, type UpdateSummary } from './model'
 
@@ -15,6 +16,7 @@ export function BackendUpdateActions({
   onRefresh: () => void
   status: UpdateSummary | null
 }) {
+  const [outputOpen, setOutputOpen] = useState(false)
   const updating = apply?.applying === true
   const failed = !!apply?.error || apply?.stage === 'error'
   const manual = apply?.stage === 'manual'
@@ -60,7 +62,7 @@ export function BackendUpdateActions({
             </Button>
           ) : (
             <Button disabled={busy} onClick={onRefresh} size="sm" variant="outline">
-              Check again
+              Recheck source
             </Button>
           )}
         </div>
@@ -81,6 +83,28 @@ export function BackendUpdateActions({
       {apply?.command ? (
         <div className={cn('mt-4 border-l-2 border-(--ui-accent) pl-3 text-xs leading-5 text-(--ui-text-tertiary)')}>
           Manual command: <code className="select-all font-mono text-(--ui-text-secondary)">{apply.command}</code>
+        </div>
+      ) : null}
+
+      {apply?.output?.trim() ? (
+        <div className="mt-4 overflow-hidden rounded-md border border-(--ui-stroke-tertiary)">
+          <button
+            aria-expanded={outputOpen}
+            className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs font-medium text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover)"
+            onClick={() => setOutputOpen(value => !value)}
+            type="button"
+          >
+            <span className="flex items-center gap-2">
+              <Codicon name="terminal" size="0.8rem" />
+              Backend CLI output
+            </span>
+            <Codicon name={outputOpen ? 'chevron-down' : 'chevron-right'} size="0.75rem" />
+          </button>
+          {outputOpen ? (
+            <LogView className="max-h-72 rounded-none border-x-0 border-b-0" role="log">
+              {apply.output}
+            </LogView>
+          ) : null}
         </div>
       ) : null}
     </section>
