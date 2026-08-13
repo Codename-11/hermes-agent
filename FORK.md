@@ -134,6 +134,11 @@ only `update-control:panel`; it must not disable the plugin or remove its
 sidebar, status-bar, and command-palette reopen actions. Contribution-registry
 refreshes must preserve the explicit dismissal until one of those actions runs.
 
+Its Hermes upstream history is a compact semantic table rather than an
+unbounded commit list. Scope filtering preserves newest-first order, renders 25
+commits per page by default, and returns to page one when the filter or refreshed
+commit payload changes.
+
 The reusable SDK seam is plugin-scoped: a pane opts into
 `data: { closeBehavior: 'dismiss' }`, and `ctx.panes.reveal(localId)` restores,
 unhides, and focuses the namespaced pane. Generic plugin panes retain the
