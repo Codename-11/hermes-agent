@@ -27,7 +27,7 @@ import {
   openFindBar
 } from '@/store/find-in-page'
 import { toggleHud } from '@/store/hud'
-import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
+import { $capture, $comboIndex, bindingAllowedForAction, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
   setFileBrowserOpen,
@@ -352,6 +352,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         const combo = comboFromEvent(event)
 
         if (!combo) {
+          return
+        }
+
+        // Dictation must remain reachable while the composer owns focus. Keep
+        // capture armed after a bare/Shift-only key instead of saving a binding
+        // the normal editable-target gate will correctly refuse to dispatch.
+        if (!bindingAllowedForAction(capturing, combo)) {
           return
         }
 

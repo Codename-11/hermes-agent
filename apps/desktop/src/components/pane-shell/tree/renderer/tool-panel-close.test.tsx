@@ -9,6 +9,7 @@ import {
   declareDefaultTree,
   markCollapsePane,
   noteActiveTreeGroup,
+  noteHoveredTreeGroup,
   registerPaneCloser,
   setTreeGroupMinimized
 } from '../store'
@@ -62,6 +63,9 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup()
+  registerPaneCloser('workspace')
+  noteActiveTreeGroup(null)
+  noteHoveredTreeGroup(null)
   disposers.splice(0).forEach(dispose => dispose())
 })
 
@@ -77,7 +81,7 @@ const zoneAt = (index: number) => {
   return (node.type === 'split' ? node.children[index] : node) as never
 }
 
-const tabEl = (paneId: string) => document.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)
+const tabEl = (paneId: string) => window.document.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)
 
 describe('right-clicking a tool panel tab', () => {
   it('offers Close when logs is STACKED with the terminal', async () => {
@@ -92,6 +96,20 @@ describe('right-clicking a tool panel tab', () => {
     openContextMenu(tabEl('logs')!)
 
     expect(await screen.findByRole('menuitem', { name: /^close$/i })).toBeTruthy()
+  })
+
+  it('offers semantic Close for the unremovable workspace pane when wiring registered a closer', async () => {
+    const closeWorkspace = vi.fn()
+    const before = $layoutTree.get()
+
+    registerPaneCloser('workspace', closeWorkspace)
+    render(<TreeGroup node={group(['workspace', 'logs'], { active: 'workspace', id: 'grp-menu-test' })} />)
+
+    openContextMenu(tabEl('workspace')!)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^close$/i }))
+
+    expect(closeWorkspace).toHaveBeenCalledOnce()
+    expect($layoutTree.get()).toBe(before)
   })
 
   it('offers Close when logs is ALONE in its zone', async () => {

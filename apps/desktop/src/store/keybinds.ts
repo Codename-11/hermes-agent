@@ -2,10 +2,16 @@ import { atom, computed } from 'nanostores'
 
 import { $registryVersion } from '@/contrib/registry'
 import { allKeybindActions, defaultBindings, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
-import { canonicalizeCombo } from '@/lib/keybinds/combo'
+import { canonicalizeCombo, comboAllowedInInput } from '@/lib/keybinds/combo'
 import { arraysEqual, persistString, storedString } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
+
+/** Dictation is expected to fire while a textarea/contenteditable owns focus.
+ * Bare and Shift-only printable bindings are therefore unreachable by design. */
+export function bindingAllowedForAction(actionId: string, combo: string): boolean {
+  return actionId !== 'composer.dictate' || comboAllowedInInput(canonicalizeCombo(combo))
+}
 
 // The user's raw stored overrides. Kept verbatim so an action CONTRIBUTED
 // after module init (plugins register late) still resolves its saved rebind —
@@ -43,7 +49,7 @@ function loadBindings(): KeybindBindings {
   const base = defaultBindings()
 
   for (const id of Object.keys(base)) {
-    if (storedOverrides[id]) {
+    if (storedOverrides[id]?.every(combo => bindingAllowedForAction(id, combo))) {
       base[id] = storedOverrides[id]
     }
   }
@@ -98,7 +104,7 @@ export const $comboIndex = computed([$bindings, $registryVersion], bindings => {
 })
 
 export function setBinding(actionId: string, combos: string[]): void {
-  if (!keybindAction(actionId)) {
+  if (!keybindAction(actionId) || !combos.every(combo => bindingAllowedForAction(actionId, combo))) {
     return
   }
 

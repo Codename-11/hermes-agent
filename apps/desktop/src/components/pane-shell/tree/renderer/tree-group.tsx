@@ -297,7 +297,10 @@ export function TreeGroup({
   const closable = () => {
     const paneId = targetPane()
 
-    return paneChrome(paneFor(paneId)).uncloseable ? undefined : paneId
+    // `uncloseable` means the pane cannot leave the structural tree. A semantic
+    // closer may still exist (workspace: clear the draft / advance tabs), and
+    // must remain available from the generic menu on a fresh draft.
+    return paneChrome(paneFor(paneId)).uncloseable && !panesWithCloser.has(paneId) ? undefined : paneId
   }
 
   // The zone hosting the uncloseable workspace never minimizes — collapsing

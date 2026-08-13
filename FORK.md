@@ -219,9 +219,13 @@ Desktop carries three independent, user-rebindable composer actions:
 `composer.dictate` toggles one-shot dictation in exactly the active visible
 composer, `composer.autoSpeak` persists a profile-qualified setting for exactly
 the active conversation's durable lineage id, and `composer.wakeWord`
-delegates to the gateway-owned wake listener. All three ship unbound. They must
-remain separate from `composer.voice` (the full voice-conversation toggle), and
-Desktop's keybind registry—not `voice.record_key`—is authoritative.
+delegates to the gateway-owned wake listener. Dictation ships on
+`mod+shift+d` so it can be captured while the composer owns focus; existing
+bare/Shift-only dictation overrides migrate to that default, and the keybind
+editor refuses to save a dictation chord without a primary Ctrl/Cmd modifier.
+Auto-speak and wake word remain unbound. All three must remain separate from
+`composer.voice` (the full voice-conversation toggle), and Desktop's keybind
+registry—not `voice.record_key`—is authoritative.
 
 Source carry for conversation-owned read-aloud: `633be55974`. This extends the
 existing upstream voice/composer path; it does not introduce a second playback
@@ -242,6 +246,7 @@ voice preference/wake stores, and Desktop i18n labels. Focused verification:
 cd apps/desktop
 npx vitest run --project ui \
   src/lib/keybinds/voice-actions.test.ts \
+  src/store/keybinds-dictation.test.ts \
   src/app/hooks/use-keybinds.test.ts \
   src/app/chat/composer/focus.test.ts \
   src/app/chat/composer/controls.test.tsx \
@@ -902,6 +907,9 @@ Protected behavior:
   pane open/resize state, dismissed/user-placed panes, split-share memory, rail
   orientation, terminal/review visibility, selected review file, and per-zone
   composer pop-out geometry all round-trip independently;
+- a fresh workspace draft still offers **Close** in the tab context menu when
+  sibling session tabs exist: the registered semantic closer promotes the next
+  session while the structural `workspace` pane remains unremovable;
 - profile switches only remount the visible pane membership. Session tile/runtime
   stores retain each profile's backend state, so hiding another profile's tabs
   never cancels its active turn;

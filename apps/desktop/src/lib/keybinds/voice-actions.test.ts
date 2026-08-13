@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { defaultBindings, KEYBIND_ACTIONS } from './actions'
 
 describe('voice keybind actions', () => {
-  it('registers distinct unbound actions without changing the voice-conversation action', () => {
+  it('ships dictation on a primary-modifier chord that works while the composer owns focus', () => {
     const byId = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
 
-    expect(byId.get('composer.dictate')).toMatchObject({ category: 'composer', defaults: [] })
+    expect(byId.get('composer.dictate')).toMatchObject({ category: 'composer', defaults: ['mod+shift+d'] })
     expect(byId.get('composer.autoSpeak')).toMatchObject({ category: 'composer', defaults: [] })
     expect(byId.get('composer.wakeWord')).toMatchObject({ category: 'composer', defaults: [] })
     expect(byId.get('composer.voice')).toBeDefined()

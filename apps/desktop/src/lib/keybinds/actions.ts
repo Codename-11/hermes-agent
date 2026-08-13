@@ -66,9 +66,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // chord, so ship it unbound there (rebindable in the panel) rather than
   // stealing the long-standing sidebar binding.
   { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
-  // Independent voice controls. They intentionally ship unbound: the desktop
-  // registry is authoritative and users can choose chords that fit their map.
-  { id: 'composer.dictate', category: 'composer', defaults: [] },
+  // Dictation must work while the composer owns focus, so it needs a primary
+  // modifier chord; bare printable keys are deliberately allowed to type.
+  { id: 'composer.dictate', category: 'composer', defaults: ['mod+shift+d'] },
+  // Independent voice controls remain rebindable and unbound by default.
   { id: 'composer.autoSpeak', category: 'composer', defaults: [] },
   { id: 'composer.wakeWord', category: 'composer', defaults: [] },
 
