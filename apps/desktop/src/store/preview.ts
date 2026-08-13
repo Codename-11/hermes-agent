@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { persistentAtom } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
@@ -14,8 +14,8 @@ import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '
  * a tool result, a file-browser click, and an artifact card all travel the
  * same road and behave identically once open.
  *
- * Tabs are global and outlive the session that created them, like tabs
- * anywhere else — they close when you close them.
+ * Tabs belong to the active profile workspace and outlive the session that
+ * created them. Switching profiles swaps the whole preview set synchronously.
  */
 
 export interface PreviewTarget {
@@ -61,6 +61,7 @@ export interface PreviewTab {
 }
 
 const TABS_STORAGE_KEY = 'hermes.desktop.previewTabs.v2'
+const PROFILE_TABS_STORAGE_KEY = 'hermes.desktop.profilePreviewTabs.v1'
 /** Superseded by the tab list above; cleared so it can't leak forever. */
 const LEGACY_SESSION_REGISTRY_KEY = 'hermes.desktop.sessionPreviews.v1'
 
@@ -134,20 +135,25 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
     .map(tab => (tab.target.kind === 'url' ? { ...tab, id: previewTabId(tab.target) } : tab))
 }
 
-export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
-  decode: decodePreviewTabs,
-  // Inline bytes are not restorable. Strip them from images, and skip remote
-  // HTML and artifact tabs that cannot render without their in-memory payload.
-  encode: tabs =>
-    JSON.stringify(
-      tabs.filter(
-        tab =>
-          tab.target.kind !== 'artifact' &&
-          !tab.target.transient &&
-          !(tab.target.previewKind === 'html' && tab.target.dataUrl)
-      ),
-      (key, value) => (key === 'dataUrl' ? undefined : value)
-    )
+export const $previewTabs = profilePersistentAtom<PreviewTab[]>({
+  codec: {
+    decode: decodePreviewTabs,
+    // Inline bytes are not restorable. Strip them from images, and skip remote
+    // HTML and artifact tabs that cannot render without their in-memory payload.
+    encode: tabs =>
+      JSON.stringify(
+        tabs.filter(
+          tab =>
+            tab.target.kind !== 'artifact' &&
+            !tab.target.transient &&
+            !(tab.target.previewKind === 'html' && tab.target.dataUrl)
+        ),
+        (key, value) => (key === 'dataUrl' ? undefined : value)
+      )
+  },
+  fallback: () => [],
+  key: PROFILE_TABS_STORAGE_KEY,
+  legacyKey: TABS_STORAGE_KEY
 })
 
 if (typeof window !== 'undefined') {

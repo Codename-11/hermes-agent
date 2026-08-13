@@ -873,7 +873,7 @@ NODE_ENV=test npx vitest run --project electron electron/connection-config.test.
 NODE_ENV=test npx vitest run --environment jsdom src/app/settings/gateway-settings.remote-profiles.test.ts
 ```
 
-### Desktop profile visibility and profile-scoped new chat — local carry pending upstream equivalent
+### Desktop profile visibility, profile-scoped tabs, and workspace appearance — local carry pending upstream equivalent
 
 Axiom lets operators hide named profiles from Desktop browsing without deleting,
 disabling, or disconnecting them. The preference is Desktop-local presentation
@@ -895,20 +895,62 @@ Protected behavior:
 - the same context menu exposes a separate **New window** action. Its optional
   profile travels through the typed preload/IPC bridge and a pre-hash renderer
   query so gateway boot adopts the clicked profile before connecting; generic
-  File/keyboard New Window remains unqualified.
+  File/keyboard New Window remains unqualified;
+- switching profiles swaps the complete profile-owned workspace rather than
+  reusing the previous profile's tab strip and pane tree: session tabs, route/page
+  tiles, file/browser/artifact previews, active preview, tree geometry/preset,
+  pane open/resize state, dismissed/user-placed panes, split-share memory, rail
+  orientation, terminal/review visibility, selected review file, and per-zone
+  composer pop-out geometry all round-trip independently;
+- profile switches only remount the visible pane membership. Session tile/runtime
+  stores retain each profile's backend state, so hiding another profile's tabs
+  never cancels its active turn;
+- pre-profile flat storage migrates into the `default` workspace and remains its
+  rollback-compatible mirror. Named profiles begin from declared pane/layout
+  defaults and persist in profile maps; secondary chat windows still never write
+  the primary window's workspace;
+- profile bundle export/import reads or writes the named profile's layout without
+  switching or overwriting the currently visible profile;
+- Appearance scope stays intentionally mixed: skin/mode, terminal font, pet,
+  backend theme, and workspace presentation follow the profile; UI scale,
+  translucency/backdrop, language, accessibility/motion, embed consent, tool-card
+  verbosity, installed-theme catalog, keybinds, and sidebar sort/grouping remain
+  operator/app-global preferences.
 
 Primary files: `apps/desktop/src/store/profile.ts`,
 `apps/desktop/src/app/chat/sidebar/{profile-switcher,index,filter-menu}.tsx`,
 `apps/desktop/src/app/session/hooks/use-session-actions/index.ts`,
+`apps/desktop/src/lib/profile-persisted.ts`,
 `apps/desktop/src/components/pane-shell/tree/store.ts`,
+`apps/desktop/src/store/{panes,route-tiles,preview,layout,review,
+composer-popout,profile-share}.ts`,
+`apps/desktop/src/app/{chat/pane-mirror,right-sidebar/store}.ts`,
 `apps/desktop/src/store/windows.ts`, `apps/desktop/electron/{main,preload,
 session-windows}.ts`, and
 `apps/desktop/src/app/settings/profile-visibility-settings.tsx`.
 
 Drop condition: upstream provides equivalent persisted profile visibility controls
 and profile-icon context actions whose current-window tab and peer window are
-explicitly bound to the clicked profile, with hidden profiles still recoverable
-and their data untouched.
+explicitly bound to the clicked profile, plus equivalent profile-owned tab,
+layout, pane, preview, and workspace-presentation persistence with safe legacy
+migration, non-active profile import/export, and hidden profiles still
+recoverable with backend work/data untouched.
+
+Focused checks:
+
+```bash
+cd apps/desktop
+npm run typecheck
+NODE_ENV=test npm run test:ui -- \
+  src/lib/profile-persisted.test.ts \
+  src/store/profile-workspace-persistence.test.ts \
+  src/store/profile-share.test.ts \
+  src/themes/profile-theme.test.ts \
+  src/store/composer-popout.test.ts \
+  src/store/preview.test.ts \
+  src/store/panes.test.ts \
+  src/store/session-states.test.ts
+```
 
 ### Desktop project overview, default project, and in-chat live status — local carry pending upstream equivalent
 

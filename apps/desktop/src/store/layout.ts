@@ -5,6 +5,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
@@ -52,7 +53,9 @@ const SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY = 'hermes.desktop.workspaceNodeOpe
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktrees'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
+const PROFILE_PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.profilePanesFlipped.v1'
 const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
+const PROFILE_RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.profileRightRailActiveTab.v1'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
@@ -79,9 +82,14 @@ export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
 
 // Persisted so a relaunch reopens the same rail tab. Null when the rail has no
 // tabs; a restored id with no matching tab is reconciled in the preview store.
-export const $rightRailActiveTabId = persistentAtom<RightRailTabId | null>(RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY, null, {
-  decode: raw => (raw ? (raw as RightRailTabId) : null),
-  encode: tabId => tabId ?? ''
+export const $rightRailActiveTabId = profilePersistentAtom<RightRailTabId | null>({
+  codec: {
+    decode: raw => (raw ? (raw as RightRailTabId) : null),
+    encode: tabId => tabId ?? null
+  },
+  fallback: () => null,
+  key: PROFILE_RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY,
+  legacyKey: RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY
 })
 
 export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states => {
@@ -378,7 +386,12 @@ export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
 
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
-export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
+export const $panesFlipped = profilePersistentAtom({
+  codec: Codecs.bool,
+  fallback: () => false,
+  key: PROFILE_PANES_FLIPPED_STORAGE_KEY,
+  legacyKey: PANES_FLIPPED_STORAGE_KEY
+})
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 

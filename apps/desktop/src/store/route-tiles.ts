@@ -1,6 +1,5 @@
-import { atom } from 'nanostores'
-
-import { readJson, writeJson } from '@/lib/storage'
+import { Codecs } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
 
 import type { SplitDir } from './session-states'
 
@@ -17,10 +16,9 @@ export interface RouteTile {
 }
 
 const TILES_KEY = 'hermes.desktop.routeTiles.v1'
+const PROFILE_TILES_KEY = 'hermes.desktop.profileRouteTiles.v1'
 
-function loadTiles(): RouteTile[] {
-  const parsed = readJson<unknown>(TILES_KEY)
-
+function sanitizeTiles(parsed: unknown): RouteTile[] {
   return Array.isArray(parsed)
     ? parsed
         .filter((t): t is RouteTile => Boolean(t && typeof (t as RouteTile).path === 'string'))
@@ -28,11 +26,15 @@ function loadTiles(): RouteTile[] {
     : []
 }
 
-export const $routeTiles = atom<RouteTile[]>(loadTiles())
+export const $routeTiles = profilePersistentAtom<RouteTile[]>({
+  codec: Codecs.json(sanitizeTiles),
+  fallback: () => [],
+  key: PROFILE_TILES_KEY,
+  legacyKey: TILES_KEY
+})
 
 function saveTiles(tiles: RouteTile[]) {
   $routeTiles.set(tiles)
-  writeJson(TILES_KEY, tiles.length === 0 ? null : tiles)
 }
 
 /** Open (or front) a page tile for a route, docked on `dir` (default right).

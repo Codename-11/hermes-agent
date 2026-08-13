@@ -26,7 +26,11 @@ const { applyDesktopOverlay, buildDesktopOverlay, exportProfileBundle } = await 
 const { $profileColors, setProfileColor } = await import('./profile')
 const { modePref, skinPref } = await import('@/themes/context')
 const { $userThemes } = await import('@/themes/user-themes')
-const { $layoutTree } = await import('@/components/pane-shell/tree/store')
+
+const { $layoutTree, activePresetForProfile, layoutTreeForProfile } = await import(
+  '@/components/pane-shell/tree/store'
+)
+
 const { exportProfileArchive } = await import('@/hermes')
 
 // isValidTheme only requires background/foreground/primary at runtime; the
@@ -89,6 +93,17 @@ describe('applyDesktopOverlay', () => {
     expect(skinPref.resolve('glam-copy')).toBe('rose-quartz')
     expect(modePref.resolve('glam-copy')).toBe('dark')
     expect($profileColors.get()['glam-copy']).toBe('#e91e63')
+  })
+
+  it('assigns an imported layout to the named profile without replacing the visible workspace', () => {
+    const current = $layoutTree.get()
+    const imported = { active: 'workspace', id: 'imported-main', panes: ['workspace'], type: 'group' as const }
+
+    applyDesktopOverlay('glam-copy', { layoutTree: imported })
+
+    expect($layoutTree.get()).toBe(current)
+    expect(layoutTreeForProfile('glam-copy')).toEqual(imported)
+    expect(activePresetForProfile('glam-copy')).toBe('custom')
   })
 
   it('ignores a skin that resolves to nothing and junk layout trees', () => {

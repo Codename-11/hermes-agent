@@ -1,15 +1,20 @@
 import { atom } from 'nanostores'
 
-import { persistBoolean, storedBoolean } from '@/lib/storage'
+import { Codecs } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
 
 export type RightSidebarTabId = 'files' | 'git' | 'terminal' | 'web'
 
 const TAKEOVER_KEY = 'hermes.desktop.terminalTakeover'
+const PROFILE_TAKEOVER_KEY = 'hermes.desktop.profileTerminalTakeover.v1'
 
 export const $rightSidebarTab = atom<RightSidebarTabId>('files')
-export const $terminalTakeover = atom(storedBoolean(TAKEOVER_KEY, false))
-
-$terminalTakeover.subscribe(active => persistBoolean(TAKEOVER_KEY, active))
+export const $terminalTakeover = profilePersistentAtom({
+  codec: Codecs.bool,
+  fallback: () => false,
+  key: PROFILE_TAKEOVER_KEY,
+  legacyKey: TAKEOVER_KEY
+})
 
 export const setRightSidebarTab = (tab: RightSidebarTabId) => $rightSidebarTab.set(tab)
 export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(active)

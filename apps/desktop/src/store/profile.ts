@@ -1,5 +1,9 @@
 import { atom, computed } from 'nanostores'
 
+import { $activeGatewayProfile, normalizeProfileKey } from './profile-scope'
+
+export { $activeGatewayProfile, normalizeProfileKey } from './profile-scope'
+
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -17,14 +21,6 @@ import { activateChangeEventsProfile } from '@/store/live-sync'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
-
-// Canonical key for a profile: trimmed, empty → "default". Used everywhere we
-// compare a session's owning profile against the live gateway's profile.
-export function normalizeProfileKey(name: string | null | undefined): string {
-  const value = (name ?? '').trim()
-
-  return value || 'default'
-}
 
 // The profile the running local backend is actually scoped to (mirrors
 // /api/profiles/active `current`). "default" is the root ~/.hermes. This is the
@@ -181,10 +177,6 @@ export async function switchProfile(name: string): Promise<void> {
 // differs from the gateway's current profile, we lazily reconnect the single
 // gateway to that profile's backend (spawned on demand by the Electron pool).
 // A single-profile user never triggers a swap, so their path is unchanged.
-
-// The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot.
-export const $activeGatewayProfile = atom<string>('default')
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.

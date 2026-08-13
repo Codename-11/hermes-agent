@@ -10,7 +10,9 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { setPluginEnabled } from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
-import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
+import { Codecs } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
+import { writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
 import { isSecondaryWindow } from '@/store/windows'
@@ -45,43 +47,49 @@ import { rootChildSide } from './renderer/track-model'
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
 const STORAGE_KEY = 'hermes.desktop.layoutTree.v2'
+const PROFILE_STORAGE_KEY = 'hermes.desktop.profileLayoutTrees.v1'
+const ACTIVE_PRESET_KEY = 'hermes.desktop.layoutPreset.active'
+const PROFILE_ACTIVE_PRESET_KEY = 'hermes.desktop.profileLayoutPresets.v1'
 
 writeKey('hermes.desktop.layoutTree.v1', null)
 
 let defaultTree: LayoutNode | null = null
 
-function loadPersisted(): LayoutNode | null {
-  const parsed = readJson<unknown>(STORAGE_KEY)
-
+function sanitizeTree(parsed: unknown): LayoutNode | null {
   // Canonicalize on load: strips stale attributes older code persisted
   // (e.g. explicit headerHidden on lone-pane zones) and re-flattens.
   return isLayoutNode(parsed) ? normalize(parsed) : null
 }
 
-function persist(tree: LayoutNode | null) {
-  // A secondary window (single-chat pop-out) shares the origin's localStorage;
-  // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
-  if (isSecondaryWindow()) {
-    return
-  }
-
-  writeJson(STORAGE_KEY, tree)
-}
-
 /** The live tree (null until a default is declared). A secondary window ignores
  *  the persisted (primary) layout and boots to the default — nothing but its
  *  own routed session. */
-export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() ? null : loadPersisted())
+export const $layoutTree = isSecondaryWindow()
+  ? atom<LayoutNode | null>(null)
+  : profilePersistentAtom<LayoutNode | null>({
+      codec: Codecs.json(sanitizeTree),
+      // Created before the app root declares its default. Read the live
+      // blueprint when a never-visited profile is first selected.
+      fallback: () => defaultTree,
+      key: PROFILE_STORAGE_KEY,
+      legacyKey: STORAGE_KEY
+    })
 
 /**
  * Which layout preset the current tree came from; `'custom'` after the user
  * rearranges anything. Drives the picker's active highlight.
  */
-export const $activePresetId = atom<string>(readKey('hermes.desktop.layoutPreset.active') ?? 'default')
+export const $activePresetId = isSecondaryWindow()
+  ? atom<string>('default')
+  : profilePersistentAtom<string>({
+      codec: Codecs.text,
+      fallback: () => 'default',
+      key: PROFILE_ACTIVE_PRESET_KEY,
+      legacyKey: ACTIVE_PRESET_KEY
+    })
 
 export function markActivePreset(id: string) {
   $activePresetId.set(id)
-  writeKey('hermes.desktop.layoutPreset.active', id)
 }
 
 /** Pane id being dragged (tree drag session), null when idle. Also set to the
@@ -177,16 +185,20 @@ function frontPaneInGroup(paneId: string) {
  *    intent (a preview target, ⌘G) or a layout reset un-dismisses.
  */
 const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
+const PROFILE_DISMISSED_KEY = 'hermes.desktop.profileDismissedPanes.v1'
 
-function loadDismissed(): ReadonlySet<string> {
-  return new Set(readJson<string[]>(DISMISSED_KEY) ?? [])
-}
-
-export const $dismissedPanes = atom<ReadonlySet<string>>(loadDismissed())
+export const $dismissedPanes = profilePersistentAtom<ReadonlySet<string>>({
+  codec: {
+    decode: raw => new Set(Codecs.stringArray.decode(raw)),
+    encode: value => Codecs.stringArray.encode([...value])
+  },
+  fallback: () => new Set(),
+  key: PROFILE_DISMISSED_KEY,
+  legacyKey: DISMISSED_KEY
+})
 
 function saveDismissed(next: ReadonlySet<string>) {
   $dismissedPanes.set(next)
-  writeJson(DISMISSED_KEY, next.size === 0 ? null : [...next])
 }
 
 function setDismissed(paneId: string, dismissed: boolean) {
@@ -203,11 +215,21 @@ function setDismissed(paneId: string, dismissed: boolean) {
 // re-open split the anchor zone [1, 1] again: each agent-triggered browser
 // open re-took half the chat, whatever the user had resized it to.
 const PANE_SHARE_KEY = 'hermes.desktop.paneShare.v1'
-
-const paneShares: Record<string, number> = readJson<Record<string, number>>(PANE_SHARE_KEY) ?? {}
+const PROFILE_PANE_SHARE_KEY = 'hermes.desktop.profilePaneShares.v1'
 
 const validShare = (share: unknown): share is number =>
   typeof share === 'number' && Number.isFinite(share) && share > 0 && share < 1
+
+const $paneShares = profilePersistentAtom<Record<string, number>>({
+  codec: Codecs.json(value =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).filter(([, share]) => validShare(share)))
+      : {}
+  ),
+  fallback: () => ({}),
+  key: PROFILE_PANE_SHARE_KEY,
+  legacyKey: PANE_SHARE_KEY
+})
 
 function rememberPaneShare(tree: LayoutNode, paneId: string) {
   const zone = findGroupOfPane(tree, paneId)
@@ -233,15 +255,14 @@ function rememberPaneShare(tree: LayoutNode, paneId: string) {
   const share = pair > 0 ? (parent.weights[at] ?? 1) / pair : null
 
   if (validShare(share)) {
-    paneShares[paneId] = share
-    writeJson(PANE_SHARE_KEY, paneShares)
+    $paneShares.set({ ...$paneShares.get(), [paneId]: share })
   }
 }
 
 /** The [target, added] weight pair a re-inserted pane's edge split should get,
  *  or undefined for the even default. Persisted state is untrusted. */
 function recalledEdgeWeights(paneId: string): [number, number] | undefined {
-  const share = paneShares[paneId]
+  const share = $paneShares.get()[paneId]
 
   return validShare(share) ? [1 - share, share] : undefined
 }
@@ -1220,7 +1241,6 @@ function commit(next: LayoutNode | null) {
   }
 
   $layoutTree.set(next)
-  persist(next)
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,12 +1251,20 @@ function commit(next: LayoutNode | null) {
 // ---------------------------------------------------------------------------
 
 const USER_PLACED_KEY = 'hermes.desktop.userPlacedPanes.v1'
+const PROFILE_USER_PLACED_KEY = 'hermes.desktop.profileUserPlacedPanes.v1'
 
-export const $userPlacedPanes = atom<ReadonlySet<string>>(new Set(readJson<string[]>(USER_PLACED_KEY) ?? []))
+export const $userPlacedPanes = profilePersistentAtom<ReadonlySet<string>>({
+  codec: {
+    decode: raw => new Set(Codecs.stringArray.decode(raw)),
+    encode: value => Codecs.stringArray.encode([...value])
+  },
+  fallback: () => new Set(),
+  key: PROFILE_USER_PLACED_KEY,
+  legacyKey: USER_PLACED_KEY
+})
 
 function saveUserPlaced(next: ReadonlySet<string>) {
   $userPlacedPanes.set(next)
-  writeJson(USER_PLACED_KEY, next.size === 0 ? null : [...next])
 }
 
 function markPaneUserPlaced(paneId: string) {
@@ -1721,11 +1749,39 @@ export function presetSplitWeights(splitId: string, length: number): number[] | 
 }
 
 export function persistTree() {
-  persist($layoutTree.get())
+  if ('persistCurrent' in $layoutTree) {
+    $layoutTree.persistCurrent()
+  }
+}
+
+/** Read/write a profile's layout without switching the visible workspace.
+ * Profile bundle import/export uses this for non-active profiles. */
+export function layoutTreeForProfile(profile: string): LayoutNode | null {
+  return 'getForProfile' in $layoutTree ? $layoutTree.getForProfile(profile) : $layoutTree.get()
+}
+
+export function setLayoutTreeForProfile(profile: string, tree: LayoutNode): void {
+  if ('setForProfile' in $layoutTree) {
+    $layoutTree.setForProfile(profile, tree)
+  } else {
+    $layoutTree.set(tree)
+  }
+}
+
+export function activePresetForProfile(profile: string): string {
+  return 'getForProfile' in $activePresetId ? $activePresetId.getForProfile(profile) : $activePresetId.get()
+}
+
+export function setActivePresetForProfile(profile: string, presetId: string): void {
+  if ('setForProfile' in $activePresetId) {
+    $activePresetId.setForProfile(profile, presetId)
+  } else {
+    $activePresetId.set(presetId)
+  }
 }
 
 export function resetLayoutTree() {
-  persist(null)
+  $layoutTree.set(null)
   clearAllPaneSizeOverrides()
   // Reset restores EVERYTHING — closed panes included — and hands pane
   // placement back to the app (user-placed pins cleared).

@@ -1,8 +1,12 @@
-import { atom, computed, type ReadableAtom } from 'nanostores'
+import { computed, type ReadableAtom } from 'nanostores'
 
-import { persistString, storedString } from '@/lib/storage'
+import { Codecs } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
+import { storedString } from '@/lib/storage'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile-scope'
 
 const POPOUT_STORAGE_KEY = 'hermes.desktop.composerPopout.zones.v1'
+const PROFILE_POPOUT_STORAGE_KEY = 'hermes.desktop.profileComposerPopoutZones.v1'
 
 // Pre-zone keys: one flag + one position for the whole window. Read at load to
 // seed the first zone the user touches (see `legacySeed`), never written again.
@@ -53,21 +57,15 @@ function legacyPosition(): PopoutPosition {
   }
 }
 
-function load(): Record<string, PopoutZoneState> {
+function sanitizeZones(parsed: unknown): Record<string, PopoutZoneState> {
   const out: Record<string, PopoutZoneState> = {}
 
-  try {
-    const parsed = JSON.parse(storedString(POPOUT_STORAGE_KEY) || 'null') as unknown
+  for (const [id, value] of Object.entries((parsed as Record<string, unknown>) ?? {})) {
+    const zone = value as null | Partial<PopoutZoneState>
 
-    for (const [id, value] of Object.entries((parsed as Record<string, unknown>) ?? {})) {
-      const zone = value as null | Partial<PopoutZoneState>
-
-      if (typeof zone?.poppedOut === 'boolean' && isPosition(zone.position)) {
-        out[id] = { poppedOut: zone.poppedOut, position: { ...zone.position } }
-      }
+    if (typeof zone?.poppedOut === 'boolean' && isPosition(zone.position)) {
+      out[id] = { poppedOut: zone.poppedOut, position: { ...zone.position } }
     }
-  } catch {
-    // Treat unparseable persisted state as missing.
   }
 
   return out
@@ -79,12 +77,18 @@ function load(): Record<string, PopoutZoneState> {
  *  tabs in the same zone share a float (switch tabs, the box stays where you
  *  put it), while a split zone beside them keeps its own — popping out on the
  *  left doesn't fling a composer out of the right. */
-export const $composerPopoutZones = atom<Record<string, PopoutZoneState>>(load())
+export const $composerPopoutZones = profilePersistentAtom<Record<string, PopoutZoneState>>({
+  autoPersist: false,
+  codec: Codecs.json(sanitizeZones),
+  fallback: () => ({}),
+  key: PROFILE_POPOUT_STORAGE_KEY,
+  legacyKey: POPOUT_STORAGE_KEY
+})
 
 /** Write-through to storage. Called explicitly — NOT on every store change: a
  *  drag updates the position once per frame, and serializing every zone to
  *  localStorage at 60Hz is exactly the IO the drag path was built to avoid. */
-const persistZones = () => persistString(POPOUT_STORAGE_KEY, JSON.stringify($composerPopoutZones.get()))
+const persistZones = () => $composerPopoutZones.persistCurrent()
 
 /** Whether the user had a float before zones existed. Seeds a zone's first read
  *  so an upgrade doesn't silently dock someone who left their composer floating
@@ -94,7 +98,9 @@ let legacySeed: PopoutZoneState | null =
   storedString(LEGACY_ENABLED_KEY) === 'true' ? { poppedOut: true, position: legacyPosition() } : null
 
 const zoneState = (zones: Record<string, PopoutZoneState>, groupId: string): PopoutZoneState =>
-  zones[groupId] ?? legacySeed ?? DEFAULT_ZONE
+  zones[groupId] ??
+  (normalizeProfileKey($activeGatewayProfile.get()) === 'default' ? legacySeed : null) ??
+  DEFAULT_ZONE
 
 // Cached per-zone derived atoms keep useStore subscriptions referentially stable
 // (and keep one zone's drag from re-rendering the composers in another).

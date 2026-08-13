@@ -14,7 +14,12 @@
  */
 
 import { isLayoutNode, normalize } from '@/components/pane-shell/tree/model'
-import { $layoutTree, markActivePreset, persistTree } from '@/components/pane-shell/tree/store'
+import {
+  activePresetForProfile,
+  layoutTreeForProfile,
+  setActivePresetForProfile,
+  setLayoutTreeForProfile
+} from '@/components/pane-shell/tree/store'
 import { exportProfileArchive, importProfileArchive } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { modePref, skinPref, type ThemeMode } from '@/themes/context'
@@ -40,8 +45,8 @@ const OVERLAY_VERSION = 1
 
 /**
  * Snapshot the desktop appearance/interface for `profile` into the overlay.
- * The layout tree is global (one window layout, not per-profile) — it rides
- * along so the receiver can opt into the sender's whole interface.
+ * The layout tree belongs to the profile workspace and rides along so the
+ * receiver gets that profile's full interface without touching another one.
  */
 export function buildDesktopOverlay(profile: string): ProfileDesktopOverlay {
   const key = normalizeProfileKey(profile)
@@ -63,7 +68,8 @@ export function buildDesktopOverlay(profile: string): ProfileDesktopOverlay {
     mode,
     ...(Object.keys(themes).length ? { themes } : {}),
     profileColor: $profileColors.get()[key] ?? null,
-    layoutTree: $layoutTree.get()
+    layoutTree: layoutTreeForProfile(key),
+    layoutPreset: activePresetForProfile(key)
   }
 }
 
@@ -120,16 +126,14 @@ export function applyDesktopOverlay(profile: string, overlay: null | ProfileDesk
     setProfileColor(key, overlay.profileColor)
   }
 
-  // 4. Layout tree — global by design (one window layout). Normalize through
-  //    the same canonicalizer the boot load uses; a null result means the
-  //    tree was junk, so the current layout stays.
+  // 4. Profile workspace layout. Normalize through the same canonicalizer the
+  //    boot load uses; a null result means the tree was junk, so it stays unset.
   if (overlay.layoutTree != null && isLayoutNode(overlay.layoutTree)) {
     const tree = normalize(overlay.layoutTree)
 
     if (tree) {
-      $layoutTree.set(tree)
-      persistTree()
-      markActivePreset('custom')
+      setLayoutTreeForProfile(key, tree)
+      setActivePresetForProfile(key, typeof overlay.layoutPreset === 'string' ? overlay.layoutPreset : 'custom')
     }
   }
 }

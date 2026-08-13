@@ -70,6 +70,18 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
     const tiles = cfg.source.get()
     const wanted = new Set(tiles.map(cfg.key))
 
+    // Withdraw the outgoing profile's contributions BEFORE registering the
+    // incoming profile's panes. Registry adoption runs synchronously: adding
+    // incoming panes while outgoing ones are still registered can briefly dock
+    // both sets into the newly restored tree and deform its saved geometry.
+    for (const [key, entry] of registered) {
+      if (!wanted.has(key)) {
+        entry.dispose()
+        registered.delete(key)
+        removeTreePane(paneId(key))
+      }
+    }
+
     for (const tile of tiles) {
       const key = cfg.key(tile)
       const title = cfg.title(key)
@@ -114,18 +126,8 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
       }
     }
 
-    for (const [key, entry] of registered) {
-      if (!wanted.has(key)) {
-        entry.dispose()
-        registered.delete(key)
-        removeTreePane(paneId(key))
-      }
-    }
-
-    // Prune tree panes the SHARED tree persisted for a tile we never registered
-    // this session and that isn't wanted now — a profile switch reloads with the
-    // other profile's tile panes still stacked in. (`registered` is empty after a
-    // reload, so the loop above can't catch these.)
+    // Prune panes a restored profile snapshot references but whose owner store
+    // no longer wants them (for example, a deleted/stale persisted tile).
     for (const id of treePanesWithPrefix(`${cfg.prefix}:`)) {
       if (!wanted.has(id.slice(cfg.prefix.length + 1))) {
         removeTreePane(id)

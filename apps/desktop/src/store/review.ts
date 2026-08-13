@@ -9,6 +9,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { stampSessionPrBranch } from './pull-requests'
@@ -29,14 +30,21 @@ import { $workspaceChangeTick } from './workspace-events'
 export const REVIEW_PANE_ID = 'review'
 
 const OPEN_KEY = 'hermes.desktop.reviewOpen'
+const PROFILE_OPEN_KEY = 'hermes.desktop.profileReviewOpen.v1'
 const COMMIT_DEFAULT_KEY = 'hermes.desktop.reviewCommitDefault'
 const TREE_MODE_KEY = 'hermes.desktop.reviewTreeMode'
 const SELECTED_KEY = 'hermes.desktop.reviewSelectedPath'
+const PROFILE_SELECTED_KEY = 'hermes.desktop.profileReviewSelectedPath.v1'
 const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-export const $reviewOpen = persistentAtom(OPEN_KEY, false, Codecs.bool)
+export const $reviewOpen = profilePersistentAtom({
+  codec: Codecs.bool,
+  fallback: () => false,
+  key: PROFILE_OPEN_KEY,
+  legacyKey: OPEN_KEY
+})
 
 // The split-button's remembered default action ('commit' | 'commitPush').
 export type CommitAction = 'commit' | 'commitPush'
@@ -73,7 +81,12 @@ export const $reviewMaxChurn = computed($reviewFiles, files =>
 )
 // Persisted so a relaunch restores the file you were diffing (its diff is
 // re-fetched in refreshReview once the file is confirmed still changed).
-export const $reviewSelectedPath = persistentAtom<null | string>(SELECTED_KEY, null, Codecs.nullableText)
+export const $reviewSelectedPath = profilePersistentAtom<null | string>({
+  codec: Codecs.nullableText,
+  fallback: () => null,
+  key: PROFILE_SELECTED_KEY,
+  legacyKey: SELECTED_KEY
+})
 export const $reviewDiff = atom<null | string>(null)
 export const $reviewDiffLoading = atom(false)
 
