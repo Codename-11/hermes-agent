@@ -1,4 +1,5 @@
-import { Badge, Button, cn, Codicon, StatusDot } from '@hermes/plugin-sdk'
+import { Badge, Button, cn, Codicon, ConfirmDialog, StatusDot } from '@hermes/plugin-sdk'
+import { useState } from 'react'
 
 import { derivePreparationView, shortSha, type UpdateStageSnapshot, type UpdateSummary } from './model'
 
@@ -10,6 +11,7 @@ export function UpdateActions({
   onPrepare,
   onRefresh,
   onRestart,
+  onStandardUpdate,
   stage,
   status
 }: {
@@ -20,9 +22,11 @@ export function UpdateActions({
   onPrepare: () => void
   onRefresh: () => void
   onRestart: () => void
+  onStandardUpdate: () => Promise<void>
   stage: UpdateStageSnapshot | null
   status: UpdateSummary | null
 }) {
+  const [standardUpdateOpen, setStandardUpdateOpen] = useState(false)
   const view = derivePreparationView(status, stage)
   const progress = stage?.state === 'preparing' && stage.percent != null ? Math.max(0, Math.min(100, stage.percent)) : null
   const activelyPreparing = stage?.state === 'preparing' && stage.ownerActive === true
@@ -72,6 +76,14 @@ export function UpdateActions({
           ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
+          <Button
+            disabled={busy || stage?.state === 'preparing'}
+            onClick={() => setStandardUpdateOpen(true)}
+            size="sm"
+            variant="outline"
+          >
+            Run standard update
+          </Button>
           {canCancel ? (
             <Button disabled={busy} onClick={onCancel} size="sm" variant="outline">
               {busy ? <Codicon className="animate-spin" name="loading" size="0.8rem" /> : null}
@@ -121,6 +133,16 @@ export function UpdateActions({
           <span>{view.diagnostic}</span>
         </div>
       ) : null}
+      <ConfirmDialog
+        busyLabel="Starting updater…"
+        confirmLabel="Close Desktop and update"
+        description="Desktop will close and run the normal Hermes update flow. This skips preparation; the updater will validate the installation, apply the configured deploy branch, and reopen Desktop when finished."
+        doneLabel="Updater started"
+        onClose={() => setStandardUpdateOpen(false)}
+        onConfirm={onStandardUpdate}
+        open={standardUpdateOpen}
+        title="Run standard Hermes update?"
+      />
     </section>
   )
 }

@@ -5,6 +5,7 @@ const updateMocks = vi.hoisted(() => ({
   $backendUpdateStatus: { get: vi.fn() },
   $updateStatus: { get: vi.fn() },
   applyBackendUpdate: vi.fn(),
+  applyUpdates: vi.fn(),
   cancelDesktopUpdatePreparation: vi.fn(),
   checkBackendUpdates: vi.fn(),
   checkUpdates: vi.fn(),
@@ -69,6 +70,19 @@ describe('host.updates', () => {
     expect(host.updates.getBackendApply()).not.toBe(applyState)
     await expect(host.updates.applyBackend()).resolves.toEqual({ ok: true })
     expect(updateMocks.applyBackendUpdate).toHaveBeenCalledOnce()
+  })
+
+  it('exposes the standard Desktop update through the existing guarded apply flow', async () => {
+    updateMocks.applyUpdates.mockResolvedValue({ ok: true, handedOff: true })
+
+    await expect(host.updates.standardUpdate()).resolves.toMatchObject({ ok: true })
+    expect(updateMocks.applyUpdates).toHaveBeenCalledWith()
+
+    updateMocks.applyUpdates.mockResolvedValueOnce({ ok: false, message: 'Updater did not launch.' })
+    await expect(host.updates.standardUpdate()).rejects.toThrow('Updater did not launch.')
+
+    updateMocks.applyUpdates.mockResolvedValueOnce({ ok: true, manual: true, command: 'hermes update --branch axiom' })
+    await expect(host.updates.standardUpdate()).rejects.toThrow('Run `hermes update --branch axiom` in a terminal.')
   })
 
   it('maps core stage/history records and rejects failed lifecycle results', async () => {
@@ -156,7 +170,7 @@ describe('host.updates', () => {
     })
   })
 
-  it('exposes only the named staged lifecycle, never branch, raw apply, progress, or bridge doors', () => {
+  it('exposes only named update operations, never branch, raw apply, progress, or bridge doors', () => {
     expect(Object.keys(host.updates).sort()).toEqual([
       'applyBackend',
       'cancelPreparation',
@@ -168,6 +182,7 @@ describe('host.updates', () => {
       'prepare',
       'refresh',
       'restartAndApply',
+      'standardUpdate',
       'syncUpstream'
     ])
     expect(host.updates).not.toHaveProperty('apply')

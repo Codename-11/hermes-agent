@@ -43,6 +43,7 @@ export interface UpdateControlApi {
   cancelPreparation(): Awaitable<unknown>
   discardStage(): Awaitable<unknown>
   restartAndApply(): Awaitable<unknown>
+  standardUpdate(): Awaitable<unknown>
   applyBackend(): Awaitable<unknown>
   syncUpstream(): Awaitable<UpstreamSyncSnapshot>
 }
