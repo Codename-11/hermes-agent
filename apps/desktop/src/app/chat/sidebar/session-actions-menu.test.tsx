@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SessionActionsMenu } from './session-actions-menu'
 
+const reloadTreePane = vi.fn()
+
 afterEach(cleanup)
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
@@ -14,6 +16,7 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
   closeAllTreeTabs: vi.fn(),
   closeOtherTreeTabs: vi.fn(),
   closeTreeTabsToRight: vi.fn(),
+  reloadTreePane: (...args: unknown[]) => reloadTreePane(...args),
   treeTabCloseTargets: vi.fn(() => null)
 }))
 vi.mock('@/hermes', () => ({ renameSession: vi.fn() }))
@@ -48,7 +51,7 @@ vi.mock('@/i18n', () => ({
           untitledPlaceholder: 'Untitled'
         }
       },
-      zones: { closeAll: 'Close all', closeOthers: 'Close others', closeToRight: 'Close to the right' }
+      zones: { closeAll: 'Close all', closeOthers: 'Close others', closeToRight: 'Close to the right', reload: 'Reload' }
     }
   })
 }))
@@ -112,5 +115,30 @@ describe('SessionActionsMenu', () => {
     expect(await screen.findByRole('menu')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /archive/i })).toBeTruthy()
+  })
+
+  it('runs the session rehydrate hook before remounting a tab', async () => {
+    const onReload = vi.fn()
+
+    render(
+      <SessionActionsMenu
+        onReload={onReload}
+        sessionId="s1"
+        surface="tab"
+        tabPaneId="session-tile:s1"
+        title="My session"
+      >
+        <button aria-label="Session actions" type="button">⋮</button>
+      </SessionActionsMenu>
+    )
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Reload' }))
+
+    expect(onReload).toHaveBeenCalledOnce()
+    expect(reloadTreePane).toHaveBeenCalledWith('session-tile:s1')
+    expect(onReload.mock.invocationCallOrder[0]).toBeLessThan(reloadTreePane.mock.invocationCallOrder[0]!)
   })
 })

@@ -99,6 +99,9 @@ interface SessionActions {
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
+  /** Session-tab Reload first discards the renderer projection, then performs
+   *  the existing pane remount. Rows and generic panes omit this hook. */
+  onReload?: () => void
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
    *  rows, the main tab). */
   onClose?: () => void
@@ -189,6 +192,7 @@ function useSessionActions({
   onBranch,
   onArchive,
   onDelete,
+  onReload,
   onClose,
   onHideTabBar,
   surface = 'row',
@@ -300,6 +304,7 @@ function useSessionActions({
                   label: t.zones.reload,
                   onSelect: () => {
                     triggerHaptic('selection')
+                    onReload?.()
                     reloadTreePane(tabPaneId)
                   }
                 })

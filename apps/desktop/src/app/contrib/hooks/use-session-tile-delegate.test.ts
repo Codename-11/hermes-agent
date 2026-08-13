@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
+import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setSessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
@@ -118,7 +119,7 @@ describe('useSessionTileDelegate resumeTile', () => {
   it('does not reuse an empty cached runtime for a stored session with history', async () => {
     setSessions([row({ id: 'stored-z', message_count: 4, profile: 'default' })])
 
-    const emptyCached = createClientSessionState('stored-z')
+    const emptyCached = { ...createClientSessionState('stored-z'), busy: true }
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-z', 'runtime-empty']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-empty', emptyCached]]) }
 
@@ -150,5 +151,47 @@ describe('useSessionTileDelegate resumeTile', () => {
       omit_messages: true
     })
     expect(updateSessionState).toHaveBeenCalled()
+  })
+
+  it('grafts the gateway live projection onto an empty persisted transcript', async () => {
+    setSessions([row({ id: 'stored-running', is_active: true, message_count: 3, profile: 'default' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-running' } as never)
+
+    const updateSessionState = vi.fn((_sessionId, updater, storedSessionId) =>
+      updater(createClientSessionState(storedSessionId ?? null))
+    )
+
+    const requestGateway = vi.fn(async () =>
+      ({
+        inflight: { assistant: 'Still working', streaming: true, user: 'Continue OpenShelf' },
+        info: { running: true },
+        messages: [],
+        messages_omitted: true,
+        session_id: 'runtime-running'
+      }) as never
+    )
+
+    renderTile(requestGateway, { updateSessionState })
+    await sessionTileDelegate()!.resumeTile('stored-running')
+
+    const updater = updateSessionState.mock.calls[0]?.[1]
+    const hydrated = updater?.(createClientSessionState('stored-running'))
+
+    expect(hydrated?.busy).toBe(true)
+    expect(hydrated?.messages.map(chatMessageText)).toEqual(['Continue OpenShelf', 'Still working'])
+  })
+
+  it('hard rehydrate clears private mappings without interrupting the backend turn', () => {
+    const cached = { ...createClientSessionState('stored-reload'), busy: true }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-reload', 'runtime-reload']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-reload', cached]]) }
+    const requestGateway = vi.fn()
+
+    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+    sessionTileDelegate()!.rehydrateTile('stored-reload')
+
+    expect(runtimeIdByStoredSessionIdRef.current.has('stored-reload')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('runtime-reload')).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('session.interrupt', expect.anything())
   })
 })

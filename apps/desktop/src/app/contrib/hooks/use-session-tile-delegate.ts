@@ -2,12 +2,12 @@ import { useEffect } from 'react'
 
 import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
-import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
+import { dropSessionState, patchSessionTile, publishSessionState, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
-import { resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
+import { appendLiveSessionProjection, resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
 
@@ -92,6 +92,20 @@ export function useSessionTileDelegate({
           { requestGateway, onRecovered: rebindTileRuntime(runtimeId) }
         )
       },
+      rehydrateTile: storedSessionId => {
+        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+        runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+
+        if (runtimeId) {
+          sessionStateByRuntimeIdRef.current.delete(runtimeId)
+          dropSessionState(runtimeId)
+        }
+
+        // Re-arm SessionTilePane's bounded resume effect without interrupting
+        // the backend turn. Only this renderer's broken projection is discarded.
+        patchSessionTile(storedSessionId, { error: undefined, runtimeId: undefined })
+      },
       resumeTile: async storedSessionId => {
         const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
@@ -99,13 +113,10 @@ export function useSessionTileDelegate({
         // A binding alone does not prove the tile owns a transcript. The
         // private cache can survive with an idle empty state; accepting it here
         // leaves an already-open tab permanently blank, while a new window works
-        // because it takes the authoritative resume below. Busy empty state is
-        // a valid first turn, and non-empty state is a valid warm transcript.
-        if (
-          existing &&
-          cached?.storedSessionId === storedSessionId &&
-          (cached.busy || cached.messages.length > 0)
-        ) {
+        // because it takes the authoritative resume below. As in the primary
+        // pane, no empty cache is valid transcript authority — `busy` only says
+        // the backend turn is running, not that this renderer owns its history.
+        if (existing && cached?.storedSessionId === storedSessionId && cached.messages.length > 0) {
           publishSessionState(existing, cached)
 
           return existing
@@ -134,13 +145,15 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        const persistedMessages = toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+        const hydratedMessages = appendLiveSessionProjection(persistedMessages, resumed)
+
         updateSessionState(
           runtimeId,
           state => ({
             ...state,
             busy: Boolean(resumed?.info?.running),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+            messages: state.messages.length > 0 ? state.messages : hydratedMessages
           }),
           storedSessionId
         )

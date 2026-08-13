@@ -602,6 +602,9 @@ export interface SessionTileDelegate {
   executeSlash(rawCommand: string, sessionId: string): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
+  /** Discard only this renderer's runtime/cache binding and re-arm the tile's
+   *  authoritative resume. The backend session and running turn continue. */
+  rehydrateTile(storedSessionId: string): void
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws. */
   resumeTile(storedSessionId: string): Promise<string>
@@ -758,7 +761,7 @@ export function openTileNeedsHydration(
     return true
   }
 
-  if (state.busy || state.messages.length > 0) {
+  if (state.messages.length > 0) {
     return false
   }
 

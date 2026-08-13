@@ -142,11 +142,11 @@ describe('openTileNeedsHydration', () => {
     ).toBe(true)
   })
 
-  it('leaves healthy, busy, and genuinely empty tiles alone', () => {
+  it('recovers busy empty history but leaves healthy and genuinely empty tiles alone', () => {
     const bound = { runtimeId: 'runtime', storedSessionId: 'stored' }
 
     expect(openTileNeedsHydration(bound, state({ messages: [{ id: 'm1' }] as never }), { message_count: 6 } as never)).toBe(false)
-    expect(openTileNeedsHydration(bound, state({ busy: true }), { is_active: true, message_count: 0 } as never)).toBe(false)
+    expect(openTileNeedsHydration(bound, state({ busy: true }), { is_active: true, message_count: 0 } as never)).toBe(true)
     expect(openTileNeedsHydration(bound, state(), { message_count: 0 } as never)).toBe(false)
   })
 })

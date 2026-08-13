@@ -526,6 +526,11 @@ export function SessionTabMenu({
         onDelete={() => void sessionTileDelegate()?.deleteSession(storedSessionId)}
         onHideTabBar={onHideTabBar}
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+        onReload={
+          tabPaneId.startsWith('session-tile:')
+            ? () => sessionTileDelegate()?.rehydrateTile(storedSessionId)
+            : undefined
+        }
         pinned={pinned}
         profile={profile}
         sessionId={storedSessionId}
