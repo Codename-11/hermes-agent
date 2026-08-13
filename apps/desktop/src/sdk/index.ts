@@ -91,6 +91,7 @@ export interface PluginUpdateStageSnapshot {
   targetSha?: string
   branch?: string
   preparedAt?: number
+  output?: string
 }
 
 export interface PluginUpdateHistoryEntry {
@@ -116,6 +117,7 @@ export interface PluginBackendUpdateApplySnapshot {
   percent: number | null
   error: string | null
   command: string | null
+  output: string
 }
 
 export interface PluginUpdateManagement {
@@ -151,7 +153,8 @@ const pluginBackendApplySnapshot = (state: UpdateApplyState): PluginBackendUpdat
   message: state.message,
   percent: state.percent,
   error: state.error,
-  command: state.command
+  command: state.command,
+  output: state.log.map(entry => entry.message).join('\n')
 })
 
 const pluginStageSnapshot = (status: DesktopUpdateStageStatus): null | PluginUpdateStageSnapshot => {
@@ -182,7 +185,8 @@ const pluginStageSnapshot = (status: DesktopUpdateStageStatus): null | PluginUpd
     currentSha: status.manifest?.baseSha,
     targetSha: status.manifest?.targetSha,
     branch: status.manifest?.branch,
-    preparedAt: status.manifest?.createdAt
+    preparedAt: status.manifest?.createdAt,
+    output: status.output
   }
 }
 

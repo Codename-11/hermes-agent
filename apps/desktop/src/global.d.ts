@@ -495,6 +495,7 @@ export interface DesktopUpdateStageProgress {
   message?: string
   percent?: number
   logPath?: string
+  output?: string
 }
 
 export interface DesktopUpdateStageStatus extends DesktopUpdateStageProgress {
@@ -602,6 +603,7 @@ export interface DesktopUpstreamSyncResult {
   error?: string
   worktree?: string
   reportPath?: string
+  output?: string
 }
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'

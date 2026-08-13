@@ -3331,9 +3331,20 @@ async function getDesktopUpdateStageRendererStatus(options = {}) {
   const status = await getDesktopUpdateStageStatus(options)
   const ownerActive = stagePreparationIsRunning()
   const activePhases = new Set(['fetching', 'preparing-dependencies', 'building', 'verifying'])
+  const expectedLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-stage.log')
+  let output
+
+  if (status.logPath === expectedLogPath) {
+    try {
+      output = fs.readFileSync(expectedLogPath, 'utf8').slice(-24_000).trim() || undefined
+    } catch {
+      // The worker may not have created the log yet. Status remains valid.
+    }
+  }
 
   return {
     ...status,
+    output,
     checkedAt: Date.now(),
     ownerActive,
     cancellable: ownerActive && activePhases.has(status.phase)

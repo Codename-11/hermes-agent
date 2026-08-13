@@ -44,7 +44,7 @@ export function UpdateActions({
       : view.action === 'restartAndApply'
         ? 'Restart and finish'
         : view.action === 'refresh'
-          ? 'Check again'
+          ? 'Recheck source'
           : null
 
   return (

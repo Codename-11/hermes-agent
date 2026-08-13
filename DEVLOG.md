@@ -1,5 +1,39 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Make Desktop Update Control observable and explicitly recheckable
+
+### Summary
+
+Fixed false failures in the source-owned Desktop Update Control path and exposed
+bounded CLI output for Desktop staging, upstream reconciliation, and connected
+backend updates. The interface now separates a local cache refresh from an
+authoritative source recheck for either target.
+
+### What changed
+
+- Raised the isolated upstream reconciliation safety ceiling from 10 to 30
+  minutes and preserved a sanitized 24 KB subprocess tail on success, failure,
+  missing receipts, spawn errors, and timeouts.
+- Removed the renderer's six-minute deadline while a durable backend action
+  receipt still reports `running`; an actually unreachable backend retains the
+  existing bounded four-minute recovery window.
+- Kept backend action output after completion and normalized it through the
+  plugin SDK alongside a guarded tail of the core-owned Desktop staging log.
+- Added collapsed-by-default `Desktop CLI output`, `Reconcile CLI output`, and
+  `Backend CLI output` views using the native `LogView` component.
+- Split the old ambiguous check action into `Refresh view` (cached query state)
+  and explicit `Recheck Desktop` / `Recheck Backend` source operations; contextual
+  buttons now use the same `Recheck source` wording.
+
+### Verification
+
+- Focused Electron and renderer suites: 62 tests passed.
+- Full Desktop TypeScript project check passed.
+- Changed-file ESLint passed with zero warnings or errors.
+- Production renderer, Electron main/preload, and native dependency staging
+  build passed.
+- Full-repo lint remains red on pre-existing errors outside this change.
+
 ## 2026-08-11 — Harden Desktop session convergence across reconnects and profiles
 
 ### Summary
