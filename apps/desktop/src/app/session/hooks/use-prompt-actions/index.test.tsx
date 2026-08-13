@@ -2334,6 +2334,7 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_user_ordinal: 0,
+        truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
       1_800_000
@@ -2403,6 +2404,7 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_user_ordinal: 0,
+        truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
       1_800_000
@@ -2450,6 +2452,7 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_user_ordinal: 0,
+        truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
       1_800_000

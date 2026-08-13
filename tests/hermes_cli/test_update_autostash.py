@@ -848,9 +848,9 @@ def test_sync_upstream_to_deploy_retries_retained_handoff_even_without_pending_d
     calls = []
 
     def fake_run(cmd, **kwargs):
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if cmd[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="axiom\n", stderr="", returncode=0)
-        if cmd[:3] == ["git", "remote", "get-url"]:
+        if cmd[-3:-1] == ["remote", "get-url"]:
             return SimpleNamespace(stdout="local\n", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -886,9 +886,9 @@ def test_sync_upstream_to_deploy_reports_successful_retained_handoff(tmp_path, m
     repo.mkdir()
 
     def fake_run(cmd, **kwargs):
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if cmd[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="axiom\n", stderr="", returncode=0)
-        if cmd[:3] == ["git", "remote", "get-url"]:
+        if cmd[-3:-1] == ["remote", "get-url"]:
             return SimpleNamespace(stdout="local\n", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
