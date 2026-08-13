@@ -23,7 +23,12 @@ import { atom, type ReadableAtom } from 'nanostores'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
-import type { DesktopUpdateHistoryEntry, DesktopUpdateStageStatus, DesktopUpdateStatus } from '@/global'
+import type {
+  DesktopUpdateHistoryEntry,
+  DesktopUpdateStageStatus,
+  DesktopUpdateStatus,
+  DesktopUpstreamSyncStatus
+} from '@/global'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -42,6 +47,7 @@ import {
   discardDesktopUpdateStage,
   getDesktopUpdateHistory,
   getDesktopUpdateStage,
+  getDesktopUpstreamSyncStatus,
   prepareDesktopUpdateStage,
   restartAndApplyDesktopUpdateStage,
   syncDesktopUpstream,
@@ -135,6 +141,7 @@ export interface PluginUpdateManagement {
   standardUpdate: () => ReturnType<typeof applyUpdates>
   applyBackend: () => ReturnType<typeof applyBackendUpdate>
   syncUpstream: () => ReturnType<typeof syncDesktopUpstream>
+  getUpstreamSyncStatus: () => Promise<DesktopUpstreamSyncStatus>
 }
 
 const cloneUpdateStatus = (status: DesktopUpdateStatus | null): DesktopUpdateStatus | null =>
@@ -264,7 +271,8 @@ export const host = {
       return result
     },
     applyBackend: async () => requireUpdateSuccess(await applyBackendUpdate()),
-    syncUpstream: async () => syncDesktopUpstream()
+    syncUpstream: async () => syncDesktopUpstream(),
+    getUpstreamSyncStatus: async () => getDesktopUpstreamSyncStatus()
   } satisfies PluginUpdateManagement,
 
   /** Toast into the app's notification stack. */

@@ -251,7 +251,7 @@ import {
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
 } from './updater-process'
-import { runUpstreamSync } from './upstream-sync'
+import { getUpstreamSyncStatus, runUpstreamSync } from './upstream-sync'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -13045,6 +13045,8 @@ ipcMain.handle('hermes:updates:sync-upstream', async () =>
     { state: 'failed' }
   )
 )
+
+ipcMain.handle('hermes:updates:sync-upstream:status', async () => getUpstreamSyncStatus())
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   runExclusiveUpdateOperation('apply', () => applyUpdates(payload || {})).catch(error => ({

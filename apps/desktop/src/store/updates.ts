@@ -17,6 +17,7 @@ import type {
   DesktopUpdateStage,
   DesktopUpdateStageStatus,
   DesktopUpdateStatus,
+  DesktopUpstreamSyncStatus,
   DesktopVersionInfo
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
@@ -413,6 +414,10 @@ export async function syncDesktopUpstream() {
   }
 
   return bridge.syncUpstream()
+}
+
+export async function getDesktopUpstreamSyncStatus(): Promise<DesktopUpstreamSyncStatus> {
+  return (await window.hermesDesktop?.updates?.getUpstreamSyncStatus?.()) ?? { running: false }
 }
 
 export async function getDesktopUpdateStage(): Promise<DesktopUpdateStageStatus> {

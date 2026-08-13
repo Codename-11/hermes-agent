@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import { parseUpstreamSyncResult, resolveUpstreamSyncExit, stopUpstreamSyncChild } from './upstream-sync'
+import {
+  appendUpstreamSyncOutput,
+  getUpstreamSyncStatus,
+  parseUpstreamSyncResult,
+  resolveUpstreamSyncExit,
+  stopUpstreamSyncChild
+} from './upstream-sync'
 
 describe('upstream sync result parsing', () => {
   test('reads the final typed result after normal progress output', () => {
@@ -25,6 +31,16 @@ describe('upstream sync result parsing', () => {
 })
 
 describe('upstream sync process outcomes', () => {
+  test('publishes sanitized CLI output before the process exits', () => {
+    let output = appendUpstreamSyncOutput('', '→ Fetching upstream…\n')
+    output = appendUpstreamSyncOutput(
+      output,
+      'HERMES_UPSTREAM_SYNC_RESULT={"ok":true,"state":"completed","message":"Published."}\n'
+    )
+
+    assert.equal(getUpstreamSyncStatus().output, '→ Fetching upstream…')
+  })
+
   test('preserves clean CLI output beside a successful structured result', () => {
     const output =
       '→ Fetching upstream…\n✓ Validated deploy branch\nHERMES_UPSTREAM_SYNC_RESULT={"ok":true,"state":"completed","message":"Published."}\n'

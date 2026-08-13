@@ -334,6 +334,7 @@ declare global {
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         syncUpstream: () => Promise<DesktopUpstreamSyncResult>
+        getUpstreamSyncStatus: () => Promise<DesktopUpstreamSyncStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         status: () => Promise<DesktopUpdateStageStatus>
         prepare: () => Promise<DesktopUpdatePrepareResult>
@@ -604,6 +605,13 @@ export interface DesktopUpstreamSyncResult {
   worktree?: string
   reportPath?: string
   output?: string
+}
+
+export interface DesktopUpstreamSyncStatus {
+  running: boolean
+  startedAt?: number
+  output?: string
+  result?: DesktopUpstreamSyncResult
 }
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
