@@ -1,5 +1,33 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Stream upstream reconciliation output inside Update Control
+
+### Summary
+
+Closed the observability gap left by the first Update Control pass: the
+reconciliation transcript had been attached only to the terminal Promise
+result, so no panel could appear while the long-running sync was active.
+
+### What changed
+
+- Electron now retains a bounded, sanitized upstream-sync status snapshot while
+  the subprocess is running and keeps the final result after exit.
+- Added a read-only status IPC/preload/store/SDK path outside the exclusive
+  update-operation lock, allowing the renderer to observe rather than contend
+  with the active mutation.
+- Update Control polls that snapshot once per second only while sync is active,
+  reattaches after pane remounts, and retains the final transcript.
+- The Reconcile CLI output disclosure opens immediately when Sync begins and
+  shows `Waiting for CLI output…` until the first subprocess line arrives.
+
+### Verification
+
+- Focused Electron tests: 8 passed.
+- Focused SDK/Update Control renderer tests: 12 passed.
+- Full Desktop TypeScript check and changed-file ESLint passed.
+- Production renderer, Electron main/preload, and native dependency staging
+  build passed.
+
 ## 2026-08-13 — Make Desktop Update Control observable and explicitly recheckable
 
 ### Summary
