@@ -9,7 +9,8 @@ const handlers = () => ({
   onDiscardAndRefresh: vi.fn(),
   onPrepare: vi.fn(),
   onRefresh: vi.fn(),
-  onRestart: vi.fn()
+  onRestart: vi.fn(),
+  onStandardUpdate: vi.fn().mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -18,6 +19,61 @@ afterEach(() => {
 })
 
 describe('UpdateActions preparation activity', () => {
+  it('confirms before handing the Desktop to the standard updater', async () => {
+    const actions = handlers()
+
+    render(
+      <UpdateActions
+        {...actions}
+        busy={false}
+        stage={{ state: 'available' }}
+        status={{ behind: 3, supported: true, updateAvailable: true }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run standard update' }))
+
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByText(/Desktop will close/i)).toBeTruthy()
+    expect(actions.onStandardUpdate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Desktop and update' }))
+    await vi.waitFor(() => expect(actions.onStandardUpdate).toHaveBeenCalledOnce())
+  })
+
+  it('keeps standard update unavailable during active preparation', () => {
+    render(
+      <UpdateActions
+        {...handlers()}
+        busy={false}
+        stage={{ state: 'preparing', ownerActive: true }}
+        status={{ behind: 3, supported: true, updateAvailable: true }}
+      />
+    )
+
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Run standard update' }).disabled).toBe(true)
+  })
+
+  it('keeps Desktop open and surfaces a standard updater launch failure', async () => {
+    const actions = handlers()
+
+    actions.onStandardUpdate.mockRejectedValue(new Error('Updater did not launch.'))
+    render(
+      <UpdateActions
+        {...actions}
+        busy={false}
+        stage={{ state: 'available' }}
+        status={{ behind: 3, supported: true, updateAvailable: true }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run standard update' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close Desktop and update' }))
+
+    expect(await screen.findByText('Updater did not launch.')).toBeTruthy()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+  })
+
   it('shows verified heartbeat, spinner, progress, and cancel for a live preparation owner', () => {
     vi.spyOn(Date, 'now').mockReturnValue(12_000)
     const actions = handlers()

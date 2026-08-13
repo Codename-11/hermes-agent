@@ -392,6 +392,16 @@ function UpdateControlPane() {
     }
   })
 
+  const standardUpdate = async () => {
+    setActionError(null)
+
+    if (!api?.standardUpdate) {
+      throw new Error('Standard Desktop update is unavailable in this Desktop build.')
+    }
+
+    await api.standardUpdate()
+  }
+
   const status = statusQuery.data ?? null
   const stage = (stageQuery.data ?? null) as UpdateStageSnapshot | null
   const history = (historyQuery.data ?? []) as UpdateHistoryEntry[]
@@ -468,6 +478,7 @@ function UpdateControlPane() {
             onPrepare={() => lifecycle.mutate('prepare')}
             onRefresh={() => refresh.mutate()}
             onRestart={() => lifecycle.mutate('restart')}
+            onStandardUpdate={standardUpdate}
             stage={stage}
             status={status}
           />

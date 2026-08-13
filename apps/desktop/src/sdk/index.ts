@@ -35,6 +35,7 @@ import {
   $backendUpdateStatus,
   $updateStatus,
   applyBackendUpdate,
+  applyUpdates,
   cancelDesktopUpdatePreparation,
   checkBackendUpdates,
   checkUpdates,
@@ -128,6 +129,8 @@ export interface PluginUpdateManagement {
   cancelPreparation: () => ReturnType<typeof cancelDesktopUpdatePreparation>
   discardStage: () => ReturnType<typeof discardDesktopUpdateStage>
   restartAndApply: () => ReturnType<typeof restartAndApplyDesktopUpdateStage>
+  /** Skip preparation and use the normal guarded Desktop update handoff. */
+  standardUpdate: () => ReturnType<typeof applyUpdates>
   applyBackend: () => ReturnType<typeof applyBackendUpdate>
   syncUpstream: () => ReturnType<typeof syncDesktopUpstream>
 }
@@ -245,6 +248,17 @@ export const host = {
     cancelPreparation: async () => requireUpdateSuccess(await cancelDesktopUpdatePreparation()),
     discardStage: async () => requireUpdateSuccess(await discardDesktopUpdateStage()),
     restartAndApply: async () => requireUpdateSuccess(await restartAndApplyDesktopUpdateStage()),
+    standardUpdate: async () => {
+      const result = requireUpdateSuccess(await applyUpdates())
+
+      if (!result.handedOff) {
+        const command = result.command || 'hermes update'
+
+        throw new Error(result.message || `The updater did not launch. Run \`${command}\` in a terminal.`)
+      }
+
+      return result
+    },
     applyBackend: async () => requireUpdateSuccess(await applyBackendUpdate()),
     syncUpstream: async () => syncDesktopUpstream()
   } satisfies PluginUpdateManagement,
