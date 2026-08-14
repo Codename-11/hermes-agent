@@ -1,5 +1,22 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-14 — Route aliased remote session resumes correctly
+
+### Summary
+
+Restored writable Desktop sessions when a local profile handle targets a differently named remote profile.
+
+### Details
+
+- Gateway RPCs now translate the active local profile handle to the connection's effective remote profile before dispatch.
+- Main chats and session tiles share the correction through the central request path.
+- Explicit sibling-profile requests remain unchanged, and transport recovery reuses the already-routed parameters without adding retries or duplicate prompts.
+
+### Verification
+
+- Focused gateway, composer, tile, and shared-remote routing regressions: 32 passing.
+- Desktop renderer/Electron/E2E TypeScript typecheck, changed-file ESLint, and production build.
+
 ## 2026-08-13 — Keep live-turn status visually online during quiet work
 
 ### Summary

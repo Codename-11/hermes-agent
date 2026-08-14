@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { $gateway } from '@/store/gateway'
+import { $activeGatewayProfile } from '@/store/profile'
+import { setConnection } from '@/store/session'
 
 import { useGatewayRequest } from './use-gateway-request'
 
@@ -10,6 +12,8 @@ const fakeGateway = { connectionState: 'open' } as unknown as HermesGateway
 
 afterEach(() => {
   $gateway.set(null)
+  $activeGatewayProfile.set('default')
+  setConnection(null)
 })
 
 describe('useGatewayRequest', () => {
@@ -63,5 +67,60 @@ describe('useGatewayRequest', () => {
     await expect(pending).rejects.toThrow('connection closed')
     expect(oldGateway.request).toHaveBeenCalledOnce()
     expect(newGateway.request).not.toHaveBeenCalled()
+  })
+
+  it('routes an active local profile alias to its effective remote profile', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    const gateway = { connectionState: 'open', request } as unknown as HermesGateway
+
+    $gateway.set(gateway)
+    $activeGatewayProfile.set('writer')
+    setConnection({ remoteProfile: 'default' } as never)
+
+    const { result } = renderHook(() => useGatewayRequest())
+
+    await result.current.requestGateway('session.resume', {
+      session_id: 'stored-remote',
+      profile: 'writer'
+    })
+    await result.current.requestGateway('prompt.submit', {
+      session_id: 'runtime-writer',
+      text: 'continue'
+    })
+
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      'session.resume',
+      { session_id: 'stored-remote', profile: 'default' },
+      undefined,
+      undefined
+    )
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      'prompt.submit',
+      { session_id: 'runtime-writer', text: 'continue' },
+      undefined,
+      undefined
+    )
+  })
+
+  it('does not rewrite an explicitly requested sibling profile', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    const gateway = { connectionState: 'open', request } as unknown as HermesGateway
+
+    $gateway.set(gateway)
+    $activeGatewayProfile.set('writer')
+    setConnection({ remoteProfile: 'default' } as never)
+
+    const { result } = renderHook(() => useGatewayRequest())
+
+    await result.current.requestGateway('session.resume', { session_id: 'stored-reviewer', profile: 'reviewer' })
+
+    expect(request).toHaveBeenCalledWith(
+      'session.resume',
+      { session_id: 'stored-reviewer', profile: 'reviewer' },
+      undefined,
+      undefined
+    )
   })
 })

@@ -5,7 +5,22 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $gatewayState, setConnection } from '@/store/session'
+import { $connection, $gatewayState, setConnection } from '@/store/session'
+
+function routeGatewayProfileParams(
+  params: Record<string, unknown>,
+  connection: { remoteProfile?: string } | null,
+  activeProfile: string
+): Record<string, unknown> {
+  const requestedProfile = typeof params.profile === 'string' ? params.profile.trim() : ''
+  const remoteProfile = connection?.remoteProfile?.trim()
+
+  if (!requestedProfile || !remoteProfile || requestedProfile !== activeProfile.trim()) {
+    return params
+  }
+
+  return { ...params, profile: remoteProfile }
+}
 
 export function useGatewayRequest() {
   const gatewayState = useStore($gatewayState)
@@ -106,13 +121,14 @@ export function useGatewayRequest() {
   const requestGateway = useCallback(
     async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal) => {
       const gateway = gatewayRef.current
+      const routedParams = routeGatewayProfileParams(params, $connection.get(), $activeGatewayProfile.get())
 
       if (!gateway) {
         throw new Error('Hermes gateway unavailable')
       }
 
       try {
-        return await gateway.request<T>(method, params, timeoutMs, signal)
+        return await gateway.request<T>(method, routedParams, timeoutMs, signal)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
 
@@ -146,7 +162,7 @@ export function useGatewayRequest() {
           throw error
         }
 
-        return recovered.request<T>(method, params, timeoutMs, signal)
+        return recovered.request<T>(method, routedParams, timeoutMs, signal)
       }
     },
     [ensureGatewayOpen]
