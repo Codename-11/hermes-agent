@@ -1291,6 +1291,8 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "add", "--update"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--cached", "--check"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "diff", "--cached", "--quiet"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=1)
         if cmd == ["git", "rev-parse", "--git-path", "MERGE_HEAD"] and cwd == worktree:
@@ -1423,6 +1425,37 @@ def test_checkpoint_resolved_handoff_commits_tracked_resolution_and_persists_sha
     assert payload["check_status"] == {}
 
 
+def test_checkpoint_resolved_handoff_rejects_whitespace_errors_already_staged(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("after   \n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(json.dumps({"phase": "resolve_pending"}), encoding="utf-8")
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+
+    resolved_head, error = axiom_update._checkpoint_resolved_handoff(
+        ["git"], repo, "axiom"
+    )
+
+    assert resolved_head == ""
+    assert "whitespace" in error.lower()
+    assert json.loads(marker.read_text(encoding="utf-8"))["phase"] == "resolve_pending"
+
+
 def test_resolver_timeout_terminates_windows_process_tree(monkeypatch):
     from hermes_cli import axiom_update
 
@@ -1436,8 +1469,9 @@ def test_resolver_timeout_terminates_windows_process_tree(monkeypatch):
         or SimpleNamespace(returncode=0),
     )
 
-    axiom_update._terminate_resolver_process_tree(process)
+    terminated = axiom_update._terminate_resolver_process_tree(process)
 
+    assert terminated is True
     assert calls == [
         (["taskkill", "/PID", "4242", "/T", "/F"], {"capture_output": True, "text": True})
     ]
@@ -1459,8 +1493,9 @@ def test_resolver_timeout_kills_parent_when_windows_tree_termination_fails(monke
         lambda *args, **kwargs: SimpleNamespace(returncode=1),
     )
 
-    axiom_update._terminate_resolver_process_tree(process)
+    terminated = axiom_update._terminate_resolver_process_tree(process)
 
+    assert terminated is False
     assert killed == [True]
 
 
@@ -2190,6 +2225,49 @@ def test_update_resolver_agent_streams_advisory_transcript(monkeypatch, tmp_path
     assert stream.closed is True
     assert result.returncode == 0
     assert result.stdout.endswith("resolver summary\n")
+
+
+def test_update_resolver_agent_marks_timeout_unsafe_when_tree_kill_is_unconfirmed(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    class TimedOutProcess:
+        pid = 4242
+        stdout = StringIO("")
+
+        def wait(self, timeout=None):
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(["resolver"], timeout)
+            return -9
+
+    monkeypatch.setattr(
+        hermes_axiom_update.subprocess,
+        "Popen",
+        lambda *args, **kwargs: TimedOutProcess(),
+    )
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_terminate_resolver_process_tree",
+        lambda process: False,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        hermes_axiom_update._run_update_resolver_agent("resolve", tmp_path)
+
+    assert caught.value.process_tree_terminated is False
+
+
+def test_timeout_salvage_requires_confirmed_process_tree_termination():
+    from hermes_cli import axiom_update as hermes_axiom_update
+
+    unsafe = subprocess.TimeoutExpired(["resolver"], 3600)
+    unsafe.process_tree_terminated = False
+    safe = subprocess.TimeoutExpired(["resolver"], 3600)
+    safe.process_tree_terminated = True
+
+    assert hermes_axiom_update._resolver_timeout_is_safe_to_salvage(unsafe) is False
+    assert hermes_axiom_update._resolver_timeout_is_safe_to_salvage(safe) is True
 
 
 def test_fork_watch_area_pytest_checks_reference_existing_files():

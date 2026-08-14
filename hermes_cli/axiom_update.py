@@ -1191,14 +1191,16 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
     try:
         returncode = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        _terminate_resolver_process_tree(process)
+        process_tree_terminated = _terminate_resolver_process_tree(process)
         process.wait()
-        pump.join()
-        raise subprocess.TimeoutExpired(
+        pump.join(timeout=None if process_tree_terminated else 1)
+        timeout_error = subprocess.TimeoutExpired(
             cmd,
             timeout,
             output="".join(transcript_tail),
-        ) from exc
+        )
+        timeout_error.process_tree_terminated = process_tree_terminated
+        raise timeout_error from exc
     pump.join()
     return subprocess.CompletedProcess(
         cmd,
@@ -1208,23 +1210,32 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
     )
 
 
-def _terminate_resolver_process_tree(process: subprocess.Popen) -> None:
+def _terminate_resolver_process_tree(process: subprocess.Popen) -> bool:
     """Terminate the resolver and descendants before inspecting its worktree."""
     if process.poll() is not None:
-        return
+        return True
     if os.name == "nt":
         result = subprocess.run(
             ["taskkill", "/PID", str(process.pid), "/T", "/F"],
             capture_output=True,
             text=True,
         )
-        if result.returncode != 0 and process.poll() is None:
+        if result.returncode == 0:
+            return True
+        if process.poll() is None:
             process.kill()
-        return
+        return False
     try:
         os.killpg(process.pid, signal.SIGKILL)
+        return True
     except OSError:
         process.kill()
+        return False
+
+
+def _resolver_timeout_is_safe_to_salvage(exc: subprocess.TimeoutExpired) -> bool:
+    """Only trust the worktree after the resolver's whole process tree stopped."""
+    return getattr(exc, "process_tree_terminated", False) is True
 
 
 def _resolver_output_tail(value: object, *, max_lines: int = 40, max_chars: int = 6000) -> list[str]:
@@ -1421,6 +1432,18 @@ def _checkpoint_resolved_handoff(
     )
     if staged.returncode != 0:
         return "", (staged.stderr or staged.stdout or "Could not stage tracked resolution").strip()
+    staged_diff_check = subprocess.run(
+        git_cmd + ["diff", "--cached", "--check"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+    )
+    if staged_diff_check.returncode != 0:
+        return "", (
+            staged_diff_check.stderr
+            or staged_diff_check.stdout
+            or "git diff --cached --check failed"
+        ).strip()
     commit_needed = subprocess.run(
         git_cmd + ["diff", "--cached", "--quiet"], cwd=worktree
     )
@@ -1639,6 +1662,21 @@ def _resolve_deploy_handoff(
                 worktree,
             )
         except subprocess.TimeoutExpired as exc:
+            if not _resolver_timeout_is_safe_to_salvage(exc):
+                status.fail(note="resolver process tree may still be running")
+                _update_deploy_handoff_state(
+                    phase="resolve_pending",
+                    resolved_head="",
+                    error=(
+                        "Resolver timed out and full process-tree termination could not "
+                        "be confirmed; retained worktree was not inspected or checkpointed."
+                    ),
+                )
+                print(
+                    "✗ Resolver timed out, but its full process tree could not be confirmed stopped."
+                )
+                print("  Retained worktree was left untouched for manual review.")
+                return None
             timed_out = True
             result = subprocess.CompletedProcess(
                 exc.cmd, 124, stdout=exc.output or "", stderr="resolver timed out"
