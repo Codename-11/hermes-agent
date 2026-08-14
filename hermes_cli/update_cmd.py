@@ -2180,6 +2180,53 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
 
+
+def _reconcile_desktop_build() -> None:
+    """Rebuild an installed Desktop package when its content stamp is stale."""
+    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+    has_desktop_app = _desktop_install_intent(desktop_dir)
+    if not (
+        (desktop_dir / "package.json").exists()
+        and _m()._resolve_node_runtime_npm()
+        and has_desktop_app
+    ):
+        return
+
+    print("→ Checking Desktop build state...")
+    try:
+        if not _m()._desktop_build_needed(
+            desktop_dir, _m().PROJECT_ROOT, source_mode=False
+        ):
+            print("  ✓ Desktop app up to date")
+            return
+    except Exception:
+        pass
+
+    print("→ Desktop sources changed; rebuilding packaged app...")
+    desktop_build_cmd = [
+        sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"
+    ]
+    from hermes_constants import with_hermes_node_path
+
+    build_env = with_hermes_node_path()
+    build_result = _m()._run_logged_subprocess(
+        desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
+    )
+    if build_result.returncode != 0:
+        build_result = _m()._run_logged_subprocess(
+            desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
+        )
+    if build_result.returncode != 0:
+        print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+        tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
+        if tail:
+            print(tail)
+        from hermes_constants import display_hermes_home as _dhh
+        print(f"  Full build log: {_dhh()}/logs/update.log")
+    else:
+        print("  ✓ Desktop app up to date")
+
+
 def _repair_node_deps_on_current_checkout(print_completion) -> None:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
@@ -2205,6 +2252,9 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+    # A previous update may have advanced Git and then failed before reaching
+    # the Desktop build. Git parity is therefore not Desktop artifact parity.
+    _reconcile_desktop_build()
     print_completion("✓ Already up to date!")
 
 
@@ -4742,63 +4792,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
 
-        # Rebuild the desktop app if the source tree changed since the last
-        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
-        # internally, so this is effectively a no-op when nothing changed.
-        # Only bother if the user has a desktop app installed (indicated by
-        # an existing packaged executable or desktop dist); people who have
-        # never run ``hermes desktop`` shouldn't be forced into a full
-        # Electron build by ``hermes update``.
-        desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_install_intent(desktop_dir)
-        if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
-            print("→ Checking Desktop build state...")
-            # Consult the content-hash stamp IN-PROCESS first. The spawned
-            # `hermes desktop --build-only` subprocess re-imports the whole
-            # CLI stack (~1-3 s) just to reach the same _m()._desktop_build_needed
-            # check; when the stamp already says "up to date" we can skip the
-            # spawn entirely. The update path never passes --source, so the
-            # subprocess would run with source_mode=False — mirror that here.
-            # Any error in the pre-check falls through to the subprocess.
-            _skip_desktop_build = False
-            try:
-                _skip_desktop_build = not _m()._desktop_build_needed(
-                    desktop_dir, _m().PROJECT_ROOT, source_mode=False
-                )
-            except Exception:
-                _skip_desktop_build = False
-            if _skip_desktop_build:
-                print("  ✓ Desktop app up to date")
-            else:
-                print("→ Desktop sources changed; rebuilding packaged app...")
-                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-                # Capture the (very loud) Electron/vite build output into
-                # update.log instead of streaming it to the terminal. On the rare
-                # nonzero exit, retry once after waiting again for the venv — this
-                # covers a still-settling rebuild window the first wait didn't fully
-                # catch — then surface the captured tail so the failure is
-                # debuggable.
-                #
-                # Start the build subprocess with the Hermes-managed Node on PATH:
-                # when `hermes update` runs inside the desktop updater chain
-                # (Desktop → hermes-setup → hermes update), the shell PATH
-                # customizations are lost, so a bare-PATH child would fail with
-                # `node: not found` before cmd_gui can self-heal.
-                from hermes_constants import with_hermes_node_path
-
-                _build_env = with_hermes_node_path()
-                build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
-                if build_result.returncode != 0:
-                    build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
-                if build_result.returncode != 0:
-                    print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
-                    tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
-                    if tail:
-                        print(tail)
-                    from hermes_constants import display_hermes_home as _dhh
-                    print(f"  Full build log: {_dhh()}/logs/update.log")
-                else:
-                    print("  ✓ Desktop app up to date")
+        _reconcile_desktop_build()
 
         print()
         print("✓ Code updated!")
