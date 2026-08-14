@@ -29,6 +29,7 @@ module per the fork contract's drop-review process rather than letting it rot.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -42,7 +43,7 @@ import threading
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Final, Optional, TypedDict
 
 
 logger = logging.getLogger("hermes_cli.axiom_update")
@@ -54,9 +55,36 @@ UPDATE_REVIEW_DIR = "update-reports"
 DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
-FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
+class CheckSpec(TypedDict):
+    id: str
+    kind: str
+    command: str
+    timeout_seconds: int
+
+
+class ForkWatchAreaSpec(TypedDict):
+    id: str
+    name: str
+    paths: tuple[str, ...]
+    invariants: tuple[str, ...]
+    prefer_upstream: str
+    drop_when: str
+    references: tuple[str, ...]
+    checks: tuple[CheckSpec, ...]
+
+
+def _check(id: str, kind: str, command: str, timeout_seconds: int = 900) -> CheckSpec:
+    return {"id": id, "kind": kind, "command": command, "timeout_seconds": timeout_seconds}
+
+
+FORK_WATCH_AREAS: Final[tuple[ForkWatchAreaSpec, ...]] = (
     {
+        "id": "deploy-updater",
         "name": "Deploy-branch-safe updater",
+        "invariants": ("Child resolves structure only; parent checkpoints, validates, and publishes the exact commit.",),
+        "prefer_upstream": "Keep upstream structure when it preserves deploy-branch safety and resumability.",
+        "drop_when": "Drop when upstream provides equivalent deploy-branch reconciliation and durable validation handoffs.",
+        "references": ("FORK.md#staged-update-lifecycle", "docs/axiom-fork-contract.md"),
         "paths": (
             "hermes_cli/axiom_update.py",
             "hermes_cli/main.py",
@@ -64,12 +92,17 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "tests/hermes_cli/test_cmd_update.py",
         ),
         "checks": (
-            "python -m py_compile hermes_cli/main.py hermes_cli/axiom_update.py",
-            "python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py",
+            _check("deploy-updater-compile", "py_compile", "python -m py_compile hermes_cli/main.py hermes_cli/axiom_update.py", 120),
+            _check("deploy-updater-tests", "pytest", "python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py"),
         ),
     },
     {
+        "id": "desktop-remote-artifacts",
         "name": "Desktop OAuth remote artifact opening",
+        "invariants": ("Remote OAuth artifacts open through authenticated Desktop routing.",),
+        "prefer_upstream": "Prefer upstream media and filesystem seams when authentication and routing remain equivalent.",
+        "drop_when": "Drop when upstream covers authenticated remote artifact opening end to end.",
+        "references": ("FORK.md", "docs/axiom-fork-contract.md"),
         "paths": (
             "apps/desktop/electron/main.ts",
             "apps/desktop/electron/preload.ts",
@@ -78,12 +111,17 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "apps/desktop/src/lib/media",
         ),
         "checks": (
-            "cd apps/desktop && npx vitest run --environment jsdom src/lib/media.remote.test.ts src/lib/desktop-fs.test.ts src/app/artifacts/index.test.ts",
-            "cd apps/desktop && NODE_ENV=test npm run typecheck",
+            _check("desktop-remote-artifacts-tests", "vitest", "cd apps/desktop && npx vitest run --environment jsdom src/lib/media.remote.test.ts src/lib/desktop-fs.test.ts src/app/artifacts/index.test.ts"),
+            _check("desktop-typecheck", "typecheck", "cd apps/desktop && NODE_ENV=test npm run typecheck"),
         ),
     },
     {
+        "id": "desktop-remote-profiles",
         "name": "Desktop remote profile handles / remote routing",
+        "invariants": ("Remote profile handles stay bound to the selected gateway.",),
+        "prefer_upstream": "Prefer upstream connection configuration when profile identity and routing remain explicit.",
+        "drop_when": "Drop when upstream supplies equivalent remote profile routing.",
+        "references": ("FORK.md", "docs/axiom-fork-contract.md"),
         "paths": (
             "apps/desktop/electron/connection-config.ts",
             "apps/desktop/electron/main.ts",
@@ -91,12 +129,17 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "apps/desktop/src/app/settings/gateway-settings.tsx",
         ),
         "checks": (
-            "cd apps/desktop && NODE_ENV=test npx vitest run --project electron electron/connection-config.test.ts",
-            "cd apps/desktop && NODE_ENV=test npm run typecheck",
+            _check("desktop-remote-profiles-tests", "vitest", "cd apps/desktop && NODE_ENV=test npx vitest run --project electron electron/connection-config.test.ts"),
+            _check("desktop-typecheck", "typecheck", "cd apps/desktop && NODE_ENV=test npm run typecheck"),
         ),
     },
     {
+        "id": "slack-channel-session",
         "name": "Slack channel/session behavior",
+        "invariants": ("Slack mentions and channel-scoped sessions retain their established routing semantics.",),
+        "prefer_upstream": "Prefer upstream Slack adapter structure while preserving channel/session scope.",
+        "drop_when": "Drop when upstream tests prove equivalent Slack mention and session behavior.",
+        "references": ("FORK.md",),
         "paths": (
             "gateway/platforms/slack.py",
             "gateway/platforms/base.py",
@@ -106,11 +149,16 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "tests/gateway/test_slack",
         ),
         "checks": (
-            "python -m pytest -o addopts= -q tests/gateway/test_slack.py tests/gateway/test_slack_mention.py tests/gateway/test_slack_channel_session_scope.py",
+            _check("slack-channel-session-tests", "pytest", "python -m pytest -o addopts= -q tests/gateway/test_slack.py tests/gateway/test_slack_mention.py tests/gateway/test_slack_channel_session_scope.py"),
         ),
     },
     {
+        "id": "anthropic-oauth-billing",
         "name": "Anthropic Claude OAuth billing-lane fixes",
+        "invariants": ("Claude OAuth requests retain billing-lane and system relocation behavior.",),
+        "prefer_upstream": "Prefer upstream transport changes when OAuth behavior remains covered.",
+        "drop_when": "Drop when upstream has equivalent OAuth billing behavior and tests.",
+        "references": ("FORK.md",),
         "paths": (
             "agent/anthropic_adapter.py",
             "agent/transports/anthropic.py",
@@ -118,12 +166,17 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "tests/agent/test_anthropic_oauth_system_relocation.py",
         ),
         "checks": (
-            "python -m py_compile agent/anthropic_adapter.py agent/transports/anthropic.py",
-            "python -m pytest -o addopts= -q tests/agent/test_anthropic_adapter.py tests/agent/test_anthropic_oauth_system_relocation.py",
+            _check("anthropic-oauth-compile", "py_compile", "python -m py_compile agent/anthropic_adapter.py agent/transports/anthropic.py", 120),
+            _check("anthropic-oauth-tests", "pytest", "python -m pytest -o addopts= -q tests/agent/test_anthropic_adapter.py tests/agent/test_anthropic_oauth_system_relocation.py"),
         ),
     },
     {
+        "id": "live-mcp-refresh",
         "name": "Live MCP/tool-schema refresh",
+        "invariants": ("MCP tool schemas refresh without rebuilding conversation context.",),
+        "prefer_upstream": "Prefer upstream agent initialization seams that preserve live refresh.",
+        "drop_when": "Drop when upstream provides equivalent cache-safe refresh.",
+        "references": ("FORK.md",),
         "paths": (
             "agent/agent_init.py",
             "agent/chat_completion_helpers.py",
@@ -132,11 +185,16 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "tests/tools/test_mcp_tool.py",
         ),
         "checks": (
-            "python -m pytest -o addopts= -q tests/tools/test_refresh_agent_mcp_tools.py",
+            _check("live-mcp-refresh-tests", "pytest", "python -m pytest -o addopts= -q tests/tools/test_refresh_agent_mcp_tools.py"),
         ),
     },
     {
+        "id": "forge-runtime-policy",
         "name": "Forge integration / runtime tool policy",
+        "invariants": ("Forge tools obey runtime tool policy and platform boundaries.",),
+        "prefer_upstream": "Prefer upstream policy seams while preserving Forge capability gating.",
+        "drop_when": "Drop when upstream supports equivalent Forge policy integration.",
+        "references": ("FORK.md",),
         "paths": (
             "plugins/platforms/forge/",
             "agent/runtime_tool_policy.py",
@@ -145,11 +203,16 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "tests/agent/test_runtime_tool_policy.py",
         ),
         "checks": (
-            "python -m pytest -o addopts= -q tests/gateway/test_forge_plugin.py tests/agent/test_runtime_tool_policy.py tests/test_model_tools.py",
+            _check("forge-runtime-policy-tests", "pytest", "python -m pytest -o addopts= -q tests/gateway/test_forge_plugin.py tests/agent/test_runtime_tool_policy.py tests/test_model_tools.py"),
         ),
     },
     {
+        "id": "webhook-route-toolsets",
         "name": "Webhook route-level toolsets",
+        "invariants": ("Webhook routes retain explicit per-route toolsets.",),
+        "prefer_upstream": "Prefer upstream webhook routing when route-level toolsets remain explicit.",
+        "drop_when": "Drop when upstream provides equivalent route-level toolset policy.",
+        "references": ("FORK.md",),
         "paths": (
             "gateway/platforms/webhook.py",
             "gateway/run.py",
@@ -158,22 +221,62 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
             "tests/hermes_cli/test_webhook_cli.py",
         ),
         "checks": (
-            "python -m pytest -o addopts= -q tests/gateway/test_webhook_adapter.py tests/hermes_cli/test_webhook_cli.py",
+            _check("webhook-route-toolsets-tests", "pytest", "python -m pytest -o addopts= -q tests/gateway/test_webhook_adapter.py tests/hermes_cli/test_webhook_cli.py"),
         ),
     },
     {
+        "id": "a2a-communication",
         "name": "A2A inter-agent communication",
+        "invariants": ("A2A protocol, adapter, and tools remain mutually compatible.",),
+        "prefer_upstream": "Prefer upstream tool configuration seams while preserving A2A protocol behavior.",
+        "drop_when": "Drop when upstream provides equivalent inter-agent communication.",
+        "references": ("FORK.md",),
         "paths": (
             "plugins/platforms/a2a/",
             "tests/plugins/test_a2a_plugin.py",
             "hermes_cli/tools_config.py",
         ),
         "checks": (
-            "python -m py_compile plugins/platforms/a2a/adapter.py plugins/platforms/a2a/tools.py plugins/platforms/a2a/protocol.py",
-            "python -m pytest -o addopts= -q tests/plugins/test_a2a_plugin.py",
+            _check("a2a-compile", "py_compile", "python -m py_compile plugins/platforms/a2a/adapter.py plugins/platforms/a2a/tools.py plugins/platforms/a2a/protocol.py", 120),
+            _check("a2a-tests", "pytest", "python -m pytest -o addopts= -q tests/plugins/test_a2a_plugin.py"),
         ),
     },
 )
+
+
+def _check_fingerprint(check: CheckSpec) -> str:
+    canonical = json.dumps(
+        {key: check[key] for key in ("id", "kind", "command", "timeout_seconds")},
+        sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _normalize_check_specs(checks: object) -> list[CheckSpec]:
+    """Normalize old command strings and reject ambiguous stable check IDs."""
+    if not isinstance(checks, (list, tuple)):
+        return []
+    by_id: dict[str, tuple[str, CheckSpec]] = {}
+    for raw in checks:
+        if isinstance(raw, str):
+            command = raw.strip()
+            if not command:
+                continue
+            digest = hashlib.sha256(command.encode("utf-8")).hexdigest()
+            spec = _check(f"legacy-{digest[:16]}", "legacy", command)
+        elif isinstance(raw, dict):
+            try:
+                spec = _check(str(raw["id"]), str(raw["kind"]), str(raw["command"]), int(raw["timeout_seconds"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        else:
+            continue
+        fingerprint = _check_fingerprint(spec)
+        previous = by_id.get(spec["id"])
+        if previous and previous[0] != fingerprint:
+            raise ValueError(f"Conflicting check id: {spec['id']}")
+        by_id.setdefault(spec["id"], (fingerprint, spec))
+    return [item[1] for item in by_id.values()]
 
 
 def _validate_update_after_pull(git_cmd, root, pre_pull_sha: str | None) -> None:
@@ -382,14 +485,61 @@ def _full_git_ref(git_cmd: list[str], cwd: Path, ref: str) -> str:
     return value if re.fullmatch(r"[0-9a-fA-F]{40,64}", value) else ""
 
 
-def _matched_fork_watch_areas(paths: list[str]) -> list[dict[str, object]]:
+def _matched_fork_watch_areas(paths: list[str]) -> list[ForkWatchAreaSpec]:
     normalized = [p.replace("\\", "/") for p in paths]
-    matched: list[dict[str, object]] = []
+    matched: list[ForkWatchAreaSpec] = []
     for area in FORK_WATCH_AREAS:
-        prefixes = tuple(str(p).replace("\\", "/") for p in area.get("paths", ()))
+        prefixes = tuple(p.replace("\\", "/") for p in area["paths"])
         if any(path.startswith(prefix) for path in normalized for prefix in prefixes):
             matched.append(area)
     return matched
+
+
+def _bounded_text(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "\n…(truncated)…"
+
+
+def _render_resolver_brief(review: dict[str, object]) -> str:
+    files = sorted({str(item) for item in review.get("conflict_files", []) or []})[:50]
+    areas = sorted(
+        (area for area in review.get("watch_areas", []) or [] if isinstance(area, dict)),
+        key=lambda area: str(area.get("id") or ""),
+    )
+    lines = [
+        "# Hermes deploy conflict resolver brief", "",
+        f"Deploy branch: `{review.get('branch') or ''}`",
+        f"Retained worktree: `{review.get('worktree') or ''}`", "",
+        "## Conflicting files", *([f"- `{path}`" for path in files] or ["- none reported"]),
+    ]
+    for area in areas:
+        lines.extend(["", f"## {area.get('name')} (`{area.get('id')}`)", "", "Protected invariants:"])
+        lines.extend(f"- {item}" for item in area.get("invariants", ()))
+        lines.extend(["", f"Prefer upstream: {area.get('prefer_upstream')}", f"Drop when: {area.get('drop_when')}", "", "References:"])
+        lines.extend(f"- `{item}`" for item in area.get("references", ()))
+        checks = _normalize_check_specs(area.get("checks", ()))
+        lines.extend(["", "Parent-owned check IDs:", *[f"- `{item['id']}`" for item in checks]])
+    incoming = _bounded_text(review.get("incoming_commits"), 2500)
+    error = _bounded_text(review.get("error"), 1500)
+    if incoming:
+        lines.extend(["", "## Bounded incoming summary", "", "```text", incoming, "```"])
+    if error:
+        lines.extend(["", "## Bounded merge output", "", "```text", error, "```"])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write_resolver_brief(review: dict[str, object]) -> Optional[Path]:
+    try:
+        reports_dir = _review_reports_dir()
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        branch = str(review.get("branch") or "deploy").replace("/", "-")
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = reports_dir / f"{run_id}-{branch}-resolver-brief.md"
+        path.write_text(_render_resolver_brief(review), encoding="utf-8")
+        return path
+    except Exception:
+        logger.debug("Failed to write resolver brief", exc_info=True)
+        return None
 
 
 def _review_reports_dir() -> Path:
@@ -700,6 +850,8 @@ def _generate_update_conflict_review(
     )
     review["llm_summary"] = llm_summary
     review["llm_error"] = llm_error
+    resolver_brief = _write_resolver_brief(review)
+    review["resolver_brief_path"] = str(resolver_brief) if resolver_brief else ""
     report_path = _write_update_review_report(review)
     review["report_path"] = str(report_path) if report_path is not None else ""
     return review
@@ -759,42 +911,23 @@ def _record_deploy_handoff(
         else:
             conflict_list = [str(line).strip() for line in conflict_files if str(line).strip()]
         watch_areas = []
-        focused_checks: list[str] = []
-        if review:
-            review_areas = review.get("watch_areas", [])
-            if isinstance(review_areas, (list, tuple)):
-                iterable_areas = review_areas
-            else:
-                iterable_areas = []
-            for area in iterable_areas:
-                if not isinstance(area, dict):
-                    continue
-                area_checks = area.get("checks", ())
-                checks = [str(c) for c in area_checks] if isinstance(area_checks, (list, tuple)) else []
-                area_paths = area.get("paths", ())
-                paths = [str(p) for p in area_paths] if isinstance(area_paths, (list, tuple)) else []
-                watch_areas.append({
-                    "name": str(area.get("name") or ""),
-                    "paths": paths,
-                    "checks": checks,
-                })
-                for check in checks:
-                    if check not in focused_checks:
-                        focused_checks.append(check)
-        elif conflict_list:
-            for area in _matched_fork_watch_areas(conflict_list):
-                area_checks = area.get("checks", ())
-                checks = [str(c) for c in area_checks] if isinstance(area_checks, (list, tuple)) else []
-                area_paths = area.get("paths", ())
-                paths = [str(p) for p in area_paths] if isinstance(area_paths, (list, tuple)) else []
-                watch_areas.append({
-                    "name": str(area.get("name") or ""),
-                    "paths": paths,
-                    "checks": checks,
-                })
-                for check in checks:
-                    if check not in focused_checks:
-                        focused_checks.append(check)
+        focused_checks: list[CheckSpec] = []
+        iterable_areas = review.get("watch_areas", []) if review else _matched_fork_watch_areas(conflict_list)
+        if not isinstance(iterable_areas, (list, tuple)):
+            iterable_areas = []
+        for area in iterable_areas:
+            if not isinstance(area, dict):
+                continue
+            checks = _normalize_check_specs(area.get("checks", ()))
+            paths = [str(p) for p in area.get("paths", ())]
+            watch_areas.append({
+                "id": str(area.get("id") or ""),
+                "name": str(area.get("name") or ""),
+                "paths": paths,
+                "checks": checks,
+            })
+            focused_checks.extend(checks)
+        focused_checks = _normalize_check_specs(focused_checks)
         payload = {
             "schema": 3,
             "repo": str(repo),
@@ -803,6 +936,7 @@ def _record_deploy_handoff(
             "worktree": str(worktree_path) if worktree_path is not None else "",
             "conflict_files": conflict_list,
             "report_path": str(review.get("report_path") or "") if review else "",
+            "resolver_brief_path": str(review.get("resolver_brief_path") or "") if review else "",
             "watch_areas": watch_areas,
             "focused_checks": focused_checks,
             "phase": phase,
@@ -1059,55 +1193,48 @@ def shlex_quote(value: str) -> str:
     return shlex.quote(value)
 
 
-def _focused_checks_for_paths(paths: list[str], payload: dict[str, object]) -> list[str]:
-    checks: list[str] = []
+def _focused_checks_for_paths(paths: list[str], payload: dict[str, object]) -> list[CheckSpec]:
+    checks: list[object] = []
     marker_checks = payload.get("focused_checks")
     if isinstance(marker_checks, list):
-        checks.extend(str(check) for check in marker_checks if str(check).strip())
+        checks.extend(marker_checks)
     for area in _matched_fork_watch_areas(paths):
-        area_checks = area.get("checks", ())
-        if isinstance(area_checks, (list, tuple)):
-            checks.extend(str(check) for check in area_checks if str(check).strip())
-    unique: list[str] = []
-    for check in checks:
-        if check not in unique:
-            unique.append(check)
+        checks.extend(area["checks"])
+    unique = _normalize_check_specs(checks)
     if unique:
         return unique
     py_files = [path for path in paths if path.endswith(".py")]
     if py_files:
         quoted = " ".join(shlex_quote(path) for path in py_files[:20])
-        return [f"python -m py_compile {quoted}"]
+        return [_check("fallback-py-compile", "py_compile", f"python -m py_compile {quoted}", 120)]
     return []
 
 
-def _build_deploy_resolver_prompt(payload: dict[str, object], checks: list[str]) -> str:
+def _build_deploy_resolver_prompt(payload: dict[str, object], checks: object) -> str:
     conflict_files = payload.get("conflict_files")
     files = "\n".join(f"- {item}" for item in conflict_files) if isinstance(conflict_files, list) else "- inspect git status"
-    report_path = str(payload.get("report_path") or "").strip()
+    brief_path = str(payload.get("resolver_brief_path") or payload.get("report_path") or "").strip()
     return f"""Resolve the retained Hermes deploy-branch update handoff to completion.
 
 Repo: {payload.get('repo')}
 Deploy branch: {payload.get('branch')}
 Retained worktree: {payload.get('worktree')}
 Reason: {payload.get('reason')}
-Conflict review report: {report_path or '(none)'}
+Resolver brief: {brief_path or '(none)'}
+
+Read the resolver brief first. It is the bounded, conflict-scoped authority for
+protected invariants, upstream/drop guidance, precise references, and the IDs
+of checks owned by the parent updater.
 
 Conflicting files from the updater marker:
 {files}
 
-Required local references to read before editing when present:
-- FORK.md
-- docs/axiom-fork-contract.md
-- ~/obsidian-vault/3. System/Operations/Hermes Axiom Sync Runbook.md
-- skill_view(name="hermes-update") when the skills tool is available
-
 Resolver contract:
 1. Work only inside the retained worktree above.
-2. Resolve the git merge conflict, preserving documented deploy-branch/Axiom/TGI behavior and preferring upstream code when it provides equivalent or better behavior.
+2. Resolve the git merge conflict using the resolver brief and prefer upstream code when it provides equivalent or better behavior.
 3. Do not touch secrets, auth tokens, .env files, or unrelated generated churn.
 4. Perform only cheap structural validation: confirm no unmerged paths, scan the reconciled files for conflict markers, and run `git diff --check`.
-5. Leave all compilation, package installation, typechecking, and focused test suites to the parent updater.
+5. Leave all compilation, package installation, and parent-owned checks to the parent updater.
 6. Leave the worktree ready for the updater to checkpoint: only justified tracked changes and no unexpected untracked files.
 
 Do not commit, push, or run `hermes update` yourself; the parent updater will checkpoint, validate, push, fast-forward the live checkout, and run the normal install/restart phase after you exit.
@@ -1276,7 +1403,9 @@ def _focused_check_shell_command(check: str, *, windows: bool) -> str:
     return " && ".join(normalized)
 
 
-def _run_focused_check(check: str, worktree: Path) -> Optional[bool]:
+def _run_focused_check(
+    check: str, worktree: Path, *, timeout_seconds: int = 900
+) -> Optional[subprocess.CompletedProcess]:
     """Run one retained-handoff check.
 
     ``None`` means the check requires pytest but the active updater
@@ -1297,10 +1426,11 @@ def _run_focused_check(check: str, worktree: Path) -> Optional[bool]:
         _focused_check_shell_command(check, windows=os.name == "nt"),
         cwd=worktree,
         shell=True,
+        capture_output=True,
         text=True,
-        timeout=900,
+        timeout=timeout_seconds,
     )
-    return result.returncode == 0
+    return result
 
 
 def _prepare_isolated_worktree_dependencies(worktree: Path) -> tuple[bool, str]:
@@ -1332,51 +1462,91 @@ def _prepare_isolated_worktree_dependencies(worktree: Path) -> tuple[bool, str]:
 def _run_parent_handoff_validation(
     worktree: Path,
     resolved_head: str,
-    checks: list[str],
-    prior_status: dict[str, str],
+    checks: object,
+    prior_status: object,
 ) -> bool:
-    """Run heavyweight checks serially, persisting resumable SHA-bound status."""
-    desktop_checks = [check for check in checks if "apps/desktop" in check]
-    non_desktop_checks = [check for check in checks if check not in desktop_checks]
-    ordered = [*non_desktop_checks, *desktop_checks]
-    check_status = dict(prior_status)
+    """Run checks serially and persist results bound to SHA plus canonical spec."""
+    import time
+
+    specs = _normalize_check_specs(checks)
+    desktop = [spec for spec in specs if "apps/desktop" in spec["command"]]
+    ordered = [spec for spec in specs if spec not in desktop] + desktop
+    prior_results: dict[str, object] = {}
+    if isinstance(prior_status, dict) and prior_status.get("resolved_sha") == resolved_head:
+        candidate = prior_status.get("results")
+        if isinstance(candidate, dict):
+            prior_results = candidate
+    ledger: dict[str, object] = {"resolved_sha": resolved_head, "results": dict(prior_results)}
+    results = ledger["results"]
+    assert isinstance(results, dict)
+    legacy_status: dict[str, str] = {}
     dependencies_prepared = False
 
-    for check in ordered:
-        if check_status.get(check) in {"passed", "skipped"}:
+    for spec in ordered:
+        check_id = spec["id"]
+        fingerprint = _check_fingerprint(spec)
+        previous = results.get(check_id)
+        if (
+            isinstance(previous, dict)
+            and previous.get("status") in {"passed", "skipped"}
+            and previous.get("fingerprint") == fingerprint
+        ):
+            legacy_status[spec["command"]] = str(previous["status"])
             continue
-        if check in desktop_checks and not dependencies_prepared:
+        if spec in desktop and not dependencies_prepared:
             prepared, error = _prepare_isolated_worktree_dependencies(worktree)
             if not prepared:
                 _update_deploy_handoff_state(
-                    phase="validation_failed",
-                    resolved_head=resolved_head,
-                    validation_sha=resolved_head,
-                    check_status=check_status,
-                    error=error,
+                    phase="validation_failed", resolved_head=resolved_head,
+                    validation_sha=resolved_head, check_ledger=ledger,
+                    check_status=legacy_status, error=_bounded_text(error, 4000),
                 )
                 return False
             dependencies_prepared = True
-        print(f"→ Focused check: {check}")
-        result = _run_focused_check(check, worktree)
-        check_status[check] = "skipped" if result is None else "passed" if result else "failed"
-        phase = "validation_pending" if result is not False else "validation_failed"
-        _update_deploy_handoff_state(
-            phase=phase,
-            resolved_head=resolved_head,
-            validation_sha=resolved_head,
-            check_status=check_status,
-            error="" if result is not False else f"Focused check failed: {check}",
+        command = spec["command"]
+        print(f"→ Focused check [{check_id}]: {command}")
+        started = time.monotonic()
+        outcome = _run_focused_check(
+            command, worktree, timeout_seconds=spec["timeout_seconds"]
         )
-        if result is False:
+        duration = round(time.monotonic() - started, 3)
+        if isinstance(outcome, subprocess.CompletedProcess):
+            returncode = outcome.returncode
+            status_value = "passed" if returncode == 0 else "failed"
+            raw_output = outcome.stderr or outcome.stdout or ""
+        else:
+            returncode = None if outcome is None else 0 if outcome else 1
+            status_value = "skipped" if outcome is None else "passed" if outcome else "failed"
+            raw_output = ""
+        try:
+            redact_module = __import__("agent.redact", fromlist=["redact_sensitive_text"])
+            raw_output = redact_module.redact_sensitive_text(str(raw_output), force=True)
+        except Exception:
+            raw_output = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", str(raw_output))
+        results[check_id] = {
+            "check_id": check_id,
+            "fingerprint": fingerprint,
+            "status": status_value,
+            "returncode": returncode,
+            "output_tail": "\n".join(_resolver_output_tail(raw_output, max_lines=30, max_chars=4000)),
+            "duration_seconds": duration,
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        legacy_status[command] = status_value
+        failed = status_value == "failed"
+        _update_deploy_handoff_state(
+            phase="validation_failed" if failed else "validation_pending",
+            resolved_head=resolved_head, validation_sha=resolved_head,
+            check_ledger=ledger, check_status=legacy_status,
+            error=f"Focused check failed: {check_id}" if failed else "",
+        )
+        if failed:
             return False
 
     _update_deploy_handoff_state(
-        phase="commit_push_pending",
-        resolved_head=resolved_head,
-        validation_sha=resolved_head,
-        check_status=check_status,
-        error="",
+        phase="commit_push_pending", resolved_head=resolved_head,
+        validation_sha=resolved_head, check_ledger=ledger,
+        check_status=legacy_status, error="",
     )
     return True
 
@@ -1466,6 +1636,8 @@ def _checkpoint_resolved_handoff(
     _update_deploy_handoff_state(
         phase="validation_pending",
         resolved_head=resolved_head,
+        validation_sha=resolved_head,
+        check_ledger={"resolved_sha": resolved_head, "results": {}},
         check_status={},
         error="",
     )
@@ -1633,7 +1805,7 @@ def _resolve_deploy_handoff(
             status.fail(note="retained checkpoint changed")
             print("✗ Retained checkpoint no longer matches its resolved commit; stopping safely.")
             return None
-        prior_status = payload.get("check_status")
+        prior_status = payload.get("check_ledger")
         if payload.get("validation_sha") != resolved_head or not isinstance(prior_status, dict):
             prior_status = {}
         status.advance("focused checks")

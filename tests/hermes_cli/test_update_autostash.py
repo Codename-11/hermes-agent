@@ -1345,6 +1345,7 @@ def test_deploy_resolver_prompt_assigns_only_structural_validation_to_child():
             "branch": "axiom",
             "worktree": "/worktree",
             "reason": "conflict",
+            "resolver_brief_path": "/reports/brief.md",
             "conflict_files": ["hermes_cli/axiom_update.py"],
         },
         ["python -m pytest tests/hermes_cli/test_update_autostash.py"],
@@ -1352,7 +1353,14 @@ def test_deploy_resolver_prompt_assigns_only_structural_validation_to_child():
 
     assert "git diff --check" in prompt
     assert "no unmerged paths" in prompt
+    assert "Resolver brief: /reports/brief.md" in prompt
+    assert "FORK.md" not in prompt
+    assert "axiom-fork-contract" not in prompt
+    assert "Obsidian" not in prompt
+    assert "skill_view" not in prompt
     assert "python -m pytest" not in prompt
+    assert "vitest" not in prompt
+    assert "typecheck" not in prompt
     assert "focused verification" not in prompt.lower()
 
 
@@ -1520,7 +1528,7 @@ def test_parent_validation_serializes_python_before_desktop_and_prepares_once(
     monkeypatch.setattr(
         axiom_update,
         "_run_focused_check",
-        lambda check, worktree: events.append(check) or True,
+        lambda check, worktree, **kwargs: events.append(check) or True,
     )
 
     ok = axiom_update._run_parent_handoff_validation(
@@ -1549,6 +1557,82 @@ def test_parent_validation_serializes_python_before_desktop_and_prepares_once(
         "cd apps/desktop && npx vitest run src/example.test.ts",
     }
     assert all(value == "passed" for value in payload["check_status"].values())
+
+
+def test_parent_validation_ledger_reuses_only_matching_sha_and_fingerprint(
+    monkeypatch, tmp_path
+):
+    marker = tmp_path / ".update_handoff.json"
+    sha = "a" * 40
+    marker.write_text(json.dumps({"phase": "validation_pending"}), encoding="utf-8")
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    calls = []
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_focused_check",
+        lambda command, worktree, **kwargs: calls.append(command) or True,
+    )
+    one = {"id": "one", "kind": "pytest", "command": "python -m pytest one.py", "timeout_seconds": 30}
+    two = {"id": "two", "kind": "pytest", "command": "python -m pytest two.py", "timeout_seconds": 30}
+    prior = {
+        "resolved_sha": sha,
+        "results": {
+            "one": {
+                "check_id": "one",
+                "fingerprint": hermes_axiom_update._check_fingerprint(one),
+                "status": "passed",
+                "returncode": 0,
+                "output_tail": "",
+                "duration_seconds": 0.1,
+                "completed_at": "2026-01-01T00:00:00",
+            }
+        },
+    }
+
+    assert hermes_axiom_update._run_parent_handoff_validation(tmp_path, sha, [one, two], prior)
+    assert calls == [two["command"]]
+
+    calls.clear()
+    changed = {**one, "command": "python -m pytest changed.py"}
+    assert hermes_axiom_update._run_parent_handoff_validation(tmp_path, sha, [changed, two], prior)
+    assert calls == [changed["command"], two["command"]]
+
+    calls.clear()
+    assert hermes_axiom_update._run_parent_handoff_validation(tmp_path, "b" * 40, [one], prior)
+    assert calls == [one["command"]]
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["check_ledger"]["resolved_sha"] == "b" * 40
+    assert payload["check_ledger"]["results"]["one"]["fingerprint"] == hermes_axiom_update._check_fingerprint(one)
+
+
+def test_failed_check_persists_bounded_result_and_resume_restarts_there(monkeypatch, tmp_path):
+    marker = tmp_path / ".update_handoff.json"
+    sha = "c" * 40
+    marker.write_text(json.dumps({"phase": "validation_pending"}), encoding="utf-8")
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    calls = []
+    outcomes = [True, subprocess.CompletedProcess([], 7, stdout="secret=" + "x" * 10_000, stderr="")]
+    monkeypatch.setattr(
+        hermes_axiom_update, "_run_focused_check",
+        lambda command, worktree, **kwargs: calls.append(command) or outcomes.pop(0),
+    )
+    checks = [
+        {"id": "passed", "kind": "python", "command": "python passed.py", "timeout_seconds": 30},
+        {"id": "failed", "kind": "python", "command": "python failed.py", "timeout_seconds": 30},
+    ]
+    assert not hermes_axiom_update._run_parent_handoff_validation(tmp_path, sha, checks, {})
+    ledger = json.loads(marker.read_text(encoding="utf-8"))["check_ledger"]
+    assert ledger["results"]["failed"]["status"] == "failed"
+    assert ledger["results"]["failed"]["returncode"] == 7
+    assert len(ledger["results"]["failed"]["output_tail"]) <= 4000
+
+    calls.clear()
+    monkeypatch.setattr(
+        hermes_axiom_update, "_run_focused_check",
+        lambda command, worktree, **kwargs: calls.append(command) or True,
+    )
+    assert hermes_axiom_update._run_parent_handoff_validation(tmp_path, sha, checks, ledger)
+    assert calls == ["python failed.py"]
 
 
 def test_validation_pending_checkpoint_is_not_discarded_as_stale_snapshot(
@@ -2277,15 +2361,83 @@ def test_fork_watch_area_pytest_checks_reference_existing_files():
     missing = []
     for area in hermes_axiom_update.FORK_WATCH_AREAS:
         for check in area["checks"]:
-            if "-m pytest" not in check:
+            command = check["command"]
+            if "-m pytest" not in command:
                 continue
-            for token in check.split():
+            for token in command.split():
                 if token.startswith("tests/"):
                     test_path = token.split("::", 1)[0]
                     if not (repo / test_path).exists():
                         missing.append((area["name"], test_path))
 
     assert missing == []
+
+
+def test_fork_watch_catalog_has_typed_unique_ids_and_valid_references():
+    repo = Path(__file__).resolve().parents[2]
+    area_ids = set()
+    check_specs = []
+
+    for area in hermes_axiom_update.FORK_WATCH_AREAS:
+        assert set(area) == {
+            "id", "name", "paths", "invariants", "prefer_upstream",
+            "drop_when", "references", "checks",
+        }
+        assert area["id"] not in area_ids
+        area_ids.add(area["id"])
+        assert isinstance(area["paths"], tuple) and area["paths"]
+        assert isinstance(area["invariants"], tuple) and area["invariants"]
+        assert area["prefer_upstream"] and area["drop_when"]
+        for reference in area["references"]:
+            path = reference.split("#", 1)[0]
+            assert (repo / path).is_file(), reference
+        check_specs.extend(area["checks"])
+
+    normalized = hermes_axiom_update._normalize_check_specs(check_specs)
+    assert len({check["id"] for check in normalized}) == len(normalized)
+    assert all(set(check) == {"id", "kind", "command", "timeout_seconds"} for check in normalized)
+
+
+def test_check_normalization_supports_legacy_strings_and_rejects_conflicting_ids():
+    legacy = "python -m py_compile hermes_cli/axiom_update.py"
+    normalized = hermes_axiom_update._normalize_check_specs([legacy, legacy])
+    assert len(normalized) == 1
+    assert normalized[0]["command"] == legacy
+    assert normalized[0]["id"].startswith("legacy-")
+
+    with pytest.raises(ValueError, match="Conflicting check id"):
+        hermes_axiom_update._normalize_check_specs([
+            {"id": "same", "kind": "python", "command": "python -V", "timeout_seconds": 5},
+            {"id": "same", "kind": "python", "command": "python -VV", "timeout_seconds": 5},
+        ])
+
+
+def test_resolver_brief_is_conflict_scoped_deterministic_and_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(hermes_axiom_update, "_review_reports_dir", lambda: tmp_path)
+    review = {
+        "branch": "axiom",
+        "worktree": "/retained/worktree",
+        "conflict_files": ["gateway/platforms/slack.py"],
+        "watch_areas": hermes_axiom_update._matched_fork_watch_areas(
+            ["gateway/platforms/slack.py"]
+        ),
+        "incoming_commits": "incoming " + ("x" * 50_000),
+        "error": "failure " + ("y" * 50_000),
+    }
+
+    first = hermes_axiom_update._render_resolver_brief(review)
+    second = hermes_axiom_update._render_resolver_brief(dict(reversed(list(review.items()))))
+
+    assert first == second
+    assert len(first) < 16_000
+    assert "gateway/platforms/slack.py" in first
+    assert "Slack channel/session behavior" in first
+    assert "slack-channel-session" in first
+    assert "Deploy-branch-safe updater" not in first
+    assert "docs/axiom-fork-contract.md" not in first
+    assert "Read the full" not in first
+    assert "python -m pytest" not in first
+    assert "Parent-owned check IDs" in first
 
 
 def test_windows_focused_check_normalizes_posix_env_assignment():
@@ -2318,7 +2470,7 @@ def test_desktop_focused_checks_reference_typescript_sources():
             if path.endswith((".ts", ".tsx")):
                 assert (repo / path).exists(), path
         for check in checks:
-            assert ".cjs" not in check, check
+            assert ".cjs" not in check["command"], check
 
 
 def test_slack_focused_checks_reference_existing_files():
@@ -2334,7 +2486,7 @@ def test_slack_focused_checks_reference_existing_files():
 
     assert checks
     for check in checks:
-        for token in check.split():
+        for token in check["command"].split():
             if token.startswith("tests/") and token.endswith(".py"):
                 assert (repo / token).exists(), token
 
