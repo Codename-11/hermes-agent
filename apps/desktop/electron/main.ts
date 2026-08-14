@@ -97,6 +97,7 @@ import {
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
+import { createExternalOpening } from './external-opening'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
@@ -221,34 +222,23 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { createStagedUpdateLifecycle } from './staged-update-lifecycle'
 import { createStreamThrottle } from './stream-throttle'
 import { createTerminalOutputRelay } from './terminal-output-relay'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
-import { appendUpdateHistory, readUpdateHistory } from './update-history'
 import { hasRetainedDeployHandoff } from './update-handoff-status'
+import { appendUpdateHistory } from './update-history'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { createUpdateOperationCoordinator } from './update-operation-coordinator'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import {
-  readUpdateStageManifest,
-  reconcileUpdateStageProgress,
-  validateUpdateStageManifest
-} from './update-stage'
-import {
-  cancelledStageProgress,
-  cancelledStageResult,
-  commandOwnsStagePreparation,
-  parseStagePreparationOwner
-} from './update-stage-cancel'
 import {
   buildStagedHandoffArgs,
   collectRelaunchArgs,
   resolvePosixScriptHandoff,
   resolveStagedApplyScriptHandoff,
   resolveStagedUpdaterBinary,
-  resolveStageUpdateScript,
   resolveUpdateScriptHandoff,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
@@ -1370,203 +1360,21 @@ function loadWindowUrl(win, url, label) {
   win.loadURL(url).catch(error => rememberLog(`${label} failed to load: ${describeCrashReason(error)}`))
 }
 
-function openExternalUrl(rawUrl) {
-  const raw = String(rawUrl || '').trim()
+const externalOpening = createExternalOpening({
+  isWsl: IS_WSL,
+  tempDir: app.getPath('temp'),
+  shell,
+  rememberLog,
+  resolveRequestedPath: resolveRequestedPathForIpc,
+  ensureBackend,
+  routeRemotePath: (value, profile, remoteProfile) =>
+    pathWithGlobalRemoteProfile(value, profile, profileRouteOptions(profile), remoteProfile),
+  fetchBinary,
+  fetchBinaryViaOauthSession,
+  timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+})
+const { openExternalUrl, openPreviewInBrowser, openRemoteFile } = externalOpening
 
-  if (!raw) {
-    return false
-  }
-
-  let parsed
-
-  try {
-    parsed = new URL(raw)
-  } catch {
-    return false
-  }
-
-  // `file://` URLs come from the artifacts panel (the renderer can't open
-  // them itself because Chromium blocks file:// navigation from the app
-  // origin). Hand them to `shell.openPath`, which dispatches to the OS
-  // file association. If the OS can't open it (`error` is a non-empty
-  // string), fall back to revealing the file in the system file manager.
-  if (parsed.protocol === 'file:') {
-    let localPath
-
-    try {
-      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })
-    } catch {
-      return false
-    }
-
-    void shell
-      .openPath(localPath)
-      .then(error => {
-        if (!error) {
-          return
-        }
-
-        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
-
-        try {
-          shell.showItemInFolder(localPath)
-        } catch (revealError) {
-          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
-        }
-      })
-      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
-
-    return true
-  }
-
-  if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
-    return false
-  }
-
-  const url = parsed.toString()
-
-  if (IS_WSL) {
-    rememberLog(`[link] opening via WSL→Windows: ${url}`)
-
-    const proc = spawn('cmd.exe', ['/c', 'start', '""', url], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    })
-
-    proc.on('error', error => {
-      rememberLog(`[link] cmd.exe start failed: ${error.message}; falling back to xdg-open`)
-      shell.openExternal(url).catch(fallback => rememberLog(`[link] xdg-open failed: ${fallback.message}`))
-    })
-    proc.unref()
-
-    return true
-  }
-
-  shell.openExternal(url).catch(error => rememberLog(`[link] openExternal failed: ${error.message}`))
-
-  return true
-}
-
-function remoteFilePathFromMediaPath(rawPath) {
-  const value = String(rawPath || '').trim()
-  if (!value) return ''
-  if (!value.startsWith('file:')) return value
-  try {
-    return decodeURIComponent(new URL(value).pathname)
-  } catch {
-    return value.replace(/^file:\/\//, '')
-  }
-}
-
-function safeDownloadFilename(rawName) {
-  const base = String(rawName || '')
-    .split(/[\\/]/)
-    .filter(Boolean)
-    .pop()
-  const cleaned = String(base || 'artifact')
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
-    .trim()
-    .slice(0, 160)
-  return cleaned || 'artifact'
-}
-
-function headerValue(headers, name) {
-  const wanted = String(name || '').toLowerCase()
-  for (const [key, value] of Object.entries(headers || {})) {
-    if (String(key).toLowerCase() !== wanted) continue
-    return Array.isArray(value) ? String(value[0] || '') : String(value || '')
-  }
-  return ''
-}
-
-function filenameFromContentDisposition(value) {
-  const header = String(value || '')
-  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
-  if (encoded) {
-    try {
-      return decodeURIComponent(encoded.replace(/^"|"$/g, ''))
-    } catch {
-      return encoded.replace(/^"|"$/g, '')
-    }
-  }
-  return header.match(/filename="?([^";]+)"?/i)?.[1] || ''
-}
-
-async function openDownloadedFile(buffer, remotePath, headers = {}) {
-  const dir = path.join(app.getPath('temp'), 'hermes-remote-files')
-  fs.mkdirSync(dir, { recursive: true })
-  const filename = safeDownloadFilename(filenameFromContentDisposition(headerValue(headers, 'content-disposition')) || remotePath)
-  const target = path.join(dir, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${filename}`)
-  fs.writeFileSync(target, buffer)
-
-  const error = await shell.openPath(target)
-  if (error) {
-    rememberLog(`[file] openPath failed for downloaded remote file: ${error}; revealing in folder instead`)
-    shell.showItemInFolder(target)
-  }
-
-  return { ok: true, path: target }
-}
-
-async function openRemoteFile(payload: { path?: string; profile?: string | null } = {}) {
-  const remotePath = remoteFilePathFromMediaPath(payload.path)
-  if (!remotePath) {
-    throw new Error('Remote file path is required')
-  }
-
-  const conn = await ensureBackend(payload.profile)
-  if (conn.mode !== 'remote') {
-    throw new Error('Remote file opening requires a remote gateway connection')
-  }
-
-  const base = String(conn.baseUrl || '').replace(/\/+$/, '')
-  const downloadPath = pathWithGlobalRemoteProfile(
-    `/api/files/download?path=${encodeURIComponent(remotePath)}`,
-    payload.profile,
-    profileRouteOptions(payload.profile),
-    conn.remoteProfile
-  )
-  const url = `${base}${downloadPath}`
-  const download =
-    conn.authMode === 'oauth'
-      ? await fetchBinaryViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
-      : await fetchBinary(url, conn.token, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
-
-  return openDownloadedFile(download.buffer, remotePath, download.headers)
-}
-
-async function openPreviewInBrowser(rawUrl) {
-  const raw = String(rawUrl || '').trim()
-
-  if (!raw) {
-    return false
-  }
-
-  let parsed
-
-  try {
-    parsed = new URL(raw)
-  } catch {
-    return false
-  }
-
-  if (parsed.protocol === 'file:') {
-    let localPath
-
-    try {
-      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open preview in browser' })
-    } catch {
-      return false
-    }
-
-    await shell.openExternal(pathToFileURL(localPath).toString())
-
-    return true
-  }
-
-  return openExternalUrl(raw)
-}
 function ensureWslWindowsFonts() {
   if (!IS_WSL) {
     return
@@ -3064,499 +2872,19 @@ const desktopUpdateStageRoot = () => path.join(HERMES_HOME, 'update-stage', 'des
 const desktopUpdateStageManifestPath = () => path.join(desktopUpdateStageRoot(), 'stage.json')
 const desktopUpdateHistoryPath = () => path.join(HERMES_HOME, 'logs', 'update-history.json')
 
-function readDesktopUpdateHistory() {
-  try {
-    const result = JSON.parse(
-      fs.readFileSync(path.join(desktopUpdateStageRoot(), 'stage-result.json'), 'utf8')
-    )
-    const finishedAt = Number(result?.finishedAt)
-
-    if (result?.ok === false && Number.isFinite(finishedAt)) {
-      appendUpdateHistory(desktopUpdateHistoryPath(), {
-        id: `prepare-${finishedAt}-${String(result.targetSha || 'unknown').slice(0, 10)}`,
-        at: finishedAt,
-        phase: 'prepare',
-        result: result.cancelled === true || result.phase === 'cancelled' ? 'cancelled' : 'failed',
-        targetSha: typeof result.targetSha === 'string' ? result.targetSha : undefined,
-        message: typeof result.message === 'string' ? result.message : 'Update preparation failed.',
-        logPath: path.join(HERMES_HOME, 'logs', 'desktop-update-stage.log')
-      })
-    }
-  } catch {
-    // No preparation result yet, or an interrupted writer. The bounded index
-    // remains authoritative and malformed latest-result files are ignored.
-  }
-
-  return readUpdateHistory(desktopUpdateHistoryPath())
-}
-
-function readStageProgress() {
-  try {
-    const value = JSON.parse(fs.readFileSync(path.join(desktopUpdateStageRoot(), 'progress.json'), 'utf8'))
-    const phases = {
-      fetching: 'fetching',
-      worktree: 'preparing-dependencies',
-      dependencies: 'preparing-dependencies',
-      'preparing-dependencies': 'preparing-dependencies',
-      building: 'building',
-      verifying: 'verifying',
-      ready: 'ready',
-      failed: 'failed'
-    }
-    const phase = phases[String(value?.phase || '')] || 'failed'
-
-    return {
-      phase,
-      message: typeof value?.message === 'string' ? value.message : undefined,
-      percent: Number.isFinite(value?.percent) ? value.percent : undefined,
-      updatedAt: Number.isFinite(value?.updatedAt) ? value.updatedAt : undefined
-    }
-  } catch {
-    return null
-  }
-}
-
-function readStagePreparationOwner() {
-  try {
-    return parseStagePreparationOwner(JSON.parse(
-      fs.readFileSync(path.join(desktopUpdateStageRoot(), '.prepare-lock', 'owner.json'), 'utf8')
-    ))
-  } catch {
-    return null
-  }
-}
-
-function stagePreparationIsRunning() {
-  const owner = readStagePreparationOwner()
-
-  if (!owner) {
-    return false
-  }
-
-  try {
-    process.kill(owner.pid, 0)
-
-    return true
-  } catch {
-    return false
-  }
-}
-
-function readWindowsProcessCommandLine(pid) {
-  const query =
-    `$value = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction Stop; ` +
-    'if ($null -ne $value) { [Console]::Out.Write($value.CommandLine) }'
-
-  return execFileSync(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', query],
-    hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] })
-  ).trim()
-}
-
-function desktopInstallCompletedAfter(timestamp) {
-  if (!Number.isFinite(timestamp)) {
-    return false
-  }
-
-  try {
-    const stamp = JSON.parse(
-      fs.readFileSync(path.join(resolveUpdateRoot(), 'apps', 'desktop', 'build', 'install-stamp.json'), 'utf8')
-    )
-    const builtAt = Date.parse(stamp?.builtAt)
-
-    return Number.isFinite(builtAt) && builtAt > timestamp
-  } catch {
-    return false
-  }
-}
-
-async function waitForStagePreparationOwnership(timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs
-
-  while (Date.now() < deadline) {
-    if (stagePreparationIsRunning()) {
-      return true
-    }
-
-    await sleep(100)
-  }
-
-  return false
-}
-
-async function desktopDirtyContentFingerprint(updateRoot) {
-  const [tracked, untracked, summary] = await Promise.all([
-    runGit(['-c', 'core.quotepath=false', 'diff', '--name-only', 'HEAD', '--'], { cwd: updateRoot }),
-    runGit(['-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard'], { cwd: updateRoot }),
-    runGit(['-c', 'core.quotepath=false', 'diff', '--summary', 'HEAD', '--'], { cwd: updateRoot })
-  ])
-
-  if ([tracked, untracked, summary].some(result => result.code !== 0)) {
-    throw new Error('Could not fingerprint the live checkout changes.')
-  }
-
-  const paths = [...new Set(`${tracked.stdout}\n${untracked.stdout}`.split(/\r?\n/).filter(Boolean))].sort()
-  const records: string[] = []
-
-  for (const relative of paths) {
-    let exists = true
-
-    try {
-      fs.lstatSync(path.join(updateRoot, relative))
-    } catch {
-      exists = false
-    }
-
-    if (!exists) {
-      records.push(`${relative}\0deleted`)
-      continue
-    }
-
-    const blob = await runGit(['hash-object', '--no-filters', '--', relative], { cwd: updateRoot })
-
-    if (blob.code !== 0) {
-      throw new Error(`Could not fingerprint dirty path: ${relative}`)
-    }
-
-    records.push(`${relative}\0${blob.stdout.trim()}`)
-  }
-
-  const normalizedSummary = summary.stdout.replace(/\r\n/g, '\n').trim()
-
-  return crypto.createHash('sha256').update(`${normalizedSummary}\n${records.join('\n')}`, 'utf8').digest('hex')
-}
-
-async function desktopUpdateLiveState(manifest, { refreshTarget = false } = {}) {
-  const updateRoot = resolveUpdateRoot()
-
-  if (refreshTarget) {
-    const fetched = await runGit(['fetch', 'origin', manifest.branch, '--prune'], { cwd: updateRoot })
-
-    if (fetched.code !== 0) {
-      throw new Error(`Could not refresh origin/${manifest.branch}. Desktop was not closed.`)
-    }
-  }
-
-  const [branch, head, target, dirtyFingerprint] = await Promise.all([
-    runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot }),
-    runGit(['rev-parse', 'HEAD'], { cwd: updateRoot }),
-    runGit(['rev-parse', `refs/remotes/origin/${manifest.branch}`], { cwd: updateRoot }),
-    desktopDirtyContentFingerprint(updateRoot)
-  ])
-
-  if ([branch, head, target].some(result => result.code !== 0)) {
-    throw new Error('Could not validate the prepared update against the live checkout.')
-  }
-
-  return {
-    branch: branch.stdout.trim(),
-    headSha: head.stdout.trim(),
-    installRoot: updateRoot,
-    targetSha: target.stdout.trim(),
-    stageRoot: desktopUpdateStageRoot(),
-    dirtyFingerprint
-  }
-}
-
-async function getDesktopUpdateStageStatus({ refreshTarget = false } = {}) {
-  if (!IS_WINDOWS) {
-    return { supported: false, phase: 'idle', message: 'Staged updates currently require Windows.' }
-  }
-
-  const read = readUpdateStageManifest(desktopUpdateStageManifestPath())
-
-  if (read.kind === 'malformed') {
-    return { supported: true, phase: 'invalidated', reason: 'malformed', message: read.error }
-  }
-
-  if (read.kind === 'ready') {
-    try {
-      const live = await desktopUpdateLiveState(read.manifest, { refreshTarget })
-      const validation = validateUpdateStageManifest(read.manifest, live)
-
-      if (validation.valid === false) {
-        return {
-          supported: true,
-          phase: 'invalidated',
-          reason: validation.reason,
-          manifest: read.manifest,
-          message: 'The prepared update no longer matches the live installation. Prepare it again.'
-        }
-      }
-
-      return {
-        supported: true,
-        phase: 'ready',
-        percent: 100,
-        message: `Ready to restart into ${read.manifest.targetSha.slice(0, 10)}.`,
-        logPath: read.manifest.logPath,
-        manifest: read.manifest
-      }
-    } catch (error) {
-      return {
-        supported: true,
-        phase: 'invalidated',
-        reason: 'target-changed',
-        manifest: read.manifest,
-        message: error?.message || String(error)
-      }
-    }
-  }
-
-  const progress = readStageProgress()
-
-  if (progress) {
-    const reconciled = reconcileUpdateStageProgress(progress, {
-      ownerAlive: stagePreparationIsRunning(),
-      installCompletedAfterProgress: desktopInstallCompletedAfter(progress.updatedAt)
-    })
-
-    if (reconciled.phase === 'failed') {
-      readDesktopUpdateHistory()
-    }
-
-    if (reconciled.phase === 'ready') {
-      return {
-        supported: true,
-        phase: 'invalidated',
-        reason: 'missing',
-        message: 'Preparation reported ready, but its manifest is missing. Prepare the update again.'
-      }
-    }
-
-    return { supported: true, ...reconciled }
-  }
-
-  return { supported: true, phase: 'idle', reason: 'missing' }
-}
-
-async function getDesktopUpdateStageRendererStatus(options = {}) {
-  const status = await getDesktopUpdateStageStatus(options)
-  const ownerActive = stagePreparationIsRunning()
-  const activePhases = new Set(['fetching', 'preparing-dependencies', 'building', 'verifying'])
-  const expectedLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-stage.log')
-  let output
-
-  if (status.logPath === expectedLogPath) {
-    try {
-      output = fs.readFileSync(expectedLogPath, 'utf8').slice(-24_000).trim() || undefined
-    } catch {
-      // The worker may not have created the log yet. Status remains valid.
-    }
-  }
-
-  return {
-    ...status,
-    output,
-    checkedAt: Date.now(),
-    ownerActive,
-    cancellable: ownerActive && activePhases.has(status.phase)
-  }
-}
-
-async function prepareDesktopUpdate() {
-  if (!IS_WINDOWS) {
-    return {
-      ok: false,
-      error: 'unsupported',
-      status: { supported: false, phase: 'idle', message: 'Staged updates currently require Windows.' }
-    }
-  }
-
-  const currentStage = await getDesktopUpdateStageStatus()
-
-  if (stagePreparationIsRunning() || currentStage.phase === 'ready') {
-    return { ok: true, status: currentStage }
-  }
-
-  const update = await checkUpdates()
-
-  if (!update.supported || !update.currentSha || !update.targetSha || (update.behind ?? 0) <= 0) {
-    return {
-      ok: false,
-      error: update.error || 'no-update',
-      status: { supported: true, phase: 'failed', message: update.message || 'No client update is available.' }
-    }
-  }
-
-  if (currentStage.phase !== 'idle') {
-    await discardDesktopUpdateStage()
-  }
-
-  const updateRoot = resolveUpdateRoot()
-  const branch = update.branch || update.currentBranch || readDesktopUpdateConfig().branch
-  const recipe = resolveStageUpdateScript(updateRoot, {
-    installRoot: updateRoot,
-    branch,
-    baseSha: update.currentSha,
-    targetSha: update.targetSha,
-    stageRoot: desktopUpdateStageRoot()
-  })
-
-  if (!recipe) {
-    return {
-      ok: false,
-      error: 'stage-script-missing',
-      status: { supported: false, phase: 'failed', message: 'This checkout does not include staged update support.' }
-    }
-  }
-
-  const venvBin = path.join(updateRoot, 'venv', 'Scripts')
-  const detachedRecipe = wrapHandoffForDetachedConsole(recipe, [])
-  const child = spawnUpdaterProcess(detachedRecipe.command, detachedRecipe.args, {
-    cwd: HERMES_HOME,
-    env: { ...process.env, HERMES_HOME, PATH: pathWithHermesManagedNode(venvBin) },
-    detached: true,
-    stdio: 'ignore'
-  })
-
-  child.unref()
-  rememberLog(`[updates] preparing ${update.targetSha.slice(0, 10)} in isolated worktree (pid ${child.pid || 'unknown'})`)
-
-  if (!(await waitForStagePreparationOwnership())) {
-    return {
-      ok: false,
-      error: 'preparation-not-started',
-      status: {
-        supported: true,
-        phase: 'failed',
-        message: 'The detached preparation worker did not claim its stage lock. Nothing was prepared.'
-      }
-    }
-  }
-
-  return {
-    ok: true,
-    status: {
-      supported: true,
-      phase: 'fetching',
-      percent: 0,
-      message: 'Preparing update while Desktop remains available.',
-      checkedAt: Date.now(),
-      ownerActive: true,
-      cancellable: true
-    }
-  }
-}
-
-async function cancelDesktopUpdatePreparation() {
-  if (!IS_WINDOWS) {
-    return { ok: false, cancelled: false, error: 'unsupported' }
-  }
-
-  const owner = readStagePreparationOwner()
-
-  if (!owner || !stagePreparationIsRunning()) {
-    return { ok: false, cancelled: false, error: 'not-running', message: 'No active preparation worker was found.' }
-  }
-
-  const updateRoot = resolveUpdateRoot()
-  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-stage-update.ps1')
-  let commandLine = ''
-
-  try {
-    commandLine = readWindowsProcessCommandLine(owner.pid)
-  } catch (error) {
-    return {
-      ok: false,
-      cancelled: false,
-      error: 'identity-unavailable',
-      message: `Could not verify the preparation worker before cancellation: ${error?.message || String(error)}`
-    }
-  }
-
-  if (!commandOwnsStagePreparation(commandLine, scriptPath, desktopUpdateStageRoot())) {
-    return {
-      ok: false,
-      cancelled: false,
-      error: 'identity-mismatch',
-      message: 'The stage owner no longer matches the Hermes preparation worker. Nothing was terminated.'
-    }
-  }
-
-  forceKillProcessTree(owner.pid)
-
-  const deadline = Date.now() + 5_000
-
-  while (Date.now() < deadline && stagePreparationIsRunning()) {
-    await sleep(100)
-  }
-
-  if (stagePreparationIsRunning()) {
-    return {
-      ok: false,
-      cancelled: false,
-      error: 'worker-still-running',
-      message: 'The preparation worker did not stop. Its stage was left untouched.'
-    }
-  }
-
-  const currentOwner = readStagePreparationOwner()
-
-  if (currentOwner && (currentOwner.token !== owner.token || currentOwner.pid !== owner.pid)) {
-    return {
-      ok: false,
-      cancelled: false,
-      error: 'ownership-changed',
-      message: 'Preparation ownership changed while cancellation was in progress. Stage files were left untouched.'
-    }
-  }
-
-  const now = Date.now()
-  const progressPath = path.join(desktopUpdateStageRoot(), 'progress.json')
-  const resultPath = path.join(desktopUpdateStageRoot(), 'stage-result.json')
-  const lockPath = path.join(desktopUpdateStageRoot(), '.prepare-lock')
-
-  fs.mkdirSync(desktopUpdateStageRoot(), { recursive: true })
-  writeFileAtomic(progressPath, JSON.stringify(cancelledStageProgress(now), null, 2), 'utf8')
-  writeFileAtomic(resultPath, JSON.stringify(cancelledStageResult(owner.targetSha, now), null, 2), 'utf8')
-  fs.rmSync(lockPath, { recursive: true, force: true })
-  readDesktopUpdateHistory()
-
-  return {
-    ok: true,
-    cancelled: true,
-    status: await getDesktopUpdateStageStatus()
-  }
-}
-
-async function discardDesktopUpdateStage() {
-  if (stagePreparationIsRunning()) {
-    return { ok: false, discarded: false, error: 'preparation-running' }
-  }
-
-  // Import any terminal worker result before deleting the transient stage
-  // directory so failures remain visible in durable update history.
-  readDesktopUpdateHistory()
-
-  const root = desktopUpdateStageRoot()
-  const worktree = path.join(root, 'worktree')
-  const updateRoot = resolveUpdateRoot()
-
-  if (fs.existsSync(worktree)) {
-    await runGit(['worktree', 'remove', '--force', worktree], { cwd: updateRoot }).catch(() => null)
-    await runGit(['worktree', 'prune'], { cwd: updateRoot }).catch(() => null)
-  }
-
-  const existed = fs.existsSync(root)
-
-  fs.rmSync(root, { recursive: true, force: true })
-
-  return { ok: true, discarded: existed }
-}
-
-async function restartAndApplyDesktopUpdate() {
-  const status = await getDesktopUpdateStageStatus({ refreshTarget: true })
-
-  if (status.phase !== 'ready' || !status.manifest) {
-    return { ok: false, applying: false, error: status.reason || 'stage-not-ready', message: status.message }
-  }
-
-  const result = await applyUpdates({ stageManifest: desktopUpdateStageManifestPath() })
-
-  return { ...result, applying: result.ok === true }
-}
+const stagedUpdates = createStagedUpdateLifecycle({
+  hermesHome: HERMES_HOME,
+  isWindows: IS_WINDOWS,
+  resolveUpdateRoot,
+  readDesktopUpdateConfig,
+  checkUpdates,
+  runGit,
+  pathWithHermesManagedNode,
+  rememberLog,
+  forceKillProcessTree,
+  applyUpdates: options => applyUpdates(options),
+  writeFileAtomic
+})
 
 // applyUpdates — hand off to the installer's --update flow, then exit.
 //
@@ -3578,7 +2906,7 @@ async function applyUpdates(opts: { dirtyStrategy?: string; stageManifest?: stri
       return { ok: false, error: 'invalid-stage-path', message: 'The staged update path is not Hermes-owned.' }
     }
 
-    const staged = await getDesktopUpdateStageStatus({ refreshTarget: true })
+    const staged = await stagedUpdates.getStatus({ refreshTarget: true })
 
     if (staged.phase !== 'ready' || !staged.manifest) {
       return {
@@ -13097,9 +12425,9 @@ ipcMain.handle('hermes:updates:sync-upstream', async () =>
   runExclusiveUpdateOperation(
     'sync-upstream',
     async () => {
-      const stage = await getDesktopUpdateStageStatus()
+      const stage = await stagedUpdates.getStatus()
 
-      if (stagePreparationIsRunning() || stage.phase !== 'idle') {
+      if (stagedUpdates.preparationIsRunning() || stage.phase !== 'idle') {
         return {
           ok: false,
           state: 'failed',
@@ -13132,7 +12460,7 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
 )
 
 ipcMain.handle('hermes:updates:stage:status', async () =>
-  getDesktopUpdateStageRendererStatus().catch(error => ({
+  stagedUpdates.getRendererStatus().catch(error => ({
     supported: IS_WINDOWS,
     phase: 'failed',
     checkedAt: Date.now(),
@@ -13143,7 +12471,7 @@ ipcMain.handle('hermes:updates:stage:status', async () =>
 )
 
 ipcMain.handle('hermes:updates:stage:prepare', async () =>
-  runExclusiveUpdateOperation('prepare', prepareDesktopUpdate).catch(error => ({
+  runExclusiveUpdateOperation('prepare', stagedUpdates.prepare).catch(error => ({
     ok: false,
     error: 'prepare-failed',
     status: { supported: IS_WINDOWS, phase: 'failed', message: error?.message || String(error) }
@@ -13151,7 +12479,7 @@ ipcMain.handle('hermes:updates:stage:prepare', async () =>
 )
 
 ipcMain.handle('hermes:updates:stage:cancel', async () =>
-  runExclusiveUpdateOperation('cancel-prepare', cancelDesktopUpdatePreparation, { cancelled: false }).catch(error => ({
+  runExclusiveUpdateOperation('cancel-prepare', stagedUpdates.cancelPreparation, { cancelled: false }).catch(error => ({
     ok: false,
     cancelled: false,
     error: 'cancel-failed',
@@ -13160,7 +12488,7 @@ ipcMain.handle('hermes:updates:stage:cancel', async () =>
 )
 
 ipcMain.handle('hermes:updates:stage:discard', async () =>
-  runExclusiveUpdateOperation('discard', discardDesktopUpdateStage, { discarded: false }).catch(error => ({
+  runExclusiveUpdateOperation('discard', stagedUpdates.discard, { discarded: false }).catch(error => ({
     ok: false,
     discarded: false,
     error: error?.message || String(error)
@@ -13168,14 +12496,14 @@ ipcMain.handle('hermes:updates:stage:discard', async () =>
 )
 
 ipcMain.handle('hermes:updates:stage:restart-and-apply', async () =>
-  runExclusiveUpdateOperation('restart-and-apply', restartAndApplyDesktopUpdate, { applying: false }).catch(error => ({
+  runExclusiveUpdateOperation('restart-and-apply', stagedUpdates.restartAndApply, { applying: false }).catch(error => ({
     ok: false,
     applying: false,
     error: error?.message || String(error)
   }))
 )
 
-ipcMain.handle('hermes:updates:history', async () => readDesktopUpdateHistory())
+ipcMain.handle('hermes:updates:history', async () => stagedUpdates.getHistory())
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

@@ -22,7 +22,6 @@ import {
   type DropPosition,
   findGroup,
   findGroupOfPane,
-  findParentSplit,
   groupLeafIds,
   type GroupNode,
   insertAtGroup,
@@ -41,8 +40,17 @@ import {
   setSplitWeights as setSplitWeightsOp,
   type SplitNode
 } from './model'
+import { resolvePaneCloseAction } from './pane-close-policy'
+import {
+  $dismissedPanes,
+  recalledPaneEdgeWeights,
+  rememberPaneShare,
+  setPaneDismissed
+} from './pane-persistence'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { rootChildSide } from './renderer/track-model'
+
+export { $dismissedPanes } from './pane-persistence'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -186,89 +194,6 @@ function frontPaneInGroup(paneId: string) {
  *  - closing the sole pane from a plugin disables that plugin, preserving the
  *    discoverable Settings → Plugins recovery path for single-pane plugins.
  */
-const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
-const PROFILE_DISMISSED_KEY = 'hermes.desktop.profileDismissedPanes.v1'
-
-export const $dismissedPanes = profilePersistentAtom<ReadonlySet<string>>({
-  codec: {
-    decode: raw => new Set(Codecs.stringArray.decode(raw)),
-    encode: value => Codecs.stringArray.encode([...value])
-  },
-  fallback: () => new Set(),
-  key: PROFILE_DISMISSED_KEY,
-  legacyKey: DISMISSED_KEY
-})
-
-function saveDismissed(next: ReadonlySet<string>) {
-  $dismissedPanes.set(next)
-}
-
-function setDismissed(paneId: string, dismissed: boolean) {
-  const next = toggledSet($dismissedPanes.get(), paneId, dismissed)
-
-  if (next) {
-    saveDismissed(next)
-  }
-}
-
-// SPLIT-SHARE MEMORY — a tile pane that leaves the tree (the browser closed,
-// a page tile closed) records the share it held against its seam neighbor, so
-// re-opening it docks at the size the user left it. Without this every
-// re-open split the anchor zone [1, 1] again: each agent-triggered browser
-// open re-took half the chat, whatever the user had resized it to.
-const PANE_SHARE_KEY = 'hermes.desktop.paneShare.v1'
-const PROFILE_PANE_SHARE_KEY = 'hermes.desktop.profilePaneShares.v1'
-
-const validShare = (share: unknown): share is number =>
-  typeof share === 'number' && Number.isFinite(share) && share > 0 && share < 1
-
-const $paneShares = profilePersistentAtom<Record<string, number>>({
-  codec: Codecs.json(value =>
-    value && typeof value === 'object' && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).filter(([, share]) => validShare(share)))
-      : {}
-  ),
-  fallback: () => ({}),
-  key: PROFILE_PANE_SHARE_KEY,
-  legacyKey: PANE_SHARE_KEY
-})
-
-function rememberPaneShare(tree: LayoutNode, paneId: string) {
-  const zone = findGroupOfPane(tree, paneId)
-
-  // Only a pane ALONE in its zone owns the zone's track — a stacked tab's
-  // removal doesn't change geometry, so there's no share to remember.
-  if (!zone || zone.panes.length !== 1) {
-    return
-  }
-
-  const parent = findParentSplit(tree, zone.id)
-
-  if (!parent) {
-    return
-  }
-
-  // The previous sibling is the seam partner a re-dock will split again (a
-  // trailing dock lands the tile right of / below its anchor); the pane at
-  // index 0 pairs with the sibling after it instead.
-  const at = parent.children.findIndex(child => child.id === zone.id)
-  const partner = at > 0 ? at - 1 : at + 1
-  const pair = (parent.weights[at] ?? 1) + (parent.weights[partner] ?? 1)
-  const share = pair > 0 ? (parent.weights[at] ?? 1) / pair : null
-
-  if (validShare(share)) {
-    $paneShares.set({ ...$paneShares.get(), [paneId]: share })
-  }
-}
-
-/** The [target, added] weight pair a re-inserted pane's edge split should get,
- *  or undefined for the even default. Persisted state is untrusted. */
-function recalledEdgeWeights(paneId: string): [number, number] | undefined {
-  const share = $paneShares.get()[paneId]
-
-  return validShare(share) ? [1 - share, share] : undefined
-}
-
 const paneClosers: Record<string, () => void> = {}
 const paneOpeners: Record<string, () => void> = {}
 
@@ -770,7 +695,7 @@ export function dismissTreePane(paneId: string) {
   const tree = $layoutTree.get()
 
   if (tree) {
-    setDismissed(paneId, true)
+    setPaneDismissed(paneId, true)
     rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
   }
@@ -778,22 +703,28 @@ export function dismissTreePane(paneId: string) {
 
 export function closeTreePane(paneId: string) {
   const closer = paneClosers[paneId]
+  const panes = registry.getArea('panes')
+  const contribution = panes.find(c => c.id === paneId)
+  const closeBehavior = (contribution?.data as { closeBehavior?: string } | undefined)?.closeBehavior
+  const source = contribution?.source
+  const action = resolvePaneCloseAction({
+    hasCloser: Boolean(closer),
+    closeBehavior,
+    source,
+    sameSourceCount: source ? panes.filter(c => c.source === source).length : 0
+  })
 
-  if (closer) {
+  if (action === 'closer' && closer) {
     closer()
 
     return
   }
 
-  const panes = registry.getArea('panes')
-  const contribution = registry.getArea('panes').find(c => c.id === paneId)
-  const closeBehavior = (contribution?.data as { closeBehavior?: string } | undefined)?.closeBehavior
-
   // A plugin may opt into normal tab dismissal: its contribution remains
   // registered and an explicit `ctx.panes.reveal(...)` restores + focuses it.
   // This is the right lifecycle for singleton main tabs such as Update
   // Control; closing the tab must not disable its status/palette surfaces.
-  if (closeBehavior === 'dismiss') {
+  if (action === 'dismiss') {
     dismissTreePane(paneId)
 
     return
@@ -804,20 +735,7 @@ export function closeTreePane(paneId: string) {
   // contribution unregisters but the pane id STAYS in the tree, so
   // re-enabling restores it exactly where it was. (Dismissal + removal
   // would strand the pane with no way back short of a layout reset.)
-  const source = contribution?.source
-
   if (source?.startsWith('plugin:')) {
-    // A plugin may own several independent panes. Closing one of them must not
-    // unload every contribution from that plugin (for example, closing Bot
-    // Mode's Cronjobs pane must leave its Bots roster and composer middleware
-    // alive). Dismiss just that pane; Layout reset remains the explicit way to
-    // restore dismissed contributed panes.
-    if (panes.filter(c => c.source === source).length > 1) {
-      dismissTreePane(paneId)
-
-      return
-    }
-
     // A single-pane plugin keeps the existing symmetric behavior: Close uses
     // the same switch as Settings → Plugins. Its contribution unregisters but
     // the pane id stays in the tree, so re-enabling restores its exact place.
@@ -828,11 +746,7 @@ export function closeTreePane(paneId: string) {
       title: translateNow('zones.pluginDisabled', pluginId),
       message: translateNow('zones.pluginDisabledBody')
     })
-
-    return
   }
-
-  dismissTreePane(paneId)
 }
 
 /**
@@ -911,7 +825,7 @@ function restoreDismissedSidePanes(side: TreeSide) {
     const paneSide = placement === 'left' ? 'left' : placement === 'main' ? null : 'right'
 
     if (paneSide === side) {
-      setDismissed(pane.id, false)
+      setPaneDismissed(pane.id, false)
       changed = true
     }
   }
@@ -968,7 +882,7 @@ export function treeSideOfPane(paneId: string): TreeSide | null {
 export function revealTreePane(paneId: string) {
   // Reveal beats a Close: un-dismiss and let adoption put the pane back.
   if ($dismissedPanes.get().has(paneId)) {
-    setDismissed(paneId, false)
+    setPaneDismissed(paneId, false)
     adoptContributedPanes()
   }
 
@@ -1175,7 +1089,7 @@ function adoptContributedPanes(): void {
       dataOf(pane.id)?.closeBehavior !== 'dismiss' &&
       $dismissedPanes.get().has(pane.id)
     ) {
-      setDismissed(pane.id, false)
+      setPaneDismissed(pane.id, false)
     }
   }
   const dismissed = $dismissedPanes.get()
@@ -1222,7 +1136,7 @@ function adoptContributedPanes(): void {
           dock?.pos ?? 'center',
           dock?.before,
           false,
-          recalledEdgeWeights(pane.id)
+          recalledPaneEdgeWeights(pane.id)
         ) ?? next
 
       // An adopted pane ARRIVES with its chip showing — a surprise zone with
@@ -1336,12 +1250,12 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
   // A dismissed pane re-enters HERE (beside the anchor), not via adoption's
   // placement fallback — clear the record so the two never disagree.
   if ($dismissedPanes.get().has(paneId)) {
-    setDismissed(paneId, false)
+    setPaneDismissed(paneId, false)
   }
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId))
+    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledPaneEdgeWeights(paneId))
 
   if (next && next !== tree) {
     commit(next)
@@ -1802,7 +1716,7 @@ export function resetLayoutTree() {
   clearAllPaneSizeOverrides()
   // Reset restores EVERYTHING — closed panes included — and hands pane
   // placement back to the app (user-placed pins cleared).
-  saveDismissed(new Set())
+  $dismissedPanes.set(new Set())
   saveUserPlaced(new Set())
   $layoutTree.set(defaultTree)
   markActivePreset('default')
