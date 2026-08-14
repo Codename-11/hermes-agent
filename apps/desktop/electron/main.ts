@@ -181,6 +181,7 @@ import {
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
+import { applyNativeThemeFromPrimary, NATIVE_THEME_SOURCES } from './native-theme-owner'
 import { createNativeTokenRefreshCoordinator } from './native-token-refresh-coordinator'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { createOauthLoginCoordinator } from './oauth-login-coordinator'
@@ -770,13 +771,12 @@ const terminalSessions = new Map()
 // nativeTheme.themeSource to it and persist the value so cold launches paint
 // correctly before the renderer has even loaded.
 const NATIVE_THEME_CONFIG_PATH = path.join(app.getPath('userData'), 'native-theme.json')
-const THEME_SOURCES = new Set(['dark', 'light', 'system'])
 
 function readPersistedThemeSource() {
   try {
     const parsed = JSON.parse(fs.readFileSync(NATIVE_THEME_CONFIG_PATH, 'utf8'))
 
-    if (parsed && THEME_SOURCES.has(parsed.themeSource)) {
+    if (parsed && NATIVE_THEME_SOURCES.has(parsed.themeSource)) {
       return parsed.themeSource
     }
   } catch {
@@ -11537,16 +11537,11 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
   }
 })
 
-// Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
-ipcMain.on('hermes:native-theme', (_event, mode) => {
-  if (!THEME_SOURCES.has(mode)) {
-    return
-  }
-
-  if (nativeTheme.themeSource !== mode) {
-    nativeTheme.themeSource = mode
-    writePersistedThemeSource(mode)
-  }
+// Pin the native appearance to the primary app theme (see NATIVE_THEME_CONFIG_PATH).
+// Helper renderers share the preload bridge, but they do not own this global,
+// cold-start state and must never overwrite the primary renderer's adopted mode.
+ipcMain.on('hermes:native-theme', (event, mode) => {
+  applyNativeThemeFromPrimary(event, mode, mainWindow, nativeTheme, writePersistedThemeSource)
 })
 
 // See-through window translucency. Persist + re-apply opacity to every open
