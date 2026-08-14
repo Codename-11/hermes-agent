@@ -49,16 +49,20 @@ test('remote profile discovery falls back to the legacy OAuth cookie partition',
   assert.deepEqual(calls, ['cookie:https://gw.example.com/api/profiles'])
 })
 
-test('remote profile discovery treats a failed native refresh as a cookie fallback', async () => {
+test('remote profile discovery preserves transient native refresh failures', async () => {
   const { calls, deps } = makeDeps(null)
+  const failure = new Error('temporary gateway outage')
 
   deps.ensureNativeAccessToken = async () => {
-    throw new Error('refresh rejected')
+    throw failure
   }
 
-  await fetchRemoteProfilesJson({ authMode: 'oauth', baseUrl: 'https://gw.example.com', token: null }, deps)
+  await assert.rejects(
+    fetchRemoteProfilesJson({ authMode: 'oauth', baseUrl: 'https://gw.example.com', token: null }, deps),
+    error => error === failure
+  )
 
-  assert.deepEqual(calls, ['cookie:https://gw.example.com/api/profiles'])
+  assert.deepEqual(calls, [])
 })
 
 test('remote profile discovery preserves legacy session-token auth', async () => {

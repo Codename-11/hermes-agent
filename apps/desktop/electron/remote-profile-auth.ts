@@ -29,7 +29,7 @@ export async function fetchRemoteProfilesJson<T>(
     return deps.fetchTokenJson(url, input.token)
   }
 
-  const nativeAccessToken = await deps.ensureNativeAccessToken(input.baseUrl).catch(() => null)
+  const nativeAccessToken = await deps.ensureNativeAccessToken(input.baseUrl)
   const auth = resolveOauthRestAuth(nativeAccessToken)
 
   if (auth.kind === 'bearer') {

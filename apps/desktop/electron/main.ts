@@ -179,6 +179,7 @@ import {
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
+import { createNativeTokenRefreshCoordinator } from './native-token-refresh-coordinator'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { createOauthLoginCoordinator } from './oauth-login-coordinator'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -5747,7 +5748,7 @@ async function gatewayAuthProviders(baseUrl) {
 // answers before the SPA catch-all). `probeIsCredentialed` tells
 // waitForHermesReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
-  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(() => null) : null
+  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl) : null
   const probeAuth = resolveReadinessProbeAuth(authMode, nativeAt, token)
 
   if (probeAuth.kind === 'bearer') {
@@ -6982,6 +6983,7 @@ function fetchBinaryViaOauthSession(url, options: any = {}): Promise<any> {
 // In-memory cache of decrypted native tokens, keyed by normalized base URL.
 // Backed by the encrypted on-disk store so it survives restarts.
 const _nativeTokens = new Map<string, NativeTokenSet>()
+const nativeTokenRefreshCoordinator = createNativeTokenRefreshCoordinator()
 
 function _nativeTokenStorePath() {
   // Co-located with the connection config under userData; one JSON file mapping
@@ -7074,28 +7076,46 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
     return null
   }
 
-  try {
-    const body = await postJsonNoAuth(
-      nativeRefreshUrl(baseUrl),
-      { refresh_token: tokens.refreshToken, provider: tokens.provider },
-      { timeoutMs: 10_000 }
-    )
+  return nativeTokenRefreshCoordinator.run(baseUrl, async () => {
+    // Another caller may have completed rotation while this caller waited for
+    // the per-origin single-flight slot. Re-read before using the old RT.
+    const current = _loadNativeTokens(baseUrl)
 
-    const rotated = parseTokenResponse(body)
-    _storeNativeTokens(baseUrl, rotated)
-
-    return rotated.accessToken
-  } catch (error: any) {
-    // A 401 means the RT is dead (session_expired) — drop tokens so the UI
-    // prompts a fresh native login. A 503/transient keeps them for a retry.
-    if (error && error.statusCode === 401) {
-      _clearNativeTokens(baseUrl)
-
+    if (!current) {
       return null
     }
 
-    throw error
-  }
+    if (!tokenNeedsRefresh(current, Math.floor(Date.now() / 1000))) {
+      return current.accessToken
+    }
+
+    if (!current.refreshToken) {
+      _clearNativeTokens(baseUrl)
+      return null
+    }
+
+    try {
+      const body = await postJsonNoAuth(
+        nativeRefreshUrl(baseUrl),
+        { refresh_token: current.refreshToken, provider: current.provider },
+        { timeoutMs: 10_000 }
+      )
+
+      const rotated = parseTokenResponse(body)
+      _storeNativeTokens(baseUrl, rotated)
+
+      return rotated.accessToken
+    } catch (error: any) {
+      // Only an explicit terminal rejection invalidates the shared session.
+      // Timeouts and 5xx responses preserve the rotating RT for a later retry.
+      if (error && error.statusCode === 401) {
+        _clearNativeTokens(baseUrl)
+        return null
+      }
+
+      throw error
+    }
+  })
 }
 
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
@@ -7105,7 +7125,7 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
 // callers treat that as "needs re-login".
 async function mintGatewayWsTicket(baseUrl) {
   // Native flow: mint the ticket with the bearer token, no cookie involved.
-  const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
+  const nativeAt = await ensureNativeAccessToken(baseUrl)
 
   if (nativeAt) {
     const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
@@ -8471,7 +8491,7 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   if (conn.authMode === 'oauth') {
     // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
     // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(conn.baseUrl)
 
     if (nativeAt) {
       return fetchJson(url, null, { ...opts, bearer: nativeAt })
@@ -11821,7 +11841,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     // Native bearer first (cookieless). ensureNativeAccessToken transparently
     // refreshes a near-expiry AT via /auth/native/refresh; a null return means
     // no native session (resolveOauthRestAuth then selects the cookie path).
-    const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(connection.baseUrl)
     const restAuth = resolveOauthRestAuth(nativeAt)
 
     if (restAuth.kind === 'bearer') {

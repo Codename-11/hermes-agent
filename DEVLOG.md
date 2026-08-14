@@ -1,5 +1,23 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Serialize Desktop native OAuth refresh rotation
+
+### Summary
+
+Stopped intermittent remote Desktop startup, session, and model-catalog failures caused by concurrent native OAuth refreshes and silent cookie fallback.
+
+### Details
+
+- Native token refreshes now single-flight per normalized gateway base URL, so pooled profile liveness checks share one rotating refresh-token exchange without crossing path-prefixed deployments.
+- Waiting callers consume the stored rotated access token instead of replaying the previous refresh token.
+- Transient refresh failures now remain transport failures across readiness, ticket minting, profile discovery, generic REST, and management IPC paths; only an absent native session or explicit terminal refresh rejection may select legacy cookie auth.
+- Failed refresh promises are removed from the coordinator so later liveness checks can recover.
+
+### Verification
+
+- Focused native-auth, profile-auth, WebSocket ticket, and refresh-coordinator regression tests.
+- Desktop Electron/UI/E2E TypeScript typecheck, changed-file ESLint, and production build.
+
 ## 2026-08-13 — Preserve validated deploy resolutions across push failures
 
 ### Summary
