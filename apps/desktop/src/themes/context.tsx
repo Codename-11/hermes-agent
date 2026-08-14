@@ -358,10 +358,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Follow profile switches: paint the profile's assigned skin + mode and
   // remember it for the next boot's first paint.
   useEffect(() => {
-    rememberActiveProfileKey(profileKey)
+    // The renderer begins on provisional "default" before gateway adoption.
+    // Never let that transient value replace the last authoritative profile or
+    // every cold/new window first-paints the default light palette.
+    if (gatewayProfileAdopted || windowProfileOverride()) {
+      rememberActiveProfileKey(profileKey)
+    }
     setThemeNameState(skinPref.resolve(profileKey))
     setModeState(modePref.resolve(profileKey))
-  }, [profileKey])
+  }, [gatewayProfileAdopted, profileKey])
 
   // Appearance is per-profile localStorage, and every desktop window is another
   // renderer on the same origin — so a switch made in the HUD (or any peer

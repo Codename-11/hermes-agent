@@ -772,7 +772,6 @@ const terminalSessions = new Map()
 // correctly before the renderer has even loaded.
 const NATIVE_THEME_CONFIG_PATH = path.join(app.getPath('userData'), 'native-theme.json')
 
-
 function readPersistedThemeSource() {
   try {
     const parsed = JSON.parse(fs.readFileSync(NATIVE_THEME_CONFIG_PATH, 'utf8'))
@@ -2502,8 +2501,7 @@ async function readUpstreamDivergence(updateRoot, deployRef) {
   const [behindStr, aheadStr] = counts.split(/\s+/)
   const upstreamBehind = Number.parseInt(behindStr, 10) || 0
   const upstreamAhead = Number.parseInt(aheadStr, 10) || 0
-  const upstreamCommits =
-    upstreamBehind > 0 ? await readCommitRange(updateRoot, deployRef, 'upstream/main') : []
+  const upstreamCommits = upstreamBehind > 0 ? await readCommitRange(updateRoot, deployRef, 'upstream/main') : []
 
   return {
     upstreamBranch: 'upstream/main',
@@ -8105,11 +8103,9 @@ async function listDesktopRemoteProfiles(input: any = {}) {
     { authMode, baseUrl, token },
     {
       ensureNativeAccessToken,
-      fetchBearerJson: (url, bearer) =>
-        fetchJson(url, null, { bearer, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
+      fetchBearerJson: (url, bearer) => fetchJson(url, null, { bearer, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
       fetchCookieJson: url => fetchJsonViaOauthSession(url, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
-      fetchTokenJson: (url, connectionToken) =>
-        fetchJson(url, connectionToken, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+      fetchTokenJson: (url, connectionToken) => fetchJson(url, connectionToken, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
     }
   )
   const profiles = Array.isArray((body as any)?.profiles) ? (body as any).profiles : []
@@ -9054,9 +9050,11 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow(
-  { profile, sessionId, watch }: { profile?: string; sessionId?: string; watch?: boolean } = {}
-) {
+function spawnSecondaryWindow({
+  profile,
+  sessionId,
+  watch
+}: { profile?: string; sessionId?: string; watch?: boolean } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -9127,10 +9125,7 @@ function spawnSecondaryWindow(
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(
-  sessionId,
-  { profile, watch = false }: { profile?: string; watch?: boolean } = {}
-) {
+function createSessionWindow(sessionId, { profile, watch = false }: { profile?: string; watch?: boolean } = {}) {
   const key = sessionWindowKey(sessionId, profile)
 
   return sessionWindows.openOrFocus(key, () => spawnSecondaryWindow({ profile, sessionId, watch }))
@@ -10869,6 +10864,9 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+// Persist a successful live multi-socket profile switch for the next cold
+// launch without tearing down or reloading the current backend.
+ipcMain.handle('hermes:profile:remember', async (_event, name) => ({ profile: writeActiveDesktopProfile(name) }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 
@@ -12449,10 +12447,10 @@ ipcMain.handle('hermes:updates:sync-upstream:status', async () => getUpstreamSyn
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   runExclusiveUpdateOperation('apply', () => applyUpdates(payload || {})).catch(error => ({
-      ok: false,
-      error: 'apply-failed',
-      message: error?.message || String(error)
-    }))
+    ok: false,
+    error: 'apply-failed',
+    message: error?.message || String(error)
+  }))
 )
 
 ipcMain.handle('hermes:updates:stage:status', async () =>
