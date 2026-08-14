@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile-scope'
 
-export { $activeGatewayProfile, normalizeProfileKey } from './profile-scope'
+export { $activeGatewayProfile, $gatewayProfileAdopted, normalizeProfileKey } from './profile-scope'
 
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'

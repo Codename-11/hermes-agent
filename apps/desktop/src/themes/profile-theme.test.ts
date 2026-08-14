@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { modePref, skinPref } from './context'
+import { modePref, resolveAppearanceProfile, skinPref } from './context'
 import { DEFAULT_SKIN_NAME } from './presets'
 
 // Skin and mode share one per-profile contract, so assert it once over both.
@@ -44,5 +44,16 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
   it('normalizes an unknown stored value back to the default', () => {
     pref.assign('work', junk)
     expect(pref.resolve('work')).toBe(fallback)
+  })
+})
+
+describe('cold-start appearance profile handoff', () => {
+  it('keeps the persisted boot profile until the gateway adopts an authoritative profile', () => {
+    expect(resolveAppearanceProfile('default', 'victor', false)).toBe('victor')
+  })
+
+  it('follows the live profile after gateway adoption, including an authoritative default', () => {
+    expect(resolveAppearanceProfile('default', 'victor', true)).toBe('default')
+    expect(resolveAppearanceProfile('sentinel', 'victor', true)).toBe('sentinel')
   })
 })

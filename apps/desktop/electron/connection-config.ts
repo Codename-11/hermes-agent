@@ -391,6 +391,32 @@ function profileRemoteOverride(config, profile) {
   }
 }
 
+function profileRemoteOverrideSharesGlobal(config, profile) {
+  const key = connectionScopeKey(profile)
+  const override = profileRemoteOverride(config, key)
+
+  if (!key || !override || override.authMode !== 'oauth' || !modeIsRemoteLike(config?.mode)) {
+    return false
+  }
+
+  const globalAuthMode = normAuthMode(config?.remote?.authMode)
+  const globalUrl = String(config?.remote?.url || '').trim()
+
+  if (globalAuthMode !== 'oauth' || !globalUrl) {
+    return false
+  }
+
+  try {
+    if (normalizeRemoteBaseUrl(override.url) !== normalizeRemoteBaseUrl(globalUrl)) {
+      return false
+    }
+  } catch {
+    return false
+  }
+
+  return !override.remoteProfile || override.remoteProfile === key
+}
+
 export interface ProfileRouteOptions {
   globalRemote?: boolean
   primaryProfile?: null | string
@@ -601,6 +627,7 @@ export {
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,
+  profileRemoteOverrideSharesGlobal,
   profileSshOverride,
   resolveAuthMode,
   resolveProfileBackendRoute,

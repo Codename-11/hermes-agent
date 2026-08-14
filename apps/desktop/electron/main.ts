@@ -74,6 +74,7 @@ import {
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
+  profileRemoteOverrideSharesGlobal,
   profileSshOverride,
   resolveAuthMode,
   resolveProfileBackendRoute,
@@ -8917,10 +8918,13 @@ function primaryProfileKey() {
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
 function profileRouteOptions(profile) {
+  const config = readDesktopConnectionConfig()
+  const hasProfileOverride = profileHasRemoteConnection(config, profile)
+
   return {
     globalRemote: globalRemoteActive(),
     primaryProfile: primaryProfileKey(),
-    profileRemoteOverride: Boolean(profileHasRemoteOverride(profile))
+    profileRemoteOverride: hasProfileOverride && !profileRemoteOverrideSharesGlobal(config, profile)
   }
 }
 

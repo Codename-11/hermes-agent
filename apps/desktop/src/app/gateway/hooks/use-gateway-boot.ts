@@ -32,7 +32,7 @@ import {
   rehydrateLiveSessionStatuses
 } from '@/store/live-session-status'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import { $activeGatewayProfile, $gatewayProfileAdopted, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $activeSessionId,
   $connection,
@@ -305,11 +305,13 @@ export function useGatewayBoot({
         const key = normalizeProfileKey(profileKey)
         primaryProfile = key
         $activeGatewayProfile.set(key)
+        $gatewayProfileAdopted.set(true)
         setPrimaryGateway(gateway, key)
         void ensureGatewayForProfile(key)
       } catch {
         primaryProfile = normalizeProfileKey(override)
         $activeGatewayProfile.set(primaryProfile)
+        $gatewayProfileAdopted.set(true)
         setPrimaryGateway(gateway, primaryProfile)
       }
     }

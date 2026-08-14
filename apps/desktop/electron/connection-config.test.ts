@@ -34,6 +34,7 @@ import {
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
+  profileRemoteOverrideSharesGlobal,
   profileSshOverride,
   resolveAuthMode,
   resolveProfileBackendRoute,
@@ -146,6 +147,66 @@ test('profileRemoteOverride preserves the target remote profile metadata', () =>
     token: undefined,
     remoteProfile: 'default'
   })
+})
+
+test('profileRemoteOverrideSharesGlobal recognizes a redundant same-profile OAuth override', () => {
+  const config = {
+    mode: 'remote',
+    remote: { url: 'https://gateway.example.com/root/', authMode: 'oauth' },
+    profiles: {
+      victor: {
+        mode: 'remote',
+        url: 'https://gateway.example.com/root',
+        authMode: 'oauth',
+        remoteProfile: 'victor'
+      }
+    }
+  }
+
+  assert.equal(profileRemoteOverrideSharesGlobal(config, 'victor'), true)
+})
+
+test('profileRemoteOverrideSharesGlobal rejects different paths, aliases, and token auth', () => {
+  const base = {
+    mode: 'remote',
+    remote: { url: 'https://gateway.example.com/root', authMode: 'oauth' }
+  }
+
+  assert.equal(
+    profileRemoteOverrideSharesGlobal(
+      { ...base, profiles: { victor: { mode: 'remote', url: 'https://gateway.example.com/other', authMode: 'oauth' } } },
+      'victor'
+    ),
+    false
+  )
+  assert.equal(
+    profileRemoteOverrideSharesGlobal(
+      {
+        ...base,
+        profiles: {
+          victor: {
+            mode: 'remote',
+            url: 'https://gateway.example.com/root',
+            authMode: 'oauth',
+            remoteProfile: 'default'
+          }
+        }
+      },
+      'victor'
+    ),
+    false
+  )
+  assert.equal(
+    profileRemoteOverrideSharesGlobal(
+      {
+        mode: 'remote',
+        remote: { url: 'https://gateway.example.com/root', authMode: 'token' },
+        profiles: { victor: { mode: 'remote', url: 'https://gateway.example.com/root', authMode: 'token' } }
+      },
+      'victor'
+    ),
+    false
+  )
 })
 
 test('SSH remains separate from URL-shaped remote modes and preserves an explicit remote profile', () => {

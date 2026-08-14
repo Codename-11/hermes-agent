@@ -15,7 +15,8 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $gatewayProfileAdopted, normalizeProfileKey } from '@/store/profile'
+import { windowProfileOverride } from '@/store/windows'
 
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
@@ -73,9 +74,14 @@ export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
 
 // Last active profile — lets the boot paint pick its appearance before the
-// gateway reports which profile actually launched.
-const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
+// gateway reports which profile actually launched. Helper windows carry an
+// explicit profile in their URL and should never paint another window's slot.
+const readBootProfileKey = () => normalizeProfileKey(windowProfileOverride() ?? storedString(LAST_PROFILE_KEY))
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
+
+export function resolveAppearanceProfile(liveProfile: string, bootProfile: string, adopted: boolean): string {
+  return normalizeProfileKey(adopted ? liveProfile : bootProfile)
+}
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
 // hexToRgb / mix / readableOn live in ./color so the VS Code converter shares
@@ -317,7 +323,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Skin + mode are assigned per profile; the active profile drives which
   // appearance shows. Single-profile users only ever see "default", so their
   // behavior is unchanged.
-  const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const liveProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const gatewayProfileAdopted = useStore($gatewayProfileAdopted)
+  const [bootProfile] = useState(readBootProfileKey)
+  const profileKey = resolveAppearanceProfile(liveProfileKey, bootProfile, gatewayProfileAdopted)
 
   // Built-ins + user-installed + registry-contributed themes. Reactive so an
   // import or a plugin registration shows up live in the palette, settings
@@ -339,11 +348,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const [themeName, setThemeNameState] = useState(() =>
-    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(readBootProfileKey())
+    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(bootProfile)
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'light' : modePref.resolve(readBootProfileKey())
+    typeof window === 'undefined' ? 'light' : modePref.resolve(bootProfile)
   )
 
   // Follow profile switches: paint the profile's assigned skin + mode and
@@ -364,7 +373,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      const live = normalizeProfileKey($activeGatewayProfile.get())
+      const live = resolveAppearanceProfile($activeGatewayProfile.get(), bootProfile, $gatewayProfileAdopted.get())
 
       setThemeNameState(skinPref.resolve(live))
       setModeState(modePref.resolve(live))
@@ -373,7 +382,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     window.addEventListener('storage', onStorage)
 
     return () => window.removeEventListener('storage', onStorage)
-  }, [])
+  }, [bootProfile])
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
@@ -396,20 +405,28 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // material, titlebar, new-window pre-paint background).
   useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
-  // Assign to whichever profile is live right now (read fresh so the callbacks
-  // stay stable across profile switches).
-  const liveProfile = () => normalizeProfileKey($activeGatewayProfile.get())
+  const setTheme = useCallback(
+    (name: string) => {
+      const next = normalizeSkin(name)
+      setThemeNameState(next)
+      skinPref.assign(
+        resolveAppearanceProfile($activeGatewayProfile.get(), bootProfile, $gatewayProfileAdopted.get()),
+        next
+      )
+    },
+    [bootProfile]
+  )
 
-  const setTheme = useCallback((name: string) => {
-    const next = normalizeSkin(name)
-    setThemeNameState(next)
-    skinPref.assign(liveProfile(), next)
-  }, [])
-
-  const setMode = useCallback((next: ThemeMode) => {
-    setModeState(next)
-    modePref.assign(liveProfile(), next)
-  }, [])
+  const setMode = useCallback(
+    (next: ThemeMode) => {
+      setModeState(next)
+      modePref.assign(
+        resolveAppearanceProfile($activeGatewayProfile.get(), bootProfile, $gatewayProfileAdopted.get()),
+        next
+      )
+    },
+    [bootProfile]
+  )
 
   // Drain a backend-driven skin switch (Hermes authoring/activating a skin from a
   // prompt, or `/skin` on another surface). setTheme persists it per profile, so

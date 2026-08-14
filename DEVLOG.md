@@ -1,5 +1,24 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Stabilize Desktop cold-start profile restoration
+
+### Summary
+
+Stopped the primary Desktop window from parking on “Waking up Victor” and resetting appearance to default light while helper session windows worked normally.
+
+### Details
+
+- Redundant same-profile OAuth overrides that resolve to the app-wide remote gateway now share the healthy primary socket instead of dialing duplicate secondary WebSockets; different URLs, path prefixes, auth shapes, and remote aliases remain isolated.
+- Renderer cold start now distinguishes the synthetic initial `default` profile from the first authoritative gateway profile.
+- Profile-scoped theme and mode restoration keep using the persisted boot profile until gateway adoption completes, so startup cannot overwrite the last-active appearance slot with default light.
+- Helper windows honor their explicit query-string profile from first paint.
+
+### Verification
+
+- Focused remote-route and OAuth regressions: 90 passing.
+- Focused appearance/profile persistence and routing regressions: 34 passing.
+- Desktop renderer/Electron/E2E TypeScript typecheck and whitespace checks.
+
 ## 2026-08-13 — Serialize Desktop native OAuth refresh rotation
 
 ### Summary
