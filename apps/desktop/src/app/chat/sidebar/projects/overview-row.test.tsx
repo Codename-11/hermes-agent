@@ -101,4 +101,10 @@ describe('ProjectOverviewRow', () => {
     expect(container.querySelector('[class~="group/workspace"]')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'New session in Home' })).toBeTruthy()
   })
+
+  it('tags the row with data-sessions-project so a skin can target one project', () => {
+    const { container } = render(<ProjectOverviewRow project={project} />)
+
+    expect(container.querySelector('[data-sessions-project="p1"]')).toBeTruthy()
+  })
 })

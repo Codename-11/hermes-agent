@@ -80,6 +80,9 @@ export function AboutSettings() {
   }, [])
 
   const behind = status?.behind ?? 0
+  // behind is null when the exact count is unknowable (shallow clone): the
+  // backend flags that case via updateAvailable instead of a number.
+  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
   const upstreamHint = upstreamDisparity(status)
@@ -103,8 +106,8 @@ export function AboutSettings() {
   } else if (applying) {
     statusLine = a.installing
     statusTone = 'available'
-  } else if (behind > 0) {
-    statusLine = a.updateReady(behind)
+  } else if (updateAvailable) {
+    statusLine = behind > 0 ? a.updateReady(behind) : a.updateReadyUnknown
     statusTone = 'available'
   } else if (status) {
     statusLine = a.onLatest
@@ -161,7 +164,7 @@ export function AboutSettings() {
               {checking ? a.checking : a.checkNow}
             </Button>
 
-            {behind > 0 && supported && !applying && (
+            {updateAvailable && supported && !applying && (
               <>
                 <Button onClick={() => startActiveUpdate()} size="sm">
                   {a.updateNow}

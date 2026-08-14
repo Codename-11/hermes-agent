@@ -294,6 +294,7 @@ export function useStatusbarItems({
       upstreamAhead: updateStatus?.upstreamAhead,
       upstreamBehind: updateStatus?.upstreamBehind,
       upstreamBranch: updateStatus?.upstreamBranch,
+      updateAvailable: updateStatus?.updateAvailable,
       version: desktopVersion?.appVersion
     })
 
@@ -324,7 +325,8 @@ export function useStatusbarItems({
     updateStatus?.currentSha,
     updateStatus?.upstreamAhead,
     updateStatus?.upstreamBehind,
-    updateStatus?.upstreamBranch
+    updateStatus?.upstreamBranch,
+    updateStatus?.updateAvailable
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {

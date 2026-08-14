@@ -98,6 +98,13 @@ import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { createExternalOpening } from './external-opening'
+import {
+  buildTerminalScript,
+  resolveTerminalLaunch,
+  terminalScriptEnv,
+  terminalScriptExtension,
+  tuiResumeArgs
+} from './external-terminal'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
@@ -227,7 +234,13 @@ import { createStagedUpdateLifecycle } from './staged-update-lifecycle'
 import { createStreamThrottle } from './stream-throttle'
 import { createTerminalOutputRelay } from './terminal-output-relay'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
-import { resolveBehindCount, shouldCountCommits } from './update-count'
+import {
+  compareApiUrl,
+  parseCompareBehindCount,
+  resolveBehindCount,
+  resolveCommitLogSelection,
+  shouldCountCommits
+} from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { hasRetainedDeployHandoff } from './update-handoff-status'
 import { appendUpdateHistory } from './update-history'
@@ -2553,11 +2566,27 @@ async function checkUpdates() {
       }
     }
 
+    // Passive SSH-official checks only know tip SHAs (ls-remote) — never
+    // fabricate a "1 commit behind". Recover the exact count via the GitHub
+    // compare API when possible; otherwise behind stays null ("update
+    // available, count unknown") and updateAvailable carries the signal.
+    // ahead_by === 0 with differing tips means the remote tip is reachable
+    // from our HEAD — a local carried commit sitting AHEAD, not behind:
+    // flagging that as an update nudges the user into wiping their work.
+    const tipsEqual = Boolean(currentSha && currentSha === targetSha)
+
+    const sshBehind = tipsEqual
+      ? 0
+      : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+
+    const upToDate = tipsEqual || sshBehind === 0
+
     return {
       supported: true,
       branch,
       currentBranch,
-      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      behind: upToDate ? 0 : sshBehind,
+      updateAvailable: !upToDate,
       currentSha,
       targetSha,
       commits: [],
@@ -2582,37 +2611,48 @@ async function checkUpdates() {
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
+  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', `origin/${branch}`]),
     git(['status', '--porcelain']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository']),
-    // merge-base exits non-zero with empty stdout when HEAD shares no common
-    // ancestor with the freshly fetched tip — exactly the shallow-clone case.
-    git(['merge-base', 'HEAD', `origin/${branch}`])
+    git(['rev-parse', '--is-shallow-repository'])
   ])
 
   const isShallow = shallowStr === 'true'
-  const hasMergeBase = Boolean(mergeBaseStr)
 
-  // Only enumerate the commit count when it is meaningful. On a shallow checkout
-  // with no merge-base, `rev-list --count` walks the entire remote ancestry
-  // (thousands of commits, see #51922) and resolveBehindCount discards the
-  // result anyway in favour of a SHA compare — so skip the expensive query.
-  const countStr = shouldCountCommits({ isShallow, hasMergeBase })
-    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
-    : ''
+  // A shallow graph cannot provide a trustworthy exact count, even when it has
+  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
+  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
 
-  const behind = resolveBehindCount({
+  // A positive directional ancestry result remains trustworthy in a shallow
+  // graph and prevents a local commit on top of origin from looking outdated.
+  const targetIsAncestorOfHead =
+    isShallow &&
+    currentSha !== targetSha &&
+    (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
+
+  let behind = resolveBehindCount({
     countStr,
     currentSha,
     targetSha,
     isShallow,
-    hasMergeBase
+    targetIsAncestorOfHead
   })
 
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  // Recover the exact count a shallow clone can't compute: the GitHub compare
+  // API knows the full graph regardless of local clone depth. Best-effort —
+  // offline, rate-limited, or non-GitHub origins keep the honest null
+  // ("update available", no fabricated number).
+  if (behind === null) {
+    behind = await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
+  }
+
+  // behind === null means "update available, exact count unknown" (shallow
+  // clone): still list what origin offers — resolveCommitLogSelection keeps
+  // the shallow log to the fetched tip so the range walk can't enumerate the
+  // contaminated ancestry — so "See what's new" stays useful and honest.
+  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow) : []
   const upstream = await readUpstreamDivergence(updateRoot, `origin/${branch}`)
 
   return {
@@ -2620,6 +2660,7 @@ async function checkUpdates() {
     branch,
     currentBranch,
     behind,
+    updateAvailable: behind === null || behind > 0,
     currentSha,
     targetSha,
     commits,
@@ -2632,14 +2673,84 @@ async function checkUpdates() {
   }
 }
 
-async function readCommitLog(cwd, branch) {
-  return readCommitRange(cwd, 'HEAD', `origin/${branch}`)
+// Best-effort exact behind-count for graphs the local clone can't measure.
+// Delegates URL building + response parsing to update-count.ts (pure, unit
+// tested); this wrapper only does the bounded network call. Any failure —
+// offline, 4xx/5xx, rate limit, shape surprise — returns null so callers keep
+// the honest "update available, count unknown" state.
+async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
+  const url = compareApiUrl({ currentSha, originUrl, targetSha })
+
+  if (!url) {
+    return null
+  }
+
+  try {
+    const payload = await new Promise((resolve, reject) => {
+      const req = https.get(
+        url,
+        {
+          headers: {
+            Accept: 'application/vnd.github+json',
+            // GitHub requires a UA on api.github.com; requests without one 403.
+            'User-Agent': 'hermes-desktop-update-check'
+          },
+          timeout: 10_000
+        },
+        res => {
+          const chunks = []
+          res.on('error', reject)
+          res.on('data', chunk => chunks.push(chunk))
+          res.on('end', () => {
+            if ((res.statusCode || 500) >= 400) {
+              reject(new Error(`compare API ${res.statusCode}`))
+
+              return
+            }
+
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+            } catch (error) {
+              reject(error)
+            }
+          })
+        }
+      )
+
+      req.on('timeout', () => req.destroy(new Error('compare API timeout')))
+      req.on('error', reject)
+    })
+
+    return parseCompareBehindCount(payload)
+  } catch {
+    return null
+  }
+}
+
+async function readCommitLog(cwd, branch, isShallow) {
+  const SEP = '\x1f'
+  const REC = '\x1e'
+  const { limit, revision } = resolveCommitLogSelection({ branch, isShallow })
+
+  const { stdout } = await runGit(
+    ['log', revision, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', String(limit)],
+    { cwd }
+  )
+
+  return stdout
+    .split(REC)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      const [sha, summary, author, at] = line.split(SEP)
+
+      return { sha, summary, author, at: Number.parseInt(at, 10) * 1000 }
+    })
 }
 
 async function readCommitRange(cwd, base, target) {
   const SEP = '\x1f'
   const REC = '\x1e'
-
   const { stdout } = await runGit(
     ['log', `${base}..${target}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
@@ -8295,7 +8406,11 @@ async function ensureBackend(profile) {
 
     // A shared backend still owes the caller its profile scope, so renderer-side
     // WebSocket, filesystem, and cache routing target the selected profile.
-    return route.descriptorProfile ? { ...connection, profile: route.descriptorProfile } : connection
+    // `sharedPrimary` marks this as the shared-primary route: pooled backends
+    // also carry `profile`, so only this descriptor gets the flag.
+    return route.descriptorProfile
+      ? { ...connection, profile: route.descriptorProfile, sharedPrimary: true }
+      : connection
   }
 
   const existing = backendPool.get(key)
@@ -10316,6 +10431,70 @@ ipcMain.handle('hermes:window:openInstance', async (_event, profile) => {
   createInstanceWindow(typeof profile === 'string' ? profile.trim() : undefined)
 
   return { ok: true }
+})
+
+// Hand a session to the user's OWN terminal emulator, running the TUI against
+// it (`hermes --tui --resume <id>`). Not the in-app terminal pane: the point is
+// to continue the chat in the terminal they already live in.
+//
+// The desktop's runtime is usually a venv Python invoked as
+// `python -m hermes_cli.main`, so we resolve the SAME backend the app itself
+// launches and carry its argv + PYTHONPATH into a launcher script rather than
+// hoping a `hermes` exists on the user's interactive PATH. Resolution only —
+// never ensureRuntime(), which would kick off a first-run install from a menu
+// click; an unresolved runtime is reported instead.
+ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) => {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    return { ok: false, error: 'invalid-session-id' }
+  }
+
+  try {
+    const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
+    const backend = resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+
+    if (!backend.command) {
+      return { ok: false, error: 'Hermes is not installed yet' }
+    }
+
+    const { cwd } = sanitizeWorkspaceCwd(opts?.cwd)
+    const scriptDir = path.join(app.getPath('userData'), 'open-in-terminal')
+    fs.mkdirSync(scriptDir, { recursive: true })
+
+    const scriptPath = path.join(
+      scriptDir,
+      `hermes-${crypto.randomBytes(6).toString('hex')}${terminalScriptExtension()}`
+    )
+
+    fs.writeFileSync(
+      scriptPath,
+      buildTerminalScript({
+        args: backend.args,
+        command: backend.command,
+        cwd,
+        env: terminalScriptEnv(backend.env, HERMES_HOME)
+      }),
+      { mode: 0o700 }
+    )
+
+    const launch = resolveTerminalLaunch({ findOnPath, scriptPath })
+
+    if (!launch) {
+      return { ok: false, error: 'No terminal emulator found' }
+    }
+
+    rememberLog(`[terminal] opening session ${sessionId} via ${launch.command}`)
+
+    // Detached + unref'd: the terminal window outlives the desktop app, and
+    // never inherits our stdio (a closed pipe would kill the TUI).
+    const child = spawn(launch.command, launch.args, { detached: true, stdio: 'ignore' })
+    child.unref()
+
+    return { ok: true }
+  } catch (error) {
+    rememberLog(`[terminal] open in terminal failed: ${error.message}`)
+
+    return { ok: false, error: error.message }
+  }
 })
 ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getState())
 ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
