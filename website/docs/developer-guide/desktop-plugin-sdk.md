@@ -247,9 +247,14 @@ data: {
 `'top' | 'bottom' | 'left' | 'right' | 'center'`. Declare a `width`/`height` so
 the pane doesn't claim half the zone.
 
-By default, closing a plugin pane disables that plugin. A singleton tab that
-should remain available through another entry point can opt into dismissal and
-reveal its own namespaced pane later:
+Closing the only pane contributed by a plugin disables that plugin, which can
+be re-enabled from **Settings → Plugins**. When a plugin contributes multiple
+panes, closing one dismisses only that pane and leaves the plugin's other panes,
+commands, and middleware active. **Reset layout** restores dismissed contributed
+panes.
+
+A singleton tab that should remain available through another entry point can
+explicitly opt into dismissal and reveal its own namespaced pane later:
 
 ```javascript
 ctx.register({

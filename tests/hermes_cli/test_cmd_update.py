@@ -263,7 +263,10 @@ class TestCmdUpdateBranchFallback:
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": ["new.option"]},
-        ) as migrate_config, patch("hermes_cli.main.sys") as mock_sys:
+        ) as migrate_config, patch(
+            "hermes_cli.main._run_npm_install_deterministic",
+            return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        ), patch("hermes_cli.main.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = False
             mock_sys.stdout.isatty.return_value = False
             mock_run.side_effect = _make_run_side_effect(
@@ -306,7 +309,10 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": [], "warnings": []},
-        ) as mock_migrate:
+        ) as mock_migrate, patch(
+            "hermes_cli.main._run_npm_install_deterministic",
+            return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        ):
             mock_run.side_effect = _make_run_side_effect(
                 branch="main", verify_ok=True, commit_count="1"
             )
@@ -344,6 +350,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": [], "warnings": []},
+        ), patch(
+            "hermes_cli.main._run_npm_install_deterministic",
+            return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
         ), patch("hermes_cli.main.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True
