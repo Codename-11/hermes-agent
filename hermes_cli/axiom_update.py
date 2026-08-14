@@ -1353,7 +1353,7 @@ def _terminate_resolver_process_tree(process: subprocess.Popen) -> bool:
             process.kill()
         return False
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok - POSIX-only branch
         return True
     except OSError:
         process.kill()
