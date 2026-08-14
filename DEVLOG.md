@@ -1,5 +1,22 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-13 — Keep live-turn status visually online during quiet work
+
+### Summary
+
+Stopped long-running Desktop sessions from appearing to flicker offline and online whenever the internal quiet-turn watchdog changed state.
+
+### Details
+
+- `working` and watchdog-quiet `stalled` turns now render the same solid accent status dot because both remain authoritatively running.
+- The internal stalled state and running-arc behavior remain intact for diagnostics without presenting a false connectivity transition.
+- Added a regression that locks the two live-turn states to one user-facing dot treatment.
+
+### Verification
+
+- Focused session status, watchdog, and dot-priority regressions: 29 passing.
+- Desktop renderer/Electron/E2E TypeScript typecheck and changed-file ESLint.
+
 ## 2026-08-13 — Stabilize Desktop cold-start profile restoration
 
 ### Summary

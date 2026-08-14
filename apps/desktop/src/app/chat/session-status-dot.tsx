@@ -42,12 +42,14 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     className: `${DOT_BASE} bg-(--ui-accent)`,
     role: 'status'
   },
-  // Hollow accent — still authoritatively running, but nothing has arrived for
-  // the watchdog window. Same color as working because it IS working; hollow
-  // because nothing is coming out of it right now.
+  // Accent — the turn is still authoritatively running, but nothing has
+  // arrived during the watchdog window. Keep the same solid running dot: a
+  // hollow/filled transition reads as offline/online even though connectivity
+  // did not change. The row's running arc and diagnostic state still preserve
+  // the quiet-turn signal without lying about connection state.
   stalled: {
     ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} border border-(--ui-accent)`,
+    className: `${DOT_BASE} bg-(--ui-accent)`,
     role: 'status',
     title: r => r.sessionRunning
   },
