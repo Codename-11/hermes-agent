@@ -50,7 +50,7 @@ def mock_args():
 # ``shutil.which`` so the existing test setup keeps working without
 # per-test changes.
 @pytest.fixture(autouse=True)
-def _patch_managed_uv(request):
+def _patch_managed_uv(request, monkeypatch):
     """Isolate update tests from managed runtimes and live Windows services."""
     import shutil
     from hermes_cli import main as hm
@@ -80,7 +80,17 @@ def _patch_managed_uv(request):
          patch.object(hm, "_clear_update_incomplete_marker"), \
          patch.object(hm, "_write_lazy_refresh_incomplete_marker"), \
          patch.object(hm, "_clear_lazy_refresh_incomplete_marker"):
-        yield
+        if getattr(request.node, "cls", None) is TestUpdateNodeDependencies:
+            yield
+        else:
+            monkeypatch.setattr(
+                hm,
+                "_run_npm_install_deterministic",
+                lambda *args, **kwargs: subprocess.CompletedProcess(
+                    [], 0, stdout="", stderr=""
+                ),
+            )
+            yield
 
 
 class TestCmdUpdateNpmLockfileCache:

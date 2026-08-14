@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1083,7 +1084,6 @@ def _focused_checks_for_paths(paths: list[str], payload: dict[str, object]) -> l
 def _build_deploy_resolver_prompt(payload: dict[str, object], checks: list[str]) -> str:
     conflict_files = payload.get("conflict_files")
     files = "\n".join(f"- {item}" for item in conflict_files) if isinstance(conflict_files, list) else "- inspect git status"
-    checks_text = "\n".join(f"- {check}" for check in checks) or "- run the narrowest relevant compile/test checks for touched files"
     report_path = str(payload.get("report_path") or "").strip()
     return f"""Resolve the retained Hermes deploy-branch update handoff to completion.
 
@@ -1106,11 +1106,11 @@ Resolver contract:
 1. Work only inside the retained worktree above.
 2. Resolve the git merge conflict, preserving documented deploy-branch/Axiom/TGI behavior and preferring upstream code when it provides equivalent or better behavior.
 3. Do not touch secrets, auth tokens, .env files, or unrelated generated churn.
-4. Run focused verification. Suggested checks:
-{checks_text}
-5. Leave the worktree ready for the updater to commit/push: no unmerged paths, no conflict markers, and only justified changes.
+4. Perform only cheap structural validation: confirm no unmerged paths, scan the reconciled files for conflict markers, and run `git diff --check`.
+5. Leave all compilation, package installation, typechecking, and focused test suites to the parent updater.
+6. Leave the worktree ready for the updater to checkpoint: only justified tracked changes and no unexpected untracked files.
 
-Do not push or run `hermes update` yourself; the parent updater will validate, commit, push, fast-forward the live checkout, and run the normal install/restart phase after you exit.
+Do not commit, push, or run `hermes update` yourself; the parent updater will checkpoint, validate, push, fast-forward the live checkout, and run the normal install/restart phase after you exit.
 """
 
 
@@ -1148,6 +1148,11 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         "HERMES_UPDATE_RESOLVE": "1",
         "PYTHONPATH": pythonpath,
     }
+    popen_kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     process = subprocess.Popen(
         cmd,
         cwd=worktree,
@@ -1159,6 +1164,7 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        **popen_kwargs,
     )
     if process.stdout is None:
         process.kill()
@@ -1185,14 +1191,16 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
     try:
         returncode = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        process.kill()
+        process_tree_terminated = _terminate_resolver_process_tree(process)
         process.wait()
-        pump.join()
-        raise subprocess.TimeoutExpired(
+        pump.join(timeout=None if process_tree_terminated else 1)
+        timeout_error = subprocess.TimeoutExpired(
             cmd,
             timeout,
             output="".join(transcript_tail),
-        ) from exc
+        )
+        timeout_error.process_tree_terminated = process_tree_terminated
+        raise timeout_error from exc
     pump.join()
     return subprocess.CompletedProcess(
         cmd,
@@ -1200,6 +1208,34 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         stdout="".join(transcript_tail),
         stderr="",
     )
+
+
+def _terminate_resolver_process_tree(process: subprocess.Popen) -> bool:
+    """Terminate the resolver and descendants before inspecting its worktree."""
+    if process.poll() is not None:
+        return True
+    if os.name == "nt":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True
+        if process.poll() is None:
+            process.kill()
+        return False
+    try:
+        os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok - POSIX-only branch
+        return True
+    except OSError:
+        process.kill()
+        return False
+
+
+def _resolver_timeout_is_safe_to_salvage(exc: subprocess.TimeoutExpired) -> bool:
+    """Only trust the worktree after the resolver's whole process tree stopped."""
+    return getattr(exc, "process_tree_terminated", False) is True
 
 
 def _resolver_output_tail(value: object, *, max_lines: int = 40, max_chars: int = 6000) -> list[str]:
@@ -1265,6 +1301,175 @@ def _run_focused_check(check: str, worktree: Path) -> Optional[bool]:
         timeout=900,
     )
     return result.returncode == 0
+
+
+def _prepare_isolated_worktree_dependencies(worktree: Path) -> tuple[bool, str]:
+    """Install a private dev dependency tree for retained Desktop validation."""
+    npm = shutil.which("npm")
+    if not npm:
+        return False, "npm is unavailable for retained Desktop validation"
+    if not (worktree / "package-lock.json").is_file():
+        return False, "retained worktree has no package-lock.json"
+    result = subprocess.run(
+        [
+            npm,
+            "ci",
+            "--include=dev",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        ],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    if result.returncode == 0:
+        return True, ""
+    return False, (result.stderr or result.stdout or "npm ci failed").strip()[-4000:]
+
+
+def _run_parent_handoff_validation(
+    worktree: Path,
+    resolved_head: str,
+    checks: list[str],
+    prior_status: dict[str, str],
+) -> bool:
+    """Run heavyweight checks serially, persisting resumable SHA-bound status."""
+    desktop_checks = [check for check in checks if "apps/desktop" in check]
+    non_desktop_checks = [check for check in checks if check not in desktop_checks]
+    ordered = [*non_desktop_checks, *desktop_checks]
+    check_status = dict(prior_status)
+    dependencies_prepared = False
+
+    for check in ordered:
+        if check_status.get(check) in {"passed", "skipped"}:
+            continue
+        if check in desktop_checks and not dependencies_prepared:
+            prepared, error = _prepare_isolated_worktree_dependencies(worktree)
+            if not prepared:
+                _update_deploy_handoff_state(
+                    phase="validation_failed",
+                    resolved_head=resolved_head,
+                    validation_sha=resolved_head,
+                    check_status=check_status,
+                    error=error,
+                )
+                return False
+            dependencies_prepared = True
+        print(f"→ Focused check: {check}")
+        result = _run_focused_check(check, worktree)
+        check_status[check] = "skipped" if result is None else "passed" if result else "failed"
+        phase = "validation_pending" if result is not False else "validation_failed"
+        _update_deploy_handoff_state(
+            phase=phase,
+            resolved_head=resolved_head,
+            validation_sha=resolved_head,
+            check_status=check_status,
+            error="" if result is not False else f"Focused check failed: {check}",
+        )
+        if result is False:
+            return False
+
+    _update_deploy_handoff_state(
+        phase="commit_push_pending",
+        resolved_head=resolved_head,
+        validation_sha=resolved_head,
+        check_status=check_status,
+        error="",
+    )
+    return True
+
+
+def _update_deploy_handoff_state(**updates: object) -> None:
+    """Durably merge state into the retained handoff marker."""
+    marker = _deploy_handoff_marker_path()
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("deploy handoff marker is malformed")
+    payload.update(updates)
+    temporary = marker.with_name(f"{marker.name}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    os.replace(temporary, marker)
+
+
+def _checkpoint_resolved_handoff(
+    git_cmd: list[str], worktree: Path, branch: str
+) -> tuple[str, str]:
+    """Commit a structurally resolved worktree without capturing new files."""
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+    )
+    if status.returncode != 0:
+        return "", "Could not inspect retained worktree status."
+    untracked = [
+        line[3:].strip()
+        for line in status.stdout.splitlines()
+        if line.startswith("?? ")
+    ]
+    if untracked:
+        return "", "Unexpected untracked files: " + ", ".join(untracked[:20])
+
+    diff_check = subprocess.run(
+        git_cmd + ["diff", "--check"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+    )
+    if diff_check.returncode != 0:
+        return "", (diff_check.stderr or diff_check.stdout or "git diff --check failed").strip()
+
+    staged = subprocess.run(
+        git_cmd + ["add", "--update"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+    )
+    if staged.returncode != 0:
+        return "", (staged.stderr or staged.stdout or "Could not stage tracked resolution").strip()
+    staged_diff_check = subprocess.run(
+        git_cmd + ["diff", "--cached", "--check"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+    )
+    if staged_diff_check.returncode != 0:
+        return "", (
+            staged_diff_check.stderr
+            or staged_diff_check.stdout
+            or "git diff --cached --check failed"
+        ).strip()
+    commit_needed = subprocess.run(
+        git_cmd + ["diff", "--cached", "--quiet"], cwd=worktree
+    )
+    if commit_needed.returncode != 0:
+        commit_cmd = (
+            git_cmd + ["commit", "--no-edit"]
+            if _has_git_state(git_cmd, worktree, "MERGE_HEAD")
+            else git_cmd
+            + ["commit", "-m", f"merge: resolve {branch} deploy update"]
+        )
+        commit = subprocess.run(
+            commit_cmd, cwd=worktree, capture_output=True, text=True
+        )
+        if commit.returncode != 0:
+            return "", (commit.stderr or commit.stdout or "Could not commit resolution").strip()
+
+    resolved_head = _full_git_ref(git_cmd, worktree, "HEAD")
+    if not resolved_head:
+        return "", "Could not read resolved checkpoint commit."
+    _update_deploy_handoff_state(
+        phase="validation_pending",
+        resolved_head=resolved_head,
+        check_status={},
+        error="",
+    )
+    return resolved_head, ""
 
 
 def _resolve_deploy_handoff(
@@ -1338,7 +1543,8 @@ def _resolve_deploy_handoff(
                 print(f"    {line}")
         return None
 
-    if payload.get("phase") == "push_pending":
+    phase = str(payload.get("phase") or "resolve_pending")
+    if phase in {"push_pending", "commit_push_pending"}:
         resolved_head = str(payload.get("resolved_head") or "").strip()
         actual_head = _full_git_ref(git_cmd, worktree, "HEAD") if worktree.exists() else ""
         if not resolved_head or actual_head != resolved_head:
@@ -1380,7 +1586,9 @@ def _resolve_deploy_handoff(
         print(f"✓ Published retained commit and fast-forwarded live checkout to origin/{branch}.")
         return changed or 1
 
-    if _handoff_snapshot_is_published(git_cmd, repo, branch, payload):
+    if phase == "resolve_pending" and _handoff_snapshot_is_published(
+        git_cmd, repo, branch, payload
+    ):
         if not _discard_published_handoff(git_cmd, repo, worktree):
             status.fail(note="stale marker cleanup failed")
             print("✗ Could not clear stale deploy handoff marker; stopping before fresh update.")
@@ -1418,68 +1626,125 @@ def _resolve_deploy_handoff(
         return None
 
     checks = _focused_checks_for_paths(conflict_files, payload)
-    status.advance("agent resolve")
-    print("  ┌─ Live Hermes resolver session (advisory)", flush=True)
-    print("  │ Parent validation, focused checks, commit, and push still follow.", flush=True)
-    result = _run_update_resolver_agent(_build_deploy_resolver_prompt({**payload, "conflict_files": conflict_files}, checks), worktree)
-    print("  └─ Resolver exited; starting authoritative parent validation.", flush=True)
-    if result.returncode != 0:
-        status.fail(note="resolver agent failed")
-        print("✗ Resolver agent failed; retained worktree was left untouched for manual review.")
-        _print_resolver_failure_diagnostics(result)
-        return None
+    if phase in {"validation_pending", "validation_failed"}:
+        resolved_head = str(payload.get("resolved_head") or "").strip()
+        actual_head = _full_git_ref(git_cmd, worktree, "HEAD")
+        if not resolved_head or actual_head != resolved_head:
+            status.fail(note="retained checkpoint changed")
+            print("✗ Retained checkpoint no longer matches its resolved commit; stopping safely.")
+            return None
+        prior_status = payload.get("check_status")
+        if payload.get("validation_sha") != resolved_head or not isinstance(prior_status, dict):
+            prior_status = {}
+        status.advance("focused checks")
+        if not _run_parent_handoff_validation(
+            worktree, resolved_head, checks, prior_status
+        ):
+            status.fail(note="validation failed")
+            print("✗ Parent validation failed; checkpoint retained for a safe retry.")
+            return None
+        phase = "commit_push_pending"
 
-    status.advance("validate")
-    unmerged = _git_output(git_cmd, worktree, ["diff", "--name-only", "--diff-filter=U"], limit=4000)
-    remaining = [line.strip() for line in unmerged.splitlines() if line.strip()]
-    if remaining:
-        status.fail(note="unmerged files remain")
-        print("✗ Resolver exited but unmerged files remain:")
-        for item in remaining[:20]:
-            print(f"  - {item}")
-        return None
-
-    marker_files = conflict_files or _git_output(git_cmd, worktree, ["diff", "--name-only", "HEAD"], limit=4000).splitlines()
-    marker_hits = _scan_conflict_markers(worktree, [line.strip() for line in marker_files if line.strip()])
-    if marker_hits:
-        status.fail(note="conflict markers remain")
-        print("✗ Resolver left conflict markers in files:")
-        for item in marker_hits[:20]:
-            print(f"  - {item}")
-        return None
-
-    status.advance("focused checks")
-    for check in checks:
-        print(f"→ Focused check: {check}")
-        check_result = _run_focused_check(check, worktree)
-        if check_result is None:
-            print("  ⚠ Skipped: pytest is not installed in the active Hermes interpreter.")
-            continue
-        if not check_result:
-            status.fail(note="focused check failed")
-            print(f"✗ Focused check failed: {check}")
+    if phase == "commit_push_pending":
+        # A same-process validation completion reaches publication below. A
+        # resumed marker was handled by the exact-commit branch above.
+        pass
+    else:
+        status.advance("agent resolve")
+        print("  ┌─ Live Hermes resolver session (advisory)", flush=True)
+        print("  │ Parent structural validation, checkpoint, and heavyweight checks follow.", flush=True)
+        timed_out = False
+        try:
+            result = _run_update_resolver_agent(
+                _build_deploy_resolver_prompt(
+                    {**payload, "conflict_files": conflict_files}, checks
+                ),
+                worktree,
+            )
+        except subprocess.TimeoutExpired as exc:
+            if not _resolver_timeout_is_safe_to_salvage(exc):
+                status.fail(note="resolver process tree may still be running")
+                _update_deploy_handoff_state(
+                    phase="resolve_pending",
+                    resolved_head="",
+                    error=(
+                        "Resolver timed out and full process-tree termination could not "
+                        "be confirmed; retained worktree was not inspected or checkpointed."
+                    ),
+                )
+                print(
+                    "✗ Resolver timed out, but its full process tree could not be confirmed stopped."
+                )
+                print("  Retained worktree was left untouched for manual review.")
+                return None
+            timed_out = True
+            result = subprocess.CompletedProcess(
+                exc.cmd, 124, stdout=exc.output or "", stderr="resolver timed out"
+            )
+        print("  └─ Resolver exited; starting authoritative parent validation.", flush=True)
+        if result.returncode != 0 and not timed_out:
+            status.fail(note="resolver agent failed")
+            print("✗ Resolver agent failed; retained worktree was left untouched for manual review.")
+            _print_resolver_failure_diagnostics(result)
             return None
 
-    status.advance("commit")
-    subprocess.run(git_cmd + ["add", "-A"], cwd=worktree, capture_output=True, text=True)
-    commit_needed = subprocess.run(git_cmd + ["diff", "--cached", "--quiet"], cwd=worktree)
-    if commit_needed.returncode != 0:
-        if _has_git_state(git_cmd, worktree, "MERGE_HEAD"):
-            commit = subprocess.run(git_cmd + ["commit", "--no-edit"], cwd=worktree, text=True)
-        else:
-            commit = subprocess.run(
-                git_cmd + ["commit", "-m", f"merge: resolve {branch} deploy update"],
-                cwd=worktree,
-                text=True,
+    if phase != "commit_push_pending":
+        status.advance("validate")
+        unmerged = _git_output(
+            git_cmd,
+            worktree,
+            ["diff", "--name-only", "--diff-filter=U"],
+            limit=4000,
+        )
+        remaining = [line.strip() for line in unmerged.splitlines() if line.strip()]
+        marker_files = conflict_files or _git_output(
+            git_cmd, worktree, ["diff", "--name-only", "HEAD"], limit=4000
+        ).splitlines()
+        marker_hits = _scan_conflict_markers(
+            worktree, [line.strip() for line in marker_files if line.strip()]
+        )
+        if remaining or marker_hits:
+            note = "unmerged files remain" if remaining else "conflict markers remain"
+            status.fail(note=note)
+            reason = (
+                "Resolver timed out before structural resolution completed."
+                if timed_out
+                else "Resolver did not complete structural resolution."
             )
-        if commit.returncode != 0:
-            status.fail(note="commit failed")
-            print("✗ Could not commit resolver changes.")
+            _update_deploy_handoff_state(
+                phase="resolve_pending", resolved_head="", error=f"{reason} {note}"
+            )
+            print(f"✗ {reason}")
+            if marker_hits and not timed_out:
+                print("✗ Resolver left conflict markers in files:")
+            for item in (remaining or marker_hits)[:20]:
+                print(f"  - {item}")
+            print("  Rerun `hermes update` to resume the retained resolution.")
+            return None
+
+        status.advance("commit")
+        resolved_head, checkpoint_error = _checkpoint_resolved_handoff(
+            git_cmd, worktree, branch
+        )
+        if not resolved_head:
+            status.fail(note="checkpoint failed")
+            _update_deploy_handoff_state(
+                phase="resolve_pending", resolved_head="", error=checkpoint_error
+            )
+            print(f"✗ Could not checkpoint structurally resolved handoff: {checkpoint_error}")
+            return None
+        if timed_out:
+            print("→ Resolver timed out, but structural resolution was salvaged and checkpointed.")
+
+        status.advance("focused checks")
+        if not _run_parent_handoff_validation(worktree, resolved_head, checks, {}):
+            status.fail(note="validation failed")
+            print("✗ Parent validation failed; checkpoint retained for a safe retry.")
             return None
 
     status.advance("push")
     push = subprocess.run(
-        git_cmd + ["push", "origin", f"HEAD:{branch}"],
+        git_cmd + ["push", "origin", f"{resolved_head}:{branch}"],
         cwd=worktree,
         capture_output=True,
         text=True,
