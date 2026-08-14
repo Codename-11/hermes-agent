@@ -6,6 +6,13 @@ const reuseBlankDraftTile = vi.fn()
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
+const profileState = vi.hoisted(() => ({ active: 'default', ensureGatewayProfile: vi.fn() }))
+
+vi.mock('@/store/profile', () => ({
+  $activeGatewayProfile: { get: () => profileState.active },
+  ensureGatewayProfile: (profile: string) => profileState.ensureGatewayProfile(profile),
+  normalizeProfileKey: (profile: null | string | undefined) => profile?.trim() || 'default'
+}))
 
 vi.mock('@/store/session-states', () => ({
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
@@ -91,6 +98,11 @@ describe('openSession', () => {
     reuseBlankDraftTile.mockReset()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
+    profileState.active = 'default'
+    profileState.ensureGatewayProfile.mockReset()
+    profileState.ensureGatewayProfile.mockImplementation(async (profile: string) => {
+      profileState.active = profile
+    })
   })
 
   it('in-place focuses an existing tile and does not navigate', () => {
@@ -118,6 +130,18 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate)
     expect(navigate).toHaveBeenCalledWith('/c/s1')
+  })
+
+  it('activates a cross-profile owner before routing in place', async () => {
+    focusOpenSession.mockReturnValue(null)
+
+    openSession('s1', navigate, 'in-place', 'victor')
+
+    expect(profileState.ensureGatewayProfile).toHaveBeenCalledWith('victor')
+    expect(navigate).not.toHaveBeenCalled()
+
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith('/c/s1'))
+    expect(focusOpenSession).toHaveBeenCalledWith('s1', 'victor')
   })
 
   it('tab focuses an existing open session instead of stacking another', () => {

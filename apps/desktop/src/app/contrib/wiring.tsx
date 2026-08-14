@@ -560,45 +560,23 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
-  // A /:sessionId route cannot encode profile ownership, and cloned profiles
-  // may legitimately contain the same stored id. Unified-sidebar navigation
-  // carries a one-shot profile intent across the route render so resumeSession
-  // can bypass an unqualified warm-cache hit and bind the intended backend.
-  const routedResumeProfilesRef = useRef(new Map<string, string>())
-
-  const resumeRoutedSession = useCallback(
-    (storedSessionId: string, replaceRoute = false) => {
-      const profile = routedResumeProfilesRef.current.get(storedSessionId)
-      routedResumeProfilesRef.current.delete(storedSessionId)
-
-      return resumeSession(storedSessionId, replaceRoute, profile)
-    },
-    [resumeSession]
-  )
-
   const openSidebarSession = useCallback(
     (storedSessionId: string, profile?: string) => {
       const requestedProfile = profile ? normalizeProfileKey(profile) : null
       const crossesProfile = requestedProfile && requestedProfile !== normalizeProfileKey(activeGatewayProfile)
 
-      if (crossesProfile) {
-        routedResumeProfilesRef.current.set(storedSessionId, requestedProfile)
-
-        // Navigating between cloned-profile copies can keep the exact same URL.
-        // Consume the intent directly in that case; otherwise the route effect
-        // consumes it after normal sidebar navigation.
-        if (routedSessionId === storedSessionId) {
-          void resumeRoutedSession(storedSessionId)
-        } else {
-          navigate(sessionRoute(storedSessionId))
-        }
+      // Cloned profiles may contain the same stored id, so the URL cannot
+      // trigger a route effect. Activate the owner and resume explicitly.
+      if (crossesProfile && routedSessionId === storedSessionId) {
+        void ensureGatewayProfile(requestedProfile).then(() => resumeSession(storedSessionId, false, requestedProfile))
 
         return
       }
 
+      // Different-route cross-profile opens use the central profile-first door.
       openSession(storedSessionId, navigate, 'in-place', requestedProfile ?? undefined)
     },
-    [activeGatewayProfile, navigate, resumeRoutedSession, routedSessionId]
+    [activeGatewayProfile, navigate, resumeSession, routedSessionId]
   )
 
   // A profile switch/create drops to a fresh new-session draft so the
@@ -809,7 +787,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     freshDraftReady,
     gatewayState,
     locationPathname: location.pathname,
-    resumeSession: resumeRoutedSession,
+    resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     routedSessionId,

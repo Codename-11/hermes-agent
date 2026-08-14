@@ -150,5 +150,11 @@ export async function openNewWindow(profile?: string): Promise<void> {
     return
   }
 
-  await runWindowOpen(() => window.hermesDesktop.openWindow(profile), 'Could not open a new window')
+  // A bare new-window request used to omit profile, so the peer renderer booted
+  // from stale last-profile storage and first-painted the default light palette.
+  // Resolve lazily to avoid a windows↔profile module cycle.
+  const profileStore = await import('./profile')
+  const targetProfile = profile ?? profileStore.normalizeProfileKey(profileStore.$activeGatewayProfile.get())
+
+  await runWindowOpen(() => window.hermesDesktop.openWindow(targetProfile), 'Could not open a new window')
 }

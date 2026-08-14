@@ -155,7 +155,7 @@ describe('openNewWindow', () => {
 
     await openNewWindow()
 
-    expect(openWindow).toHaveBeenCalledTimes(1)
+    expect(openWindow).toHaveBeenCalledWith('default')
     expect(notifyError).not.toHaveBeenCalled()
   })
 
