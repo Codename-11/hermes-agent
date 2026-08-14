@@ -1263,6 +1263,7 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
         encoding="utf-8",
     )
     calls = []
+    resolved_head = "a" * 40
 
     monkeypatch.setattr(
         hermes_axiom_update,
@@ -1284,7 +1285,11 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "diff", "--name-only", "--diff-filter=U"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "add", "-A"] and cwd == worktree:
+        if cmd == ["git", "status", "--porcelain", "--untracked-files=all"] and cwd == worktree:
+            return SimpleNamespace(stdout=" M README.md\n", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--check"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "add", "--update"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "diff", "--cached", "--quiet"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=1)
@@ -1292,7 +1297,9 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
             return SimpleNamespace(stdout="MERGE_HEAD\n", stderr="", returncode=0)
         if cmd == ["git", "commit", "--no-edit"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "push", "origin", "HEAD:axiom"] and cwd == worktree:
+        if cmd == ["git", "rev-parse", "--verify", "HEAD^{commit}"] and cwd == worktree:
+            return SimpleNamespace(stdout=f"{resolved_head}\n", stderr="", returncode=0)
+        if cmd == ["git", "push", "origin", f"{resolved_head}:axiom"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "merge", "--ff-only", "origin/axiom"] and cwd == repo:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
@@ -1313,7 +1320,7 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     assert not marker.exists()
     commands = [cmd for cmd, _ in calls]
     assert ["git", "commit", "--no-edit"] in commands
-    assert ["git", "push", "origin", "HEAD:axiom"] in commands
+    assert ["git", "push", "origin", f"{resolved_head}:axiom"] in commands
     assert ["git", "merge", "--ff-only", "origin/axiom"] in commands
     out = capsys.readouterr().out
     assert "prepare resolve" in out
@@ -1325,6 +1332,255 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     assert "Resolved deploy handoff" in out
     assert "\r" not in out
     assert not any(frame in out for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+
+def test_deploy_resolver_prompt_assigns_only_structural_validation_to_child():
+    from hermes_cli import axiom_update
+
+    prompt = axiom_update._build_deploy_resolver_prompt(
+        {
+            "repo": "/repo",
+            "branch": "axiom",
+            "worktree": "/worktree",
+            "reason": "conflict",
+            "conflict_files": ["hermes_cli/axiom_update.py"],
+        },
+        ["python -m pytest tests/hermes_cli/test_update_autostash.py"],
+    )
+
+    assert "git diff --check" in prompt
+    assert "no unmerged paths" in prompt
+    assert "python -m pytest" not in prompt
+    assert "focused verification" not in prompt.lower()
+
+
+def test_checkpoint_resolved_handoff_rejects_untracked_files_before_commit(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("after\n", encoding="utf-8")
+    (repo / "package-lock.generated").write_text("generated\n", encoding="utf-8")
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(json.dumps({"phase": "resolve_pending"}), encoding="utf-8")
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+
+    resolved_head, error = axiom_update._checkpoint_resolved_handoff(
+        ["git"], repo, "axiom"
+    )
+
+    assert resolved_head == ""
+    assert "unexpected untracked" in error.lower()
+    assert subprocess.run(
+        ["git", "diff", "--quiet", "HEAD"], cwd=repo
+    ).returncode == 1
+    assert json.loads(marker.read_text(encoding="utf-8"))["phase"] == "resolve_pending"
+
+
+def test_checkpoint_resolved_handoff_commits_tracked_resolution_and_persists_sha(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("after\n", encoding="utf-8")
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(json.dumps({"phase": "resolve_pending"}), encoding="utf-8")
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+
+    resolved_head, error = axiom_update._checkpoint_resolved_handoff(
+        ["git"], repo, "axiom"
+    )
+
+    assert error == ""
+    assert len(resolved_head) == 40
+    assert subprocess.run(
+        ["git", "diff", "--quiet", "HEAD"], cwd=repo
+    ).returncode == 0
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["phase"] == "validation_pending"
+    assert payload["resolved_head"] == resolved_head
+    assert payload["check_status"] == {}
+
+
+def test_resolver_timeout_terminates_windows_process_tree(monkeypatch):
+    from hermes_cli import axiom_update
+
+    process = SimpleNamespace(pid=4242, poll=lambda: None, kill=lambda: None)
+    calls = []
+    monkeypatch.setattr(axiom_update.os, "name", "nt")
+    monkeypatch.setattr(
+        axiom_update.subprocess,
+        "run",
+        lambda cmd, **kwargs: calls.append((cmd, kwargs))
+        or SimpleNamespace(returncode=0),
+    )
+
+    axiom_update._terminate_resolver_process_tree(process)
+
+    assert calls == [
+        (["taskkill", "/PID", "4242", "/T", "/F"], {"capture_output": True, "text": True})
+    ]
+
+
+def test_resolver_timeout_kills_parent_when_windows_tree_termination_fails(monkeypatch):
+    from hermes_cli import axiom_update
+
+    killed = []
+    process = SimpleNamespace(
+        pid=4242,
+        poll=lambda: None,
+        kill=lambda: killed.append(True),
+    )
+    monkeypatch.setattr(axiom_update.os, "name", "nt")
+    monkeypatch.setattr(
+        axiom_update.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1),
+    )
+
+    axiom_update._terminate_resolver_process_tree(process)
+
+    assert killed == [True]
+
+
+def test_parent_validation_serializes_python_before_desktop_and_prepares_once(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+    sha = "a" * 40
+    marker.write_text(
+        json.dumps({"phase": "validation_pending", "resolved_head": sha}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    events = []
+    monkeypatch.setattr(
+        axiom_update,
+        "_prepare_isolated_worktree_dependencies",
+        lambda worktree: events.append("prepare") or (True, ""),
+    )
+    monkeypatch.setattr(
+        axiom_update,
+        "_run_focused_check",
+        lambda check, worktree: events.append(check) or True,
+    )
+
+    ok = axiom_update._run_parent_handoff_validation(
+        tmp_path,
+        sha,
+        [
+            "cd apps/desktop && npm run typecheck",
+            "python -m pytest tests/hermes_cli/test_cmd_update.py",
+            "cd apps/desktop && npx vitest run src/example.test.ts",
+        ],
+        {},
+    )
+
+    assert ok
+    assert events == [
+        "python -m pytest tests/hermes_cli/test_cmd_update.py",
+        "prepare",
+        "cd apps/desktop && npm run typecheck",
+        "cd apps/desktop && npx vitest run src/example.test.ts",
+    ]
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["phase"] == "commit_push_pending"
+    assert set(payload["check_status"]) == {
+        "python -m pytest tests/hermes_cli/test_cmd_update.py",
+        "cd apps/desktop && npm run typecheck",
+        "cd apps/desktop && npx vitest run src/example.test.ts",
+    }
+    assert all(value == "passed" for value in payload["check_status"].values())
+
+
+def test_validation_pending_checkpoint_is_not_discarded_as_stale_snapshot(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    worktree.mkdir()
+    marker = tmp_path / ".update_handoff.json"
+    sha = "a" * 40
+    marker.write_text(
+        json.dumps(
+            {
+                "repo": str(repo),
+                "branch": "axiom",
+                "worktree": str(worktree),
+                "phase": "validation_pending",
+                "resolved_head": sha,
+                "validation_sha": sha,
+                "check_status": {},
+                "conflict_files": [],
+                "focused_checks": [],
+                "origin_head": "old-origin",
+                "upstream_head": "old-upstream",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(axiom_update, "_full_git_ref", lambda *args: sha)
+    monkeypatch.setattr(
+        axiom_update,
+        "_handoff_snapshot_is_published",
+        lambda *args: True,
+    )
+    validation = []
+    monkeypatch.setattr(
+        axiom_update,
+        "_run_parent_handoff_validation",
+        lambda *args: validation.append(args) or True,
+    )
+    monkeypatch.setattr(
+        axiom_update,
+        "_discard_published_handoff",
+        lambda *args: pytest.fail("checkpoint must not be discarded before validation"),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] in (["git", "fetch", "origin"], ["git", "fetch", "upstream"]):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == ["git", "push", "origin", f"{sha}:axiom"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="offline")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(axiom_update.subprocess, "run", fake_run)
+
+    assert axiom_update._resolve_deploy_handoff(
+        git_cmd=["git"],
+        repo=repo,
+        branch="axiom",
+        pre_update_head="live",
+        publish_only=True,
+    ) is None
+    assert validation
 
 
 def test_published_handoff_snapshot_is_discarded_before_agent_resolve(
