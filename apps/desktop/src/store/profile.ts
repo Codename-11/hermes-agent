@@ -330,7 +330,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // Reuse the active socket for a descriptor-only repair. Otherwise open (or
     // reuse) the target socket and point the active gateway at it.
     if (!gatewayAlreadyActive) {
-      await ensureGatewayForProfile(target)
+      await ensureGatewayForProfile(target, connection)
     }
     // Publish the effective transport and profile back-to-back, with no await
     // between them, after the target gateway is selected. A secondary socket

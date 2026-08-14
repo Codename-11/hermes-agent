@@ -60,6 +60,19 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect($gateway.get()).toBe(primary)
   })
 
+  it('reuses a pre-resolved shared descriptor without minting another connection ticket', async () => {
+    const primary = makePrimary()
+    const getConnection = vi.fn(async () => ({ port: 4242, profile: 'venture', token: 'second-ticket' }))
+    const resolved = { port: 4242, profile: 'venture', token: 'first-ticket' }
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop({ getConnection })
+
+    await ensureGatewayForProfile('venture', resolved as never)
+
+    expect(getConnection).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(primary)
+  })
+
   it('still pools a socket for profiles with their own descriptor (untagged)', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

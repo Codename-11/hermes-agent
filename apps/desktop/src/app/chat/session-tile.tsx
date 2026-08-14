@@ -351,11 +351,15 @@ export function SessionTilePane({ tileKey }: { tileKey: string }) {
       })
   }, [identity, ownerGatewayOpen, profile, runtimeId, storedSessionId, tile?.error])
 
+  // Clear a stale resume error only on a real gateway/profile edge. Depending
+  // on tile.error here creates an infinite retry loop: resume rejects → set
+  // error → this effect clears it → resume runs again.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- tile.error is deliberately latched until an edge or explicit Retry
   useEffect(() => {
     if (ownerGatewayOpen && tile?.error) {
       patchSessionTile(storedSessionId, { error: undefined }, profile)
     }
-  }, [ownerGatewayOpen, profile, storedSessionId, tile?.error])
+  }, [ownerGatewayOpen, profile, storedSessionId])
 
   let content: React.ReactNode
 

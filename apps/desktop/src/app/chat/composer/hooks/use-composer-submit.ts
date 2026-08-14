@@ -119,10 +119,6 @@ export function useComposerSubmit({
   )
 
   const submitDraft = () => {
-    if (disabled) {
-      return
-    }
-
     // Source the text from the DOM editor, not React state. The AUI composer
     // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
     // render, so on fast typing or IME composition the final keystroke(s) may
@@ -147,6 +143,21 @@ export function useComposerSubmit({
     // on the way out so it attaches instead of submitting as inert text.
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
+    // A resumed/cross-profile tile activates its owner gateway on pointer-down.
+    // The click itself can arrive before that activation opens the socket. Do
+    // not silently drop that submit: existing sessions already have a durable
+    // queue that auto-drains on reconnect, so park the payload there and let the
+    // in-flight wake finish. New-session drafts have no queue key yet and stay
+    // in the editor unchanged.
+    if (disabled) {
+      if (payloadPresent && activeQueueSessionKey) {
+        queueCurrentDraft()
+        focusInput()
+      }
+
+      return
+    }
 
     // A clarify card parked on this session owns the turn: the agent is blocked
     // inside its tool batch waiting on `clarify.respond`, so a follow-up routed

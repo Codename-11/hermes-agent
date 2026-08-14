@@ -1,6 +1,7 @@
 import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
@@ -176,14 +177,14 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary): Promise<void> {
+async function openSecondary(entry: Secondary, resolvedConnection?: HermesConnection): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
     return
   }
 
-  const conn = await desktop.getConnection(entry.profile)
+  const conn = resolvedConnection ?? (await desktop.getConnection(entry.profile))
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
   await entry.gateway.connect(wsUrl)
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
@@ -270,7 +271,7 @@ function createSecondary(profile: string, wantOpen = true): Secondary {
 // that descriptor is wrong — over SSH the second dial fails (tunnel/token are
 // per-backend) and the closed socket poisons the active gateway with
 // "not connected" even though the primary is open right next to it.
-async function sharedPrimaryRoute(profile: string): Promise<boolean> {
+async function sharedPrimaryRoute(profile: string, resolvedConnection?: HermesConnection): Promise<boolean> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -278,7 +279,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   }
 
   try {
-    const conn = await desktop.getConnection(profile)
+    const conn = resolvedConnection ?? (await desktop.getConnection(profile))
 
     return Boolean(conn && typeof conn === 'object' && (conn as { profile?: string }).profile)
   } catch {
@@ -349,7 +350,7 @@ export async function refreshGatewayForProfile(profile: string): Promise<void> {
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+export async function ensureGatewayForProfile(profile: string, resolvedConnection?: HermesConnection): Promise<void> {
   const key = normKey(profile)
 
   if (key === g.primaryProfile) {
@@ -363,7 +364,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // primary instead of dialing a doomed duplicate socket at the same
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key)) {
+  if (await sharedPrimaryRoute(key, resolvedConnection)) {
     setActive(g.primaryProfile)
 
     return
@@ -382,7 +383,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     entry.reconnectAttempt = 0
 
     try {
-      await openSecondary(entry)
+      await openSecondary(entry, resolvedConnection)
     } catch {
       scheduleReconnect(entry)
     }

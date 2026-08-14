@@ -18,6 +18,7 @@ interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
   compacting?: boolean
+  disabled?: boolean
   text?: string
 }
 
@@ -25,6 +26,7 @@ function renderSubmitHook({
   attachments = [],
   busy = false,
   compacting = false,
+  disabled = false,
   text = ''
 }: SubmitHarnessOptions = {}) {
   const draftRef = { current: text }
@@ -50,7 +52,7 @@ function renderSubmitHook({
       busy,
       compacting,
       clearDraft,
-      disabled: false,
+      disabled,
       draftRef,
       drainNextQueued: vi.fn(async () => false),
       editorRef,
@@ -178,6 +180,22 @@ describe('useComposerSubmit busy-turn routing', () => {
     )
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('queues an existing-session draft when submit lands while its gateway is waking', () => {
+    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      disabled: true,
+      text: 'send once Victor is awake'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
 

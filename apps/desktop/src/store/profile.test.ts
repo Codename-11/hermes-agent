@@ -82,7 +82,7 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 
     await ensureGatewayProfile('vps-remote')
 
-    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote', remoteConn())
     expect(getConnection).toHaveBeenCalledWith('vps-remote')
     expect($connection.get()?.mode).toBe('remote')
     expect($connection.get()?.profile).toBe('vps-remote')
