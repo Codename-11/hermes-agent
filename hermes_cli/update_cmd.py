@@ -2350,6 +2350,7 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
 
+
 def _repair_node_deps_on_current_checkout(print_completion) -> None:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
@@ -2375,6 +2376,13 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+    # A previous update may have advanced Git and then failed before reaching
+    # the Desktop build. Git parity is therefore not Desktop artifact parity.
+    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+    _rebuild_desktop_after_update(
+        desktop_dir,
+        had_desktop_app_before_update=_desktop_install_intent(desktop_dir),
+    )
     print_completion("✓ Already up to date!")
 
 

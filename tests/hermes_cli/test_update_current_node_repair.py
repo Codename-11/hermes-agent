@@ -36,9 +36,16 @@ def test_current_checkout_healthy_node_deps_reports_up_to_date():
     completion = MagicMock()
     with patch.object(
         update_cmd, "_update_node_dependencies", return_value=[]
-    ), patch.object(update_cmd, "_m") as m:
+    ), patch.object(update_cmd, "_desktop_install_intent", return_value=True), patch.object(
+        update_cmd, "_rebuild_desktop_after_update"
+    ) as reconcile, patch.object(update_cmd, "_m") as m:
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
     # The refresh pairs with the web build like every other call site.
     m.return_value._build_web_ui.assert_called_once()
+    desktop_dir = m.return_value.PROJECT_ROOT / "apps" / "desktop"
+    reconcile.assert_called_once_with(
+        desktop_dir,
+        had_desktop_app_before_update=True,
+    )
     completion.assert_called_once_with("✓ Already up to date!")
