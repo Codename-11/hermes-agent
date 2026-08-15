@@ -15,7 +15,13 @@
  *     the bridge has no session-window support.
  */
 import { $activeGatewayProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $activeSessionId, $selectedStoredSessionId, $sessions, rememberedSessionProfile } from '@/store/session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  $sessions,
+  markSessionRead,
+  rememberedSessionProfile
+} from '@/store/session'
 import {
   focusedSessionNeedsRoute,
   focusOpenSession,
@@ -89,6 +95,11 @@ export function openSession(
   )
   const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
   const scopedProfile = profile !== undefined || ownerProfile !== activeProfile ? ownerProfile : undefined
+  // Any explicit open/focus means the user has seen the finished-turn marker.
+  // Must run BEFORE the focus short-circuits below: clicking a session that is
+  // already on screen (open tile, or the main session) would otherwise return
+  // at focusOpenSession and never clear its unread dot.
+  markSessionRead(storedSessionId)
 
   let resolved: OpenSessionIntent = intent
 

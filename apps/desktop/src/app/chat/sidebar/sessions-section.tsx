@@ -110,6 +110,7 @@ interface SidebarSessionsSectionProps {
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
+  onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
   rootClassName?: string
@@ -192,6 +193,7 @@ export function SidebarSessionsSection({
   onArchiveSession,
   onBranchSession,
   onTogglePin,
+  onToggleUnread,
   onNewSessionInWorkspace,
   pinned,
   rootClassName,
@@ -278,7 +280,9 @@ export function SidebarSessionsSection({
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
-        showProject: showProjectTags
+        showProject: showProjectTags,
+        onToggleUnread: () => onToggleUnread(session.id),
+        unread: session.unread === true
       }
 
       return draggable && !branchStem ? (
@@ -296,6 +300,7 @@ export function SidebarSessionsSection({
       onDeleteSession,
       onResumeSession,
       onTogglePin,
+      onToggleUnread,
       pinned,
       showProfileTags,
       showProjectTags
@@ -360,8 +365,7 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry =>
-                hasLiveTurn(dotStates[sessionStatusKey(entry.session.profile, entry.session.id)] ?? 'idle'),
+              entry => hasLiveTurn(dotStates[sessionStatusKey(entry.session.profile, entry.session.id)] ?? 'idle'),
               statusDividerLabels
             )
           : toSessionRows(displayEntries)
@@ -407,6 +411,7 @@ export function SidebarSessionsSection({
           onDeleteSession={onDeleteSession}
           onResumeSession={onResumeSession}
           onTogglePin={onTogglePin}
+          onToggleUnread={onToggleUnread}
           pinned={pinned}
           rows={flatRows}
           showProfileTags={showProfileTags}
@@ -559,7 +564,9 @@ export function SidebarSessionsSection({
     <SidebarGroup className={rootClassName}>
       <SidebarSectionHeader
         action={headerAction}
-        ariaLabel={projectOverview ? (projectOverviewOpen ? t.sidebar.projects.hideOverview : t.sidebar.showProjects) : undefined}
+        ariaLabel={
+          projectOverview ? (projectOverviewOpen ? t.sidebar.projects.hideOverview : t.sidebar.showProjects) : undefined
+        }
         collapsible={collapsible}
         icon={labelIcon}
         label={label}
@@ -581,9 +588,11 @@ interface SortableSessionRowProps {
   session: SessionInfo
   isPinned: boolean
   isSelected: boolean
+  unread: boolean
   onArchive: () => void
   onDelete: () => void
   onPin: () => void
+  onToggleUnread: () => void
   onResume: () => void
 }
 

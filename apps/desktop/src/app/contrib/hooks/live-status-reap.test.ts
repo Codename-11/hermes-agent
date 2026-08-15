@@ -2,11 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import {
-  captureLiveSessionStatusBaseline,
-  setLiveSessionStateReconciler
-} from '@/store/live-session-status'
+import { captureLiveSessionStatusBaseline, setLiveSessionStateReconciler } from '@/store/live-session-status'
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds, setSessions } from '@/store/session'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
 import {
   $attentionSessionIds,
   $sessionStates,
@@ -40,6 +39,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     clearAllSessionStates()
     setSessions([])
     $unreadFinishedSessionIds.set([])
+    $activeSessionId.set(null)
   })
 
   it('clears a working session that disappears from the live snapshot', () => {
@@ -175,5 +175,54 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     )
 
     expect($sessionStates.get()['runtime-a']).toBe(newer)
+  })
+
+  it('seals open tool parts and clears awaitingResponse when a session vanishes', () => {
+    const openTool = {
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'patch',
+      args: {},
+      argsText: '{}'
+    } as never
+
+    publishSessionState('runtime-tools', {
+      ...createClientSessionState('stored-tools'),
+      busy: true,
+      awaitingResponse: true,
+      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never]
+    })
+
+    // Keep the runtime referenced so the settled state stays in the store
+    // instead of being evicted as no-longer-needed.
+    $activeSessionId.set('runtime-tools')
+
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-tools', session_key: 'stored-tools', status: 'working' }]
+    })
+    rehydrateLiveSessionStatuses({ sessions: [] })
+
+    const state = $sessionStates.get()['runtime-tools']
+
+    expect(state.busy).toBe(false)
+    expect(state.awaitingResponse).toBe(false)
+    expect((state.messages[0].parts[0] as { result?: unknown }).result).toBeDefined()
+  })
+
+  it('clears a session stuck awaiting a response without the busy flag', () => {
+    publishSessionState('runtime-await', {
+      ...createClientSessionState('stored-await'),
+      awaitingResponse: true,
+      busy: false
+    })
+
+    $activeSessionId.set('runtime-await')
+
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-await', session_key: 'stored-await', status: 'working' }]
+    })
+    rehydrateLiveSessionStatuses({ sessions: [] })
+
+    expect($sessionStates.get()['runtime-await'].awaitingResponse).toBe(false)
   })
 })

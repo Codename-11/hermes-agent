@@ -15,21 +15,45 @@
  *
  * The inputs are all reference-stable across stream deltas, so this recomputes
  * on status edges rather than per token.
+ *
+ * Unread has TWO sources, both claiming the same state: the runtime marker
+ * (a turn finished in the background while this window wasn't looking at it,
+ * $unreadFinishedSessionIds — transient) and the backend's derived read-state
+ * watermark (row.unread — persists across restarts and is visible to every
+ * surface). The write side of the persisted flag lives in session-unread.ts.
  */
 
 import { computed } from 'nanostores'
 
-import { stableRecord } from '@/lib/stable-array'
+import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionKeys,
   $draftSessionIds,
+  $sessionStates,
   $stalledSessionIds,
   $workingSessionKeys,
   sessionStatusKey
 } from './session-states'
+import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
+import { $subagentsBySession, activeSubagentCount } from './subagents'
+
+let delegatingIds: readonly string[] = []
+export const $delegatingSessionIds = computed(
+  [$subagentsBySession, $sessionStates, $sessions],
+  (bySession, states, sessions) => {
+    const ids = new Set<string>()
+
+    for (const [runtimeId, items] of Object.entries(bySession)) {
+      if (activeSubagentCount(items) === 0) continue
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) ids.add(alias)
+    }
+
+    return (delegatingIds = stableArray(delegatingIds, [...ids]))
+  }
+)
 
 export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
@@ -69,17 +93,21 @@ export const $sessionDotStateById = computed(
     $workingSessionKeys,
     $stalledSessionIds,
     $backgroundRunningSessionIds,
+    $delegatingSessionIds,
     $unreadFinishedSessionIds,
     $draftSessionIds,
-    $sessions
+    $sessions,
+    $unreadWriteGuard
   ],
-  (attention, working, stalled, background, unread, draft, sessions) => {
+  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard) => {
     const next: Record<string, SessionDotState> = {}
 
     const scopedAliases = (session: (typeof sessions)[number]) =>
       lineageAliases(
         session.id,
-        sessions.filter(candidate => (candidate.profile?.trim() || 'default') === (session.profile?.trim() || 'default'))
+        sessions.filter(
+          candidate => (candidate.profile?.trim() || 'default') === (session.profile?.trim() || 'default')
+        )
       )
 
     const claimBare = (ids: readonly string[], state: SessionDotState) => {
@@ -106,7 +134,19 @@ export const $sessionDotStateById = computed(
     // the first thing that does happen speaks over it.
     claimBare(draft, 'draft')
     claimBare(unread, 'unread')
+
+    const persistedUnread: string[] = []
+    for (const session of sessions) {
+      const entry = unreadWriteGuard.get(session.id)
+      if (entry && Date.now() - entry.at < UNREAD_WRITE_GUARD_MS) {
+        if (entry.value) persistedUnread.push(session.id)
+        continue
+      }
+      if (session.unread === true) persistedUnread.push(session.id)
+    }
+    claimBare(persistedUnread, 'unread')
     claimBare(background, 'background')
+    claimBare(delegating, 'background')
     claimKeys(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still
