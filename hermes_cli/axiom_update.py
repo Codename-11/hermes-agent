@@ -1513,7 +1513,7 @@ def _run_parent_handoff_validation(
         if isinstance(outcome, subprocess.CompletedProcess):
             returncode = outcome.returncode
             status_value = "passed" if returncode == 0 else "failed"
-            raw_output = outcome.stderr or outcome.stdout or ""
+            raw_output = "\n".join(part for part in (outcome.stderr, outcome.stdout) if part)
         else:
             returncode = None if outcome is None else 0 if outcome else 1
             status_value = "skipped" if outcome is None else "passed" if outcome else "failed"

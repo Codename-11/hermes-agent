@@ -1635,6 +1635,28 @@ def test_failed_check_persists_bounded_result_and_resume_restarts_there(monkeypa
     assert calls == ["python failed.py"]
 
 
+def test_failed_check_persists_stderr_and_stdout(monkeypatch, tmp_path):
+    marker = tmp_path / ".update_handoff.json"
+    sha = "d" * 40
+    marker.write_text(json.dumps({"phase": "validation_pending"}), encoding="utf-8")
+    monkeypatch.setattr(hermes_axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_axiom_update,
+        "_run_focused_check",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            [], 2, stdout="TypeScript diagnostic", stderr="npm warning"
+        ),
+    )
+    checks = [
+        {"id": "typecheck", "kind": "node", "command": "npm run typecheck", "timeout_seconds": 30}
+    ]
+
+    assert not hermes_axiom_update._run_parent_handoff_validation(tmp_path, sha, checks, {})
+    output = json.loads(marker.read_text(encoding="utf-8"))["check_ledger"]["results"]["typecheck"]["output_tail"]
+    assert "npm warning" in output
+    assert "TypeScript diagnostic" in output
+
+
 def test_validation_pending_checkpoint_is_not_discarded_as_stale_snapshot(
     monkeypatch, tmp_path
 ):
