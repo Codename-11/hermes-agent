@@ -81,9 +81,10 @@ session convergence and profile-safe live status**.
 
 ## Desktop Update Control contract
 
-The bundled **Update Control** plugin is a read-only cockpit over the existing
-Desktop updater. It reports the local Desktop client and the active backend as
-separate targets because they can update on different hosts and schedules.
+The opt-in **Axiom Enhancements** disk plugin owns Update Control presentation;
+it is distributed from the Axiom Agent Library rather than bundled in Hermes
+core. It reports the local Desktop client and the active backend as separate
+targets because they can update on different hosts and schedules.
 
 Update Control is a singleton `placement: 'main'` pane in the standard Desktop
 tab strip, not a permanent workspace route. Closing its tab dismisses only the
@@ -106,14 +107,16 @@ home page when no URL tab exists; it must not create a parallel browser surface.
   `upstream/main`. Upstream work can be pending reconciliation even when the
   local checkout has consumed every published Axiom commit.
 
-The fork-local `host.updates` plugin facade exposes only detached client/backend
-status snapshots and one entry point that opens the native updater for the
-active connection target. It does not expose checks, branch selection, progress
-streams, raw Electron IPC, shell commands, or apply controls. It reports
-Git/update readiness but does not replace the separate build-stamp/source-hash/
-running-executable verification below. All polling, mutation, confirmation,
-dirty-tree policy, deploy reconciliation, and restart/relaunch handling stay in
-the core updater.
+The fork-local typed `host.updates` facade exposes detached client/backend
+snapshots, backend apply progress, staged-update status/history, refresh, stage
+preparation/cancellation/discard, guarded client or backend apply, restart/apply,
+and upstream reconciliation status. The renderer may present and request those
+operations, but core remains authoritative for checks, branch selection,
+progress collection, locks, confirmation, dirty-tree policy, Git/filesystem
+mutation, process shutdown, rollback, deploy reconciliation, and relaunch. The
+facade never exposes raw Electron IPC, shell commands, repository paths, or
+updater internals. Its readiness display does not replace the separate
+build-stamp/source-hash/running-executable verification below.
 
 Suggested focused verification for Desktop patch work:
 

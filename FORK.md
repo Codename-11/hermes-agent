@@ -125,14 +125,16 @@ windows and stale sidebar metadata, plus causal steer ordering for both stable
 and temporarily non-canonical live tails, with the focused invariants above
 still passing.
 
-## Axiom Desktop tabbed Update Control
+## Axiom Desktop update-service plugin seam
 
-The bundled, opt-in **Update Control** plugin is a singleton main-pane tab, not
-a workspace route. It must stack with session tabs, participate in the standard
-tab menu/keyboard lifecycle, and remain explicitly closeable. Closing dismisses
-only `update-control:panel`; it must not disable the plugin or remove its
-sidebar, status-bar, and command-palette reopen actions. Contribution-registry
-refreshes must preserve the explicit dismissal until one of those actions runs.
+The source-owned, opt-in **Axiom Enhancements** disk plugin lives in the private
+Axiom Agent Library; Hermes core does not bundle Axiom-specific renderer UI. Its
+first module, Update Control, is a singleton main-pane tab rather than a workspace
+route. It must stack with session tabs, participate in the standard tab
+menu/keyboard lifecycle, and remain explicitly closeable. Closing dismisses only
+`axiom-enhancements:panel`; it must not disable the plugin or remove its sidebar,
+status-bar, and command-palette reopen actions. Contribution-registry refreshes
+must preserve the explicit dismissal until one of those actions runs.
 
 Its Hermes upstream history is a compact semantic table rather than an
 unbounded commit list. Scope filtering preserves newest-first order, renders 25
@@ -185,7 +187,8 @@ Update history is the bounded Hermes-owned `logs/update-history.json` index. Suc
 
 Every selected install (Desktop client or connected backend) must expose the update lineage as three distinct authorities: **Hermes upstream** (`upstream/main`) → **Axiom** (`origin/<deploy>`) → **Local** (the running checkout). The status contract keeps deploy commits (`Local..Axiom`) separate from upstream commits (`Axiom..upstream/main`); Update Control renders both ranges independently so upstream activity is readable at a glance without double-counting deploy-only work.
 
-Protected files: `apps/desktop/src/plugins/update-control/`,
+The plugin renderer source and generated disk artifact are protected in
+`axiom-agent-library/plugins/desktop/axiom-enhancements/`. Core protected files:
 `apps/desktop/electron/main.ts`,
 `apps/desktop/electron/update-handoff-status.ts`,
 `apps/desktop/electron/update-operation-coordinator.ts`,
@@ -210,20 +213,20 @@ NODE_ENV=test npx vitest run --environment jsdom \
   electron/update-operation-coordinator.test.ts \
   electron/updater-process.test.ts \
   electron/upstream-sync.test.ts \
-  src/plugins/update-control/plugin.test.tsx \
-  src/plugins/update-control/model.test.ts \
   src/contrib/plugin.test.ts \
   src/components/pane-shell/tree/pane-toggle-visibility.test.ts \
   src/store/preview.test.ts \
   src/store/session-states.test.ts
 npm run typecheck
 cd ../..
-python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py
+python3 -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py
 ```
 
-Drop condition: upstream provides an equivalent reopenable plugin main-tab
-lifecycle where tab Close does not disable the plugin and explicit plugin entry
-points can restore/focus the same singleton pane.
+Core drop condition: upstream provides equivalent typed updater capabilities and
+a reopenable plugin main-tab lifecycle where tab Close does not disable the
+plugin and explicit plugin entry points can restore/focus the same singleton
+pane. The Axiom-specific renderer remains an Agent Library plugin until its
+operator workflow is no longer needed.
 
 ## Axiom Desktop voice keybinds
 

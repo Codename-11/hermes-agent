@@ -259,17 +259,7 @@ export const host = {
     cancelPreparation: async () => requireUpdateSuccess(await cancelDesktopUpdatePreparation()),
     discardStage: async () => requireUpdateSuccess(await discardDesktopUpdateStage()),
     restartAndApply: async () => requireUpdateSuccess(await restartAndApplyDesktopUpdateStage()),
-    standardUpdate: async () => {
-      const result = requireUpdateSuccess(await applyUpdates())
-
-      if (!result.handedOff) {
-        const command = result.command || 'hermes update'
-
-        throw new Error(result.message || `The updater did not launch. Run \`${command}\` in a terminal.`)
-      }
-
-      return result
-    },
+    standardUpdate: async () => requireUpdateSuccess(await applyUpdates()),
     applyBackend: async () => requireUpdateSuccess(await applyBackendUpdate()),
     syncUpstream: async () => syncDesktopUpstream(),
     getUpstreamSyncStatus: async () => getDesktopUpstreamSyncStatus()

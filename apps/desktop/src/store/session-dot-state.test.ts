@@ -3,15 +3,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
+import { $activeGatewayProfile } from './profile-scope'
 import { $sessions, $unreadFinishedSessionIds, setSessions } from './session'
 import { $delegatingSessionIds, $sessionDotStateById, hasLiveTurn, showsRunningArc } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState, sessionStatusKey } from './session-states'
-import { $unreadWriteGuard } from './session-unread-remote'
+import { $unreadWriteGuard, unreadWriteGuardKey } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 
 afterEach(() => {
   clearAllSessionStates()
   setSessions([])
+  $activeGatewayProfile.set('default')
 })
 
 describe('showsRunningArc', () => {
@@ -88,6 +90,24 @@ describe('profile-scoped status identity', () => {
     expect($sessionDotStateById.get()[sessionStatusKey('worker', 'shared-id')]).toBeUndefined()
     expect($sessionDotStateById.get()[sessionStatusKey('default', 'shared-id')]).toBeUndefined()
   })
+
+  it('keeps the bare-id compatibility view pinned to the active profile', () => {
+    setSessions([
+      storedRow('shared-id', { profile: 'default', unread: true }),
+      storedRow('shared-id', { profile: 'worker', unread: false })
+    ])
+    publishSessionState('runtime-worker', {
+      ...createClientSessionState('shared-id'),
+      busy: true,
+      profile: 'worker'
+    })
+
+    expect($sessionDotStateById.get()['shared-id']).toBe('unread')
+    expect($sessionDotStateById.get()[sessionStatusKey('worker', 'shared-id')]).toBe('working')
+
+    $activeGatewayProfile.set('worker')
+    expect($sessionDotStateById.get()['shared-id']).toBe('working')
+  })
 })
 
 describe('$delegatingSessionIds', () => {
@@ -157,6 +177,16 @@ describe('persisted unread (backend watermark)', () => {
     expect($sessionDotStateById.get()['s1']).toBe('unread')
   })
 
+  it('does not leak persisted unread to a duplicate id in another profile', () => {
+    setSessions([
+      storedRow('s1', { profile: 'default', unread: true }),
+      storedRow('s1', { profile: 'worker', unread: false })
+    ])
+
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 's1')]).toBe('unread')
+    expect($sessionDotStateById.get()[sessionStatusKey('worker', 's1')]).toBeUndefined()
+  })
+
   it('keeps draft weaker than persisted unread', () => {
     // A blank tile (no busy, no messages, message_count 0) is a draft; the
     // persisted unread claim must speak over it.
@@ -174,8 +204,9 @@ describe('persisted unread (backend watermark)', () => {
   })
 
   it('fences a stale page with the write guard', () => {
-    const guard = new Map<string, { at: number; value: boolean }>()
-    guard.set('s1', { at: Date.now(), value: true })
+    const key = unreadWriteGuardKey('s1', 'default')
+    const guard = new Map($unreadWriteGuard.get())
+    guard.set(key, { at: Date.now(), profile: 'default', storedId: 's1', value: true })
     $unreadWriteGuard.set(guard)
 
     // A page issued before our PATCH still says read — keep OUR value.
@@ -183,8 +214,8 @@ describe('persisted unread (backend watermark)', () => {
     expect($sessionDotStateById.get()['s1']).toBe('unread')
 
     // The guard expires: the page wins and the dot drops.
-    const expired = new Map<string, { at: number; value: boolean }>()
-    expired.set('s1', { at: Date.now() - 60_000, value: true })
+    const expired = new Map($unreadWriteGuard.get())
+    expired.set(key, { at: Date.now() - 60_000, profile: 'default', storedId: 's1', value: true })
     $unreadWriteGuard.set(expired)
     expect($sessionDotStateById.get()['s1']).not.toBe('unread')
   })

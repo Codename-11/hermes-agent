@@ -1,5 +1,5 @@
 import type { ClientSessionState } from '@/app/types'
-import { chatMessageText } from '@/lib/chat-messages'
+import { chatMessageText, sealOpenToolParts } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { $sessions, sessionMatchesStoredId } from './session'
@@ -58,9 +58,11 @@ function requestStillOwnsRuntime(runtimeSessionId: string, baseline?: LiveSessio
 }
 
 function finalizePendingMessages(state: ClientSessionState) {
-  return state.messages
+  const settled = state.messages
     .filter(message => !((message.pending || message.id === state.streamId) && !chatMessageText(message).trim()))
     .map(message => (message.pending || message.id === state.streamId ? { ...message, pending: false } : message))
+
+  return sealOpenToolParts(settled)
 }
 
 function settleRuntime(state: ClientSessionState): ClientSessionState {

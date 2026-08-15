@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import type { DesktopUpdateStatus, HermesConnection } from '@/global'
 
 const storage = new Map<string, string>()
 
@@ -77,7 +77,7 @@ const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus =>
 
 const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { onDismiss: () => void }
 
-const setRemote = (on: boolean) =>
+const setRemote = (on: boolean, over: Partial<HermesConnection> = {}) =>
   setConnection({
     baseUrl: 'http://box:9119',
     isFullscreen: false,
@@ -86,7 +86,8 @@ const setRemote = (on: boolean) =>
     token: 't',
     wsUrl: 'ws://box:9119',
     logs: [],
-    windowButtonPosition: null
+    windowButtonPosition: null,
+    ...over
   })
 
 describe('maybeNotifyUpdateAvailable', () => {
@@ -278,6 +279,38 @@ describe('checkBackendUpdates', () => {
     setRemote(false)
     await checkBackendUpdates()
     expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+
+  it('discards an old source result after switching remote connections', async () => {
+    let resolveA: (value: Record<string, unknown>) => void = () => undefined
+    let resolveB: (value: Record<string, unknown>) => void = () => undefined
+
+    const response = (version: string) => ({
+      install_method: 'git',
+      current_version: version,
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update'
+    })
+
+    checkHermesUpdateSpy
+      .mockImplementationOnce(() => new Promise(resolve => (resolveA = resolve)))
+      .mockImplementationOnce(() => new Promise(resolve => (resolveB = resolve)))
+
+    setRemote(true, { baseUrl: 'http://remote-a:9119', connectionId: 'remote-a' })
+    const pendingA = checkBackendUpdates()
+
+    setRemote(true, { baseUrl: 'http://remote-b:9119', connectionId: 'remote-b' })
+    const pendingB = checkBackendUpdates()
+
+    resolveB(response('backend-b'))
+    await expect(pendingB).resolves.toMatchObject({ currentVersion: 'backend-b' })
+    expect($backendUpdateStatus.get()?.currentVersion).toBe('backend-b')
+
+    resolveA(response('backend-a'))
+    await expect(pendingA).resolves.toMatchObject({ currentVersion: 'backend-b' })
+    expect($backendUpdateStatus.get()?.currentVersion).toBe('backend-b')
   })
 })
 

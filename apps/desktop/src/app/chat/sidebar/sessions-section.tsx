@@ -110,7 +110,7 @@ interface SidebarSessionsSectionProps {
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
-  onToggleUnread: (sessionId: string) => void
+  onToggleUnread: (sessionId: string, profile?: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
   rootClassName?: string
@@ -281,7 +281,7 @@ export function SidebarSessionsSection({
         session,
         showProfile: showProfileTags,
         showProject: showProjectTags,
-        onToggleUnread: () => onToggleUnread(session.id),
+        onToggleUnread: () => onToggleUnread(session.id, session.profile),
         unread: session.unread === true
       }
 

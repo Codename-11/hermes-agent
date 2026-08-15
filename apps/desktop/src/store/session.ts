@@ -7,6 +7,7 @@ import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
+import { $activeGatewayProfile } from '@/store/profile-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { clearUnreadOnOpen } from './session-unread-remote'
@@ -747,7 +748,7 @@ export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
 
   // ...and the persisted watermark flag, when the row carried one.
   if (id) {
-    void clearUnreadOnOpen(id)
+    void clearUnreadOnOpen(id, $activeGatewayProfile.get())
   }
 }
 

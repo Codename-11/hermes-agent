@@ -4,8 +4,6 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { captureLiveSessionStatusBaseline, setLiveSessionStateReconciler } from '@/store/live-session-status'
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds, setSessions } from '@/store/session'
-import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
 import {
   $attentionSessionIds,
   $sessionStates,
@@ -135,8 +133,10 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
         }
       ]
     ])
+
     $activeSessionId.set('runtime-a')
     publishSessionState('runtime-a', cache.get('runtime-a')!)
+
     const dispose = setLiveSessionStateReconciler((runtimeId, updater, storedSessionId) => {
       const next = updater(cache.get(runtimeId) ?? createClientSessionState(storedSessionId))
       cache.set(runtimeId, next)

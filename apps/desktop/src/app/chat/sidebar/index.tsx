@@ -72,8 +72,8 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
-import { openBrowser } from '@/store/preview'
 import { notifyError } from '@/store/notifications'
+import { openBrowser } from '@/store/preview'
 import {
   $hiddenProfiles,
   $newChatProfile,
@@ -403,14 +403,18 @@ export function ChatSidebar({
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
   // become the truth (optimistic update + rollback in markSessionUnread).
-  const toggleUnread = (storedId: string) => {
-    const row = $sessions.get().find(r => r.id === storedId)
+  const toggleUnread = (storedId: string, profile?: string) => {
+    const normalizedProfile = normalizeProfileKey(profile)
+
+    const row = $sessions
+      .get()
+      .find(r => r.id === storedId && normalizeProfileKey(r.profile) === normalizedProfile)
 
     if (!row) {
       return
     }
 
-    markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
+    markSessionUnread(storedId, row.unread !== true, row.profile).catch(err => notifyError(err, s.row.unreadFailed))
   }
 
   // Only surface the profile switcher when more than one profile exists, so

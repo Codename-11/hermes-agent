@@ -224,7 +224,9 @@ export async function downloadGatewayMediaFile(
   const conn = $connection.get()
 
   if (!window.hermesDesktop?.saveGatewayFile) {
-    if (window.hermesDesktop?.api) {
+    const legacyApi = (window.hermesDesktop as { api?: unknown } | undefined)?.api
+
+    if (typeof legacyApi === 'function') {
       return downloadGatewayMediaFileViaDataUrl(file, profile)
     }
 

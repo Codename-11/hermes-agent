@@ -179,10 +179,11 @@ The app also surfaces the broader Hermes management surface so you don't have to
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when
-one is ready. In the Axiom fork, the bundled **Update Control** plugin adds a
-closable tab, status-bar summary, and command-palette entry for viewing the local
-Desktop client and active backend snapshots without treating them as one target.
-Enable it under **Settings → Plugins**, then open **Update Control** from the
+one is ready. On the Axiom surface, the optional **Axiom Enhancements** disk plugin
+adds an Update Control tab, status-bar summary, and command-palette entry for
+viewing the local Desktop client and active backend snapshots without treating
+them as one target. Install the disk plugin, enable it under **Settings →
+Plugins**, then open **Update Control** from the
 status bar or command palette. It joins the same main tab strip as sessions;
 closing the tab leaves the plugin enabled so either entry point can reopen it.
 

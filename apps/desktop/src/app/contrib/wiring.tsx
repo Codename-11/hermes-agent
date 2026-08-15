@@ -26,7 +26,7 @@ import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
-
+import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
@@ -355,6 +355,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       }
 
       const targetProfile = normalizeProfileKey(requestedProfile ?? activeGatewayProfile)
+
       const storedProfile =
         $sessions
           .get()
@@ -362,6 +363,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             session =>
               sessionMatchesStoredId(session, storedSessionId) && normalizeProfileKey(session.profile) === targetProfile
           )?.profile ?? targetProfile
+
       const hydrationKey = `${normalizeProfileKey(storedProfile)}:${storedSessionId}:${runtimeSessionId}`
       const requestId = (storedHydrationRequestRef.current.get(hydrationKey) ?? 0) + 1
       storedHydrationRequestRef.current.set(hydrationKey, requestId)

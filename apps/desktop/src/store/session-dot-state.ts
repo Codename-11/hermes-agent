@@ -28,6 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
+import { $activeGatewayProfile } from './profile-scope'
 import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionKeys,
@@ -37,7 +38,7 @@ import {
   $workingSessionKeys,
   sessionStatusKey
 } from './session-states'
-import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
+import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS, unreadWriteGuardKey } from './session-unread-remote'
 import { $subagentsBySession, activeSubagentCount } from './subagents'
 
 let delegatingIds: readonly string[] = []
@@ -47,8 +48,9 @@ export const $delegatingSessionIds = computed(
     const ids = new Set<string>()
 
     for (const [runtimeId, items] of Object.entries(bySession)) {
-      if (activeSubagentCount(items) === 0) continue
-      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) ids.add(alias)
+      if (activeSubagentCount(items) === 0) {continue}
+
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {ids.add(alias)}
     }
 
     return (delegatingIds = stableArray(delegatingIds, [...ids]))
@@ -97,9 +99,10 @@ export const $sessionDotStateById = computed(
     $unreadFinishedSessionIds,
     $draftSessionIds,
     $sessions,
-    $unreadWriteGuard
+    $unreadWriteGuard,
+    $activeGatewayProfile
   ],
-  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard) => {
+  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard, activeProfile) => {
     const next: Record<string, SessionDotState> = {}
 
     const scopedAliases = (session: (typeof sessions)[number]) =>
@@ -126,6 +129,16 @@ export const $sessionDotStateById = computed(
       }
     }
 
+    const claimRows = (rows: readonly (typeof sessions)[number][], state: SessionDotState) => {
+      const members = new Set(rows.map(session => sessionStatusKey(session.profile, session.id)))
+
+      for (const session of sessions) {
+        if (scopedAliases(session).some(alias => members.has(sessionStatusKey(session.profile, alias)))) {
+          next[sessionStatusKey(session.profile, session.id)] = state
+        }
+      }
+    }
+
     // Weakest claim first — each pass overwrites the one above it, so the order
     // below IS the priority order. A blocking prompt outranks everything: it is
     // the only state that needs the user.
@@ -135,16 +148,21 @@ export const $sessionDotStateById = computed(
     claimBare(draft, 'draft')
     claimBare(unread, 'unread')
 
-    const persistedUnread: string[] = []
+    const persistedUnread: (typeof sessions)[number][] = []
+
     for (const session of sessions) {
-      const entry = unreadWriteGuard.get(session.id)
+      const entry = unreadWriteGuard.get(unreadWriteGuardKey(session.id, session.profile))
+
       if (entry && Date.now() - entry.at < UNREAD_WRITE_GUARD_MS) {
-        if (entry.value) persistedUnread.push(session.id)
+        if (entry.value) {persistedUnread.push(session)}
+
         continue
       }
-      if (session.unread === true) persistedUnread.push(session.id)
+
+      if (session.unread === true) {persistedUnread.push(session)}
     }
-    claimBare(persistedUnread, 'unread')
+
+    claimRows(persistedUnread, 'unread')
     claimBare(background, 'background')
     claimBare(delegating, 'background')
     claimKeys(working, 'working')
@@ -154,6 +172,7 @@ export const $sessionDotStateById = computed(
     // session already claimed as working. The hint outlives its turn by a tick
     // on some paths; without this it could invent a running session.
     const stalledIds = new Set(stalled)
+
     for (const session of sessions) {
       const key = sessionStatusKey(session.profile, session.id)
 
@@ -163,6 +182,15 @@ export const $sessionDotStateById = computed(
     }
 
     claimKeys(attention, 'needs-input')
+
+    // Profile-qualified keys keep duplicate stored ids isolated. Preserve the
+    // store's original bare-id contract as an active-profile compatibility
+    // view so legacy consumers never observe another profile's status.
+    const activePrefix = sessionStatusKey(activeProfile, '')
+
+    for (const [key, state] of Object.entries(next)) {
+      if (key.startsWith(activePrefix)) {next[key.slice(activePrefix.length)] = state}
+    }
 
     return (dotStates = stableRecord(dotStates, next))
   }

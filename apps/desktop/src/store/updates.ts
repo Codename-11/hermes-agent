@@ -18,7 +18,8 @@ import type {
   DesktopUpdateStageStatus,
   DesktopUpdateStatus,
   DesktopUpstreamSyncStatus,
-  DesktopVersionInfo
+  DesktopVersionInfo,
+  HermesConnection
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -59,6 +60,20 @@ export const $updateStatus = atom<DesktopUpdateStatus | null>(null)
 export const $backendUpdateStatus = atom<DesktopUpdateStatus | null>(null)
 export const $backendUpdateApply = atom<UpdateApplyState>(IDLE)
 export const $backendUpdateChecking = atom<boolean>(false)
+
+let backendCheckGeneration = 0
+let backendCheckingSourceKey: null | string = null
+
+function backendUpdateSourceKey(connection: HermesConnection | null = $connection.get()): null | string {
+  if (connection?.mode !== 'remote') {
+    return null
+  }
+
+  const source = connection.connectionId || connection.baseUrl
+  const profile = connection.remoteProfile || connection.profile || ''
+
+  return `remote:${source}:${profile}`
+}
 
 export type UpdateTarget = 'client' | 'backend'
 export const $updateOverlayTarget = atom<UpdateTarget>('client')
@@ -343,19 +358,37 @@ function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
 }
 
 export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null> {
-  if (!isRemoteMode() || $backendUpdateChecking.get()) {
+  const sourceKey = backendUpdateSourceKey()
+
+  if (!sourceKey) {
     return $backendUpdateStatus.get()
   }
 
+  if ($backendUpdateChecking.get() && backendCheckingSourceKey === sourceKey) {
+    return $backendUpdateStatus.get()
+  }
+
+  const generation = ++backendCheckGeneration
+
+  backendCheckingSourceKey = sourceKey
   $backendUpdateChecking.set(true)
 
   try {
     const status = mapBackendCheck(await checkHermesUpdate(true))
+
+    if (generation !== backendCheckGeneration || backendUpdateSourceKey() !== sourceKey) {
+      return $backendUpdateStatus.get()
+    }
+
     $backendUpdateStatus.set(status)
     maybeNotifyUpdateAvailable(status)
 
     return status
   } catch (error) {
+    if (generation !== backendCheckGeneration || backendUpdateSourceKey() !== sourceKey) {
+      return $backendUpdateStatus.get()
+    }
+
     const fallback: DesktopUpdateStatus = {
       supported: $backendUpdateStatus.get()?.supported ?? true,
       error: 'check-failed',
@@ -367,7 +400,10 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
 
     return fallback
   } finally {
-    $backendUpdateChecking.set(false)
+    if (generation === backendCheckGeneration) {
+      backendCheckingSourceKey = null
+      $backendUpdateChecking.set(false)
+    }
   }
 }
 
@@ -811,7 +847,7 @@ let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let lastFocusAt = 0
 let connectionUnsub: (() => void) | null = null
-let lastConnectionMode: string | undefined
+let lastBackendSourceKey: null | string
 
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
@@ -827,6 +863,7 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   void checkUpdates()
+  lastBackendSourceKey = backendUpdateSourceKey()
   void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
@@ -835,13 +872,19 @@ export function startUpdatePoller(): void {
   // backend check above sees mode≠remote and no-ops. Re-check once the
   // connection resolves to remote.
   connectionUnsub = $connection.subscribe(conn => {
-    if (conn?.mode === lastConnectionMode) {
+    const sourceKey = backendUpdateSourceKey(conn)
+
+    if (sourceKey === lastBackendSourceKey) {
       return
     }
 
-    lastConnectionMode = conn?.mode
+    lastBackendSourceKey = sourceKey
+    backendCheckGeneration += 1
+    backendCheckingSourceKey = null
+    $backendUpdateChecking.set(false)
+    $backendUpdateStatus.set(null)
 
-    if (conn?.mode === 'remote') {
+    if (sourceKey) {
       void checkBackendUpdates()
     }
   })
@@ -864,7 +907,10 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
-  lastConnectionMode = undefined
+  backendCheckGeneration += 1
+  backendCheckingSourceKey = null
+  $backendUpdateChecking.set(false)
+  lastBackendSourceKey = null
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

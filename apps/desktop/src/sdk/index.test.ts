@@ -102,8 +102,11 @@ describe('host.updates', () => {
     updateMocks.applyUpdates.mockResolvedValueOnce({ ok: false, message: 'Updater did not launch.' })
     await expect(host.updates.standardUpdate()).rejects.toThrow('Updater did not launch.')
 
+    updateMocks.applyUpdates.mockResolvedValueOnce({ ok: true, guiSkew: true, manualRestart: true })
+    await expect(host.updates.standardUpdate()).resolves.toMatchObject({ ok: true, manualRestart: true })
+
     updateMocks.applyUpdates.mockResolvedValueOnce({ ok: true, manual: true, command: 'hermes update --branch axiom' })
-    await expect(host.updates.standardUpdate()).rejects.toThrow('Run `hermes update --branch axiom` in a terminal.')
+    await expect(host.updates.standardUpdate()).resolves.toMatchObject({ ok: true, manual: true })
   })
 
   it('maps core stage/history records and rejects failed lifecycle results', async () => {

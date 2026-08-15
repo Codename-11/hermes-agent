@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { $registryVersion } from '@/contrib/registry'
 import { allKeybindActions, defaultBindings, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
-import { canonicalizeCombo, comboAllowedInInput } from '@/lib/keybinds/combo'
+import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { arraysEqual, persistString, storedString } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
@@ -10,7 +10,7 @@ const STORAGE_KEY = 'hermes.desktop.keybinds'
 /** Dictation is expected to fire while a textarea/contenteditable owns focus.
  * Bare and Shift-only printable bindings are therefore unreachable by design. */
 export function bindingAllowedForAction(actionId: string, combo: string): boolean {
-  return actionId !== 'composer.dictate' || comboAllowedInInput(canonicalizeCombo(combo))
+  return actionId !== 'composer.dictate' || /^(?:mod|ctrl)(?:\+|$)/.test(canonicalizeCombo(combo))
 }
 
 // The user's raw stored overrides. Kept verbatim so an action CONTRIBUTED

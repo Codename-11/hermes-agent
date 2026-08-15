@@ -14,7 +14,13 @@ vi.mock('@/hermes', () => ({
 
 import { $sessions } from '@/store/session'
 
-import { $unreadWriteGuard, clearUnreadOnOpen, markSessionUnread, watchUnreadWriteGuard } from './session-unread-remote'
+import {
+  $unreadWriteGuard,
+  clearUnreadOnOpen,
+  markSessionUnread,
+  unreadWriteGuardKey,
+  watchUnreadWriteGuard
+} from './session-unread-remote'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -55,7 +61,24 @@ describe('markSessionUnread', () => {
     // The backend kept the old value, so the optimistic flip is undone and
     // the guard is released (nothing to fence a page about).
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
-    expect($unreadWriteGuard.get().has('a')).toBe(false)
+    expect($unreadWriteGuard.get().has(unreadWriteGuardKey('a', 'default'))).toBe(false)
+  })
+
+  it('updates only the selected profile when stored IDs collide', async () => {
+    $sessions.set([
+      row('shared', { profile: 'default', unread: false }),
+      row('shared', { profile: 'work', unread: false })
+    ])
+
+    await markSessionUnread('shared', true, 'work')
+
+    expect(patch).toHaveBeenCalledWith('shared', true, 'work')
+    expect($sessions.get()).toMatchObject([
+      { id: 'shared', profile: 'default', unread: false },
+      { id: 'shared', profile: 'work', unread: true }
+    ])
+    expect($unreadWriteGuard.get().has(unreadWriteGuardKey('shared', 'work'))).toBe(true)
+    expect($unreadWriteGuard.get().has(unreadWriteGuardKey('shared', 'default'))).toBe(false)
   })
 })
 
@@ -88,26 +111,28 @@ describe('clearUnreadOnOpen', () => {
 describe('watchUnreadWriteGuard', () => {
   it('drops a guard entry once a list page confirms the value we wrote', () => {
     watchUnreadWriteGuard()
-    const guard = new Map<string, { at: number; value: boolean }>()
-    guard.set('a', { at: Date.now(), value: true })
+    const key = unreadWriteGuardKey('a', 'default')
+    const guard = new Map($unreadWriteGuard.get())
+    guard.set(key, { at: Date.now(), profile: 'default', storedId: 'a', value: true })
     $unreadWriteGuard.set(guard)
 
     // The server caught up and echoes our value back.
     $sessions.set([row('a', { unread: true })])
 
-    expect($unreadWriteGuard.get().has('a')).toBe(false)
+    expect($unreadWriteGuard.get().has(key)).toBe(false)
   })
 
   it('keeps the guard while a page contradicts a write still in flight', () => {
     watchUnreadWriteGuard()
-    const guard = new Map<string, { at: number; value: boolean }>()
-    guard.set('a', { at: Date.now(), value: true })
+    const key = unreadWriteGuardKey('a', 'default')
+    const guard = new Map($unreadWriteGuard.get())
+    guard.set(key, { at: Date.now(), profile: 'default', storedId: 'a', value: true })
     $unreadWriteGuard.set(guard)
 
     // A list request issued before the PATCH still says read. Honouring it
     // would silently undo the mark the user just made.
     $sessions.set([row('a', { unread: false })])
 
-    expect($unreadWriteGuard.get().has('a')).toBe(true)
+    expect($unreadWriteGuard.get().has(key)).toBe(true)
   })
 })

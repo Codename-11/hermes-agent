@@ -64,8 +64,9 @@ your agent plugin's folder — see
 [One package, both SDKs](#one-package-both-sdks). Everything on this page is
 written against the disk door (what you and the agent write);
 [Bundled plugins](#bundled-plugins) notes the two
-differences. The Axiom fork ships the **Update Control** bundled plugin; reference
-demos live in the companion
+differences. The Axiom fork exposes the generic typed update seam; Axiom-specific
+Update Control presentation is delivered as a separately installed disk plugin.
+Reference demos live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 repo.
 
@@ -692,12 +693,11 @@ enable/disable contract as a disk plugin. The two differences:
 2. It's still lint-fenced to `@hermes/plugin-sdk` + `react` only — no `@/…` app
    internals.
 
-The Axiom fork ships **Update Control** from this tree. It uses
-`host.updates.getStatus()` for read-only comparison and the named client/backend
-lifecycle methods to perform updates while rendering progress in the plugin. It
-registers a route-backed `/update-control` workspace page and matching sidebar
-row, so it is available without inserting or opening a pane during startup.
-Demos still live in the
+The separately installed **Axiom Enhancements** disk plugin uses
+`host.updates.getStatus()` for detached comparison and the named client/backend
+lifecycle methods while core performs every privileged operation. Its Update
+Control module registers a dismissible, reopenable main-pane tab plus sidebar,
+status-bar, and palette entry; it is not a workspace route. Demos still live in the
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo.
 
@@ -743,7 +743,7 @@ not treat this pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.updates.getStatus`, `.updates.open`) |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.updates.getStatus`, `.updates.refresh`, `.updates.getStage`, `.updates.getHistory`, and core-owned lifecycle methods) |
 | Plugin contract | `HermesPlugin`, `PluginContext` (including plugin-scoped `panes.reveal(localId)`), `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 REPO = Path(__file__).resolve().parents[1]
+SHARED_CRON = Path.home() / ".hermes" / "cron" / "jobs.json"
 SENTINEL_CRON = Path.home() / ".hermes" / "profiles" / "sentinel" / "cron" / "jobs.json"
 DESKTOP_ALIAS = "AXIOM-DESKTOP"
 DESKTOP_REPO_PS = "$env:LOCALAPPDATA\\hermes\\hermes-agent"
@@ -70,27 +71,53 @@ def remote_urls() -> dict[str, str]:
     return remotes
 
 
-def sentinel_sync_state() -> dict[str, object]:
-    if not SENTINEL_CRON.exists():
-        return {"found": False, "path": str(SENTINEL_CRON)}
-    try:
-        data = json.loads(SENTINEL_CRON.read_text())
-    except Exception as exc:  # pragma: no cover - defensive helper
-        return {"found": False, "path": str(SENTINEL_CRON), "error": f"{type(exc).__name__}: {exc}"}
-    for job in data.get("jobs", []):
-        if job.get("name") == "Hermes Axiom Sync" or job.get("script") == "sentinel-hermes-axiom-sync.py":
+def cron_job_state(*, names: set[str], scripts: set[str]) -> dict[str, object]:
+    errors: list[str] = []
+    stores = (SHARED_CRON, SENTINEL_CRON)
+
+    for store in stores:
+        if not store.exists():
+            continue
+        try:
+            data = json.loads(store.read_text())
+        except Exception as exc:  # pragma: no cover - defensive helper
+            errors.append(f"{store}: {type(exc).__name__}: {exc}")
+
+            continue
+
+        for job in data.get("jobs", []):
+            if job.get("name") not in names and job.get("script") not in scripts:
+                continue
+
             return {
                 "found": True,
+                "path": str(store),
                 "id": job.get("id"),
+                "name": job.get("name"),
+                "owner_profile": job.get("owner_profile"),
                 "enabled": job.get("enabled"),
                 "state": job.get("state"),
                 "paused_at": job.get("paused_at"),
                 "last_run_at": job.get("last_run_at"),
                 "last_status": job.get("last_status"),
-                "schedule": job.get("schedule_display"),
+                "schedule": job.get("schedule_display") or job.get("schedule"),
                 "deliver": job.get("deliver"),
             }
-    return {"found": False, "path": str(SENTINEL_CRON), "error": "Hermes Axiom Sync job not found"}
+
+    result: dict[str, object] = {"found": False, "paths": [str(store) for store in stores]}
+    if errors:
+        result["errors"] = errors
+
+    return result
+
+
+def sentinel_sync_state() -> dict[str, object]:
+    """Compatibility key for the optional mutation-capable sync job."""
+    return cron_job_state(names={"Hermes Axiom Sync"}, scripts={"sentinel-hermes-axiom-sync.py"})
+
+
+def drift_watch_state() -> dict[str, object]:
+    return cron_job_state(names={"Hermes Daily Check"}, scripts=set())
 
 
 def desktop_status(timeout: int) -> dict[str, object]:
@@ -154,18 +181,25 @@ def print_markdown(report: dict[str, object]) -> None:
     for name, url in sorted(report["remotes"].items()):  # type: ignore[union-attr]
         print(f"- `{name}` → `{url}`")
     print()
-    print("## Sentinel Hermes Axiom Sync")
-    sync = report["sentinel_sync"]
-    if isinstance(sync, dict) and sync.get("found"):
-        print(f"- Job: `{sync.get('id')}`")
-        print(f"- Enabled: `{sync.get('enabled')}`")
-        print(f"- State: `{sync.get('state')}`")
-        print(f"- Schedule: `{sync.get('schedule')}`")
-        print(f"- Paused at: `{sync.get('paused_at')}`")
-        print(f"- Last run: `{sync.get('last_run_at')}` / `{sync.get('last_status')}`")
-    else:
-        print(f"- `{sync}`")
-    print()
+    for heading, key, capability in (
+        ("Upstream drift detection", "drift_watch", "read-only detection/reporting"),
+        ("Automatic upstream reconciliation", "sentinel_sync", "mutation-capable sync"),
+    ):
+        print(f"## {heading}")
+        job = report[key]
+        if isinstance(job, dict) and job.get("found"):
+            print(f"- Capability: `{capability}`")
+            print(f"- Job: `{job.get('name')}` / `{job.get('id')}`")
+            print(f"- Owner: `{job.get('owner_profile')}`")
+            print(f"- Enabled: `{job.get('enabled')}`")
+            print(f"- State: `{job.get('state')}`")
+            print(f"- Schedule: `{job.get('schedule')}`")
+            print(f"- Paused at: `{job.get('paused_at')}`")
+            print(f"- Last run: `{job.get('last_run_at')}` / `{job.get('last_status')}`")
+        else:
+            print(f"- Capability: `{capability}`")
+            print("- Job: `not configured`")
+        print()
     print("## Axiom-Desktop")
     desktop = report.get("desktop")
     if not desktop:
@@ -191,6 +225,7 @@ def build_report(*, include_desktop: bool, desktop_timeout: int) -> dict[str, ob
         "head_contains_upstream": git_ok("merge-base", "--is-ancestor", "upstream/main", "HEAD"),
         "dirty": dirty_files(),
         "remotes": remote_urls(),
+        "drift_watch": drift_watch_state(),
         "sentinel_sync": sentinel_sync_state(),
         "desktop": desktop_status(desktop_timeout) if include_desktop else None,
     }

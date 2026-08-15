@@ -2643,6 +2643,8 @@ def test_deploy_update_refreshes_stale_origin_ref_before_comparing(monkeypatch, 
 
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
+    from hermes_cli import gateway as hermes_gateway
+
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
@@ -2653,6 +2655,16 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
+    monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
+    monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
+    # cmd_update now snapshots, drains, and rechecks the gateway fleet after the
+    # code swap. These dependency/update tests do not own that integration and
+    # must never discover or signal the developer's live gateways.
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda *a, **kw: [])
+    monkeypatch.setattr(hermes_gateway, "find_profile_gateway_processes", lambda *a, **kw: [])
+    monkeypatch.setattr(hermes_gateway, "_get_service_pids", lambda *a, **kw: set())
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_macos", lambda: False)
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
@@ -2851,7 +2863,7 @@ def test_cmd_update_reloads_runtime_modules_before_lazy_refresh(monkeypatch, tmp
     def fake_reload_runtime_modules():
         events.append("reload")
 
-    def fake_refresh_lazy_features(install_prefix=None, env=None):
+    def fake_refresh_lazy_features(install_prefix=None, env=None, features=None):
         events.append("lazy-refresh")
         return True
 

@@ -316,35 +316,7 @@ export function usePromptActions({
             return appendMidTurnUserMessage(state, message)
           }
 
-          const lastAssistantIndex = options.insertBeforeActiveReply
-            ? state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
-            : -1
-
-          const activeReplyIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
-
-          // A reconnect/projection reconciliation can briefly publish the live
-          // assistant shell before the optimistic user row that started the
-          // turn. The steer still belongs before the redirected reply once the
-          // tail canonicalizes, but it must never jump ahead of user intent
-          // already visible after that shell. Preserve causal user ordering and
-          // let the next authoritative projection restore role alternation.
-          const lastUserAfterActiveReply =
-            activeReplyIndex >= 0
-              ? state.messages.reduce(
-                  (latest, candidate, index) =>
-                    index >= activeReplyIndex && candidate.role === 'user' ? index : latest,
-                  -1
-                )
-              : -1
-
-          const insertionIndex = lastUserAfterActiveReply >= 0 ? lastUserAfterActiveReply + 1 : activeReplyIndex
-
-          const messages =
-            insertionIndex >= 0
-              ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
-              : [...state.messages, message]
-
-          return { ...state, messages }
+          return { ...state, messages: [...state.messages, message] }
         },
         storedSessionId ?? selectedStoredSessionIdRef.current
       )
