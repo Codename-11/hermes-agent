@@ -185,6 +185,46 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
     except (subprocess.CalledProcessError, OSError):
         return None
 
+
+_PYTHON_DEPENDENCY_MANIFEST_PATHS = (
+    "pyproject.toml",
+    "uv.lock",
+    "setup.py",
+    "setup.cfg",
+    ":(glob)**/requirements*.txt",
+    ":(glob)**/constraints*.txt",
+)
+
+
+def _python_dependency_refresh_required(git_cmd, repo: Path, old_head: str | None) -> bool:
+    """Return whether the update changed Python dependency declarations.
+
+    Editable installs expose source changes immediately, so reinstalling after
+    every git update is unnecessary. On Windows it is also unsafe when the
+    updater was launched through the mapped ``hermes.exe`` shim. Fall back to
+    refreshing whenever the comparison cannot be trusted.
+    """
+    if not old_head:
+        return True
+    try:
+        result = subprocess.run(
+            git_cmd
+            + [
+                "diff",
+                "--name-only",
+                f"{old_head}..HEAD",
+                "--",
+                *_PYTHON_DEPENDENCY_MANIFEST_PATHS,
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            check=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return True
+    return bool(result.stdout.strip())
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -2180,6 +2220,53 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
 
+
+def _reconcile_desktop_build() -> None:
+    """Rebuild an installed Desktop package when its content stamp is stale."""
+    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+    has_desktop_app = _desktop_install_intent(desktop_dir)
+    if not (
+        (desktop_dir / "package.json").exists()
+        and _m()._resolve_node_runtime_npm()
+        and has_desktop_app
+    ):
+        return
+
+    print("→ Checking Desktop build state...")
+    try:
+        if not _m()._desktop_build_needed(
+            desktop_dir, _m().PROJECT_ROOT, source_mode=False
+        ):
+            print("  ✓ Desktop app up to date")
+            return
+    except Exception:
+        pass
+
+    print("→ Desktop sources changed; rebuilding packaged app...")
+    desktop_build_cmd = [
+        sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"
+    ]
+    from hermes_constants import with_hermes_node_path
+
+    build_env = with_hermes_node_path()
+    build_result = _m()._run_logged_subprocess(
+        desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
+    )
+    if build_result.returncode != 0:
+        build_result = _m()._run_logged_subprocess(
+            desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
+        )
+    if build_result.returncode != 0:
+        print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+        tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
+        if tail:
+            print(tail)
+        from hermes_constants import display_hermes_home as _dhh
+        print(f"  Full build log: {_dhh()}/logs/update.log")
+    else:
+        print("  ✓ Desktop app up to date")
+
+
 def _repair_node_deps_on_current_checkout(print_completion) -> None:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
@@ -2205,6 +2292,9 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+    # A previous update may have advanced Git and then failed before reaching
+    # the Desktop build. Git parity is therefore not Desktop artifact parity.
+    _reconcile_desktop_build()
     print_completion("✓ Already up to date!")
 
 
@@ -2497,8 +2587,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         sys.exit(1)
 
     if is_shallow:
-        # No history to count across the shallow boundary. Compare tip SHAs and
-        # report presence-only (mirrors the banner's _check_via_local_git).
+        # No history to count across the shallow boundary. Compare tip SHAs
+        # (mirrors the banner's _check_via_local_git), then try to recover the
+        # exact count via the GitHub compare API — the remote graph is complete
+        # even when the local one is truncated.
         head_sha = subprocess.run(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -2510,9 +2602,19 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
         else:
-            print(f"⚕ Update available (behind {compare_branch}).")
+            from hermes_cli.banner import _github_compare_behind
             from hermes_cli.config import recommended_update_command
 
+            counted = _github_compare_behind(head_sha, target_sha)
+            if counted == 0:
+                # Local commits on top of the remote tip — not behind.
+                print("✓ Already up to date.")
+                return
+            if counted is not None:
+                commits_word = "commit" if counted == 1 else "commits"
+                print(f"⚕ Update available: {counted} {commits_word} behind {compare_branch}.")
+            else:
+                print(f"⚕ Update available (behind {compare_branch}).")
             print(f"  Run '{recommended_update_command()}' to install.")
         return
 
@@ -4217,6 +4319,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_phase_completed = False
 
     # Fetch and pull
+    dependency_base_sha: str | None = None
     try:
 
         # Resolve the target branch up front so the fetch can be scoped to it.
@@ -4280,6 +4383,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd, _m().PROJECT_ROOT
             )
             pre_update_head = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+            dependency_base_sha = pre_update_head or None
             if not exact_target and _m()._deploy_handoff_exists_for(_m().PROJECT_ROOT, current_branch):
                 deploy_commit_count = _m()._resolve_deploy_handoff(
                     git_cmd=git_cmd,
@@ -4367,7 +4471,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
-        # Check if there are updates
+        # Check if there are updates. On shallow checkouts `rev-list --count`
+        # walks the truncated graph and can report the entire remote ancestry
+        # (e.g. "Found 9980 new commit(s)" on a depth-1 install — #53479).
+        # The zero/nonzero gate is still sound (HEAD == origin/<branch> counts
+        # 0), so keep it, but treat the shallow NUMBER as unknown and recover
+        # the real one via the GitHub compare API when possible.
         result = subprocess.run(
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=_m().PROJECT_ROOT,
@@ -4378,6 +4487,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
         commit_count = int(result.stdout.strip())
         if deploy_commit_count is not None:
             commit_count = deploy_commit_count
+
+        apply_is_shallow = (
+            subprocess.run(
+                git_cmd + ["rev-parse", "--is-shallow-repository"],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            == "true"
+        )
+        if commit_count > 0 and apply_is_shallow:
+            from hermes_cli.banner import _github_compare_behind
+
+            head_sha = subprocess.run(
+                git_cmd + ["rev-parse", "HEAD"],
+                cwd=_m().PROJECT_ROOT, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            target_sha = subprocess.run(
+                git_cmd + ["rev-parse", f"origin/{branch}"],
+                cwd=_m().PROJECT_ROOT, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            counted = _github_compare_behind(head_sha, target_sha)
+            # counted == 0 means local-ahead (remote tip reachable from HEAD):
+            # not behind, fall through to the up-to-date path.
+            commit_count = counted if counted is not None else -1
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -4481,7 +4617,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
-        print(f"→ Found {commit_count} new commit(s)")
+        if commit_count > 0:
+            print(f"→ Found {commit_count} new commit(s)")
+        else:
+            # Shallow checkout, exact count unrecoverable (offline/rate-limited
+            # compare API) — the tips differ, so there IS an update.
+            print("→ Updates available (commit count unknown on this shallow checkout)")
 
         print("→ Pulling updates...")
         update_succeeded = False
@@ -4491,6 +4632,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # every user who ran ``hermes update`` for the 7 minutes between
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        if dependency_base_sha is None:
+            dependency_base_sha = pre_pull_sha
         try:
             # Merge the ref we already fetched above (→ Fetching updates...)
             # instead of `git pull`, which performs a SECOND network fetch of
@@ -4622,8 +4765,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # marker survives and the next ``hermes`` launch finishes the install
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
-        _write_update_incomplete_marker()
-        print("→ Updating Python dependencies...")
+        refresh_python_dependencies = _python_dependency_refresh_required(
+            git_cmd, _m().PROJECT_ROOT, dependency_base_sha
+        )
+        if refresh_python_dependencies:
+            _write_update_incomplete_marker()
+            print("→ Updating Python dependencies...")
+        else:
+            print("  ✓ Python dependency manifests unchanged — skipping reinstall")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
@@ -4643,12 +4792,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 uv_env.pop("PYTHONHOME", None)
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if _m()._is_termux_env(uv_env) and _is_android_python():
+            if (
+                refresh_python_dependencies
+                and _m()._is_termux_env(uv_env)
+                and _is_android_python()
+            ):
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _m()._install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
+            if refresh_python_dependencies:
+                _m()._install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
+                )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -4671,10 +4825,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _m()._is_termux_env():
                 install_group = "termux-all"
                 print("  → Termux detected: using curated termux-all optional profile...")
-            if _m()._is_termux_env() and _is_android_python():
+            if refresh_python_dependencies and _m()._is_termux_env() and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)
-            _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            if refresh_python_dependencies:
+                _m()._install_python_dependencies_with_optional_fallback(
+                    pip_cmd, group=install_group
+                )
 
         install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
         lazy_env = uv_env if uv_bin else None
@@ -4742,63 +4899,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
 
-        # Rebuild the desktop app if the source tree changed since the last
-        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
-        # internally, so this is effectively a no-op when nothing changed.
-        # Only bother if the user has a desktop app installed (indicated by
-        # an existing packaged executable or desktop dist); people who have
-        # never run ``hermes desktop`` shouldn't be forced into a full
-        # Electron build by ``hermes update``.
-        desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_install_intent(desktop_dir)
-        if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
-            print("→ Checking Desktop build state...")
-            # Consult the content-hash stamp IN-PROCESS first. The spawned
-            # `hermes desktop --build-only` subprocess re-imports the whole
-            # CLI stack (~1-3 s) just to reach the same _m()._desktop_build_needed
-            # check; when the stamp already says "up to date" we can skip the
-            # spawn entirely. The update path never passes --source, so the
-            # subprocess would run with source_mode=False — mirror that here.
-            # Any error in the pre-check falls through to the subprocess.
-            _skip_desktop_build = False
-            try:
-                _skip_desktop_build = not _m()._desktop_build_needed(
-                    desktop_dir, _m().PROJECT_ROOT, source_mode=False
-                )
-            except Exception:
-                _skip_desktop_build = False
-            if _skip_desktop_build:
-                print("  ✓ Desktop app up to date")
-            else:
-                print("→ Desktop sources changed; rebuilding packaged app...")
-                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-                # Capture the (very loud) Electron/vite build output into
-                # update.log instead of streaming it to the terminal. On the rare
-                # nonzero exit, retry once after waiting again for the venv — this
-                # covers a still-settling rebuild window the first wait didn't fully
-                # catch — then surface the captured tail so the failure is
-                # debuggable.
-                #
-                # Start the build subprocess with the Hermes-managed Node on PATH:
-                # when `hermes update` runs inside the desktop updater chain
-                # (Desktop → hermes-setup → hermes update), the shell PATH
-                # customizations are lost, so a bare-PATH child would fail with
-                # `node: not found` before cmd_gui can self-heal.
-                from hermes_constants import with_hermes_node_path
-
-                _build_env = with_hermes_node_path()
-                build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
-                if build_result.returncode != 0:
-                    build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
-                if build_result.returncode != 0:
-                    print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
-                    tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
-                    if tail:
-                        print(tail)
-                    from hermes_constants import display_hermes_home as _dhh
-                    print(f"  Full build log: {_dhh()}/logs/update.log")
-                else:
-                    print("  ✓ Desktop app up to date")
+        _reconcile_desktop_build()
 
         print()
         print("✓ Code updated!")

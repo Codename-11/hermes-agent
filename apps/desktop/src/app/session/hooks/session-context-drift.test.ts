@@ -149,6 +149,34 @@ describe('sessionContextDrift', () => {
     expect(reason).toBeNull()
   })
 
+  it('does not drift when a profile-qualified tile composer targets the same stored session', () => {
+    const reason = sessionContextDrift({
+      startRouteToken: routeToken(sessionRoute(SESS_A)),
+      nowRouteToken: routeToken(sessionRoute(SESS_A)),
+      startSelectedStoredId: SESS_A,
+      nowSelectedStoredId: SESS_A,
+      submitTargetStoredId: SESS_A,
+      composerScope: `victor:${SESS_A}`,
+      submitTargetComposerScope: SESS_A
+    })
+
+    expect(reason).toBeNull()
+  })
+
+  it('still drifts when a profile-qualified tile composer targets a different stored session', () => {
+    const reason = sessionContextDrift({
+      startRouteToken: routeToken(sessionRoute(SESS_A)),
+      nowRouteToken: routeToken(sessionRoute(SESS_A)),
+      startSelectedStoredId: SESS_A,
+      nowSelectedStoredId: SESS_A,
+      submitTargetStoredId: SESS_A,
+      composerScope: `victor:${SESS_B}`,
+      submitTargetComposerScope: SESS_A
+    })
+
+    expect(reason).toBe(`composer:victor:${SESS_B}->${SESS_A}`)
+  })
+
   it('drifts (composer prong) when the loaded composer scope disagrees with the resolved submit target (#59305)', () => {
     const reason = sessionContextDrift({
       startRouteToken: routeToken(sessionRoute(SESS_A)),

@@ -40,6 +40,12 @@ declare global {
         sessionId: string,
         opts?: { profile?: string; watch?: boolean }
       ) => Promise<{ ok: boolean; error?: string }>
+      // Resume this session in the user's own terminal emulator (`hermes --tui
+      // --resume <id>`) — the external terminal, not the in-app pane.
+      openSessionInTerminal: (
+        sessionId: string,
+        opts?: { cwd?: string; profile?: string }
+      ) => Promise<{ ok: boolean; error?: string }>
       // Open a new full-chrome app window — a peer instance of the primary that
       // renders the complete app against the shared backend, so the user can run
       // multiple GUI windows at once.
@@ -134,6 +140,8 @@ declare global {
       }
       profile: {
         get: () => Promise<DesktopActiveProfile>
+        /** Persist a successful live profile switch without reloading. */
+        remember: (name: string) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -579,7 +587,10 @@ export interface DesktopUpdateStatus {
   reason?: string
   message?: string
   error?: string
-  behind?: number
+  /** Exact commits behind. null = update available, but the count is
+   *  unknowable (shallow clone without a merge-base) — never render it as a
+   *  literal number. */
+  behind?: number | null
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string
@@ -708,6 +719,10 @@ export interface HermesConnection {
   // Set for pool (non-primary) backends so the renderer knows which profile a
   // connection belongs to.
   profile?: string
+  // True only when `profile` is a request scope on the shared primary backend.
+  // A pooled backend also carries `profile`, so presence alone cannot identify
+  // the shared-primary routing case.
+  sharedPrimary?: boolean
   windowButtonPosition: { x: number; y: number } | null
 }
 

@@ -345,6 +345,10 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   try {
     await operation
+    // The main process already reads this preference before backend startup;
+    // remember live multi-socket switches so cold launch resumes the same
+    // profile instead of falling back to default.
+    void window.hermesDesktop?.profile?.remember?.(target)
   } finally {
     // Never let an older caller clear a newer operation's lock or UI target.
     if (gatewaySwitch === operation) {

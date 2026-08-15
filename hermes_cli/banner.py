@@ -214,12 +214,54 @@ def _count_git_range(repo_dir: Path, base: str, target: str) -> Optional[int]:
         return None
 
 
-def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via ls-remote.
+def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
+    """Exact behind-count via the GitHub compare API for uncountable graphs.
 
-    Returns 0 if up-to-date, ``UPDATE_AVAILABLE_NO_COUNT`` if behind,
-    or ``None`` on failure.
+    Shallow installer clones and ls-remote-only probes know the two tip SHAs
+    but have no local history to run ``rev-list --count`` across. GitHub's
+    ``GET /repos/<owner>/<repo>/compare/<current>...<target>`` knows the full
+    graph regardless of local clone depth and returns ``ahead_by`` — exactly
+    the behind count the local graph lost. Unauthenticated, bounded, and
+    best-effort: any failure (offline, rate limit, diverged/unknown SHAs)
+    returns None so callers keep the honest UPDATE_AVAILABLE_NO_COUNT.
     """
+    if not (_is_full_sha(current_rev) and _is_full_sha(target_rev)):
+        return None
+    url = (
+        "https://api.github.com/repos/nousresearch/hermes-agent/"
+        f"compare/{current_rev}...{target_rev}"
+    )
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                # api.github.com 403s requests without a User-Agent.
+                "User-Agent": "hermes-cli-update-check",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    ahead = payload.get("ahead_by") if isinstance(payload, dict) else None
+    if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0:
+        return ahead
+    return None
+
+
+def _is_full_sha(value: Optional[str]) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(c in "0123456789abcdefABCDEF" for c in value)
+    )
+
+
+def _upstream_main_sha() -> Optional[str]:
+    """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
     try:
         result = subprocess.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
@@ -231,9 +273,27 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     if result.returncode != 0 or not result.stdout:
         return None
     upstream_rev = result.stdout.split()[0]
+    return upstream_rev or None
+
+
+def _check_via_rev(local_rev: str) -> Optional[int]:
+    """Compare an embedded git revision to upstream main via ls-remote.
+
+    Returns 0 if up-to-date, the exact behind-count when the GitHub compare
+    API can recover it, ``UPDATE_AVAILABLE_NO_COUNT`` if behind by an unknown
+    amount, or ``None`` on failure.
+    """
+    upstream_rev = _upstream_main_sha()
     if not upstream_rev:
         return None
-    return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
+    if upstream_rev == local_rev:
+        return 0
+    # Behind, but ls-remote only knows tip SHAs. Try to recover the exact
+    # count from the GitHub compare API before falling back to the sentinel.
+    # ahead_by == 0 with differing tips means the remote tip is reachable from
+    # our HEAD — a local-ahead checkout, i.e. NOT behind.
+    counted = _github_compare_behind(local_rev, upstream_rev)
+    return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
@@ -241,10 +301,32 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        checked = _check_via_rev(head_rev) if head_rev else None
-        if checked == UPDATE_AVAILABLE_NO_COUNT:
-            return 1
-        return checked
+        if not head_rev:
+            return None
+        # Passive probe via HTTPS ls-remote (never SSH — no hardware-key
+        # prompts). Tip SHAs alone can't distinguish "behind" from a local
+        # carried commit sitting AHEAD of origin/main, and misreporting an
+        # ahead checkout as behind nudges the user into `hermes update`,
+        # which can wipe their carried work.
+        upstream_rev = _upstream_main_sha()
+        if upstream_rev is None:
+            return None
+        if upstream_rev == head_rev:
+            return 0
+        # Local-ahead: the remote tip is an ancestor of HEAD. Checked against
+        # the FRESH upstream SHA (not the possibly stale origin/main tracking
+        # ref) so a stale ref can't fake an up-to-date report.
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", upstream_rev, "HEAD"],
+            capture_output=True, timeout=5, cwd=str(repo_dir),
+        )
+        if ancestor.returncode == 0:
+            return 0
+        # Genuinely behind (or diverged). Recover the exact count via the
+        # GitHub compare API; a local-only HEAD 404s there, which safely
+        # degrades to the honest no-count sentinel — never a fabricated 1.
+        counted = _github_compare_behind(head_rev, upstream_rev)
+        return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
     current_branch = _current_git_branch(repo_dir)
     origin_branch = current_branch if current_branch in _DEPLOY_BRANCHES else "main"
@@ -298,23 +380,46 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             pass
 
     if is_shallow:
-        # No history to count across the shallow boundary. Compare tip SHAs and
-        # report presence-only instead of a bogus large commit count.
+        # No history to count across the shallow boundary. Preserve deploy
+        # branch's two-hop check while using ancestry/API evidence to avoid
+        # flagging local-ahead checkouts as updates.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         if current_branch in _DEPLOY_BRANCHES:
             remote_ref = f"origin/{current_branch}"
-            target_refs = [remote_ref]
+            remote_rev = _git_stdout(["rev-parse", remote_ref], cwd=repo_dir)
+            target_pairs = [(head_rev, remote_rev)]
             if has_upstream:
-                target_refs.append("upstream/main")
+                target_pairs.append((remote_rev, _git_stdout(["rev-parse", "upstream/main"], cwd=repo_dir)))
         else:
-            target_refs = ["upstream/main"] if has_upstream else []
-            target_refs.append("FETCH_HEAD")
-            target_refs.append("origin/main")
-        for ref in target_refs:
-            target_rev = _git_stdout(["rev-parse", ref], cwd=repo_dir)
-            if target_rev and head_rev and target_rev != head_rev:
-                return UPDATE_AVAILABLE_NO_COUNT
-        return 0 if head_rev else None
+            target_rev = (
+                _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
+                or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+            )
+            target_pairs = [(head_rev, target_rev)]
+
+        compared = False
+        total = 0
+        unknown = False
+        for base_rev, target_rev in target_pairs:
+            if not base_rev or not target_rev:
+                continue
+            compared = True
+            if base_rev == target_rev:
+                continue
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", target_rev, base_rev],
+                capture_output=True, timeout=5, cwd=str(repo_dir),
+            )
+            if ancestor.returncode == 0:
+                continue
+            counted = _github_compare_behind(base_rev, target_rev)
+            if counted is None:
+                unknown = True
+            else:
+                total += counted
+        if not compared:
+            return None
+        return UPDATE_AVAILABLE_NO_COUNT if unknown else total
 
     current_branch = _current_git_branch(repo_dir)
 

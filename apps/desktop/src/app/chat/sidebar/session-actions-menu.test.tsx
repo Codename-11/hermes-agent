@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -68,6 +68,7 @@ vi.mock('@/store/projects', () => ({
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
+  $connection: atom<null | { mode: string }>(null),
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
   sessionMatchesStoredId: vi.fn(() => false),
@@ -83,8 +84,10 @@ vi.mock('@/store/session-states', () => ({
   openSessionTile: vi.fn()
 }))
 vi.mock('@/store/windows', () => ({
+  canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
-  openSessionInNewWindow: vi.fn()
+  openSessionInNewWindow: vi.fn(),
+  openSessionInTerminal: vi.fn()
 }))
 
 function renderMenu() {
@@ -140,5 +143,29 @@ describe('SessionActionsMenu', () => {
     expect(onReload).toHaveBeenCalledOnce()
     expect(reloadTreePane).toHaveBeenCalledWith('session-tile:s1')
     expect(onReload.mock.invocationCallOrder[0]).toBeLessThan(reloadTreePane.mock.invocationCallOrder[0]!)
+  })
+
+  it('opens the rename dialog focused on its input, not the row trigger', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    // The dialog opens and its textbox takes focus. If the menu's close restored
+    // focus to the row trigger instead, Space would activate the row and the
+    // arrow keys would move the list rather than the caret (the reported bug).
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    expect(document.activeElement).not.toBe(trigger)
   })
 })

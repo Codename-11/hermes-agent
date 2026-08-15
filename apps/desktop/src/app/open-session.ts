@@ -14,7 +14,8 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeGatewayProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeSessionId, $selectedStoredSessionId, $sessions, rememberedSessionProfile } from '@/store/session'
 import {
   focusedSessionNeedsRoute,
   focusOpenSession,
@@ -79,11 +80,21 @@ export function openSession(
     return
   }
 
+  // Every entry point must route through the session owner, including callers
+  // that only know an id (search results, notifications, refs, cold resume).
+  // Falling back to the currently active profile preserves uncached/single-
+  // profile behavior while cached rows remain authoritative.
+  const ownerProfile = normalizeProfileKey(
+    profile ?? rememberedSessionProfile($sessions.get(), storedSessionId, $activeGatewayProfile.get())
+  )
+  const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+  const scopedProfile = profile !== undefined || ownerProfile !== activeProfile ? ownerProfile : undefined
+
   let resolved: OpenSessionIntent = intent
 
   if (resolved === 'window') {
     if (canOpenSessionWindow()) {
-      void openSessionInNewWindow(storedSessionId, profile ? { profile } : undefined)
+      void openSessionInNewWindow(storedSessionId, scopedProfile ? { profile: scopedProfile } : undefined)
 
       return
     }
@@ -107,7 +118,9 @@ export function openSession(
     // Already on screen? Front it. openSessionTile would no-op on main without
     // focusing, or try to relocate an existing tile — neither is right for a
     // soft "open beside" link.
-    if (profile === undefined ? focusOpenSession(storedSessionId) : focusOpenSession(storedSessionId, profile)) {
+    if (
+      scopedProfile === undefined ? focusOpenSession(storedSessionId) : focusOpenSession(storedSessionId, scopedProfile)
+    ) {
       return
     }
 
@@ -116,15 +129,17 @@ export function openSession(
     // stacking a second blank one beside it.
     if (
       spendBlankDraft &&
-      (profile === undefined ? reuseBlankDraftTile(storedSessionId) : reuseBlankDraftTile(storedSessionId, profile))
+      (scopedProfile === undefined
+        ? reuseBlankDraftTile(storedSessionId)
+        : reuseBlankDraftTile(storedSessionId, scopedProfile))
     ) {
       return
     }
 
-    if (profile === undefined) {
+    if (scopedProfile === undefined) {
       openSessionTile(storedSessionId, 'center')
     } else {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, profile)
+      openSessionTile(storedSessionId, 'center', undefined, undefined, scopedProfile)
     }
 
     return
@@ -134,7 +149,17 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  const focused = profile === undefined ? focusOpenSession(storedSessionId) : focusOpenSession(storedSessionId, profile)
+  // An in-place session owns the foreground socket. Re-home before focusing or
+  // routing; otherwise the URL can show profile B's chat while requests still
+  // leave through profile A (cold-start/search split-brain).
+  if (ownerProfile !== activeProfile) {
+    void ensureGatewayProfile(ownerProfile).then(() => openSession(storedSessionId, navigate, 'in-place', ownerProfile))
+
+    return
+  }
+
+  const focused =
+    scopedProfile === undefined ? focusOpenSession(storedSessionId) : focusOpenSession(storedSessionId, scopedProfile)
 
   if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))

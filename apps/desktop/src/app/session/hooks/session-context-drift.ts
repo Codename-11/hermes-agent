@@ -1,5 +1,19 @@
 import { isNewChatRoute, routeSessionId } from '../../routes'
 
+const decodeTileComposerStoredId = (scope: string): string | null => {
+  const separator = scope.indexOf(':')
+
+  if (separator < 0) {
+    return null
+  }
+
+  try {
+    return decodeURIComponent(scope.slice(separator + 1))
+  } catch {
+    return scope.slice(separator + 1)
+  }
+}
+
 /**
  * The chat a route token points at: the stored/routed session id, `'__new__'`
  * for the new-chat route, or null for a route that isn't a chat (settings and
@@ -86,8 +100,18 @@ export function sessionContextDrift({
   // mode. Compared against submitTargetComposerScope (lineage-pinned), NOT
   // submitTargetStoredId (live tip) — see the field doc on
   // SessionContextDriftArgs for why those two must not be conflated.
-  if (composerScope !== undefined && composerScope !== null && composerScope !== submitTargetComposerScope) {
-    return `composer:${composerScope}->${submitTargetComposerScope}`
+  if (composerScope !== undefined && composerScope !== null) {
+    // Primary composers use the lineage-root key directly. Session tiles use a
+    // profile-qualified key (`profile:stored-id`) and stay pinned to their live
+    // stored id. Comparing that tile key to the primary lineage key false-aborts
+    // every tile submit even when both name the same conversation.
+    const tileStoredSessionId = decodeTileComposerStoredId(composerScope)
+    const actualComposerScope = tileStoredSessionId ?? composerScope
+    const expectedComposerScope = tileStoredSessionId ? submitTargetStoredId : submitTargetComposerScope
+
+    if (actualComposerScope !== expectedComposerScope) {
+      return `composer:${composerScope}->${expectedComposerScope}`
+    }
   }
 
   const targetStart = routeTargetFromToken(startRouteToken)

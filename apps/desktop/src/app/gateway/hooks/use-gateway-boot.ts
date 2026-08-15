@@ -32,7 +32,12 @@ import {
   rehydrateLiveSessionStatuses
 } from '@/store/live-session-status'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, $gatewayProfileAdopted, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $gatewayProfileAdopted,
+  normalizeProfileKey,
+  touchActiveGatewayBackend
+} from '@/store/profile'
 import {
   $activeSessionId,
   $connection,
@@ -297,12 +302,17 @@ export function useGatewayBoot({
     // session id against the wrong backend — the HUD then falls back to the
     // default profile's last session (#82285). The override wins over the
     // stored preference; absent, behavior is unchanged.
-    async function adoptPrimaryProfile() {
+    async function resolvePrimaryProfile(): Promise<string> {
+      const override = windowProfileOverride()
+
+      return normalizeProfileKey(override ?? (await desktop.profile?.get?.())?.profile)
+    }
+
+    async function adoptPrimaryProfile(resolvedProfile?: string) {
       const override = windowProfileOverride()
 
       try {
-        const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
-        const key = normalizeProfileKey(profileKey)
+        const key = resolvedProfile ?? (await resolvePrimaryProfile())
         primaryProfile = key
         $activeGatewayProfile.set(key)
         $gatewayProfileAdopted.set(true)
@@ -350,13 +360,14 @@ export function useGatewayBoot({
 
         // Same override rule as boot(): a profile-pinned helper window stays
         // on its pinned profile's backend across a soft switch.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        const targetProfile = await resolvePrimaryProfile()
+        const conn = await desktop.getConnection(targetProfile)
 
         if (cancelled) {
           return
         }
 
-        await adoptPrimaryProfile()
+        await adoptPrimaryProfile(targetProfile)
         publish(conn)
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
@@ -590,9 +601,11 @@ export function useGatewayBoot({
     async function boot() {
       try {
         // A profile-pinned helper window (the HUD) dials its target profile's
-        // backend directly — ensureBackend spawns/reuses it from the pool.
-        // Everything else keeps dialing the primary.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        // backend directly. Main/new windows resolve the persisted live profile
+        // before dialing so remote cold start cannot open default then merely
+        // relabel the socket as the saved profile.
+        const targetProfile = await resolvePrimaryProfile()
+        const conn = await desktop.getConnection(targetProfile)
 
         if (cancelled) {
           return
@@ -601,7 +614,7 @@ export function useGatewayBoot({
         // Establish socket ownership before the socket can emit gateway.ready
         // or session events. Otherwise a named primary is permanently tagged
         // with the startup placeholder profile.
-        await adoptPrimaryProfile()
+        await adoptPrimaryProfile(targetProfile)
 
         setDesktopBootStep({
           phase: 'renderer.gateway.connect',

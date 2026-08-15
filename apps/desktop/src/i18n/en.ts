@@ -128,6 +128,7 @@ export const en: Translations = {
     updateHermes: 'Update Hermes',
     updateReadyTitle: 'Update ready',
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
+    updateReadyMessageUnknown: 'A new update is available.',
     seeWhatsNew: "See what's new",
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
@@ -556,6 +557,7 @@ export const en: Translations = {
       cantReach: "We couldn't reach the update server.",
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
+      updateReadyUnknown: 'A new update is ready.',
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic updates',
@@ -2025,6 +2027,7 @@ export const en: Translations = {
       rename: 'Rename',
       archive: 'Archive',
       newWindow: 'New window',
+      openInTerminal: 'Open in terminal',
       hideTabBar: 'Hide tab bar',
       openInNewTab: 'Open in new tab',
       openInSplit: 'Open in split',
