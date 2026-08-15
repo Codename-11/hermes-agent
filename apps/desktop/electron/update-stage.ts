@@ -222,33 +222,40 @@ function defaultSha256File(candidate: string): string {
   return createHash('sha256').update(fs.readFileSync(candidate)).digest('hex')
 }
 
-function defaultSha256Tree(root: string): string {
-  const records: string[] = []
+export function sha256UpdateArtifactTree(root: string): string {
+  const previousNoAsar = process.noAsar
+  process.noAsar = true
 
-  const visit = (directory: string) => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      const fullPath = path.join(directory, entry.name)
+  try {
+    const records: string[] = []
 
-      if (entry.isSymbolicLink()) {
-        throw new Error(`Staged package contains a symbolic link: ${fullPath}`)
-      }
+    const visit = (directory: string) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const fullPath = path.join(directory, entry.name)
 
-      if (entry.isDirectory()) {
-        visit(fullPath)
-      } else if (entry.isFile()) {
-        const relative = path.relative(root, fullPath).split(path.sep).join('/')
-        const stat = fs.statSync(fullPath)
-        const hash = defaultSha256File(fullPath)
+        if (entry.isSymbolicLink()) {
+          throw new Error(`Staged package contains a symbolic link: ${fullPath}`)
+        }
 
-        records.push(`${relative}\0${stat.size}\0${hash}`)
+        if (entry.isDirectory()) {
+          visit(fullPath)
+        } else if (entry.isFile()) {
+          const relative = path.relative(root, fullPath).split(path.sep).join('/')
+          const stat = fs.statSync(fullPath)
+          const hash = defaultSha256File(fullPath)
+
+          records.push(`${relative}\0${stat.size}\0${hash}`)
+        }
       }
     }
+
+    visit(root)
+    records.sort()
+
+    return createHash('sha256').update(records.join('\n'), 'utf8').digest('hex')
+  } finally {
+    process.noAsar = previousNoAsar
   }
-
-  visit(root)
-  records.sort()
-
-  return createHash('sha256').update(records.join('\n'), 'utf8').digest('hex')
 }
 
 export function validateUpdateStageManifest(
@@ -319,7 +326,7 @@ export function validateUpdateStageManifest(
   let actualTreeHash: string
 
   try {
-    actualTreeHash = (deps.sha256Tree ?? defaultSha256Tree)(manifest.artifactDir)
+    actualTreeHash = (deps.sha256Tree ?? sha256UpdateArtifactTree)(manifest.artifactDir)
   } catch {
     return { valid: false, reason: 'artifact-hash-mismatch' }
   }

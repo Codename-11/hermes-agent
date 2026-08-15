@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
-import { describe, test } from 'vitest'
+import { describe, test, vi } from 'vitest'
 
 import {
   type DesktopUpdateStageManifest,
   parseUpdateStageManifest,
   readUpdateStageManifest,
   reconcileUpdateStageProgress,
+  sha256UpdateArtifactTree,
   validateUpdateStageManifest,
   writeUpdateStageManifestAtomic
 } from './update-stage'
@@ -15,6 +20,36 @@ const BASE = 'a'.repeat(40)
 const TARGET = 'b'.repeat(40)
 const HASH = 'c'.repeat(64)
 const TREE_HASH = 'e'.repeat(64)
+
+test('hashes packaged ASAR files as opaque bytes and restores Electron ASAR handling', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'hermes-update-tree-'))
+  const originalReadFile = fs.readFileSync.bind(fs)
+  const previousNoAsar = process.noAsar
+  let appAsarReadWithBypass = false
+
+  try {
+    mkdirSync(path.join(root, 'resources'))
+    writeFileSync(path.join(root, 'Hermes.exe'), 'exe')
+    writeFileSync(path.join(root, 'resources', 'app.asar'), 'asar')
+    vi.spyOn(fs, 'readFileSync').mockImplementation(((candidate: fs.PathOrFileDescriptor, options?: any) => {
+      if (String(candidate).endsWith('app.asar')) {
+        appAsarReadWithBypass = process.noAsar === true
+      }
+      return originalReadFile(candidate, options)
+    }) as typeof fs.readFileSync)
+
+    assert.equal(
+      sha256UpdateArtifactTree(root),
+      '8e7ab1b09e985dd135f94aed361c2dcd8a1aa60c88060336d335c984c4b7bd2f'
+    )
+    assert.equal(appAsarReadWithBypass, true)
+    assert.equal(process.noAsar, previousNoAsar)
+  } finally {
+    vi.restoreAllMocks()
+    process.noAsar = previousNoAsar
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 function manifest(overrides: Partial<DesktopUpdateStageManifest> = {}): DesktopUpdateStageManifest {
   return {
