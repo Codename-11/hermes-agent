@@ -12,7 +12,7 @@
  * through the plugin host loader (next phase); this is that seam.
  */
 
-import { revealTreePane } from '@/components/pane-shell/tree/store'
+import { revealTreePane, setPaneCollapsed } from '@/components/pane-shell/tree/store'
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
@@ -88,6 +88,8 @@ export interface PluginContext {
   panes: {
     /** Restore, unhide, and focus one of this plugin's pane contributions. */
     reveal: (localId: string) => void
+    /** Collapse one of this plugin's pane contributions to its minimized rail. */
+    collapse: (localId: string) => void
   }
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
    *  resolved against the app's active locale — no core `en.ts` edit. */
@@ -184,7 +186,8 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     os: createPluginOs(pluginId),
     storage: createPluginStorage(pluginId),
     panes: {
-      reveal: localId => revealTreePane(`${pluginId}:${localId}`)
+      reveal: localId => revealTreePane(`${pluginId}:${localId}`),
+      collapse: localId => setPaneCollapsed(`${pluginId}:${localId}`, true)
     },
     i18n: createPluginI18n(pluginId, track)
   }
