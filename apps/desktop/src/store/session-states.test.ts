@@ -6,7 +6,7 @@ import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
-  $sessionTiles,
+  $sessionStates,
   blankDraftTile,
   closeSessionTile,
   decodeSessionTileKey,
@@ -17,10 +17,8 @@ import {
   nextSessionTileForWorkspace,
   openTileNeedsHydration,
   orderTilesByTree,
-  patchSessionTile,
-  selectionHomesToWorkspace,
-  sessionTileKey,
-  sessionTilePaneId
+  releaseSessionTranscript,
+  selectionHomesToWorkspace
 } from '@/store/session-states'
 
 const tile = (storedSessionId: string, profile = 'default'): SessionTile => ({ profile, storedSessionId })
@@ -82,6 +80,27 @@ describe('profile-qualified tile identity', () => {
 
     closeSessionTile('same', 'worker')
     expect($sessionTiles.get()).toEqual([tile('same', 'default')])
+  })
+})
+
+describe('releaseSessionTranscript', () => {
+  afterEach(() => {
+    $sessionStates.set({})
+  })
+
+  it('normalizes legacy state whose messages field is undefined', () => {
+    const legacy = { busy: false, storedSessionId: 'stored' } as ClientSessionState
+    $sessionStates.set({ runtime: legacy })
+
+    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
+    expect($sessionStates.get().runtime).toEqual({ ...legacy, messages: [] })
+  })
+
+  it('ignores a legacy undefined state without throwing', () => {
+    $sessionStates.set({ runtime: undefined } as unknown as Record<string, ClientSessionState>)
+
+    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
+    expect($sessionStates.get()).toHaveProperty('runtime', undefined)
   })
 })
 

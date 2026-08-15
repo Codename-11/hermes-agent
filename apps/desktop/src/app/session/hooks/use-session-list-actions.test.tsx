@@ -171,16 +171,13 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
-  it('fails non-local and unknown sources closed even if an older backend returns them', async () => {
+  it('drops tombstoned rows from the messaging slice and per-platform paging too (#50928)', async () => {
+    // The same delete race exists on every ingestion point: the batched
+    // refresh's messaging slice and the per-platform "load more" pager must
+    // both honor the tombstone, or a deleted platform thread resurrects.
+    removed.ids = new Set(['tg-2'])
     listSidebarSessions.mockResolvedValue(
-      sidebar({
-        sessions: [
-          row('local', { source: 'desktop' }),
-          row('discord', { source: 'discord' }),
-          row('a2a', { source: 'a2a' }),
-          row('future', { source: 'future_runner' })
-        ]
-      })
+      sidebar({ sessions: [] }, [], [row('tg-1', { source: 'telegram' }), row('tg-2', { source: 'telegram' })])
     )
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
@@ -189,7 +186,23 @@ describe('refreshSessions identity + loading hygiene', () => {
       await result.current.refreshSessions()
     })
 
-    expect($sessions.get().map(s => s.id)).toEqual(['local'])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['tg-1'])
+
+    // Per-platform pager: backend page still lists the doomed row.
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [
+        row('tg-1', { source: 'telegram' }),
+        row('tg-2', { source: 'telegram' }),
+        row('tg-3', { source: 'telegram' })
+      ],
+      total: 3
+    })
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('telegram')
+    })
+
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['tg-1', 'tg-3'])
   })
 
   it('still shows loading for the initial (empty-list) fetch', async () => {

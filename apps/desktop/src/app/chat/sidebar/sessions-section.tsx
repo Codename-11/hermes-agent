@@ -110,6 +110,7 @@ interface SidebarSessionsSectionProps {
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
+  onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
   rootClassName?: string
@@ -192,6 +193,7 @@ export function SidebarSessionsSection({
   onArchiveSession,
   onBranchSession,
   onTogglePin,
+  onToggleUnread,
   onNewSessionInWorkspace,
   pinned,
   rootClassName,
@@ -274,11 +276,12 @@ export function SidebarSessionsSection({
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
-        onResume: () => onResumeSession(session.id, session.profile),
+        onToggleUnread: () => onToggleUnread(session.id),
+        onResume: () => onResumeSession(session.id),
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
-        showProject: showProjectTags
+        unread: session.unread === true
       }
 
       return draggable && !branchStem ? (
@@ -296,6 +299,7 @@ export function SidebarSessionsSection({
       onDeleteSession,
       onResumeSession,
       onTogglePin,
+      onToggleUnread,
       pinned,
       showProfileTags,
       showProjectTags
@@ -545,6 +549,40 @@ export function SidebarSessionsSection({
         renderRows={renderRows}
       />
     ))
+  } else if (flatVirtualized) {
+    const virtual = (
+      <VirtualSessionList
+        activeSessionId={activeSessionId}
+        card={card}
+        className={contentClassName}
+        dividerAction={dividerAction}
+        onArchiveSession={onArchiveSession}
+        onBranchSession={onBranchSession}
+        onDeleteSession={onDeleteSession}
+        onResumeSession={onResumeSession}
+        onTogglePin={onTogglePin}
+        onToggleUnread={onToggleUnread}
+        pinned={pinned}
+        rows={flatRows}
+        showProfileTags={showProfileTags}
+        sortable={sessionsDraggable}
+      />
+    )
+
+    inner =
+      sessionsDraggable && onReorderSessions ? (
+        <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
+          {virtual}
+        </ReorderableList>
+      ) : (
+        virtual
+      )
+  } else if (sessionsDraggable && onReorderSessions) {
+    inner = (
+      <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
+        {flatRows.map(row => renderListRow(row, true, dividerAction))}
+      </ReorderableList>
+    )
   } else {
     inner = renderFlatContent(true)
   }
@@ -581,9 +619,11 @@ interface SortableSessionRowProps {
   session: SessionInfo
   isPinned: boolean
   isSelected: boolean
+  unread: boolean
   onArchive: () => void
   onDelete: () => void
   onPin: () => void
+  onToggleUnread: () => void
   onResume: () => void
 }
 

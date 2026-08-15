@@ -164,8 +164,14 @@ function TileChat({
   const composer = useComposerActions({
     activeSessionId: runtimeId,
     currentCwd: cwd,
-    requestGateway: requestOwnerGateway,
-    scope: { add: attachments.add, remove: attachments.remove, target: scope.target, update: attachments.update }
+    requestGateway,
+    scope: {
+      add: attachments.add,
+      remove: attachments.remove,
+      target: scope.target,
+      update: attachments.update,
+      updateIfCurrent: attachments.updateIfCurrent
+    }
   })
 
   // ChatView is memo()d — every callback prop must be referentially stable or

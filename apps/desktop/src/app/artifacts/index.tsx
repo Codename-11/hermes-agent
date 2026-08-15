@@ -475,7 +475,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     let active = true
 
     setSrc('')
-    void artifactImageSrc(artifact.value, artifact.href, artifact.profile ?? null)
+    void artifactImageSrc(artifact.value)
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)

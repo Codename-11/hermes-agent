@@ -61,6 +61,7 @@ import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-ac
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { LiveSessionStatus } from './live-session-status'
 import { ProfileTag } from './profile-tag'
+import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
@@ -414,7 +415,7 @@ export const ChatView = memo(function ChatView({
   // direct nav). Derived in render so the swap reads instantly: the same frame
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
+  const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.

@@ -215,14 +215,16 @@ moa:
     assert ref_event[2] == {"moa_index": 0, "moa_count": 1}
 
 
-def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
-    """MoA must not inject an output cap on reference or aggregator calls.
+def test_moa_generic_client_rebuild_preserves_virtual_facade(monkeypatch, tmp_path):
+    """Generic client replacement must not install a native OpenAI client.
 
-    The preset's old hardcoded max_tokens=4096 truncated long aggregator
-    syntheses. MoA now passes max_tokens=None (no caller cap), so call_llm
-    omits the parameter and each model uses its real maximum. Regression for
-    the "no limit on MoA models" fix.
+    Credential rotation and timeout/dead-connection recovery call the shared
+    replacement helper. If it rebuilds from stale fallback ``_client_kwargs``,
+    the next prepared MoA request leaks its private kwarg into the OpenAI SDK.
     """
+    from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
+    from agent.moa_loop import MoAClient
+
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text(
@@ -231,7 +233,6 @@ moa:
   default_preset: review
   presets:
     review:
-      max_tokens: 4096
       reference_models:
         - provider: openai-codex
           model: gpt-5.5
@@ -242,15 +243,6 @@ moa:
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    calls = []
-
-    def fake_call_llm(**kwargs):
-        calls.append(kwargs)
-        if kwargs["task"] == "moa_reference":
-            return _response("reference advice")
-        return _response("aggregator acted")
-
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
 
     agent = AIAgent(
         api_key="moa-virtual-provider",
@@ -263,15 +255,53 @@ moa:
         enabled_toolsets=["file"],
         max_iterations=1,
     )
-    agent.run_conversation("solve this")
+    original_client = agent.client
+    agent._client_kwargs = {
+        "api_key": "stale-fallback-key",
+        "base_url": "https://relay.example/v1",
+    }
+    monkeypatch.setattr(
+        agent,
+        "_create_openai_client",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("MoA replacement must rebuild its facade")
+        ),
+    )
 
-    # Even with a preset max_tokens: 4096 present in config, neither the
-    # reference nor the aggregator call carries a cap — MoA passes None and
-    # call_llm omits the parameter so the model uses its full output budget.
-    ref_call = next(c for c in calls if c["task"] == "moa_reference")
-    agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
-    assert ref_call.get("max_tokens") is None
-    assert agg_call.get("max_tokens") is None
+    assert agent._replace_primary_openai_client(reason="credential_rotation") is True
+    assert isinstance(agent.client, MoAClient)
+    assert agent.client is not original_client
+
+    captured = {}
+
+    def accept_prepared(prepared, api_kwargs):
+        captured["prepared"] = prepared
+        captured["api_kwargs"] = api_kwargs
+        return "aggregated"
+
+    monkeypatch.setattr(
+        agent.client.chat.completions,
+        "_call_prepared_aggregator",
+        accept_prepared,
+    )
+    prepared = {"messages": [], "guidance": "advice"}
+    result = _dispatch_nonstreaming_api_request(
+        agent,
+        {
+            "model": "review",
+            "messages": [],
+            "_moa_prepared_request": prepared,
+        },
+        make_client=lambda *_args, **_kwargs: pytest.fail(
+            "MoA dispatch must not build a request-local OpenAI client"
+        ),
+    )
+
+    assert result == "aggregated"
+    assert captured["prepared"] is prepared
+    assert "_moa_prepared_request" not in captured["api_kwargs"]
+
+
 
 
 def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):

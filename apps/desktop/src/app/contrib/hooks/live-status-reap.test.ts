@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import {
-  captureLiveSessionStatusBaseline,
-  setLiveSessionStateReconciler
-} from '@/store/live-session-status'
-import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds, setSessions } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
 import {
   $attentionSessionIds,
   $sessionStates,
@@ -14,7 +9,6 @@ import {
   clearAllSessionStates,
   publishSessionState
 } from '@/store/session-states'
-import type { SessionInfo } from '@/types/hermes'
 
 import { rehydrateLiveSessionStatuses } from './use-background-sync'
 
@@ -40,6 +34,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     clearAllSessionStates()
     setSessions([])
     $unreadFinishedSessionIds.set([])
+    $activeSessionId.set(null)
   })
 
   it('clears a working session that disappears from the live snapshot', () => {
@@ -92,88 +87,52 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     expect($workingSessionIds.get()).toEqual(['stored-other'])
   })
 
-  it('reaps a stream-seeded background runtime on its first reconnect snapshot', () => {
-    setSessions([{ id: 'stored-worker', profile: 'worker' } as SessionInfo])
-    publishSessionState('runtime-worker', {
-      ...createClientSessionState('stored-worker'),
+  it('seals open tool parts and clears awaitingResponse when a session vanishes', () => {
+    const openTool = {
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'patch',
+      args: {},
+      argsText: '{}'
+    } as never
+
+    publishSessionState('runtime-tools', {
+      ...createClientSessionState('stored-tools'),
       busy: true,
-      storedSessionId: 'stored-worker'
+      awaitingResponse: true,
+      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never]
     })
 
-    expect($workingSessionIds.get()).toEqual(['stored-worker'])
+    // Keep the runtime referenced so the settled state stays in the store
+    // instead of being evicted as no-longer-needed.
+    $activeSessionId.set('runtime-tools')
 
-    rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'worker', true)
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-tools', session_key: 'stored-tools', status: 'working' }]
+    })
+    rehydrateLiveSessionStatuses({ sessions: [] })
 
-    expect($workingSessionIds.get()).toEqual([])
+    const state = $sessionStates.get()['runtime-tools']
+
+    expect(state.busy).toBe(false)
+    expect(state.awaitingResponse).toBe(false)
+    expect((state.messages[0].parts[0] as { result?: unknown }).result).toBeDefined()
   })
 
-  it('does not reap another profile during authoritative reconnect', () => {
-    setSessions([{ id: 'stored-worker', profile: 'worker' } as SessionInfo])
-    publishSessionState('runtime-worker', {
-      ...createClientSessionState('stored-worker'),
-      busy: true,
-      storedSessionId: 'stored-worker'
+  it('clears a session stuck awaiting a response without the busy flag', () => {
+    publishSessionState('runtime-await', {
+      ...createClientSessionState('stored-await'),
+      awaitingResponse: true,
+      busy: false
     })
 
-    rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'default', true)
+    $activeSessionId.set('runtime-await')
 
-    expect($workingSessionIds.get()).toEqual(['stored-worker'])
-  })
-
-  it('fully settles an idle row through the cache-owned reconciler', () => {
-    const cache = new Map<string, ClientSessionState>([
-      [
-        'runtime-a',
-        {
-          ...createClientSessionState('stored-a'),
-          adoptedRunningTurn: true,
-          awaitingResponse: true,
-          busy: true,
-          interimBoundaryPending: true,
-          streamId: 'stream-a',
-          turnStartedAt: 123
-        }
-      ]
-    ])
-    $activeSessionId.set('runtime-a')
-    publishSessionState('runtime-a', cache.get('runtime-a')!)
-    const dispose = setLiveSessionStateReconciler((runtimeId, updater, storedSessionId) => {
-      const next = updater(cache.get(runtimeId) ?? createClientSessionState(storedSessionId))
-      cache.set(runtimeId, next)
-      publishSessionState(runtimeId, next)
-
-      return next
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-await', session_key: 'stored-await', status: 'working' }]
     })
+    rehydrateLiveSessionStatuses({ sessions: [] })
 
-    rehydrateLiveSessionStatuses({ sessions: [{ id: 'runtime-a', session_key: 'stored-a', status: 'idle' }] })
-
-    expect(cache.get('runtime-a')).toMatchObject({
-      adoptedRunningTurn: false,
-      awaitingResponse: false,
-      busy: false,
-      interimBoundaryPending: false,
-      streamId: null,
-      turnStartedAt: null
-    })
-    expect($sessionStates.get()['runtime-a']).toBe(cache.get('runtime-a'))
-    dispose()
-  })
-
-  it('does not let an older active-list snapshot overwrite a newer stream edge', () => {
-    const initial = { ...createClientSessionState('stored-a'), busy: true }
-    publishSessionState('runtime-a', initial)
-    const baseline = captureLiveSessionStatusBaseline()
-    const newer = { ...initial, sawAssistantPayload: true, streamId: 'new-stream' }
-    publishSessionState('runtime-a', newer)
-
-    rehydrateLiveSessionStatuses(
-      { sessions: [{ id: 'runtime-a', session_key: 'stored-a', status: 'idle' }] },
-      Date.now(),
-      'default',
-      false,
-      baseline
-    )
-
-    expect($sessionStates.get()['runtime-a']).toBe(newer)
+    expect($sessionStates.get()['runtime-await'].awaitingResponse).toBe(false)
   })
 })

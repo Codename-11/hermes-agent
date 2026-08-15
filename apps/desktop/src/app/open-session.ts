@@ -14,8 +14,7 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
-import { $activeGatewayProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $activeSessionId, $selectedStoredSessionId, $sessions, rememberedSessionProfile } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
 import {
   focusedSessionNeedsRoute,
   focusOpenSession,
@@ -80,15 +79,11 @@ export function openSession(
     return
   }
 
-  // Every entry point must route through the session owner, including callers
-  // that only know an id (search results, notifications, refs, cold resume).
-  // Falling back to the currently active profile preserves uncached/single-
-  // profile behavior while cached rows remain authoritative.
-  const ownerProfile = normalizeProfileKey(
-    profile ?? rememberedSessionProfile($sessions.get(), storedSessionId, $activeGatewayProfile.get())
-  )
-  const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
-  const scopedProfile = profile !== undefined || ownerProfile !== activeProfile ? ownerProfile : undefined
+  // Any explicit open/focus means the user has seen the finished-turn marker.
+  // Must run BEFORE the focus short-circuits below: clicking a session that is
+  // already on screen (open tile, or the main session) would otherwise return
+  // at focusOpenSession and never clear its unread dot.
+  markSessionRead(storedSessionId)
 
   let resolved: OpenSessionIntent = intent
 

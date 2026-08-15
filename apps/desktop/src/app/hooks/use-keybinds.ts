@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
+import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
@@ -16,7 +17,7 @@ import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { useI18n } from '@/i18n'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
-import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
@@ -96,6 +97,8 @@ export interface KeybindRuntimeDeps {
   openNewSessionTab: () => void
   /** Pin/unpin the active session. */
   toggleSelectedPin: () => void
+  /** Archive the active session. */
+  archiveSelectedSession: () => void
 }
 
 type HandlerMap = Record<string, () => void>
@@ -135,6 +138,7 @@ export async function toggleWakeWordFromKeyboard(
 // mode is active (edit overlay / panel rebind) — records the pressed combo.
 export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const navigate = useNavigate()
+  const location = useLocation()
   const { resolvedMode, setMode } = useTheme()
   const { t } = useI18n()
 
@@ -254,6 +258,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
+    'session.archive': deps.archiveSelectedSession,
     // openWorktreeDialog resolves the target. There is no test for a repo
     // here, so the key works from a detached session that sits inside a
     // project, and not only from a session with a repo. When no repo is in
@@ -296,7 +301,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // the Win/Linux path where ⌘W reaches the renderer directly.
     'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
-    'view.findInPage': openFindBar,
+    'view.findInPage': () => {
+      // Suppress on overlay routes so it doesn't collide with overlay-specific
+      // search surfaces (e.g. Settings search bar).
+      if (!isOverlayView(appViewForPath(location.pathname))) {
+        openFindBar()
+      }
+    },
     // ⌘G / ⌘⇧G are handled by the find bar's own capture-phase listener while
     // it is open (so they don't collide with `view.toggleReview`). These
     // registry handlers cover a user-assigned dedicated chord: stepping is a
@@ -335,6 +346,16 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // An active IME composition owns the keyboard. Windows Chinese IMEs
+      // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
+      // so without this guard that keystroke ALSO matched `nav.settings` and
+      // navigated away mid-word — unmounting the composer and destroying the
+      // unsent draft (#41079). The draft stash below makes navigation safe;
+      // this makes the IME keystroke not navigate at all.
+      if (event.isComposing) {
+        return
+      }
+
       // Capture mode: the next real key becomes the binding. Swallow everything
       // so e.g. ⌘K rebinds instead of opening the palette.
       const capturing = $capture.get()
@@ -408,7 +429,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      if (isEditableTarget(event.target) && !comboAllowedInInput(combo)) {
+      if (isEditableTarget(event.target) && !actionAllowedInInput(actionId, combo)) {
         return
       }
 

@@ -10,6 +10,7 @@ import {
   ensureDesktopDirectory,
   readDesktopDir,
   readDesktopFileDataUrl,
+  readDesktopFileDataUrlLocalFirst,
   readDesktopFileText,
   selectDesktopPaths,
   setDesktopFsRemotePicker
@@ -126,27 +127,24 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).not.toHaveBeenCalled()
   })
 
-  it('creates typed project directories through Electron only in local mode', async () => {
+  it('does not retry the same unreadable path through the local facade', async () => {
+    const error = new Error('not readable')
+
     $connection.set({ mode: 'local' } as never)
+    readFileDataUrl.mockRejectedValueOnce(error)
 
-    await expect(ensureDesktopDirectory('/local/new-project')).resolves.toEqual({ path: '/local/new-project' })
-
-    expect(ensureDirectory).toHaveBeenCalledWith('/local/new-project')
+    await expect(readDesktopFileDataUrlLocalFirst('/missing.png')).rejects.toBe(error)
+    expect(readFileDataUrl).toHaveBeenCalledOnce()
     expect(api).not.toHaveBeenCalled()
   })
 
-  it('creates typed project directories through the active authenticated remote profile', async () => {
-    $connection.set({ mode: 'remote', profile: 'coder' } as never)
+  it('falls back from local disk to the active gateway in remote mode', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    readFileDataUrl.mockRejectedValueOnce(new Error('not on host'))
 
-    await expect(ensureDesktopDirectory('/remote/new-project')).resolves.toEqual({ path: '/remote/new-project' })
-
-    expect(api).toHaveBeenCalledWith({
-      body: { path: '/remote/new-project' },
-      method: 'POST',
-      path: '/api/fs/ensure-directory',
-      profile: 'coder'
-    })
-    expect(ensureDirectory).not.toHaveBeenCalled()
+    await expect(readDesktopFileDataUrlLocalFirst('/remote/image.png')).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
+    expect(readFileDataUrl).toHaveBeenCalledOnce()
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fremote%2Fimage.png' })
   })
 
   it('targets the active profile backend so a remote profile never reads local disk', async () => {
