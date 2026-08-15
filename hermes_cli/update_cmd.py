@@ -185,6 +185,46 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
     except (subprocess.CalledProcessError, OSError):
         return None
 
+
+_PYTHON_DEPENDENCY_MANIFEST_PATHS = (
+    "pyproject.toml",
+    "uv.lock",
+    "setup.py",
+    "setup.cfg",
+    ":(glob)**/requirements*.txt",
+    ":(glob)**/constraints*.txt",
+)
+
+
+def _python_dependency_refresh_required(git_cmd, repo: Path, old_head: str | None) -> bool:
+    """Return whether the update changed Python dependency declarations.
+
+    Editable installs expose source changes immediately, so reinstalling after
+    every git update is unnecessary. On Windows it is also unsafe when the
+    updater was launched through the mapped ``hermes.exe`` shim. Fall back to
+    refreshing whenever the comparison cannot be trusted.
+    """
+    if not old_head:
+        return True
+    try:
+        result = subprocess.run(
+            git_cmd
+            + [
+                "diff",
+                "--name-only",
+                f"{old_head}..HEAD",
+                "--",
+                *_PYTHON_DEPENDENCY_MANIFEST_PATHS,
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            check=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return True
+    return bool(result.stdout.strip())
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -4279,6 +4319,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_phase_completed = False
 
     # Fetch and pull
+    dependency_base_sha: str | None = None
     try:
 
         # Resolve the target branch up front so the fetch can be scoped to it.
@@ -4342,6 +4383,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd, _m().PROJECT_ROOT
             )
             pre_update_head = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+            dependency_base_sha = pre_update_head or None
             if not exact_target and _m()._deploy_handoff_exists_for(_m().PROJECT_ROOT, current_branch):
                 deploy_commit_count = _m()._resolve_deploy_handoff(
                     git_cmd=git_cmd,
@@ -4590,6 +4632,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # every user who ran ``hermes update`` for the 7 minutes between
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        if dependency_base_sha is None:
+            dependency_base_sha = pre_pull_sha
         try:
             # Merge the ref we already fetched above (→ Fetching updates...)
             # instead of `git pull`, which performs a SECOND network fetch of
@@ -4721,8 +4765,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # marker survives and the next ``hermes`` launch finishes the install
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
-        _write_update_incomplete_marker()
-        print("→ Updating Python dependencies...")
+        refresh_python_dependencies = _python_dependency_refresh_required(
+            git_cmd, _m().PROJECT_ROOT, dependency_base_sha
+        )
+        if refresh_python_dependencies:
+            _write_update_incomplete_marker()
+            print("→ Updating Python dependencies...")
+        else:
+            print("  ✓ Python dependency manifests unchanged — skipping reinstall")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
@@ -4742,12 +4792,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 uv_env.pop("PYTHONHOME", None)
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if _m()._is_termux_env(uv_env) and _is_android_python():
+            if (
+                refresh_python_dependencies
+                and _m()._is_termux_env(uv_env)
+                and _is_android_python()
+            ):
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _m()._install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
+            if refresh_python_dependencies:
+                _m()._install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
+                )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -4770,10 +4825,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _m()._is_termux_env():
                 install_group = "termux-all"
                 print("  → Termux detected: using curated termux-all optional profile...")
-            if _m()._is_termux_env() and _is_android_python():
+            if refresh_python_dependencies and _m()._is_termux_env() and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)
-            _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            if refresh_python_dependencies:
+                _m()._install_python_dependencies_with_optional_fallback(
+                    pip_cmd, group=install_group
+                )
 
         install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
         lazy_env = uv_env if uv_bin else None
