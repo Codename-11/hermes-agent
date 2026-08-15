@@ -104,6 +104,7 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
         onResumeSession={onResumeSession}
         onToggle={noop}
         onTogglePin={noop}
+        onToggleUnread={noop}
         open
         pinned={false}
         sessions={[session]}
@@ -128,6 +129,7 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
         onResumeSession={noop}
         onToggle={noop}
         onTogglePin={noop}
+        onToggleUnread={noop}
         open
         pinned={false}
         sessions={[
@@ -290,6 +292,7 @@ describe('SidebarSessionsSection hybrid project overview', () => {
         onResumeSession={noop}
         onToggle={noop}
         onTogglePin={noop}
+        onToggleUnread={noop}
         open
         pinned={false}
         projectOverview={[homeProject] as never}
@@ -324,6 +327,7 @@ describe('SidebarSessionsSection hybrid project overview', () => {
         onToggle={noop}
         onTogglePin={noop}
         onToggleProjectOverview={onToggleProjectOverview}
+        onToggleUnread={noop}
         open
         pinned={false}
         projectOverview={[homeProject] as never}
@@ -348,6 +352,7 @@ describe('SidebarSessionsSection hybrid project overview', () => {
         onToggle={noop}
         onTogglePin={noop}
         onToggleProjectOverview={onToggleProjectOverview}
+        onToggleUnread={noop}
         open
         pinned={false}
         projectOverview={[homeProject] as never}
@@ -378,6 +383,7 @@ describe('SidebarSessionsSection hybrid project overview', () => {
         onResumeSession={noop}
         onToggle={noop}
         onTogglePin={noop}
+        onToggleUnread={noop}
         open
         pinned={false}
         projectOverview={[{ ...homeProject, previewSessions: previews, sessionCount: 9 }] as never}
@@ -408,6 +414,7 @@ describe('SidebarSessionsSection hybrid project overview', () => {
         onResumeSession={noop}
         onToggle={noop}
         onTogglePin={noop}
+        onToggleUnread={noop}
         open
         pinned={false}
         projectContent={{ ...homeProject, id: 'p-demo', isNoProject: false, label: 'Demo' } as never}

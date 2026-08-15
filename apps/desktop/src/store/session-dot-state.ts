@@ -30,11 +30,12 @@ import { stableArray, stableRecord } from '@/lib/stable-array'
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
-  $attentionSessionIds,
+  $attentionSessionKeys,
   $draftSessionIds,
   $sessionStates,
   $stalledSessionIds,
-  $workingSessionIds
+  $workingSessionKeys,
+  sessionStatusKey
 } from './session-states'
 import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
 import { $subagentsBySession, activeSubagentCount } from './subagents'
@@ -142,8 +143,8 @@ export const $sessionDotStateById = computed(
     //
     // Draft is weakest of all: it says only "no turn has happened here yet", so
     // the first thing that does happen speaks over it.
-    claim(draft, 'draft')
-    claim(unread, 'unread')
+    claimBare(draft, 'draft')
+    claimBare(unread, 'unread')
 
     // Persisted read state (backend watermark): a row marked unread keeps the
     // same emerald dot a background finish would paint, and survives
@@ -169,15 +170,15 @@ export const $sessionDotStateById = computed(
       }
     }
 
-    claim(persistedUnread, 'unread')
+    claimBare(persistedUnread, 'unread')
 
-    claim(background, 'background')
+    claimBare(background, 'background')
     // Async delegation: the parent turn has ended but its subagents are still
     // running, so the session's work continues in child sessions. Same visual
     // claim as background processes — and it yields to `working` below the
     // moment the parent turn itself is live (synchronous orchestrator children).
-    claim(delegating, 'background')
-    claim(working, 'working')
+    claimBare(delegating, 'background')
+    claimKeys(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still
     // authoritatively running, it has just gone quiet — so it only downgrades a

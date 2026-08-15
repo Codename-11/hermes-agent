@@ -1,8 +1,12 @@
-import { computed, type ReadableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { Codecs } from '@/lib/persisted'
+import { profilePersistentAtom } from '@/lib/profile-persisted'
+import { persistBoolean, storedBoolean, storedString } from '@/lib/storage'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile-scope'
 
 const POPOUT_STORAGE_KEY = 'hermes.desktop.composerPopout.zones.v1'
+const PROFILE_POPOUT_STORAGE_KEY = 'hermes.desktop.profileComposerPopoutZones.v1'
 const POPOUT_GESTURES_ENABLED_STORAGE_KEY = 'hermes.desktop.composerPopout.gesturesEnabled'
 
 // Pre-zone keys: one flag + one position for the whole window. Read at load to
@@ -62,12 +66,8 @@ function sanitizeZones(parsed: unknown): Record<string, PopoutZoneState> {
   for (const [id, value] of Object.entries((parsed as Record<string, unknown>) ?? {})) {
     const zone = value as null | Partial<PopoutZoneState>
 
-    for (const [id, value] of Object.entries((parsed as Record<string, unknown>) ?? {})) {
-      const zone = value as null | Partial<PopoutZoneState>
-
-      if (typeof zone?.poppedOut === 'boolean' && isPosition(zone.position)) {
-        out[id] = { poppedOut: gesturesEnabledAtLoad && zone.poppedOut, position: { ...zone.position } }
-      }
+    if (typeof zone?.poppedOut === 'boolean' && isPosition(zone.position)) {
+      out[id] = { poppedOut: gesturesEnabledAtLoad && zone.poppedOut, position: { ...zone.position } }
     }
   }
 
@@ -80,7 +80,13 @@ function sanitizeZones(parsed: unknown): Record<string, PopoutZoneState> {
  *  tabs in the same zone share a float (switch tabs, the box stays where you
  *  put it), while a split zone beside them keeps its own — popping out on the
  *  left doesn't fling a composer out of the right. */
-export const $composerPopoutZones = atom<Record<string, PopoutZoneState>>(load())
+export const $composerPopoutZones = profilePersistentAtom<Record<string, PopoutZoneState>>({
+  autoPersist: false,
+  codec: Codecs.json(sanitizeZones),
+  fallback: () => ({}),
+  key: PROFILE_POPOUT_STORAGE_KEY,
+  legacyKey: POPOUT_STORAGE_KEY
+})
 export const $composerPopoutGesturesEnabled = atom(gesturesEnabledAtLoad)
 
 /** Write-through to storage. Called explicitly — NOT on every store change: a

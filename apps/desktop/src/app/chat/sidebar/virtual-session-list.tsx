@@ -157,7 +157,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onToggleUnread: () => onToggleUnread(session.id),
-      onResume: () => onResumeSession(session.id),
+      onResume: () => onResumeSession(session.id, session.profile),
       reorderable,
       showProfile: showProfileTags,
       unread: session.unread === true

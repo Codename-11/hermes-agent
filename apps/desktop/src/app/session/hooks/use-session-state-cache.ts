@@ -22,7 +22,8 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
+import { $sessionTiles, dropSessionState, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
+import { clearSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
 import { SessionStateCache } from '../session-state-cache'

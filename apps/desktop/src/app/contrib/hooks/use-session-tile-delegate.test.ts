@@ -223,7 +223,7 @@ describe('useSessionTileDelegate interruptSession', () => {
     const requestGateway = vi.fn(async () => ({}) as never)
 
     renderTile(requestGateway)
-    await sessionTileDelegate()!.interruptSession('runtime-tile-1')
+    await sessionTileDelegate()!.interruptSession('runtime-tile-1', 'default')
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-tile-1' })
     // Same 3s cooldown the primary chat's Stop sets: busy reads false while the

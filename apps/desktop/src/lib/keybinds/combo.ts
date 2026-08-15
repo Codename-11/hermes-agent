@@ -249,6 +249,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 const INPUT_SAFE_ACTIONS = new Set([
+  'composer.dictate',
   'composer.modelPicker',
   'composer.voice',
   'keybinds.openPanel',
@@ -259,6 +260,12 @@ const INPUT_SAFE_ACTIONS = new Set([
 ])
 
 const TEXT_NAVIGATION_KEYS = new Set(['up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown'])
+
+// A primary modifier (Cmd/Ctrl/Control) fires even while typing; bare and
+// Shift-only printable combos are suppressed in inputs.
+export function comboAllowedInInput(combo: string): boolean {
+  return /^(?:mod|ctrl)(?:\+|$)/.test(combo)
+}
 
 // Only explicit text-entry-safe actions fire while typing. Editing/navigation
 // chords such as Ctrl+Arrow/PageUp must stay with the input even if a user

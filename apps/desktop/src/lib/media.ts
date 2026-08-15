@@ -189,7 +189,8 @@ export async function gatewayMediaDataUrl(path: string, profile?: null | string)
 // avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
 // used by preview endpoints.
 export async function downloadGatewayMediaFile(
-  path: string
+  path: string,
+  profile?: null | string
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
   const file = filePathFromMediaPath(path)
   const conn = $connection.get()
@@ -200,7 +201,7 @@ export async function downloadGatewayMediaFile(
 
   return window.hermesDesktop.saveGatewayFile({
     path: file,
-    profile: conn?.profile,
+    profile: profile ?? conn?.profile,
     suggestedName: mediaName(file)
   })
 }

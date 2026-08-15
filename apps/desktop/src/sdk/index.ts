@@ -23,6 +23,12 @@ import { atom, type ReadableAtom } from 'nanostores'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
+import type {
+  DesktopUpdateHistoryEntry,
+  DesktopUpdateStageStatus,
+  DesktopUpdateStatus,
+  DesktopUpstreamSyncStatus
+} from '@/global'
 import { getLogs, getStatus, type HermesGateway } from '@/hermes'
 import { $gateway, ensureGatewayForAgent, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds, setSessions } from '@/store/session'
 import {
   $attentionSessionIds,
   $sessionStates,

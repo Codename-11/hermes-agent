@@ -12,7 +12,7 @@ vi.mock('@/components/pane-shell/pane-visibility', () => ({
 }))
 
 vi.mock('@/hooks/use-resize-observer', () => ({ useResizeObserver: () => undefined }))
-vi.mock('@/store/windows', () => ({ isSecondaryWindow: () => false }))
+vi.mock('@/store/windows', () => ({ isSecondaryWindow: () => false, windowProfileOverride: () => null }))
 
 function PopoutAffordanceHarness() {
   const composerRef = useRef<HTMLFormElement>(null)

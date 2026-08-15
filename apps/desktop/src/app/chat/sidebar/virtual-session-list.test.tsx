@@ -59,6 +59,7 @@ describe('VirtualSessionList', () => {
     const { getByTestId } = render(
       <VirtualSessionList
         activeSessionId={null}
+        activeSessionProfile="default"
         onArchiveSession={noop}
         onDeleteSession={noop}
         onResumeSession={noop}
@@ -89,6 +90,7 @@ describe('VirtualSessionList', () => {
     const { getByTestId } = render(
       <VirtualSessionList
         activeSessionId={null}
+        activeSessionProfile="default"
         onArchiveSession={noop}
         onDeleteSession={noop}
         onResumeSession={noop}

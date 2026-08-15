@@ -5,7 +5,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { $sessions, $unreadFinishedSessionIds, setSessions } from './session'
 import { $delegatingSessionIds, $sessionDotStateById, hasLiveTurn, showsRunningArc } from './session-dot-state'
-import { clearAllSessionStates, publishSessionState } from './session-states'
+import { clearAllSessionStates, publishSessionState, sessionStatusKey } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 
@@ -107,7 +107,7 @@ describe('persisted unread (backend watermark)', () => {
   it('claims unread for a session whose row carries unread: true', () => {
     setSessions([storedRow('s1', { unread: true })])
 
-    expect($sessionDotStateById.get()['s1']).toBe('unread')
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 's1')]).toBe('unread')
   })
 
   it('keeps draft weaker than persisted unread', () => {
@@ -116,14 +116,14 @@ describe('persisted unread (backend watermark)', () => {
     setSessions([storedRow('s1', { message_count: 0, unread: true })])
     publishSessionState('rt1', createClientSessionState('s1'))
 
-    expect($sessionDotStateById.get()['s1']).toBe('unread')
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 's1')]).toBe('unread')
   })
 
   it('lets working outrank persisted unread', () => {
     setSessions([storedRow('s1', { unread: true })])
     publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
 
-    expect($sessionDotStateById.get()['s1']).toBe('working')
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 's1')]).toBe('working')
   })
 
   it('fences a stale page with the write guard', () => {
@@ -133,18 +133,18 @@ describe('persisted unread (backend watermark)', () => {
 
     // A page issued before our PATCH still says read — keep OUR value.
     setSessions([storedRow('s1', { unread: false })])
-    expect($sessionDotStateById.get()['s1']).toBe('unread')
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 's1')]).toBe('unread')
 
     // The guard expires: the page wins and the dot drops.
     const expired = new Map<string, { at: number; value: boolean }>()
     expired.set('s1', { at: Date.now() - 60_000, value: true })
     $unreadWriteGuard.set(expired)
-    expect($sessionDotStateById.get()['s1']).not.toBe('unread')
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 's1')]).not.toBe('unread')
   })
 
   it('leaves a row alone when the backend omits the flag (older runtime)', () => {
     setSessions([storedRow('s1')])
 
-    expect($sessionDotStateById.get()['s1'] ?? 'idle').not.toBe('unread')
+    expect($sessionDotStateById.get()[sessionStatusKey('default', 's1')] ?? 'idle').not.toBe('unread')
   })
 })

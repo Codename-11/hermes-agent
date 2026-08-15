@@ -251,7 +251,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   }
 }
 
-function createSecondary(profile: string, connectionId: null | string = null): Secondary {
+function createSecondary(profile: string, connectionId: null | string = null, wantOpen = true): Secondary {
   const gateway = new HermesGateway()
   const scope = backendScopeKey(connectionId, profile)
 
@@ -341,7 +341,7 @@ export async function openGatewayForProfile(profile: string): Promise<void> {
 
   // Hover prewarming is speculative. It must not opt the profile into the
   // permanent reconnect loop until activation or live work actually needs it.
-  const entry = g.secondaries.get(key) ?? createSecondary(key, false)
+  const entry = g.secondaries.get(key) ?? createSecondary(key, null, false)
 
   if (!isOpen(entry.gateway)) {
     await openSecondary(entry)
@@ -372,6 +372,40 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   if (!isOpen(entry.gateway)) {
     await openSecondary(entry)
   }
+}
+
+/** Evict a profile's descriptor-bound socket after its connection settings
+ * change. If it is foreground-active, reconnect immediately from the newly
+ * persisted descriptor; otherwise the next activation opens it lazily. */
+export async function refreshGatewayForProfile(profile: string): Promise<void> {
+  const key = normKey(profile)
+
+  if (key === g.primaryProfile) {
+    return
+  }
+
+  const previous = g.secondaries.get(key)
+
+  if (previous) {
+    disposeSecondary(previous)
+    g.secondaries.delete(key)
+  }
+
+  if (g.activeKey !== key) {
+    return
+  }
+
+  g.$gateway.set(null)
+  setGatewayState('closed')
+  const entry = createSecondary(key)
+
+  try {
+    await openSecondary(entry)
+  } catch {
+    scheduleReconnect(entry)
+  }
+
+  setActive(key)
 }
 
 export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<void> {

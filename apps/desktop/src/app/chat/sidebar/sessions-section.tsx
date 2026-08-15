@@ -277,7 +277,7 @@ export function SidebarSessionsSection({
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
         onToggleUnread: () => onToggleUnread(session.id),
-        onResume: () => onResumeSession(session.id),
+        onResume: () => onResumeSession(session.id, session.profile),
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
@@ -411,6 +411,7 @@ export function SidebarSessionsSection({
           onDeleteSession={onDeleteSession}
           onResumeSession={onResumeSession}
           onTogglePin={onTogglePin}
+          onToggleUnread={onToggleUnread}
           pinned={pinned}
           rows={flatRows}
           showProfileTags={showProfileTags}
@@ -553,6 +554,7 @@ export function SidebarSessionsSection({
     const virtual = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
+        activeSessionProfile={activeGatewayProfile}
         card={card}
         className={contentClassName}
         dividerAction={dividerAction}

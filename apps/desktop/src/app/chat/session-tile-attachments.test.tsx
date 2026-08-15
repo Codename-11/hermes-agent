@@ -19,6 +19,12 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
 
+vi.mock('@/store/profile', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/store/profile')>()
+
+  return { ...actual, ensureGatewayProfile: vi.fn(async () => undefined) }
+})
+
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
@@ -100,6 +106,7 @@ function installDelegate(): void {
     deleteSession: vi.fn(async () => undefined),
     executeSlash: vi.fn(async () => undefined),
     interruptSession: vi.fn(async () => undefined),
+    rehydrateTile: vi.fn(),
     resumeTile: vi.fn(async () => RUNTIME_ID),
     submitToSession: vi.fn(async () => undefined),
     updateSession
@@ -160,7 +167,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: 'default', runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -168,7 +175,7 @@ describe('session tile attachment occurrence ownership', () => {
       submitted = result.current.submitText('describe this')
     })
 
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything()))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything(), undefined, undefined))
     expect(scope.attachments.updateIfCurrent(original, { thumbnailUrl: THUMBNAIL })).toBe(true)
 
     attach.resolve({ attached: true, path: STAGED_PATH })
@@ -206,7 +213,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: 'default', runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -214,7 +221,7 @@ describe('session tile attachment occurrence ownership', () => {
       submitted = result.current.submitText('describe this')
     })
 
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything()))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything(), undefined, undefined))
     scope.attachments.remove(original.id)
     scope.attachments.add(replacement)
 
@@ -244,7 +251,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: 'default', runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -252,7 +259,7 @@ describe('session tile attachment occurrence ownership', () => {
       submitted = result.current.submitText('describe this')
     })
 
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything()))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything(), undefined, undefined))
     scope.attachments.remove(original.id)
     scope.attachments.add(replacement)
     attach.resolve({ attached: true, path: STAGED_PATH })
@@ -281,7 +288,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: 'default', runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -290,7 +297,7 @@ describe('session tile attachment occurrence ownership', () => {
     })
 
     await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything(), undefined)
     )
     scope.attachments.remove(original.id)
     scope.attachments.add(replacement)
@@ -322,7 +329,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: 'default', runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     await act(async () => {

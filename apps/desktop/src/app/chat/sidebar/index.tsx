@@ -73,6 +73,7 @@ import {
   unpinSession
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { openBrowser } from '@/store/preview'
 import {
   $hiddenProfiles,
   $newChatProfile,
@@ -128,7 +129,7 @@ import {
   setCurrentCwd
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $focusedStoredSessionId, $workingSessionIds, sessionStatusKey, type SplitDir } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -392,6 +393,12 @@ export function ChatSidebar({
   const hiddenProfiles = useStore($hiddenProfiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+  const visibleProfiles = filterVisibleProfiles(profiles, hiddenProfiles)
+
+  const visibleProfileKeys = useMemo(
+    () => new Set(visibleProfiles.map(profile => normalizeProfileKey(profile.name))),
+    [visibleProfiles]
+  )
 
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend

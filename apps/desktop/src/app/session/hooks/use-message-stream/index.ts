@@ -566,7 +566,8 @@ export function useMessageStream({
       text: string,
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean },
-      occurredAt = Date.now() / 1000
+      occurredAt = Date.now() / 1000,
+      sourceProfile?: string
     ) => {
       let shouldHydrate = false
 

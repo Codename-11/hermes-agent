@@ -1,5 +1,5 @@
 import type { ClientSessionState } from '@/app/types'
-import { chatMessageText } from '@/lib/chat-messages'
+import { chatMessageText, sealOpenToolParts } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { $sessions, sessionMatchesStoredId } from './session'
@@ -70,7 +70,7 @@ function settleRuntime(state: ClientSessionState): ClientSessionState {
     awaitingResponse: false,
     busy: false,
     interimBoundaryPending: false,
-    messages: finalizePendingMessages(state),
+    messages: sealOpenToolParts(finalizePendingMessages(state)),
     needsInput: false,
     pendingBranchGroup: null,
     streamId: null,

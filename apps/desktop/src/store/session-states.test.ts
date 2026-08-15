@@ -6,6 +6,7 @@ import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
+  $sessionTiles,
   $sessionStates,
   blankDraftTile,
   closeSessionTile,
@@ -17,8 +18,11 @@ import {
   nextSessionTileForWorkspace,
   openTileNeedsHydration,
   orderTilesByTree,
+  patchSessionTile,
   releaseSessionTranscript,
-  selectionHomesToWorkspace
+  selectionHomesToWorkspace,
+  sessionTileKey,
+  sessionTilePaneId
 } from '@/store/session-states'
 
 const tile = (storedSessionId: string, profile = 'default'): SessionTile => ({ profile, storedSessionId })

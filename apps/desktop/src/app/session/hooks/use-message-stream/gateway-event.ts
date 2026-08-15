@@ -226,7 +226,8 @@ interface GatewayEventDeps {
     text: string,
     responsePreviewed?: boolean,
     failure?: { error: string; partial: boolean },
-    occurredAt?: number
+    occurredAt?: number,
+    sourceProfile?: string
   ) => void
   failAssistantMessage: (sessionId: string, errorMessage: string, occurredAt?: number) => void
   flushQueuedDeltas: (sessionId?: string) => void
@@ -892,7 +893,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
             : undefined
 
-        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt, event.profile)
 
         // Structured billing wall forwarded by the gateway (out of credits /
         // payment required) — cache it + raise a billing-specific toast.

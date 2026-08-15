@@ -24,7 +24,7 @@ import {
   setSelectedStoredSessionId,
   setTurnStartedAt
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $sessionStates, clearAllSessionStates } from '@/store/session-states'
 
 import { useSessionStateCache } from './use-session-state-cache'
 
