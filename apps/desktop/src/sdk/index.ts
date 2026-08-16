@@ -31,10 +31,8 @@ import type {
   DesktopUpdateStatus,
   DesktopUpstreamSyncStatus
 } from '@/global'
-import { getLogs, getStatus, type HermesGateway } from '@/hermes'
-import { $gateway, ensureGatewayForAgent, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
-import { $gateway, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
+import { $gateway, ensureGatewayForAgent, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,

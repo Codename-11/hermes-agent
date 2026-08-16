@@ -1614,6 +1614,39 @@ def _checkpoint_resolved_handoff(
             or staged_diff_check.stdout
             or "git diff --cached --check failed"
         ).strip()
+
+    # The resolver is advisory.  A conflict can be marker-free and whitespace-clean
+    # while still swallowing a Python statement into a comment or otherwise leaving
+    # a syntactically invalid file.  Fail before creating the durable checkpoint so
+    # the retained handoff remains safely repairable rather than committing known
+    # broken structure and only discovering it in the heavier parent checks.
+    staged_python = subprocess.run(
+        git_cmd + ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.py"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+    )
+    if staged_python.returncode != 0:
+        return "", "Could not enumerate staged Python files for syntax validation."
+    python_paths = [
+        str(worktree / relative)
+        for relative in staged_python.stdout.splitlines()
+        if relative.strip() and (worktree / relative).is_file()
+    ]
+    if python_paths:
+        syntax_check = subprocess.run(
+            [sys.executable, "-m", "py_compile", *python_paths],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+        )
+        if syntax_check.returncode != 0:
+            return "", (
+                syntax_check.stderr
+                or syntax_check.stdout
+                or "Staged Python syntax validation failed"
+            ).strip()
+
     commit_needed = subprocess.run(
         git_cmd + ["diff", "--cached", "--quiet"], cwd=worktree
     )

@@ -387,15 +387,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
-            state => {
-              if (state.storedSessionId !== storedSessionId) {
-                return state
-              }
-
-              const withPendingTurn = preserveLocalPendingTurnMessages(messages, state.messages)
-
-              return { ...state, messages: preserveLocalAssistantErrors(withPendingTurn, state.messages) }
-            },
             state => ({
               ...state,
               // Post-turn rehydrate reads only the newest tail page — graft it

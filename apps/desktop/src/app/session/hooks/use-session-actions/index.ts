@@ -1294,7 +1294,6 @@ export function useSessionActions({
             turnLive: state.turnLive || resumedRunning,
             needsInput: pendingApproval || pendingClarify || state.needsInput,
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
-            turnStartedAt: resumedRunning ? (state.turnStartedAt ?? Date.now()) : null,
             ...(inFlightRecovery.applied
               ? {
                   sawAssistantPayload: true,

@@ -99,7 +99,7 @@ describe('host.state focused-session atoms', () => {
       cost_usd: 0.0123
     }
 
-    states.$sessionTiles.set([{ storedSessionId: 'tile-a', runtimeId: 'runtime-tile-a' }])
+    states.$sessionTiles.set([{ storedSessionId: 'tile-a', runtimeId: 'runtime-tile-a', profile: 'default' }])
     states.$sessionStates.set({
       'runtime-tile-a': { storedSessionId: 'tile-a', usage: tileUsage } as never
     })

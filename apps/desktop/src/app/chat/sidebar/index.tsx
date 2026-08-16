@@ -82,7 +82,6 @@ import {
   $profileScope,
   ALL_PROFILES,
   filterVisibleProfiles,
-  normalizeProfileKey
   messagingTotalsKey,
   normalizeProfileKey,
   sidebarProfileForScope

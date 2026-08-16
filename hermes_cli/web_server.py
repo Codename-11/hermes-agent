@@ -17617,29 +17617,21 @@ def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> 
     # theme YAML): resolve them from the process launch home so they don't
     # vanish when a request is scoped to another profile via a context-local
     # HERMES_HOME override (e.g. embedded /chat under --open-profile).
-    search_dirs = [
     #
-    # #87197: when the process itself is profile-scoped (``--profile <name>``
-    # sets ``HERMES_HOME=<root>/profiles/<name>``), the launch home is the
-    # profile directory, which has no ``plugins/`` — user plugins are
-    # installed in the hermes root (``~/.hermes/plugins``). Scan the default
-    # root as well (``get_default_hermes_root()`` unwraps
-    # ``<root>/profiles/<name>`` → ``<root>`` and returns a custom
-    # ``HERMES_HOME`` unchanged when it *is* the root), mirroring how
-    # ``hermes_cli.plugins`` resolves plugin install locations. The
-    # ``seen_names`` dedupe below keeps profile-local plugins (if any)
-    # authoritative over same-named root plugins.
+    # When the process itself is profile-scoped (``--profile <name>``), the
+    # launch home is ``<root>/profiles/<name>`` while user plugins are installed
+    # in ``<root>/plugins``. Scan both roots, retaining profile-local plugins as
+    # the authoritative duplicate through the existing ``seen_names`` handling.
     from hermes_constants import get_default_hermes_root
 
     user_plugin_roots = [get_process_hermes_home() / "plugins"]
     root_plugins = get_default_hermes_root() / "plugins"
     if root_plugins.resolve(strict=False) != user_plugin_roots[0].resolve(strict=False):
         user_plugin_roots.append(root_plugins)
-    search_dirs = [(d, "user") for d in user_plugin_roots]
-    search_dirs += [
+    search_dirs = [
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
-        (get_process_hermes_home() / "plugins", "user"),
+        *((directory, "user") for directory in user_plugin_roots),
     ]
     # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
     # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,

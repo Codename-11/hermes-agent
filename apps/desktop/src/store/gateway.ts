@@ -266,7 +266,6 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   }
 }
 
-function createSecondary(profile: string, wantOpen = true, connectionId: null | string = null): Secondary {
 // Electron's getConnectionFor rejects with `No connection with id "…"` when
 // the registry entry is gone. That is a permanent condition for the scoped
 // socket, unlike transient transport errors.
@@ -276,7 +275,7 @@ function isMissingConnectionError(error: unknown): boolean {
   return message.includes('No connection with id')
 }
 
-function createSecondary(profile: string, connectionId: null | string = null): Secondary {
+function createSecondary(profile: string, wantOpen = true, connectionId: null | string = null): Secondary {
   const gateway = new HermesGateway()
   const scope = backendScopeKey(connectionId, profile)
 

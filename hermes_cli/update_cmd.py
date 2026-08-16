@@ -1610,13 +1610,13 @@ def _handle_update_called_process_error(
     files and turns one install failure into source-tree corruption.
     """
     print(f"⚠ Update subprocess failed: {exc}")
-    if sys.platform == "win32" and is_fork:
+    if _m()._is_windows() and is_fork:
         print(
             "✗ ZIP fallback disabled for this fork checkout; canonical upstream "
             "ZIP contents would overwrite fork-only files."
         )
         return False
-    if sys.platform == "win32" and not git_phase_completed:
+    if _m()._is_windows() and not git_phase_completed:
         print("→ Falling back to ZIP download...")
         print()
         if had_desktop_app_before_update:
@@ -1627,7 +1627,7 @@ def _handle_update_called_process_error(
         else:
             _update_via_zip(args)
         return True
-    if sys.platform == "win32" and git_phase_completed:
+    if _m()._is_windows() and git_phase_completed:
         print(
             "✗ Post-git dependency/build failure; ZIP fallback disabled to "
             "preserve this checkout."

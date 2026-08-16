@@ -1321,16 +1321,10 @@ export async function resolveStoredSession(
 ): Promise<SessionInfo | undefined> {
   const requestedKey = requestedProfile ? normalizeProfileKey(requestedProfile) : null
 
-  const cached = $sessions
-    .get()
-    .find(
-      session =>
-        sessionMatchesStoredId(session, storedSessionId) &&
-        (!requestedKey || normalizeProfileKey(session.profile) === requestedKey)
-    )
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
-    sessionMatchesStoredId(session, storedSessionId)
+  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(
+    session =>
+      sessionMatchesStoredId(session, storedSessionId) &&
+      (!requestedKey || normalizeProfileKey(session.profile) === requestedKey)
   )
 
   // A row with no owning profile can't route a resume when more than one
