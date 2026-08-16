@@ -5214,7 +5214,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # orphan merge-conflict markers in hermes_cli/config.py bricked
         # every user who ran ``hermes update`` for the 7 minutes between
         # the bad commit and the fix landing).
-        pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        # Preserve the actual deploy baseline when the deploy reconciler already
+        # advanced the checkout. The generic merge below is then intentionally a
+        # no-op, not evidence that the update failed to move code.
+        pre_pull_sha = (
+            pre_update_head
+            if is_deploy_branch and deploy_commit_count and pre_update_head
+            else _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        )
         if dependency_base_sha is None:
             dependency_base_sha = pre_pull_sha
         try:
