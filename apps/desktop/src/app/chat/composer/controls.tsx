@@ -5,18 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import {
-  AudioLines,
-  Ear,
-  EarOff,
-  iconSize,
-  Layers3,
-  Loader2,
-  Square,
-  Volume2,
-  VolumeX
-} from '@/lib/icons'
-import { useKeybindAriaShortcut } from '@/lib/keybinds/use-keybind-hint'
+import { AudioLines, Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
@@ -269,17 +258,15 @@ function ConversationIndicator({
 
 // Pure-TTS toggle: type normally, but have every assistant reply read aloud —
 // no dictation, no full conversation loop. Filled/accent when on, mirroring the
-// muted-mic pressed state above. Persisted per Desktop conversation.
+// muted-mic pressed state above. Driven by (and persisted to) `voice.auto_tts`.
 function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disabled: boolean; onToggle: () => void }) {
   const { t } = useI18n()
   const c = t.composer
   const label = active ? c.stopSpeakingReplies : c.speakReplies
-  const shortcut = useKeybindAriaShortcut('composer.autoSpeak')
 
   return (
-    <Tip label={<TipKeybindLabel actionId="composer.autoSpeak" text={label} />}>
+    <Tip label={label}>
       <Button
-        aria-keyshortcuts={shortcut}
         aria-label={label}
         aria-pressed={active}
         className={cn(
@@ -315,7 +302,6 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
   const { t } = useI18n()
   const c = t.composer
   const wake = useStore($wakeWord)
-  const shortcut = useKeybindAriaShortcut('composer.wakeWord')
 
   const phrase = wake.phrase || 'hey hermes'
 
@@ -328,9 +314,8 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
   const tooltip = !pausedForVoice && wake.notice ? `${label} — ${wake.notice}` : label
 
   return (
-    <Tip label={<TipKeybindLabel actionId="composer.wakeWord" text={tooltip} />}>
+    <Tip label={tooltip}>
       <Button
-        aria-keyshortcuts={shortcut}
         aria-label={label}
         aria-pressed={wake.listening && !pausedForVoice}
         className={cn(
@@ -367,15 +352,13 @@ function DictationButton({
   const { t } = useI18n()
   const c = t.composer
   const active = state.active || status !== 'idle'
-  const shortcut = useKeybindAriaShortcut('composer.dictate')
 
   const aria =
     status === 'recording' ? c.stopDictation : status === 'transcribing' ? c.transcribingDictation : c.voiceDictation
 
   return (
-    <Tip label={<TipKeybindLabel actionId="composer.dictate" text={aria} />}>
+    <Tip label={aria}>
       <Button
-        aria-keyshortcuts={shortcut}
         aria-label={aria}
         aria-pressed={active}
         className={cn(

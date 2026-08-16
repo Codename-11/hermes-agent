@@ -814,7 +814,7 @@ export interface Translations {
       deepLinkErrorConfig: string
       deepLinkErrorShape: string
       deepLinkErrorUrl: string
-      deepLinkErrorTooLarge: string,
+      deepLinkErrorTooLarge: string
       importButton: string
       importPlaceholder: string
       importNoMatch: string
