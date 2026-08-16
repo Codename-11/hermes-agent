@@ -1293,6 +1293,10 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "diff", "--cached", "--check"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == [
+            "git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.py"
+        ] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "diff", "--cached", "--quiet"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=1)
         if cmd == ["git", "rev-parse", "--git-path", "MERGE_HEAD"] and cwd == worktree:

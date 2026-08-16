@@ -1832,6 +1832,32 @@ def _resolve_deploy_handoff(
 
     checks = _focused_checks_for_paths(conflict_files, payload)
     if phase in {"validation_pending", "validation_failed"}:
+        # A failed parent check leaves the retained worktree editable so a
+        # resolver can repair the exact checkpoint. Re-checkpoint tracked
+        # repairs before consulting the old validation ledger; otherwise every
+        # retry reruns checks against the stale commit forever.
+        retained_status = subprocess.run(
+            git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+        )
+        if retained_status.returncode != 0:
+            status.fail(note="retained status unavailable")
+            print("✗ Could not inspect retained worktree before retrying validation.")
+            return None
+        if retained_status.stdout.strip():
+            status.advance("commit")
+            repaired_head, checkpoint_error = _checkpoint_resolved_handoff(
+                git_cmd, worktree, branch
+            )
+            if not repaired_head:
+                status.fail(note="repair checkpoint failed")
+                print(f"✗ Could not checkpoint retained validation repair: {checkpoint_error}")
+                return None
+            payload = _read_deploy_handoff_payload(repo, branch) or payload
+            phase = "validation_pending"
+
         resolved_head = str(payload.get("resolved_head") or "").strip()
         actual_head = _full_git_ref(git_cmd, worktree, "HEAD")
         if not resolved_head or actual_head != resolved_head:
