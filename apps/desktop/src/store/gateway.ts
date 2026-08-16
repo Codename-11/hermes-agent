@@ -142,6 +142,13 @@ export function activeGateway(): HermesGateway | null {
   return g.secondaries.get(g.activeKey)?.gateway ?? null
 }
 
+/** Read a profile-owned socket without changing the foreground gateway. */
+export function gatewayForProfile(profile: string): HermesGateway | null {
+  const key = normKey(profile)
+
+  return key === g.primaryProfile ? g.primaryGateway : (g.secondaries.get(key)?.gateway ?? null)
+}
+
 /**
  * The registry connection serving the gateway the user is currently looking
  * at — null for the local/legacy primary path and for profile-keyed (local)
