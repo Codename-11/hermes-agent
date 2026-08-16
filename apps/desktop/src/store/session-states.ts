@@ -33,6 +33,7 @@ import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
   $lastReadAtBySessionId,
@@ -307,6 +308,7 @@ export function dropSessionState(runtimeId: string) {
   // a just-finished session's row survives merge eviction even if its tile or
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
+  clearSessionProviderWait(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -331,6 +333,7 @@ export function clearAllSessionStates() {
 
   sessionWatchdogTimers.clear()
   settledExpiry.clear()
+  clearAllProviderWaits()
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }

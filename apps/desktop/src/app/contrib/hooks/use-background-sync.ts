@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { getLatestSessionMessages } from '@/hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
@@ -107,7 +108,13 @@ export async function reconcileActiveTranscript({
 
     updateSessionState(
       runtimeSessionId,
-      state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+      state => ({
+        ...state,
+        // The refresh re-reads only the newest tail page; graft it onto any
+        // older pages "Show earlier" already backfilled instead of clobbering
+        // them (see transcript-backfill).
+        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+      }),
       storedSessionId
     )
   } catch {

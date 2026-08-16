@@ -41,6 +41,7 @@ import {
   MessageCircle,
   Monitor,
   Moon,
+  Network,
   Package,
   Palette,
   PawPrint,
@@ -388,6 +389,7 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
 type NonConfigSettingsLabel =
   | 'about'
   | 'archivedChats'
+  | 'connections'
   | 'gateway'
   | 'keysSettings'
   | 'keysTools'
@@ -415,6 +417,12 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     tab: 'providers&pview=keys'
   },
   { icon: Globe, keywords: ['connection', 'messaging'], labelKey: 'gateway', tab: 'gateway' },
+  {
+    icon: Network,
+    keywords: ['connections', 'gateway', 'remote', 'multi', 'instances', 'ssh', 'cloud', 'add gateway', 'registry'],
+    labelKey: 'connections',
+    tab: 'connections'
+  },
   {
     icon: KeyRound,
     keywords: ['api', 'secrets', 'tokens', 'credentials', 'browser', 'search'],
