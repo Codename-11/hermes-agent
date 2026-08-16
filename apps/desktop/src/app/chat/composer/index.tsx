@@ -26,6 +26,8 @@ import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplyConversations, autoSpeakRepliesEnabled } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
+import { LiveSessionStatus } from '../live-session-status'
+
 import { AttachmentList } from './attachments'
 import {
   acceptsTriggerCompletion,
@@ -330,6 +332,12 @@ export function ChatBar({
     editorRef,
     poppedOut
   })
+  // A live status needs a persistent center lane. While a turn is active, use
+  // the composer's existing stacked controls row so the status never overlays
+  // editable text. Equal flexible side tracks keep it geometrically centered
+  // as controls appear and disappear on either side.
+
+  const controlsStacked = stacked || busy
 
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
@@ -1012,7 +1020,7 @@ export function ChatBar({
   )
 
   const input = (
-    <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
+    <div className={cn('relative', controlsStacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
@@ -1021,8 +1029,8 @@ export function ChatBar({
         className={cn(
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
-          stacked && 'pl-3',
-          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'
+          controlsStacked && 'pl-3',
+          controlsStacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'
         )}
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
@@ -1330,9 +1338,11 @@ export function ChatBar({
                   <div
                     className={cn(
                       'grid w-full',
-                      stacked
-                        ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                        : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+                      busy
+                        ? 'grid-cols-[minmax(max-content,1fr)_auto_minmax(max-content,1fr)] items-center gap-(--composer-control-gap) [grid-template-areas:"input_input_input"_"menu_status_controls"]'
+                        : stacked
+                          ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
+                          : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                     )}
                   >
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
@@ -1340,6 +1350,14 @@ export function ChatBar({
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
+                    <LiveSessionStatus
+                      awaitingInput={awaitingInput}
+                      busy={busy}
+                      className="[grid-area:status]"
+                      compact={compactPill || poppedOut}
+                      runningLabel={t.desktop.liveSessionRunning}
+                      waitingLabel={t.desktop.liveSessionWaiting}
+                    />
                     <div className="flex items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
                       <ContribSlot area={COMPOSER_AREAS.actions} />
                       {controls}

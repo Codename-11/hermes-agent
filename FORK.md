@@ -992,9 +992,11 @@ Protected behavior:
   filesystem setter, while the existing manual-folder picker remains available;
 - explicit project scope still wins over the configured default, and selecting a
   named project replaces rather than stacks with a stale manual-folder default;
-- every busy selected/tiled chat surface renders a persistent **Working…** strip
-  above its composer, transitioning to **Waiting for your input** for blocking
-  prompts and clearing when the session settles;
+- every busy selected/tiled chat surface renders **Working…** in the centered
+  control lane of its composer, compacting to the animated indicator in narrow
+  or popped-out composers; it transitions to **Waiting for your input** only
+  when the session-scoped prompt store reports a blocking clarify, approval,
+  sudo, or secret request, and clears when the session settles;
 - sidebar live-status keys remain profile-qualified even when a stream-seeded
   runtime publishes before its profile metadata arrives: a missing state profile
   may adopt the unique owning profile from the authoritative stored-session row,
@@ -1003,6 +1005,7 @@ Protected behavior:
 Primary files: `apps/desktop/src/store/{projects,session,session-states,
 session-dot-state}.ts`,
 `apps/desktop/src/app/chat/{index,live-session-status}.tsx`,
+`apps/desktop/src/app/chat/composer/index.tsx`,
 `apps/desktop/src/app/chat/sidebar/{index,sessions-section}.tsx`, and
 `apps/desktop/src/app/settings/default-project-setting.tsx`.
 
