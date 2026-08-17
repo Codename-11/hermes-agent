@@ -68,6 +68,7 @@ export const zhHant = defineLocale({
       connectingGateway: '正在連線桌面閘道',
       loadingSettings: '正在載入 Hermes 設定',
       loadingSessions: '正在載入最近工作階段',
+      retryingRemoteBackend: '正在重新連線遠端 Hermes 後端…',
       startingDesktopConnection: '正在啟動桌面連線',
       startingHermesDesktop: '正在啟動 Hermes Desktop…'
     },
@@ -1770,6 +1771,7 @@ export const zhHant = defineLocale({
       baseBranchPlaceholder: '搜尋分支…',
       baseBranchNone: '未找到分支',
       startWorkFailed: '無法建立工作樹',
+      worktreeStaleBackend: '請更新 Hermes 後端以在此遠端連線上建立工作樹 —— 該後端早於 git 工作樹 API。',
       worktreeProjectLabel: '專案',
       worktreeRepositoryLabel: '儲存庫',
       worktreeIntentLabel: '工作樹操作',
@@ -2321,6 +2323,7 @@ export const zhHant = defineLocale({
       inferenceNotReady: '推論未就緒',
       checkingInference: '正在檢查推論',
       disconnected: '已中斷連線',
+      reconnectGateway: '重新連線閘道',
       openSystem: '開啟系統面板',
       connection: label => `連線：${label}`,
       recentActivity: '最近活動',

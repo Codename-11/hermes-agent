@@ -95,6 +95,14 @@ export function useSessionTileDelegate({
         await ensureGatewayProfile(profile)
         await executeSlashCommand(rawCommand, { sessionId })
       },
+      // Gateway reconnect (sleep/wake, backend respawn): every stored→runtime
+      // binding recorded pre-reconnect points at a runtime id the respawned
+      // backend no longer knows. Drop the map so resumeTile's warm path can't
+      // re-bind a tile to a dead runtime; live bindings re-record from
+      // post-reconnect events and fresh resumes.
+      invalidateRuntimeBindings: () => {
+        runtimeIdByStoredSessionIdRef.current.clear()
+      },
       interruptSession: async (runtimeId, profile) => {
         await ensureGatewayProfile(profile)
         // Same cooldown as the primary chat's Stop (#83855): the gateway may
@@ -142,8 +150,9 @@ export function useSessionTileDelegate({
         // private cache can survive with an idle empty state; accepting it here
         // leaves an already-open tab permanently blank, while a new window works
         // because it takes the authoritative resume below. As in the primary
-        // pane, no empty cache is valid transcript authority — `busy` only says
-        // the backend turn is running, not that this renderer owns its history.
+        // pane, no empty cache is valid transcript authority. A reconnect can
+        // leave a stale pre-wake binding marked busy, so busy alone is not proof
+        // that this renderer owns a live transcript.
         if (
           existing &&
           cached?.storedSessionId === storedSessionId &&
