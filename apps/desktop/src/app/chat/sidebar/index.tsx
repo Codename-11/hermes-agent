@@ -137,12 +137,12 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
-  type SidebarNavContribution,
   SKILLS_ROUTE
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { activateSidebarNavItem, resolveSidebarNavContribution } from './sidebar-nav'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
@@ -319,22 +319,19 @@ export function ChatSidebar({
   const contributedNav = useMemo<SidebarNavItem[]>(
     () =>
       navContributions.flatMap(c => {
-        const data = c.data as Partial<SidebarNavContribution> | undefined
-        const route = data?.path?.startsWith('/') ? data.path : undefined
+        const data = resolveSidebarNavContribution(c.data)
 
-        if (!data?.label || (!route && !data.onSelect)) {
+        if (!data) {
           return []
         }
-
-        const codicon = data.codicon || 'plug'
 
         return [
           {
             id: c.id,
             label: data.label,
-            icon: (props: { className?: string }) => <Codicon name={codicon} {...props} />,
+            icon: (props: { className?: string }) => <Codicon name={data.codicon} {...props} />,
             onSelect: data.onSelect,
-            route
+            route: data.route
           }
         ]
       }),
@@ -1492,13 +1489,7 @@ export function ChatSidebar({
                         $newChatProfile.set(null)
                       }
 
-                      if (item.onSelect) {
-                        item.onSelect()
-
-                        return
-                      }
-
-                      onNavigate(item)
+                      activateSidebarNavItem(item, onNavigate)
                     }}
                     tooltip={
                       item.keybindActionId
