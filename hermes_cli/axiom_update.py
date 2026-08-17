@@ -1428,6 +1428,8 @@ def _run_focused_check(
         shell=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout_seconds,
     )
     return result
@@ -1452,6 +1454,8 @@ def _prepare_isolated_worktree_dependencies(worktree: Path) -> tuple[bool, str]:
         cwd=worktree,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=900,
     )
     if result.returncode == 0:

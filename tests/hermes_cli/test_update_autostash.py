@@ -1511,6 +1511,24 @@ def test_resolver_timeout_kills_parent_when_windows_tree_termination_fails(monke
     assert killed == [True]
 
 
+def test_focused_check_decodes_utf8_output_independent_of_windows_locale(monkeypatch, tmp_path):
+    from hermes_cli import axiom_update
+
+    calls = []
+    monkeypatch.setattr(
+        axiom_update.subprocess,
+        "run",
+        lambda cmd, **kwargs: calls.append((cmd, kwargs))
+        or subprocess.CompletedProcess(cmd, 0, stdout="✓", stderr=""),
+    )
+
+    result = axiom_update._run_focused_check("node check.mjs", tmp_path)
+
+    assert result.returncode == 0
+    assert calls[0][1]["encoding"] == "utf-8"
+    assert calls[0][1]["errors"] == "replace"
+
+
 def test_parent_validation_serializes_python_before_desktop_and_prepares_once(
     monkeypatch, tmp_path
 ):
