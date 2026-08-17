@@ -51,6 +51,15 @@ def _patch_managed_uv(request):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gateway_discovery():
+    """Keep updater tests from discovering or signaling live gateways."""
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+        yield
+
+
 
 
 
