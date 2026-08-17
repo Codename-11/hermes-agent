@@ -1,3 +1,12 @@
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
+
+import pytest
+
 from hermes_cli import update_ui
 
 
@@ -74,3 +83,73 @@ def test_digest_header_can_include_commit_sha_range():
     assert "━━ Upstream changes since last update (abcdef1234..123456abcd) ━━" in digest
     assert "Features (1):" in digest
     assert "Fixes (1):" in digest
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows cp1252 regression")
+def test_collect_commits_decodes_utf8_git_output_under_cp1252(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args, env=None):
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "ASCII Author")
+    (repo / "fixture.txt").write_text("first\n", encoding="utf-8")
+    git("add", "fixture.txt")
+    git("commit", "-m", "test: first commit")
+    old_sha = git("rev-parse", "HEAD").stdout.decode("ascii").strip()
+
+    (repo / "fixture.txt").write_text("second\n", encoding="utf-8")
+    git("add", "fixture.txt")
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "李灵航",
+        "GIT_AUTHOR_EMAIL": "unicode@example.com",
+        "GIT_COMMITTER_NAME": "李灵航",
+        "GIT_COMMITTER_EMAIL": "unicode@example.com",
+    }
+    git("commit", "-m", "fix(update): preserve Unicode attribution", env=commit_env)
+    new_sha = git("rev-parse", "HEAD").stdout.decode("ascii").strip()
+
+    project_root = Path(update_ui.__file__).resolve().parents[1]
+    probe = textwrap.dedent(
+        f"""
+        import json
+        from pathlib import Path
+        from hermes_cli.update_ui import _collect_commits
+
+        commits, _stat, _files = _collect_commits(
+            Path({str(repo)!r}), {old_sha!r}, {new_sha!r}
+        )
+        assert commits, "Unicode git log output was lost"
+        print(json.dumps(commits, ensure_ascii=True))
+        """
+    )
+    child_env = {
+        **os.environ,
+        "PYTHONUTF8": "0",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": str(project_root),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=project_root,
+        env=child_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 0, result.stderr
+    commits = json.loads(result.stdout)
+    assert commits[0][2] == "李灵航"
+    assert "UnicodeDecodeError" not in result.stderr

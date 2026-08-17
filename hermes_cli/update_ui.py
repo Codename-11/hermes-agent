@@ -324,7 +324,13 @@ def _collect_commits(
     def _run(args: list[str]) -> str:
         try:
             r = subprocess.run(
-                git + args, cwd=repo, capture_output=True, text=True, check=True,
+                git + args,
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=True,
             )
             return r.stdout
         except Exception:

@@ -4392,6 +4392,8 @@ def _print_update_brief(
             cwd=repo,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         ).stdout.strip()
         if not post_update_head or post_update_head == pre_update_head:
@@ -4854,6 +4856,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 cwd=_m().PROJECT_ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=True,
             ).stdout.strip()
         except Exception:

@@ -289,6 +289,8 @@ class TestCmdUpdateBrief:
             git_cmd=["git"],
             branch="tgi",
         )
+        assert mock_run.call_args.kwargs["encoding"] == "utf-8"
+        assert mock_run.call_args.kwargs["errors"] == "replace"
         mock_inject.assert_called_once_with(brief)
 
     @patch("subprocess.run")
@@ -327,6 +329,7 @@ class TestCmdUpdateBranchFallback:
         from hermes_cli import main as hm
 
         calls = []
+        rev_parse_head_kwargs = []
 
         def _run(cmd, **kwargs):
             calls.append(list(cmd))
@@ -334,6 +337,7 @@ class TestCmdUpdateBranchFallback:
             if "rev-parse --abbrev-ref HEAD" in joined:
                 return subprocess.CompletedProcess(cmd, 0, stdout="tgi\n", stderr="")
             if "rev-parse HEAD" in joined:
+                rev_parse_head_kwargs.append(kwargs)
                 return subprocess.CompletedProcess(cmd, 0, stdout="oldhead\n", stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -356,6 +360,9 @@ class TestCmdUpdateBranchFallback:
         deploy_update.assert_called_once_with(
             _expected_git_cmd(), PROJECT_ROOT, "tgi", "oldhead"
         )
+        assert rev_parse_head_kwargs
+        assert all(kwargs["encoding"] == "utf-8" for kwargs in rev_parse_head_kwargs)
+        assert all(kwargs["errors"] == "replace" for kwargs in rev_parse_head_kwargs)
         assert not any("checkout main" in " ".join(cmd) for cmd in calls)
         assert not any("HEAD..origin/main" in " ".join(cmd) for cmd in calls)
 
