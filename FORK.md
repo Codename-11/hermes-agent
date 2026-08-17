@@ -1,6 +1,6 @@
 # TGI Fork Contract
 
-Last reviewed: 2026-06-18
+Last reviewed: 2026-08-17
 Fork/deploy branch: `tgi`  
 Fork remote: `origin` = `https://github.com/Codename-11/hermes-agent.git`  
 Upstream remote: `upstream` = `https://github.com/NousResearch/hermes-agent.git`  
@@ -558,6 +558,96 @@ venv/bin/python -m pytest -o 'addopts=' -q tests/cron/test_scheduler.py::TestCro
 - **Surviving seam:** `hermes_cli/plugins.py` still eagerly loads an explicitly
   enabled bundled platform plugin so A2A's outbound tools register. Keep the
   generic plugin discovery regression test until upstream absorbs that behavior.
+
+### 12. Portable updater and Windows approval hardening
+
+**Source provenance:** selectively carried from `origin/axiom` commits
+`2674492748`, `0d3d3e71fd`, `8d04f10664`, `4e6003c599`, and `45c6016b57`.
+The carries were adapted to TGI's newer updater architecture rather than taking
+Axiom files wholesale.
+
+**Protected outcomes:**
+
+- Git Bash/MSYS absolute temp spellings are accepted for safe temporary-file
+  deletion on Windows without weakening canonical-path checks on POSIX.
+- Windows deploy updates wait for every force-killed gateway/launcher PID to
+  exit before dependency replacement begins.
+- An already-current checkout repairs a missing/stale installed Desktop build
+  using TGI's existing install-intent and rebuild helper.
+- Python dependencies are refreshed only when the relevant manifests changed;
+  lazy dependency refresh, tool restoration, and memory-provider repair still
+  run on every update.
+- Deploy-update dependency comparison retains the pre-movement baseline after
+  the tested deploy artifact advances the checkout.
+
+**Primary files:** `tools/approval.py`, `hermes_cli/update_cmd.py`, and focused
+tests under `tests/tools/` and `tests/hermes_cli/test_update_*`.
+
+**Focused verification:**
+
+```bash
+venv/bin/python -m pytest -q -o addopts='' \
+  tests/tools/test_approval.py \
+  tests/hermes_cli/test_update_concurrent_quarantine.py \
+  tests/hermes_cli/test_update_current_node_repair.py \
+  tests/hermes_cli/test_update_python_dependency_refresh.py \
+  tests/hermes_cli/test_cmd_update.py \
+  tests/hermes_cli/test_update_autostash.py \
+  tests/hermes_cli/test_update_check.py
+```
+
+**Retire when:** upstream provides equivalent behavior for each invariant and
+the focused tests pass after removing that local hunk. Evaluate each outcome
+independently; this group does not need to retire atomically.
+
+### 13. Axiom Enhancements runtime-plugin host contract
+
+**Distribution:** the plugin source is not bundled into this public fork. The
+private Axiom Agent Library owns the canonical `axiom-enhancements` disk-plugin
+artifact and assigns it to the `tgi-desktop` surface. TGI core carries only the
+generic SDK/layout seams required to load that artifact safely.
+
+**Source provenance:** selectively adapted from `origin/axiom` commits
+`e0b3427ea9`, `c4fdb79941`, `1e41e7cd5b`, and `eac0ee14b9`.
+
+**Required behavior:**
+
+- `host.updates.getStatus/open` exposes detached client/backend snapshots and
+  delegates mutation to the core-owned updater.
+- A plugin may opt a singleton pane into `closeBehavior: 'dismiss'`, preserve
+  that dismissal across registry refreshes, and reopen it through the
+  namespaced `ctx.panes.reveal(...)` API.
+- `ctx.panes.collapse(...)` minimizes only the calling plugin's namespaced pane.
+- `sidebar.nav` contributions may use an `onSelect` action instead of a route,
+  allowing the plugin to reopen its pane without replacing the active workspace.
+- The staged update mutation lifecycle (`prepare`, `restartAndApply`, history,
+  upstream sync) is intentionally absent. The plugin feature-detects these
+  optional methods and hides unavailable actions. Do not add stubs or expose a
+  partial Electron/Python/PowerShell lifecycle.
+
+**Primary files:** `apps/desktop/src/sdk/index.ts`,
+`apps/desktop/src/contrib/plugin.ts`, pane-tree store/tests, sidebar contribution
+types/rendering, and the public Desktop plugin SDK guide.
+
+**Focused verification:**
+
+```bash
+cd apps/desktop
+NODE_ENV=test npm run typecheck
+NODE_ENV=test npx vitest run --environment jsdom \
+  src/sdk/index.test.ts \
+  src/contrib/plugin.test.ts \
+  src/components/pane-shell/tree/pane-toggle-visibility.test.ts
+```
+
+**Retire when:** upstream exposes equivalent typed update snapshots/core updater
+delegation plus dismiss/reveal/collapse/sidebar-action plugin seams. The external
+plugin remains private library content even after the core seams retire.
+
+**Deferred separately:** Axiom's newer remote-profile correctness stack spans
+effective backend routing, native OAuth, reconnect, cold-start state, ownership,
+and profile lookup. It is an eight-commit architecture port and was not folded
+into this production sync.
 
 ## Current known update/build pitfalls
 
