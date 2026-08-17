@@ -27,6 +27,18 @@ describe('forceLoneHeaderForPanes', () => {
     ).toBe(true)
   })
 
+  it('forces a header for a lone plugin pane regardless of placement', () => {
+    expect(
+      forceLoneHeaderForPanes(['hermes-bots:pane'], chrome('left'), noCollapse, id =>
+        id.startsWith('hermes-bots:')
+      )
+    ).toBe(true)
+  })
+
+  it('leaves a lone uncloseable plugin pane headerless', () => {
+    expect(forceLoneHeaderForPanes(['plugin:status'], chrome('left', true), noCollapse, () => true)).toBe(false)
+  })
+
   it('leaves a lone uncloseable workspace headerless', () => {
     expect(forceLoneHeaderForPanes(['workspace'], chrome('main', true), noCollapse)).toBe(false)
   })

@@ -1,5 +1,23 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-17 — Restore plugin pane exits and saved cold-start skins
+
+### Summary
+
+Kept closeable runtime-plugin panes escapable, migrated the Bots pane to its corrected Sessions-bottom dock, and stopped delayed backend skins from being discarded during Desktop cold start.
+
+### Details
+
+- Lone closeable plugin panes now retain standard tab chrome, while every visible pane body exposes the generic zone context menu and its Close action without overriding pane-owned or Electron-native edit/media menus.
+- The Bots plugin uses a fresh local pane ID so persisted pre-dock layouts adopt the existing `placement: left`, 260 px width, and Sessions-bottom dock without resetting unrelated layout.
+- Persisted backend/contributed skin slugs survive the provisional boot paint and repaint as soon as gateway theme seeding registers the saved skin; interactive selections remain registry-validated.
+
+### Verification
+
+- Focused pane chrome, guarded body-menu, Bots migration, and delayed-theme regressions: 32 passing.
+- Desktop renderer/Electron/E2E TypeScript typecheck and changed-file ESLint.
+- Full production Desktop build, including Electron main/preload bundles and native dependency staging.
+
 ## 2026-08-14 — Route aliased remote session resumes correctly
 
 ### Summary

@@ -7,6 +7,7 @@
  *    page, a preview) is one, so dragging a tile into a zone of its own keeps
  *    its tab and its ✕
  *  - a collapse tool panel dragged into its own zone
+ *  - a contributed plugin pane, whose standard tab/menu is its generic exit
  */
 
 export interface LoneHeaderChrome {
@@ -17,7 +18,8 @@ export interface LoneHeaderChrome {
 export function forceLoneHeaderForPanes(
   shown: readonly string[],
   chromeOf: (id: string) => LoneHeaderChrome,
-  isCollapsePane: (id: string) => boolean
+  isCollapsePane: (id: string) => boolean,
+  isPluginPane: (id: string) => boolean = () => false
 ): boolean {
   // "This pane can be closed, so it must expose the ✕." Only the uncloseable
   // workspace is exempt; standing side chrome (files / sessions) isn't 'main'.
@@ -31,5 +33,11 @@ export function forceLoneHeaderForPanes(
     return true
   }
 
-  return shown.length === 1 && isCollapsePane(shown[0])
+  if (shown.length !== 1) {
+    return false
+  }
+
+  const paneId = shown[0]
+
+  return isCollapsePane(paneId) || (isPluginPane(paneId) && !chromeOf(paneId).uncloseable)
 }

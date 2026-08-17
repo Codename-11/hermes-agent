@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ActionsContextMenu } from '@/components/ui/actions-menu'
 import { registry } from '@/contrib/registry'
 
 import { group, split } from '../model'
@@ -142,6 +143,88 @@ describe('right-clicking a tool panel tab', () => {
     openContextMenu(tabEl('logs')!)
 
     expect(await screen.findByRole('menuitem', { name: /^close$/i })).toBeTruthy()
+  })
+
+  it('keeps a close route on a lone plugin pane body', async () => {
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { placement: 'left' },
+        id: 'hermes-bots:pane',
+        render: () => <div data-testid="bots-pane-body">Bots</div>,
+        source: 'plugin:hermes-bots',
+        title: 'Bots'
+      })
+    )
+    render(
+      <TreeGroup node={group(['hermes-bots:pane'], { active: 'hermes-bots:pane', id: 'grp-bots' })} parentAxis="column" />
+    )
+
+    // A closeable pane must retain both standard exits: visible tab chrome and
+    // the generic context menu from its body. The old lone-pane policy hid the
+    // strip, while the body was never wrapped in ZoneMenu at all.
+    expect(tabEl('hermes-bots:pane')).toBeTruthy()
+    openContextMenu(screen.getByTestId('bots-pane-body'))
+
+    expect(await screen.findByRole('menuitem', { name: /^close$/i })).toBeTruthy()
+  })
+
+  it('defers the body fallback to native editable and media menus', () => {
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { placement: 'left' },
+        id: 'plugin:interactive',
+        render: () => (
+          <div>
+            <input aria-label="Plugin input" />
+            <img alt="Plugin media" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" />
+          </div>
+        ),
+        source: 'plugin:interactive',
+        title: 'Interactive'
+      })
+    )
+    render(
+      <TreeGroup
+        node={group(['plugin:interactive'], { active: 'plugin:interactive', id: 'grp-interactive' })}
+        parentAxis="column"
+      />
+    )
+
+    openContextMenu(screen.getByRole('textbox', { name: 'Plugin input' }))
+    expect(screen.queryByRole('menuitem', { name: /^close$/i })).toBeNull()
+
+    openContextMenu(screen.getByRole('img', { name: 'Plugin media' }))
+    expect(screen.queryByRole('menuitem', { name: /^close$/i })).toBeNull()
+  })
+
+  it('defers the body fallback to a pane-owned context menu', async () => {
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { placement: 'left' },
+        id: 'plugin:domain-menu',
+        render: () => (
+          <ActionsContextMenu items={kit => <kit.Item onSelect={() => undefined}>Domain action</kit.Item>}>
+            <div data-testid="domain-menu-body">Domain surface</div>
+          </ActionsContextMenu>
+        ),
+        source: 'plugin:domain-menu',
+        title: 'Domain menu'
+      })
+    )
+    render(
+      <TreeGroup
+        node={group(['plugin:domain-menu'], { active: 'plugin:domain-menu', id: 'grp-domain-menu' })}
+        parentAxis="column"
+      />
+    )
+
+    openContextMenu(screen.getByTestId('domain-menu-body'))
+
+    expect(await screen.findByRole('menuitem', { name: 'Domain action' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: /^close$/i })).toBeNull()
   })
 })
 

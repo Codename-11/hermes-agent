@@ -6798,7 +6798,10 @@ export default {
     host.state.gateway.listen(handleSessionsGatewayTransition)
 
     ctx.register({
-      id: 'pane',
+      // Fresh local id intentionally migrates persisted pre-dock layouts: the
+      // retired `pane` contribution disappears and this one is adopted from
+      // the exact Sessions-bottom hint without resetting unrelated layout.
+      id: 'bots-dock',
       area: 'panes',
       title: 'Bots',
       // dock: explicit adoption gesture. Without it the tree adopts a
@@ -6807,7 +6810,11 @@ export default {
       // default the user never changed), the sessions pane vanishes behind
       // the Bots tab with no visible strip to switch back. Splitting below
       // the sessions pane keeps both surfaces visible instead.
-      data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'bottom' } },
+      data: {
+        placement: 'left',
+        width: '260px',
+        dock: { pane: 'sessions', pos: 'bottom' }
+      },
       render: () => jsx(BotsPane, {})
     })
 

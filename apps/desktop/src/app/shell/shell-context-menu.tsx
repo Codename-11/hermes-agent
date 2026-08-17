@@ -1,10 +1,9 @@
 import type * as React from 'react'
 import { useNavigate } from 'react-router'
 
-import { hasTextSelection } from '@/components/assistant-ui/thread/user-message'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { useI18n } from '@/i18n'
-import { isEditableTarget } from '@/lib/keybinds/combo'
+import { guardFallbackContextMenu } from '@/lib/fallback-context-menu'
 import { openCommandPalette } from '@/store/command-palette'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
@@ -73,29 +72,13 @@ export function ShellContextMenu({ children }: { children: React.ReactNode }) {
             are merged onto the same node as ours (asChild), so a handler there
             can't stop the trigger's — but a child's stopPropagation never
             reaches it. */}
-        <div className="contents" onContextMenu={guard}>
+        <div
+          className="contents"
+          onContextMenu={event => guardFallbackContextMenu(event, 'data-shell-context-menu')}
+        >
           {children}
         </div>
       </div>
     </ActionsContextMenu>
   )
-}
-
-/** Right-clicks that already have an owner keep it: a surface with its own
- *  context menu, an editable, a live selection (Electron's native edit menu),
- *  or an image/media element (Electron's native image menu — Copy Image,
- *  Save Image As...). Never `preventDefault` — that is what would swallow the
- *  native menu. */
-function guard(event: React.MouseEvent<HTMLDivElement>) {
-  const target = event.target as HTMLElement | null
-  const owner = target?.closest('[data-slot="context-menu-trigger"]')
-
-  if (
-    (owner && !owner.hasAttribute('data-shell-context-menu')) ||
-    target?.closest('img, picture, video, canvas') ||
-    isEditableTarget(target) ||
-    hasTextSelection()
-  ) {
-    event.stopPropagation()
-  }
 }

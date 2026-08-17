@@ -87,6 +87,26 @@ describe('ThemeProvider ← backend skin sync', () => {
     expect(cssVar('--theme-foreground')).toBe('#ff9f0a')
   })
 
+  it('restores a saved backend skin after its cold-start registry seed arrives', async () => {
+    window.localStorage.setItem('hermes-desktop-profile-themes-v1', JSON.stringify({ default: 'bloomberg' }))
+
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    // The backend theme is unavailable during the synchronous boot paint, so
+    // Nous may paint provisionally. A gateway.ready seed must hydrate the saved
+    // identity instead of leaving the app stranded on the blue fallback.
+    act(() => ingestBackendSkin(bloomberg('#ff9f0a'), { apply: false }))
+
+    await waitFor(() => {
+      expect(cssVar('--theme-foreground')).toBe('#ff9f0a')
+      expect(cssVar('--theme-background-seed')).toBe('#000000')
+    })
+  })
+
   it('reconciles the native theme after adopting the authoritative profile', async () => {
     window.localStorage.setItem('hermes-desktop-active-profile-v1', 'boot')
     modePref.assign('boot', 'light')

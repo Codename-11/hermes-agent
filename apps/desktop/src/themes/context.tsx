@@ -45,6 +45,9 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
+const normalizeStoredSkin = (name: string | null): string =>
+  name && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+
 const normalizeSkin = (name: string | null): string =>
   name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
@@ -67,7 +70,10 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
   }
 })
 
-export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
+// Keep a saved backend/contributed slug even when its registry arrives after
+// the synchronous boot paint. deriveTheme paints Nous provisionally, then its
+// registry dependencies repaint the same slug as soon as it becomes available.
+export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeStoredSkin)
 export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
 /** Everything a peer window could change that this one has to repaint for. */
@@ -364,6 +370,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (gatewayProfileAdopted || windowProfileOverride()) {
       rememberActiveProfileKey(profileKey)
     }
+
     setThemeNameState(skinPref.resolve(profileKey))
     setModeState(modePref.resolve(profileKey))
   }, [gatewayProfileAdopted, profileKey])
