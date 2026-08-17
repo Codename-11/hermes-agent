@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
+import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+
 const updateMocks = vi.hoisted(() => ({
   $backendUpdateApply: { get: vi.fn() },
   $backendUpdateStatus: { get: vi.fn() },
@@ -231,12 +235,8 @@ describe('host.updates', () => {
     expect(host.updates).not.toHaveProperty('check')
     expect(host.updates).not.toHaveProperty('onProgress')
     expect(host.updates).not.toHaveProperty('bridge')
-import { afterEach, describe, expect, it } from 'vitest'
-
-import { createClientSessionState } from '@/lib/chat-runtime'
-import { host } from '@/sdk'
-import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
-import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {
@@ -320,7 +320,7 @@ describe('host.state turn flags', () => {
     // Primary chat is idle; the tile's session is mid-turn.
     setActiveSessionId('rt-primary')
     publishSessionState('rt-primary', createClientSessionState('stored-primary'))
-    $sessionTiles.set([{ runtimeId: 'rt-tile-a', storedSessionId: 'tile-a' }])
+    $sessionTiles.set([{ profile: 'default', runtimeId: 'rt-tile-a', storedSessionId: 'tile-a' }])
     publishSessionState('rt-tile-a', {
       ...createClientSessionState('tile-a'),
       awaitingResponse: true,

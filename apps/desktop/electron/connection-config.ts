@@ -669,7 +669,7 @@ function pathWithProfileScope(path, profile) {
     return path
   }
 
-  parsed.searchParams.set('profile', requestProfile)
+  parsed.searchParams.set('profile', scopedProfile)
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
 }

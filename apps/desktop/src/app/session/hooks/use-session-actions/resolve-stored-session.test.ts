@@ -74,6 +74,8 @@ describe('resolveStoredSession profile ownership', () => {
         expect.objectContaining({ id: 'shared-id', profile: 'meta', title: 'Remote-local name' })
       ])
     )
+  })
+
   it.each([
     ['cron', $cronSessions],
     ['messaging', $messagingSessions]

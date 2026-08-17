@@ -244,7 +244,7 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary): Promise<void> {
+async function openSecondary(entry: Secondary, resolvedConnection?: HermesConnection | null): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -261,9 +261,10 @@ async function openSecondary(entry: Secondary): Promise<void> {
     // Registry-scoped entries dial through getConnectionFor when the bridge has
     // it. Local/legacy entries retain the existing getConnection path.
     const conn =
-      entry.connectionId && desktop.getConnectionFor
+      resolvedConnection ??
+      (entry.connectionId && desktop.getConnectionFor
         ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
-        : await desktop.getConnection(entry.profile)
+        : await desktop.getConnection(entry.profile))
 
     entry.connection = conn
 
@@ -411,7 +412,10 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 // the second dial fails (tunnel/token are per-backend) and the closed socket
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
-async function sharedPrimaryRoute(profile: string): Promise<boolean> {
+async function sharedPrimaryRoute(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<boolean> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -419,7 +423,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   }
 
   try {
-    const conn = await desktop.getConnection(profile)
+    const conn = resolvedConnection ?? (await desktop.getConnection(profile))
 
     return Boolean(conn && typeof conn === 'object' && (conn as { sharedPrimary?: boolean }).sharedPrimary === true)
   } catch {
@@ -430,7 +434,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
 // Resolve and open `profile`'s socket WITHOUT changing the active gateway.
 // Shared global-remote profiles intentionally return the primary socket plus a
 // request-scope flag; dedicated local/remote profiles use their pooled socket.
-async function gatewayForProfile(
+async function resolveGatewayForProfileRoute(
   profile: string,
   leaseRequest = false
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
@@ -505,7 +509,7 @@ export async function requestGatewayForProfile<T>(
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<T> {
-  const route = await gatewayForProfile(profile, true)
+  const route = await resolveGatewayForProfileRoute(profile, true)
 
   try {
     if (!route.gateway) {
@@ -583,7 +587,7 @@ export async function requestGatewayForAgent<T>(
 // backend must not start a background retry loop — the real switch owns retry
 // and error UX. An already-open (or primary) profile is a no-op.
 export async function openGatewayForProfile(profile: string): Promise<void> {
-  await gatewayForProfile(profile)
+  await resolveGatewayForProfileRoute(profile)
 }
 
 // ── Connection-scoped agents (multi-source roster) ─────────────────────────
@@ -665,7 +669,10 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+export async function ensureGatewayForProfile(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<void> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
@@ -680,7 +687,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // primary instead of dialing a doomed duplicate socket at the same
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key)) {
+  if (await sharedPrimaryRoute(key, resolvedConnection)) {
     applyActive(g.primaryProfile, activationEpoch)
 
     return
@@ -700,7 +707,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     entry.reconnectAttempt = 0
 
     try {
-      await openSecondary(entry)
+      await openSecondary(entry, resolvedConnection)
     } catch {
       scheduleReconnect(entry)
     }

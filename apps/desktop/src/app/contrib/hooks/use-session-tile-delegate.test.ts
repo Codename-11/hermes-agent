@@ -167,6 +167,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', state]]) }
     const requestGateway = vi.fn(async () => ({}) as never)
 
+    $sessionTiles.set([{ profile: 'default', runtimeId: 'runtime-a', storedSessionId: 'stored-a' }])
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-a', 'default')
 
@@ -221,7 +222,11 @@ describe('useSessionTileDelegate resumeTile', () => {
   it('invalidateRuntimeBindings clears the stored→runtime map so tiles re-resume after reconnect', async () => {
     setSessions([row({ id: 'stored-c', profile: 'default' })])
 
-    const liveState = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-c' }
+    const liveState = {
+      ...createClientSessionState('stored-c'),
+      busy: false,
+      messages: [{ id: 'm1' }]
+    } as ClientSessionState
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-c', 'runtime-dead']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
 

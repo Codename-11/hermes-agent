@@ -102,18 +102,18 @@ describe('resetTileRuntimeBindings', () => {
     const invalidateRuntimeBindings = vi.fn()
     setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
 
-    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
+    $sessionTiles.set([{ profile: 'default', runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
     resetTileRuntimeBindings()
 
     expect(invalidateRuntimeBindings).toHaveBeenCalledTimes(1)
     expect($sessionTiles.get()).toEqual([
-      { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
+      { anchor: undefined, before: undefined, dir: undefined, profile: 'default', storedSessionId: 'stored-a' }
     ])
   })
 
   it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
     setSessionTileDelegate({} as unknown as SessionTileDelegate)
-    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
+    $sessionTiles.set([{ profile: 'default', runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
 
     expect(() => resetTileRuntimeBindings()).not.toThrow()
     expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()

@@ -136,8 +136,8 @@ describe('session.reclaimed', () => {
     await mountStream()
     publishSessionState('live-gone', createClientSessionState('stored-1'))
     $sessionTiles.set([
-      { runtimeId: 'live-gone', storedSessionId: 'stored-1' },
-      { runtimeId: 'live-kept', storedSessionId: 'stored-2' }
+      { profile: 'default', runtimeId: 'live-gone', storedSessionId: 'stored-1' },
+      { profile: 'default', runtimeId: 'live-kept', storedSessionId: 'stored-2' }
     ])
 
     reclaim('live-gone')

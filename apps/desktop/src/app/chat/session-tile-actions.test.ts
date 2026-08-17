@@ -6,6 +6,11 @@ import { MAIN_COMPOSER_SCOPE } from './composer/scope'
 
 const requestGatewayMock = vi.hoisted(() => vi.fn())
 
+vi.mock('@/store/profile', async importActual => ({
+  ...(await importActual<typeof import('@/store/profile')>()),
+  ensureGatewayProfile: vi.fn(async () => undefined)
+}))
+
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway: requestGatewayMock })
 }))
@@ -20,6 +25,7 @@ const RECOVERED_SESSION_ID = 'rt-tile-recovered'
 function renderTileActions() {
   return renderHook(() =>
     useSessionTileActions({
+      profile: 'default',
       runtimeId: RUNTIME_SESSION_ID,
       scope: MAIN_COMPOSER_SCOPE,
       storedSessionId: STORED_SESSION_ID
@@ -41,6 +47,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
       deleteSession: vi.fn(async () => undefined),
       executeSlash: vi.fn(async () => undefined),
       interruptSession: vi.fn(async () => undefined),
+      rehydrateTile: vi.fn(),
       resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
       submitToSession: vi.fn(async () => undefined),
       updateSession: vi.fn((_runtimeId, updater) =>
