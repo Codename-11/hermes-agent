@@ -758,6 +758,13 @@ export interface Translations {
       loading: string
       failedLoad: string
       empty: string
+      searchTools: string
+      searchSettings: string
+      noMatch: string
+    }
+    search: {
+      placeholder: string
+      pill: string
     }
     profileScope: {
       appliesTo: string
@@ -1263,8 +1270,10 @@ export interface Translations {
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
     restartGateway: string
+    openBrowser: string
     gatewayRestartFailed: string
     updateHermes: string
+    reloadWindow: string
     actionRunning: string
     actionDone: string
     actionFailed: string
@@ -2495,6 +2504,7 @@ export interface Translations {
     web: {
       appFailedToBoot: string
       serverNotFound: string
+      remoteLoopback: string
       failedToLoad: string
       tryAgain: string
       restarting: string
@@ -2508,6 +2518,12 @@ export interface Translations {
       showConsole: string
       hideDevTools: string
       openDevTools: string
+      goBack: string
+      goForward: string
+      reload: string
+      address: string
+      addressPlaceholder: string
+      blankPageBody: string
       finishedRestarting: (message?: string) => string
       failedRestarting: (message: string) => string
       unknownError: string
