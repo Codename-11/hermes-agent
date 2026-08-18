@@ -1064,6 +1064,30 @@ def test_tgi_update_focused_check_env_keeps_virtualenv_symlink(
     ]
 
 
+def test_tgi_focused_node_checks_reuse_live_dependencies(monkeypatch, tmp_path):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    live_root = tmp_path / "live"
+    live_modules = live_root / "node_modules"
+    live_modules.mkdir(parents=True)
+    live_desktop_modules = live_root / "apps" / "desktop" / "node_modules"
+    live_desktop_modules.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    (worktree / "apps" / "desktop").mkdir(parents=True)
+    monkeypatch.setattr(hermes_fork_update, "__file__", str(live_root / "hermes_cli" / "fork_update.py"))
+
+    with hermes_fork_update._focused_node_modules(worktree, ["cd apps/desktop && npx vitest run"]):
+        link = worktree / "node_modules"
+        assert link.is_symlink()
+        assert link.resolve() == live_modules.resolve()
+        desktop_link = worktree / "apps" / "desktop" / "node_modules"
+        assert desktop_link.is_symlink()
+        assert desktop_link.resolve() == live_desktop_modules.resolve()
+
+    assert not (worktree / "node_modules").exists()
+    assert not (worktree / "apps" / "desktop" / "node_modules").exists()
+
+
 def test_tgi_focused_checks_install_declared_pytest_tooling_when_missing(monkeypatch):
     from hermes_cli import fork_update as hermes_fork_update
 

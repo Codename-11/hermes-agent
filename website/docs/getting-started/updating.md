@@ -44,9 +44,15 @@ If your local checkout is on a different branch, Hermes auto-stashes any uncommi
 
 ### Maintaining a patched deploy branch
 
-For long-lived deploy branches that intentionally carry local behavior on top of upstream `main`, keep `main` as an upstream mirror and commit custom runtime behavior on the deploy branch. Reconcile by merging `upstream/main` into the deploy branch, resolving conflicts, running focused tests, and pushing the tested deploy commit so live checkouts can fast-forward.
+Long-lived deploy branches may intentionally carry local behavior on top of upstream `main`. Keep `main` as an upstream mirror and commit custom runtime behavior on the deploy branch. A deploy-aware fork may make normal `hermes update` consume only the tested deploy artifact while reserving upstream reconciliation for an explicit resolver workflow; follow that fork's operator documentation rather than forcing the generic `--branch` path.
 
-When upstream touches the same area as a local patch, prefer upstream if it now satisfies the same outcome. Preserve the required behavior with tests and carry only the smallest missing delta. If `hermes update` preserves deploy-branch working changes in a stash, reapply that stash onto the updated branch, resolve it with the same upstream-first rule, test, commit, push, and then drop the stash.
+When upstream touches the same area as a local patch, prefer upstream if it now satisfies the same outcome. Preserve required behavior with focused tests and carry only the smallest missing delta. Resolve conflicts in an isolated or updater-retained worktree so the live checkout remains on the last tested deploy commit until the reconciliation is validated and published.
+
+### Checkout parked on a feature branch
+
+If the source checkout was left sitting on a feature branch (by tooling, a worktree experiment, or a manual checkout), `hermes update` only switches it back to the update target automatically when that is provably safe: the working tree is clean **and** every commit on the parked branch is already contained in `origin/main` (`git cherry` reports nothing unmerged). In that case the update says so — `Checkout was parked on '<branch>' (fully merged) — switched back to main` — and stays on `main` afterwards.
+
+When the parked branch has uncommitted changes or unmerged commits, Hermes does **not** touch it. The code update is marked **SKIPPED** with a loud warning naming the branch, how far behind `origin/main` it is, and the exact commands to resolve — instead of pretending the update succeeded. The completion line always shows the actual branch and HEAD (`✓ Update complete! [main @ 30fcf9580]`) so drift is visible at a glance. Set `updates.auto_switch_parked_branch: false` in `config.yaml` to disable the auto-switch entirely (the skip warning still fires).
 
 ### Local changes on non-interactive updates
 

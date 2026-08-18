@@ -34,9 +34,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 
 logger = logging.getLogger("hermes_cli.fork_update")
@@ -1049,6 +1050,51 @@ def _ensure_focused_pytest(checks: list[str], env: dict[str, str]) -> bool:
     return verified.returncode == 0
 
 
+@contextmanager
+def _focused_node_modules(worktree: Path, checks: list[str]) -> Iterator[None]:
+    """Expose the live install's Node dependencies to a resolver worktree.
+
+    Update worktrees intentionally do not install dependencies.  Desktop
+    focused checks otherwise invoke ``npx``, create a partial local
+    ``node_modules/.vite-temp``, and fail before collecting tests because
+    ``vitest/config`` cannot resolve.  Reuse the already-installed live root
+    dependencies for the duration of validation, then remove only our symlink.
+    """
+    needs_node = any(
+        token in check
+        for check in checks
+        for token in ("npm ", "npx ", "node ")
+    )
+    live_root = Path(__file__).resolve().parents[1]
+    candidates = [(worktree / "node_modules", live_root / "node_modules")]
+    if any("apps/desktop" in check for check in checks):
+        candidates.append(
+            (
+                worktree / "apps" / "desktop" / "node_modules",
+                live_root / "apps" / "desktop" / "node_modules",
+            )
+        )
+    created: list[Path] = []
+    for link, live_modules in candidates:
+        if not needs_node or link.exists() or not live_modules.is_dir():
+            continue
+        try:
+            link.symlink_to(live_modules, target_is_directory=True)
+            created.append(link)
+        except OSError:
+            logger.debug("Could not link resolver Node dependencies", exc_info=True)
+    if created:
+        print("  ✓ Reusing installed Node dependencies for focused checks")
+    try:
+        yield
+    finally:
+        for link in reversed(created):
+            try:
+                link.unlink()
+            except OSError:
+                logger.debug("Could not remove resolver Node dependency link", exc_info=True)
+
+
 def _handoff_snapshot_is_published(
     git_cmd: list[str],
     repo: Path,
@@ -1387,20 +1433,21 @@ def _resolve_deploy_handoff(
     if not _ensure_focused_pytest(checks, check_env):
         status.fail(note="pytest tooling unavailable")
         return None
-    for check in checks:
-        print(f"→ Focused check: {check}")
-        check_result = subprocess.run(
-            check,
-            cwd=worktree,
-            shell=True,
-            text=True,
-            timeout=900,
-            env=check_env,
-        )
-        if check_result.returncode != 0:
-            status.fail(note="focused check failed")
-            print(f"✗ Focused check failed: {check}")
-            return None
+    with _focused_node_modules(worktree, checks):
+        for check in checks:
+            print(f"→ Focused check: {check}")
+            check_result = subprocess.run(
+                check,
+                cwd=worktree,
+                shell=True,
+                text=True,
+                timeout=900,
+                env=check_env,
+            )
+            if check_result.returncode != 0:
+                status.fail(note="focused check failed")
+                print(f"✗ Focused check failed: {check}")
+                return None
 
     status.advance("commit")
     subprocess.run(git_cmd + ["add", "-A"], cwd=worktree, capture_output=True, text=True)
