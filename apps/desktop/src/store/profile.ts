@@ -1,9 +1,6 @@
-import { atom, computed } from 'nanostores'
+import { atom, batch, computed } from 'nanostores'
 
-import { $activeGatewayProfile, normalizeProfileKey } from './profile-scope'
-
-export { $activeGatewayProfile, $gatewayProfileAdopted, normalizeProfileKey } from './profile-scope'
-
+import type { HermesConnection } from '@/global'
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -16,11 +13,15 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import { $gateway, openGatewayForProfile, prepareGatewayForAgent, prepareGatewayForProfile } from '@/store/gateway'
 import { activateChangeEventsProfile } from '@/store/live-sync'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
+
+import { $activeGatewayProfile, normalizeProfileKey } from './profile-scope'
+
+export { $activeGatewayProfile, $gatewayProfileAdopted, normalizeProfileKey } from './profile-scope'
 
 // Presentation-only label: the display_name from profile.yaml when set (e.g. a
 // renamed default profile), else the canonical name. Never used for
@@ -84,40 +85,6 @@ export function setProfileOrder(names: string[]): void {
   if (!arraysEqual($profileOrder.get(), names)) {
     $profileOrder.set(names)
   }
-}
-
-// ── Rail visibility ────────────────────────────────────────────────────────
-// Local presentation preference only: hiding a profile never mutates, disables,
-// or disconnects its Hermes environment. The default profile stays visible so
-// users cannot hide the rail's stable way home.
-const HIDDEN_PROFILES_STORAGE_KEY = 'hermes.desktop.hiddenProfiles'
-
-export const $hiddenProfiles = atom<string[]>(storedStringArray(HIDDEN_PROFILES_STORAGE_KEY))
-
-$hiddenProfiles.subscribe(value => persistStringArray(HIDDEN_PROFILES_STORAGE_KEY, [...value]))
-
-export function setProfileHidden(name: string, hidden: boolean): void {
-  const key = normalizeProfileKey(name)
-
-  if (key === 'default') {
-    return
-  }
-
-  const current = $hiddenProfiles.get()
-  const next = hidden ? [...new Set([...current, key])] : current.filter(item => item !== key)
-
-  if (!arraysEqual(current, next)) {
-    $hiddenProfiles.set(next)
-  }
-}
-
-export function filterVisibleProfiles<T extends { is_default: boolean; name: string }>(
-  profiles: T[],
-  hidden: string[]
-): T[] {
-  const hiddenKeys = new Set(hidden.map(normalizeProfileKey))
-
-  return profiles.filter(profile => profile.is_default || !hiddenKeys.has(normalizeProfileKey(profile.name)))
 }
 
 // Sort items by the stored order; unordered names alphabetise at the tail.
@@ -293,27 +260,24 @@ export function prewarmProfileBackend(name: string): void {
 
 let gatewaySwitch: Promise<void> | null = null
 
-// Keep the renderer's $connection (mode / baseUrl / profile) in lockstep with
-// the profile the live gateway is now on. $connection seeds from the PRIMARY
+// The target profile's connection descriptor (mode / baseUrl / …), fetched
+// BEFORE activation so the switch can publish it in the same synchronous frame
+// as the gateway and profile pointer. $connection seeds from the PRIMARY
 // (window) backend at boot and otherwise only refreshes on a sleep/wake
-// reconnect — so activating a *background* profile left $connection describing
-// the primary, with the wrong `mode` for everything that branches on
-// local-vs-remote. Headline symptom: with a local primary and a remote pool
-// profile active, image attachments went out via the path-based `image.attach`
-// instead of `image.attach_bytes`, handing the remote gateway a client-only
-// path it can't resolve ("image not found: C:\…"), while the /api/fs/* file
-// browser and /api/media fetches targeted the wrong machine (#46651).
-// Resolve a profile's effective connection before publishing that profile as
-// active. Keeping the descriptor fetch separate from the atom update prevents
-// renderers from observing a new profile with the previous profile's transport.
+// reconnect — so activating a *background* profile without this left
+// $connection describing the primary, with the wrong `mode` for everything
+// that branches on local-vs-remote (#46651: path-based `image.attach` against
+// a remote gateway, /api/fs/* and /api/media on the wrong machine).
+//
+// Null means "no desktop bridge" (plain browser) — there is no descriptor to
+// sync then. A bridge REJECTION propagates: the caller aborts the whole switch
+// rather than activating a backend whose descriptor (and thus mode) is
+// unknown, which previously left $gateway on the new backend while
+// $connection kept describing the old one for the rest of the session.
 async function resolveConnectionForProfile(profile: string) {
   const getConnection = window.hermesDesktop?.getConnection
 
-  if (!getConnection) {
-    throw new Error('Desktop connection routing is unavailable')
-  }
-
-  return getConnection(profile)
+  return getConnection ? getConnection(profile) : null
 }
 
 // Make `profile`'s backend the active gateway, lazily opening its socket if it
@@ -336,86 +300,97 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  // Wait until we own the serialization slot. Several callers can be queued
-  // behind the same operation; after each wait, re-check the live lock so only
-  // one continuation can install the next operation.
-  while (gatewaySwitch) {
-    const pending = gatewaySwitch
-    let succeeded = true
+  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+    return
+  }
 
-    try {
-      await pending
-    } catch {
-      succeeded = false
-    }
+  // Serialize concurrent activations so two rapid session switches don't race
+  // the active pointer.
+  if (gatewaySwitch) {
+    await gatewaySwitch.catch(() => undefined)
 
-    // A successful queued switch to our target already reconciled its
-    // descriptor. Failed switches are retried rather than mistaken for success.
-    if (succeeded && normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+    if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
       return
     }
   }
 
-  const gatewayAlreadyActive = normalizeProfileKey($activeGatewayProfile.get()) === target && Boolean($gateway.get())
-
   $gatewaySwapTarget.set(target)
-  const operation = (async () => {
-    // Resolve under the same serialization lock as the gateway swap. If lookup
-    // fails, the previous route remains coherent and callers receive the error.
-    const connection = await resolveConnectionForProfile(target)
+  gatewaySwitch = (async () => {
+    // Resolve the target's connection descriptor and open (or reuse) its
+    // socket BEFORE anything is published — without closing the profile you
+    // came from. The gateway used to be activated (and the profile atom set)
+    // while the descriptor fetch was still in flight, so during that window
+    // $gateway already targeted the new backend while $connection still
+    // described the previous one — and any request or plugin mode-listener
+    // firing then announced the WRONG mode to the new backend.
+    const [connection, activate] = await Promise.all([
+      resolveConnectionForProfile(target),
+      prepareGatewayForProfile(target)
+    ])
 
-    // Reuse the active socket for a descriptor-only repair. Otherwise open (or
-    // reuse) the target socket and point the active gateway at it.
-    if (!gatewayAlreadyActive) {
-      await ensureGatewayForProfile(target, connection)
-    }
-    // Publish the effective transport and profile back-to-back, with no await
-    // between them, after the target gateway is selected. A secondary socket
-    // may still be reconnecting; its remote descriptor must remain authoritative
-    // so REST/filesystem work never falls back to this machine's local disk.
-    if (connection) {
-      setConnection(connection)
-    }
-    $activeGatewayProfile.set(target)
-  })()
-  gatewaySwitch = operation
+    // ONE publication. batch() defers Nanostores' notifications to the end of
+    // the callback, so the active gateway, $activeGatewayProfile and
+    // $connection become visible together. Without it these are sequential
+    // .set() calls that each drain their listeners synchronously, and a
+    // $gateway listener runs while the other two still name the old backend.
+    batch(() => {
+      // A rejected activation publishes NOTHING, exactly like the agent path.
+      // applyActive() returns false when its captured epoch was superseded --
+      // a newer switch (or a teardown) landed while this one was awaiting its
+      // route or socket. Publishing the companions anyway would leave the
+      // CURRENT gateway paired with the stale profile pointer and descriptor,
+      // and batch() cannot rescue that: it would make the mismatched tuple
+      // atomically observable rather than prevent it.
+      if (!activate()) {
+        return
+      }
+
+      $activeGatewayProfile.set(target)
+
+      if (connection) {
+        setConnection(connection)
+      }
+    })
+  })().catch(() => {
+    // Descriptor lookup failed: the switch fails as a unit. Nothing was
+    // published, so every atom still consistently describes the previous
+    // profile; the user can retry the switch.
+  })
 
   try {
-    await operation
-    // The main process already reads this preference before backend startup;
-    // remember live multi-socket switches so cold launch resumes the same
-    // profile instead of falling back to default.
-    void window.hermesDesktop?.profile?.remember?.(target)
+    await gatewaySwitch
   } finally {
-    // Never let an older caller clear a newer operation's lock or UI target.
-    if (gatewaySwitch === operation) {
-      gatewaySwitch = null
-      $gatewaySwapTarget.set(null)
-    }
+    gatewaySwitch = null
+    $gatewaySwapTarget.set(null)
   }
 }
 
 // Registry-aware sibling of syncConnectionToActiveProfile: a connection-scoped
 // agent's descriptor comes from getConnectionFor (its SOURCE connection), not
-// getConnection (the local pool). Same best-effort contract.
-async function syncConnectionToActiveAgent(connectionId: string, profile: string): Promise<void> {
+// getConnection (the local pool).
+// Resolve only — publication is the caller's, so the descriptor can be in hand
+// BEFORE the activation frame rather than an await after it.
+//
+// Null means "no desktop bridge" (plain browser) and nothing else, matching
+// resolveConnectionForProfile. A bridge REJECTION propagates so the caller
+// aborts the whole switch. Collapsing the two into null instead let a failed
+// lookup publish the new gateway and profile while $connection kept describing
+// the OLD backend, and unlike the pending-descriptor race that state did not
+// close on its own: it survived until some later reconnect or switch happened
+// to repair it, which is the same invariant this path exists to establish.
+async function resolveConnectionForActiveAgent(
+  connectionId: string,
+  profile: string
+): Promise<null | HermesConnection> {
   const getConnectionFor = window.hermesDesktop?.getConnectionFor
 
-  if (!getConnectionFor) {
-    return
-  }
-
-  try {
-    setConnection(await getConnectionFor({ connectionId, profile }))
-  } catch {
-    // Leave the prior connection in place; boot/reconnect resyncs it later.
-  }
+  return getConnectionFor ? getConnectionFor({ connectionId, profile }) : null
 }
 
 // Activate a connection-scoped agent's gateway — the (connectionId, profile)
 // analogue of ensureGatewayProfile, and the door the SDK's ensureAgent goes
-// through. Two invariants the raw store call (ensureGatewayForAgent) does not
-// provide on its own:
+// through. Three invariants the raw store call (ensureGatewayForAgent) does
+// not provide on its own:
 //  - Every activation moves $activeGatewayProfile and resyncs $connection,
 //    exactly like the profile path — otherwise activating an ALREADY-OPEN
 //    registry agent left both describing the previous backend, routing
@@ -424,6 +399,10 @@ async function syncConnectionToActiveAgent(connectionId: string, profile: string
 //  - Activations share the gatewaySwitch mutex with profile switches, so a
 //    rapid agent↔profile (or agent↔agent) interleave can't finish out of
 //    order and leave the EARLIER setActive() as the last write.
+//  - The gateway, the profile pointer and the connection descriptor publish in
+//    ONE synchronous frame, via the same prepare/publish seam the profile path
+//    uses, so no subscriber sees the new backend paired with the old
+//    descriptor.
 // Only a null connectionId falls through to the legacy profile path. Explicit
 // `local` is a registry identity and must use the genuinely-local route.
 export async function ensureGatewayAgent(connectionId: null | string, profile: string): Promise<void> {
@@ -441,16 +420,40 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    const activated = await ensureGatewayForAgent(connection, target)
+    // Dial the agent's socket and resolve its descriptor without publishing
+    // either, exactly like the profile path above. Activating first and then
+    // awaiting the descriptor left $gateway on the new backend while
+    // $connection still described the old one, so anything requesting during
+    // that window announced the WRONG mode to the new backend.
+    const [descriptor, activate] = await Promise.all([
+      resolveConnectionForActiveAgent(connection, target),
+      prepareGatewayForAgent(connection, target)
+    ])
 
-    if (!activated) {
-      return
-    }
+    // ONE publication. batch() defers Nanostores' notifications to the end of
+    // the callback, so a $gateway listener cannot run while the profile
+    // pointer and the connection descriptor still name the previous backend.
+    // Without it these are three sequential .set() calls, each draining its
+    // listeners synchronously, and the first listener observes exactly the
+    // mismatch this seam exists to prevent.
+    batch(() => {
+      // A disposed target (source edited/removed mid-dial) publishes nothing
+      // at all, rather than moving the profile pointer to a backend that no
+      // longer has a socket.
+      if (!activate()) {
+        return
+      }
 
-    $activeGatewayProfile.set(target)
-    // The active backend just changed; resync $connection so remote-aware
-    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
-    await syncConnectionToActiveAgent(connection, target)
+      $activeGatewayProfile.set(target)
+
+      // Remote-aware paths (image.attach_bytes vs image.attach, /api/fs/*,
+      // /api/media) follow $connection. Null here is only the no-bridge case,
+      // so keeping the previous descriptor is correct; a failed lookup
+      // rejected above and never reached this frame.
+      if (descriptor) {
+        setConnection(descriptor)
+      }
+    })
   })()
 
   try {
@@ -479,19 +482,19 @@ export const messagingTotalsKey = (messagingProfile: string, sourceId: string): 
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
-// Opt-in unified view. Request routing and browsing are deliberately separate:
-// focusing a mixed-profile chat tab may activate its gateway, but must not
-// replace the sidebar list the user is browsing.
+// Opt-in unified view. When false, scope follows the live gateway profile, so
+// single-profile users (who never see the switcher) are completely unaffected.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
-export const $browsedProfile = atom<string>(normalizeProfileKey($activeGatewayProfile.get()))
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 
-// The profile context the sidebar is currently showing: a concrete browse key,
-// or ALL_PROFILES for the unified grouped view. It changes only through explicit
-// profile navigation, never as a side effect of a chat pane routing an RPC.
-export const $profileScope = computed([$showAllProfiles, $browsedProfile], (showAll, browsed) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(browsed)
+// The profile context the sidebar is currently showing: a concrete profile key,
+// or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
+// gateway so opening/selecting a profile (which swaps the gateway) moves the
+// whole sidebar with it — a real context switch, not a separate filter to keep
+// in sync.
+export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
+  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
@@ -501,9 +504,8 @@ export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
-  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($browsedProfile.get())
+  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
-  $browsedProfile.set(target)
   $newChatProfile.set(target)
 
   if (switching) {
@@ -540,7 +542,7 @@ export function toggleShowAllProfiles(): void {
 // when the slot is empty so unused ⌘N keys stay harmless.
 
 function orderedProfileKeys(): string[] {
-  const profiles = filterVisibleProfiles($profiles.get(), $hiddenProfiles.get())
+  const profiles = $profiles.get()
 
   const named = sortByProfileOrder(
     profiles.filter(profile => !profile.is_default),
@@ -562,7 +564,7 @@ export function switchToDefaultProfile(): void {
 // Switch to the Nth named (non-default) profile in rail order (1-based).
 export function switchProfileToSlot(slot: number): void {
   const named = sortByProfileOrder(
-    filterVisibleProfiles($profiles.get(), $hiddenProfiles.get()).filter(profile => !profile.is_default),
+    $profiles.get().filter(profile => !profile.is_default),
     $profileOrder.get()
   )
 

@@ -45,11 +45,13 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
-const normalizeStoredSkin = (name: string | null): string =>
-  name && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
-
 const normalizeSkin = (name: string | null): string =>
   name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+
+// Keep a saved backend/contributed slug even when its registry arrives after
+// the synchronous boot paint. Registry reactivity repaints it once available.
+const normalizeStoredSkin = (name: string | null): string =>
+  name && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
@@ -70,9 +72,6 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
   }
 })
 
-// Keep a saved backend/contributed slug even when its registry arrives after
-// the synchronous boot paint. deriveTheme paints Nous provisionally, then its
-// registry dependencies repaint the same slug as soon as it becomes available.
 export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeStoredSkin)
 export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
@@ -81,7 +80,7 @@ const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_
 
 // Last active profile — lets the boot paint pick its appearance before the
 // gateway reports which profile actually launched. Helper windows carry an
-// explicit profile in their URL and should never paint another window's slot.
+// explicit profile and must never paint another window's slot.
 const readBootProfileKey = () => normalizeProfileKey(windowProfileOverride() ?? storedString(LAST_PROFILE_KEY))
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
@@ -310,6 +309,13 @@ interface ThemeContextValue {
   availableThemes: Array<{ name: string; label: string; description: string }>
   setTheme: (name: string) => void
   setMode: (mode: ThemeMode) => void
+  /**
+   * Paint a theme with an explicit light/dark, without persistence. This is
+   * the highlight preview for the palette. A commit (`setTheme`) or
+   * `clearThemePreview` repaints the committed appearance.
+   */
+  previewTheme: (name: string, mode: 'light' | 'dark') => void
+  clearThemePreview: () => void
 }
 
 const SKIN_LIST = BUILTIN_THEME_LIST.map(({ name, label, description }) => ({ name, label, description }))
@@ -322,7 +328,9 @@ const ThemeContext = createContext<ThemeContextValue>({
   renderedMode: 'light',
   availableThemes: SKIN_LIST,
   setTheme: () => {},
-  setMode: () => {}
+  setMode: () => {},
+  previewTheme: () => {},
+  clearThemePreview: () => {}
 })
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -365,12 +373,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // remember it for the next boot's first paint.
   useEffect(() => {
     // The renderer begins on provisional "default" before gateway adoption.
-    // Never let that transient value replace the last authoritative profile or
-    // every cold/new window first-paints the default light palette.
+    // Never let that transient value replace the last authoritative profile.
     if (gatewayProfileAdopted || windowProfileOverride()) {
       rememberActiveProfileKey(profileKey)
     }
-
     setThemeNameState(skinPref.resolve(profileKey))
     setModeState(modePref.resolve(profileKey))
   }, [gatewayProfileAdopted, profileKey])
@@ -399,46 +405,55 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
 
+  // Transient highlight preview (palette theme picker). It is never
+  // persisted. A commit or an explicit clear returns the paint to the
+  // committed appearance.
+  const [preview, setPreview] = useState<{ name: string; mode: 'light' | 'dark' } | null>(null)
+
+  const paintedName = preview ? preview.name : themeName
+  const paintedMode = preview ? preview.mode : resolvedMode
+
   const activeTheme = useMemo(
-    () => deriveTheme(themeName, resolvedMode),
+    () => deriveTheme(paintedName, paintedMode),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
     // skin (live theme authoring) must repaint, not just a name switch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [themeName, resolvedMode, userThemes, backendThemes, registryVersion]
+    [paintedName, paintedMode, userThemes, backendThemes, registryVersion]
   )
 
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
-  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
+  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, paintedMode), [activeTheme, paintedMode])
 
-  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+  useEffect(() => applyTheme(activeTheme, paintedMode), [activeTheme, paintedMode])
 
   // Keep the native window appearance pinned to the app theme (vibrancy
   // material, titlebar, new-window pre-paint background).
   useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
-  const setTheme = useCallback(
-    (name: string) => {
-      const next = normalizeSkin(name)
-      setThemeNameState(next)
-      skinPref.assign(
-        resolveAppearanceProfile($activeGatewayProfile.get(), bootProfile, $gatewayProfileAdopted.get()),
-        next
-      )
-    },
-    [bootProfile]
-  )
+  // Assign to whichever profile is live right now (read fresh so the callbacks
+  // stay stable across profile switches).
+  const liveProfile = () =>
+    resolveAppearanceProfile($activeGatewayProfile.get(), bootProfile, $gatewayProfileAdopted.get())
 
-  const setMode = useCallback(
-    (next: ThemeMode) => {
-      setModeState(next)
-      modePref.assign(
-        resolveAppearanceProfile($activeGatewayProfile.get(), bootProfile, $gatewayProfileAdopted.get()),
-        next
-      )
-    },
-    [bootProfile]
-  )
+  const setTheme = useCallback((name: string) => {
+    const next = normalizeSkin(name)
+    setPreview(null)
+    setThemeNameState(next)
+    skinPref.assign(liveProfile(), next)
+  }, [bootProfile])
+
+  const setMode = useCallback((next: ThemeMode) => {
+    setPreview(null)
+    setModeState(next)
+    modePref.assign(liveProfile(), next)
+  }, [bootProfile])
+
+  const previewTheme = useCallback((name: string, previewMode: 'light' | 'dark') => {
+    setPreview(resolveTheme(name) ? { name, mode: previewMode } : null)
+  }, [])
+
+  const clearThemePreview = useCallback(() => setPreview(null), [])
 
   // Drain a backend-driven skin switch (Hermes authoring/activating a skin from a
   // prompt, or `/skin` on another surface). setTheme persists it per profile, so
@@ -456,8 +471,30 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme: activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode }),
-    [activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode]
+    () => ({
+      theme: activeTheme,
+      themeName,
+      mode,
+      resolvedMode,
+      renderedMode,
+      availableThemes,
+      setTheme,
+      setMode,
+      previewTheme,
+      clearThemePreview
+    }),
+    [
+      activeTheme,
+      themeName,
+      mode,
+      resolvedMode,
+      renderedMode,
+      availableThemes,
+      setTheme,
+      setMode,
+      previewTheme,
+      clearThemePreview
+    ]
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

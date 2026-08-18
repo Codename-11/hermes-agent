@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $activeGatewayProfile, $gatewayProfileAdopted } from '@/store/profile-scope'
 
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
-import { modePref, ThemeProvider } from './context'
+import { modePref, skinPref, ThemeProvider, useTheme } from './context'
+import { midnightTheme } from './presets'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -127,5 +128,74 @@ describe('ThemeProvider ← backend skin sync', () => {
     })
 
     await waitFor(() => expect(setNativeTheme).toHaveBeenLastCalledWith('dark'))
+  })
+})
+
+describe('ThemeProvider highlight preview', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+  })
+
+  afterEach(cleanup)
+
+  // Read the live context so the tests drive the real provider, not a mock.
+  let ctx: ReturnType<typeof useTheme>
+
+  function Probe() {
+    ctx = useTheme()
+
+    return null
+  }
+
+  const renderProbe = () =>
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+
+  it('paints the previewed theme without persisting it', () => {
+    renderProbe()
+
+    const committed = ctx.themeName
+
+    act(() => ctx.previewTheme('midnight', 'dark'))
+
+    expect(cssVar('--theme-foreground')).toBe(midnightTheme.colors.foreground)
+    // The commit surface does not change. The context name and the stored
+    // preference keep their values.
+    expect(ctx.themeName).toBe(committed)
+    expect(skinPref.resolve('default')).toBe(committed)
+  })
+
+  it('clearThemePreview repaints the committed appearance', () => {
+    renderProbe()
+
+    act(() => ctx.previewTheme('midnight', 'dark'))
+    expect(cssVar('--theme-foreground')).toBe(midnightTheme.colors.foreground)
+
+    act(() => ctx.clearThemePreview())
+    expect(cssVar('--theme-foreground')).not.toBe(midnightTheme.colors.foreground)
+  })
+
+  it('a commit replaces the preview and persists', () => {
+    renderProbe()
+
+    act(() => ctx.previewTheme('midnight', 'dark'))
+    act(() => ctx.setTheme('mono'))
+
+    expect(ctx.themeName).toBe('mono')
+    expect(skinPref.resolve('default')).toBe('mono')
+    expect(cssVar('--theme-foreground')).not.toBe(midnightTheme.colors.foreground)
+  })
+
+  it('ignores a preview of an unknown theme', () => {
+    renderProbe()
+
+    const painted = cssVar('--theme-foreground')
+
+    act(() => ctx.previewTheme('does-not-exist', 'dark'))
+    expect(cssVar('--theme-foreground')).toBe(painted)
   })
 })

@@ -132,6 +132,14 @@ describe('openSession', () => {
     expect(navigate).toHaveBeenCalledWith('/c/s1')
   })
 
+  it('main routes to the workspace even when the session is already open as a tile', () => {
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'main')
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(focusOpenSession).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
   it('activates a cross-profile owner before routing in place', async () => {
     focusOpenSession.mockReturnValue(null)
 

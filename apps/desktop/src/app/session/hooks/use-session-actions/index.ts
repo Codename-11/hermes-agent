@@ -20,6 +20,7 @@ import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $newChatProfile,
+  ensureGatewayAgent,
   ensureGatewayProfile,
   normalizeProfileKey
 } from '@/store/profile'
@@ -67,6 +68,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { requestForSessionProfile } from '@/store/session-request-router'
 import {
   $sessionTiles,
   closeSessionTile,
@@ -80,6 +82,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { dropTranscriptTail, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type {
   SessionCreateResponse,
@@ -766,7 +769,29 @@ export function useSessionActions({
         return
       }
 
-      await ensureGatewayProfile(sessionProfile)
+      // A row spliced from a CONNECTED registry gateway (#88880) carries its
+      // owning connection — activate THAT gateway, not a same-named local
+      // profile. Rows without the tag keep the legacy profile path.
+      if (storedForProfile?.connection_id) {
+        await ensureGatewayAgent(storedForProfile.connection_id, sessionProfile || 'default')
+      } else {
+        await ensureGatewayProfile(sessionProfile)
+      }
+
+      // Request-time routing guard for every session-scoped RPC below. The
+      // await above REQUESTS the swap, but by dispatch time the active gateway
+      // can be back on another profile: a concurrent switch won the
+      // gatewaySwitch mutex, an eviction path (idle reap, connection edit,
+      // profile delete) re-pointed the active route at the primary, or the
+      // target's dial failed and scheduleReconnect left the previous socket
+      // active. Sending this session's resume/activate on whatever socket
+      // happens to be active then lands it on a backend that has never heard
+      // of the session — the backend boots, sits idle, and the renderer burns
+      // its bounded retries into the "retries gave up" screen while the bot's
+      // own backend is healthy one port over (#89206: local pool AND SSH).
+      // requestForSessionProfile re-resolves the route at each call.
+      const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
+        requestForSessionProfile<T>(sessionProfile, requestGateway, method, params)
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
@@ -859,7 +884,7 @@ export function useSessionActions({
             let activated: SessionResumeResponse | null = null
 
             try {
-              activated = await requestGateway<SessionResumeResponse>('session.activate', {
+              activated = await requestForSession<SessionResumeResponse>('session.activate', {
                 session_id: cachedRuntimeId,
                 cols: 96,
                 omit_messages: true
@@ -872,7 +897,7 @@ export function useSessionActions({
                 throw error
               }
 
-              const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+              const usage = await requestForSession<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
               if (!isCurrentResume()) {
                 return
@@ -1015,6 +1040,9 @@ export function useSessionActions({
               setBusy(running)
               setAwaitingResponse(running)
               syncSessionStateToView(cachedRuntimeId, activatedState)
+              // Durable tail refresh — same post-reconcile contract as the
+              // cold path's save below.
+              saveTranscriptTail(storedSessionId, activatedState.messages)
 
               return
             }
@@ -1055,6 +1083,36 @@ export function useSessionActions({
         setMessages([])
       }
 
+      // Instant paint from the durable tail cache: a cold resume (fresh app
+      // launch, reaped/respawned backend) otherwise shows a loader until the
+      // REST prefetch lands — which on a cold multi-profile boot waits behind
+      // a backend spawn. Painting the persisted tail here makes the wake
+      // visually complete at ~0ms (and satisfies the paint-first hydration
+      // wait). The paint is DISPLAY-ONLY: reconciliation below must treat the
+      // view as empty (see cachedTailPaint), because grafting the REST tail
+      // onto a stale cached tail would duplicate or misorder rows — the
+      // authoritative transcript REPLACES the cached paint when it lands.
+      // Same-selected re-resumes skip it — their transcript is already live.
+      let cachedTailPaint: ChatMessage[] | null = null
+
+      if (!resumedSameSelectedSession && $messages.get().length === 0) {
+        const cachedTail = loadTranscriptTail(storedSessionId)
+
+        if (cachedTail && selectedStoredSessionIdRef.current === storedSessionId) {
+          cachedTailPaint = cachedTail
+          setMessages(cachedTail)
+        }
+      }
+
+      // The reconciler's notion of "what was already on screen": a durable
+      // cached paint is provisional, not history — report empty so the
+      // authoritative transcript replaces it wholesale.
+      const viewMessagesForReconcile = (): ChatMessage[] => {
+        const current = $messages.get()
+
+        return cachedTailPaint !== null && current === cachedTailPaint ? [] : current
+      }
+
       // A history load is not a live turn. Do not mark the incoming session
       // busy — running ≠ loading, and a leftover true locked the composer.
       busyRef.current = false
@@ -1084,8 +1142,8 @@ export function useSessionActions({
         const watchWindow = isWatchWindow()
 
         let localSnapshot = resumedSameSelectedSession
-          ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-          : $messages.get()
+          ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+          : viewMessagesForReconcile()
 
         let prefetchApplied = false
         let prefetchedStoredSessionId: string | null = null
@@ -1100,7 +1158,7 @@ export function useSessionActions({
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
 
-        const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
+        const resumePromise = requestForSession<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
           source: 'desktop',
@@ -1146,8 +1204,8 @@ export function useSessionActions({
 
         if (prefetchedResult) {
           const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
+            ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+            : viewMessagesForReconcile()
 
           // Tail page + previously backfilled prefix (same-session re-resume).
           const graftedPrefetch = graftRefreshedTailOntoBackfill(
@@ -1161,7 +1219,7 @@ export function useSessionActions({
           prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
 
-        const currentMessages = $messages.get()
+        const currentMessages = viewMessagesForReconcile()
 
         // Keep the local snapshot when resume would only reshuffle runtime
         // projection. When the REST prefetch already hydrated the transcript,
@@ -1266,6 +1324,15 @@ export function useSessionActions({
         // is safer than surfacing the in-flight turn alone). Recovery only
         // ever appends, so this matches the final transcript's emptiness.
         if (sessionShouldHaveTranscript(stored) && preferredMessages.length === 0) {
+          // Roll back a provisional cached-tail paint and drop its entry: the
+          // authoritative sources say this session has no transcript, so the
+          // cache no longer reflects backend truth and must not survive to
+          // mislead the retry (or the next wake).
+          if (cachedTailPaint !== null && $messages.get() === cachedTailPaint) {
+            setMessages([])
+            dropTranscriptTail(storedSessionId)
+          }
+
           setActiveSessionId(null)
           activeSessionIdRef.current = null
           setResumeFailedSessionId(storedSessionId)
@@ -1324,6 +1391,12 @@ export function useSessionActions({
         if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
           setMessages(messagesForView)
         }
+
+        // Refresh the durable tail cache with the authoritative transcript so
+        // the NEXT wake of this session paints instantly (fresh launch,
+        // reaped backend). Post-reconcile only — never persist an optimistic
+        // or in-flight-recovered projection ahead of backend truth.
+        saveTranscriptTail(storedSessionId, messagesForView)
       } catch (err) {
         if (!isCurrentResume()) {
           return
@@ -1347,8 +1420,8 @@ export function useSessionActions({
           }
 
           const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
+            ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+            : viewMessagesForReconcile()
 
           // Resume failed, so there is no live projection — the journal is the
           // only carrier of a crashed turn's progress on this path.
@@ -1376,7 +1449,7 @@ export function useSessionActions({
         // instead of toasting an error and hot-looping the bounded retry on a
         // permanently-dead id. (Booting straight into a no-longer-existent
         // last-session id is the common trigger.)
-        if ($messages.get().length === 0 && isSessionGoneError(fallbackError)) {
+        if (viewMessagesForReconcile().length === 0 && isSessionGoneError(fallbackError)) {
           // A 404 is only trustworthy from the backend that OWNS the session.
           // A cross-profile open (Bots pane) races the gateway swap, so both
           // lookups can land on a backend that never heard of the id (#88540).
@@ -1420,9 +1493,12 @@ export function useSessionActions({
           return
         }
 
-        if ($messages.get().length === 0) {
+        if (viewMessagesForReconcile().length === 0) {
           // Arm the self-heal ONLY when the window is still empty: the gateway
           // resume rejected AND the REST fallback failed to paint a transcript.
+          // A durable cached-tail paint counts as EMPTY here — it's provisional
+          // display, not proof of a live transcript, and must not mask the
+          // stranded state from the retry machinery.
           // That is the exact stranded state the loader latches on
           // (messagesEmpty && !activeSessionId), and matches $resumeFailedSessionId's
           // documented contract. If the REST fallback DID paint history, the
@@ -1734,6 +1810,8 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removed?.profile)
+        // A deleted session's cached tail must not resurrect on a recycled id.
+        dropTranscriptTail(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, removed?.profile)
