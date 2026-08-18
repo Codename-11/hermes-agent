@@ -187,6 +187,13 @@ export function activeGateway(): HermesGateway | null {
   return g.secondaries.get(g.activeKey)?.gateway ?? null
 }
 
+/** Read a profile-owned socket without changing the foreground gateway. */
+export function gatewayForProfile(profile: string): HermesGateway | null {
+  const key = normKey(profile)
+
+  return key === g.primaryProfile ? g.primaryGateway : (g.secondaries.get(key)?.gateway ?? null)
+}
+
 /**
  * The registry connection serving the gateway the user is currently looking
  * at — null for the local/legacy primary path and for profile-keyed (local)
@@ -280,7 +287,7 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary): Promise<void> {
+async function openSecondary(entry: Secondary, resolvedConnection?: HermesConnection | null): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -297,9 +304,10 @@ async function openSecondary(entry: Secondary): Promise<void> {
     // Registry-scoped entries dial through getConnectionFor when the bridge has
     // it. Local/legacy entries retain the existing getConnection path.
     const conn =
-      entry.connectionId && desktop.getConnectionFor
+      resolvedConnection ??
+      (entry.connectionId && desktop.getConnectionFor
         ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
-        : await desktop.getConnection(entry.profile)
+        : await desktop.getConnection(entry.profile))
 
     entry.connection = conn
 
@@ -465,7 +473,10 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 // the second dial fails (tunnel/token are per-backend) and the closed socket
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
-async function sharedPrimaryRoute(profile: string): Promise<boolean> {
+async function sharedPrimaryRoute(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<boolean> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -473,7 +484,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   }
 
   try {
-    const conn = await desktop.getConnection(profile)
+    const conn = resolvedConnection ?? (await desktop.getConnection(profile))
 
     return Boolean(conn && typeof conn === 'object' && (conn as { sharedPrimary?: boolean }).sharedPrimary === true)
   } catch {
@@ -484,9 +495,10 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
 // Resolve and open `profile`'s socket WITHOUT changing the active gateway.
 // Shared global-remote profiles intentionally return the primary socket plus a
 // request-scope flag; dedicated local/remote profiles use their pooled socket.
-async function gatewayForProfile(
+async function resolveGatewayForProfileRoute(
   profile: string,
-  leaseRequest = false
+  leaseRequest = false,
+  resolvedConnection?: HermesConnection | null
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
@@ -495,7 +507,7 @@ async function gatewayForProfile(
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
   }
 
-  if (await sharedPrimaryRoute(key)) {
+  if (await sharedPrimaryRoute(key, resolvedConnection)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
@@ -539,7 +551,7 @@ async function gatewayForProfile(
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry)
+      await openSecondary(entry, resolvedConnection)
     }
   } catch (error) {
     release()
@@ -559,7 +571,7 @@ export async function requestGatewayForProfile<T>(
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<T> {
-  const route = await gatewayForProfile(profile, true)
+  const route = await resolveGatewayForProfileRoute(profile, true)
 
   try {
     if (!route.gateway) {
@@ -637,7 +649,7 @@ export async function requestGatewayForAgent<T>(
 // backend must not start a background retry loop — the real switch owns retry
 // and error UX. An already-open (or primary) profile is a no-op.
 export async function openGatewayForProfile(profile: string): Promise<void> {
-  await gatewayForProfile(profile)
+  await resolveGatewayForProfileRoute(profile)
 }
 
 // ── Connection-scoped agents (multi-source roster) ─────────────────────────
@@ -746,7 +758,10 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 // pointer, connection descriptor), so no subscriber can observe the active
 // gateway pointing at one backend while companion state still describes
 // another. Nothing is published until the thunk runs.
-export async function prepareGatewayForProfile(profile: string): Promise<() => boolean> {
+export async function prepareGatewayForProfile(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<() => boolean> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
@@ -762,7 +777,7 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
   // createSecondary so a shared-remote profile never mints a secondary
   // entry, and returned as a thunk like every other path here so this
   // switch publishes as atomically as a dedicated-socket one.
-  if (await sharedPrimaryRoute(key)) {
+  if (await sharedPrimaryRoute(key, resolvedConnection)) {
     return () => applyActive(g.primaryProfile, activationEpoch)
   }
 
@@ -780,7 +795,7 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
     entry.reconnectAttempt = 0
 
     try {
-      await openSecondary(entry)
+      await openSecondary(entry, resolvedConnection)
     } catch {
       scheduleReconnect(entry)
     }
@@ -812,8 +827,11 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
-  ;(await prepareGatewayForProfile(profile))()
+export async function ensureGatewayForProfile(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<void> {
+  ;(await prepareGatewayForProfile(profile, resolvedConnection))()
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

@@ -1368,6 +1368,160 @@ def test_deploy_resolver_prompt_assigns_only_structural_validation_to_child():
     assert "focused verification" not in prompt.lower()
 
 
+def test_deploy_resolver_prompt_includes_failed_parent_diagnostics_for_repair():
+    from hermes_cli import axiom_update
+
+    prompt = axiom_update._build_deploy_resolver_prompt(
+        {
+            "repo": "/repo",
+            "branch": "axiom",
+            "worktree": "/worktree",
+            "reason": "conflict",
+            "phase": "repair_pending",
+            "conflict_files": ["apps/desktop/src/store/profile.ts"],
+            "check_ledger": {
+                "resolved_sha": "a" * 40,
+                "results": {
+                    "desktop-typecheck": {
+                        "status": "failed",
+                        "output_tail": "profile.ts: missing exported member $hiddenProfiles",
+                    }
+                },
+            },
+        },
+        [],
+    )
+
+    assert "parent validation repair" in prompt.lower()
+    assert "desktop-typecheck" in prompt
+    assert "missing exported member $hiddenProfiles" in prompt
+    assert "Do not rerun parent-owned checks" in prompt
+
+
+def test_failed_parent_check_immediately_schedules_bounded_resolver_repair(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "branch": "axiom",
+                "repo": str(tmp_path),
+                "phase": "validation_failed",
+                "check_ledger": {
+                    "results": {
+                        "desktop-typecheck": {
+                            "status": "failed",
+                            "output_tail": "missing export",
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    calls = []
+    monkeypatch.setattr(
+        axiom_update,
+        "_resolve_deploy_handoff",
+        lambda **kwargs: calls.append(kwargs) or 3,
+    )
+
+    result = axiom_update._retry_validation_with_resolver(
+        git_cmd=["git"],
+        repo=tmp_path,
+        branch="axiom",
+        pre_update_head="old",
+        publish_only=False,
+    )
+
+    assert result == 3
+    assert len(calls) == 1
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["phase"] == "repair_pending"
+    assert payload["validation_repair_attempts"] == 1
+
+
+def test_validation_repair_does_not_send_dependency_prep_failure_to_resolver(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "branch": "axiom",
+                "repo": str(tmp_path),
+                "phase": "validation_failed",
+                "error": "npm ci failed",
+                "check_ledger": {"results": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        axiom_update,
+        "_resolve_deploy_handoff",
+        lambda **kwargs: pytest.fail("resolver must not repair environment failures"),
+    )
+
+    assert (
+        axiom_update._retry_validation_with_resolver(
+            git_cmd=["git"],
+            repo=tmp_path,
+            branch="axiom",
+            pre_update_head="old",
+        )
+        is None
+    )
+
+
+def test_validation_repair_stops_at_bounded_attempt_limit(monkeypatch, tmp_path):
+    from hermes_cli import axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "branch": "axiom",
+                "repo": str(tmp_path),
+                "phase": "validation_failed",
+                "validation_repair_attempts": 2,
+                "check_ledger": {
+                    "results": {
+                        "desktop-typecheck": {
+                            "status": "failed",
+                            "output_tail": "still broken",
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        axiom_update,
+        "_resolve_deploy_handoff",
+        lambda **kwargs: pytest.fail("repair loop exceeded its cap"),
+    )
+
+    assert (
+        axiom_update._retry_validation_with_resolver(
+            git_cmd=["git"],
+            repo=tmp_path,
+            branch="axiom",
+            pre_update_head="old",
+        )
+        is None
+    )
+
+
 def test_checkpoint_resolved_handoff_rejects_untracked_files_before_commit(
     monkeypatch, tmp_path
 ):

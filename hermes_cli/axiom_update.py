@@ -1214,6 +1214,26 @@ def _build_deploy_resolver_prompt(payload: dict[str, object], checks: object) ->
     conflict_files = payload.get("conflict_files")
     files = "\n".join(f"- {item}" for item in conflict_files) if isinstance(conflict_files, list) else "- inspect git status"
     brief_path = str(payload.get("resolver_brief_path") or payload.get("report_path") or "").strip()
+    failed_results = _failed_validation_results(payload)
+    repair_section = ""
+    if failed_results:
+        diagnostics = []
+        for check_id, result in failed_results:
+            output = _bounded_text(result.get("output_tail") or "(no diagnostic output)", 4000)
+            diagnostics.append(f"[{check_id}]\n{output}")
+        repair_section = f"""
+
+Parent validation repair:
+The structural merge checkpoint compiled or tested unsuccessfully. Repair the
+tracked source against these authoritative parent diagnostics. Trace missing
+symbols to their surviving fork consumers and preserve upstream behavior plus
+still-required fork contracts; do not merely silence types or delete consumers.
+
+{chr(10).join(diagnostics)}
+
+Do not rerun parent-owned checks. The parent updater will checkpoint your tracked
+repair and rerun the failed checks after you exit.
+"""
     return f"""Resolve the retained Hermes deploy-branch update handoff to completion.
 
 Repo: {payload.get('repo')}
@@ -1228,6 +1248,7 @@ of checks owned by the parent updater.
 
 Conflicting files from the updater marker:
 {files}
+{repair_section}
 
 Resolver contract:
 1. Work only inside the retained worktree above.
@@ -1569,6 +1590,69 @@ def _update_deploy_handoff_state(**updates: object) -> None:
     os.replace(temporary, marker)
 
 
+_MAX_VALIDATION_REPAIR_ATTEMPTS = 2
+
+
+def _failed_validation_results(
+    payload: dict[str, object],
+) -> list[tuple[str, dict[str, object]]]:
+    ledger = payload.get("check_ledger")
+    if not isinstance(ledger, dict):
+        return []
+    results = ledger.get("results")
+    if not isinstance(results, dict):
+        return []
+    return [
+        (str(check_id), result)
+        for check_id, result in results.items()
+        if isinstance(result, dict) and result.get("status") == "failed"
+    ]
+
+
+def _retry_validation_with_resolver(
+    *,
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    pre_update_head: str,
+    publish_only: bool = False,
+) -> Optional[int]:
+    """Feed real parent diagnostics back to the resolver, with a hard cap."""
+    payload = _read_deploy_handoff_payload(repo, branch)
+    if payload is None or not _failed_validation_results(payload):
+        return None
+
+    try:
+        attempts = int(payload.get("validation_repair_attempts") or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    if attempts >= _MAX_VALIDATION_REPAIR_ATTEMPTS:
+        print(
+            "✗ Parent validation still fails after "
+            f"{_MAX_VALIDATION_REPAIR_ATTEMPTS} automatic repair pass(es); "
+            "checkpoint retained for review."
+        )
+        return None
+
+    attempts += 1
+    _update_deploy_handoff_state(
+        phase="repair_pending",
+        validation_repair_attempts=attempts,
+        error=f"Parent validation repair pass {attempts} pending.",
+    )
+    print(
+        f"→ Feeding parent validation diagnostics back to the resolver "
+        f"(repair {attempts}/{_MAX_VALIDATION_REPAIR_ATTEMPTS})."
+    )
+    return _resolve_deploy_handoff(
+        git_cmd=git_cmd,
+        repo=repo,
+        branch=branch,
+        pre_update_head=pre_update_head,
+        publish_only=publish_only,
+    )
+
+
 def _checkpoint_resolved_handoff(
     git_cmd: list[str], worktree: Path, branch: str
 ) -> tuple[str, str]:
@@ -1878,7 +1962,13 @@ def _resolve_deploy_handoff(
         ):
             status.fail(note="validation failed")
             print("✗ Parent validation failed; checkpoint retained for a safe retry.")
-            return None
+            return _retry_validation_with_resolver(
+                git_cmd=git_cmd,
+                repo=repo,
+                branch=branch,
+                pre_update_head=pre_update_head,
+                publish_only=publish_only,
+            )
         phase = "commit_push_pending"
 
     if phase == "commit_push_pending":
@@ -1976,7 +2066,13 @@ def _resolve_deploy_handoff(
         if not _run_parent_handoff_validation(worktree, resolved_head, checks, {}):
             status.fail(note="validation failed")
             print("✗ Parent validation failed; checkpoint retained for a safe retry.")
-            return None
+            return _retry_validation_with_resolver(
+                git_cmd=git_cmd,
+                repo=repo,
+                branch=branch,
+                pre_update_head=pre_update_head,
+                publish_only=publish_only,
+            )
 
     status.advance("push")
     push = subprocess.run(

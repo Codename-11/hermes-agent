@@ -72,6 +72,7 @@ vi.mock('@/store/profile', () => ({
     profiles.filter(item => item.is_default || !hidden.includes(item.name)),
   newSessionInProfile,
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
+  profileLabel: (profile: ProfileInfo) => profile.display_name?.trim() || profile.name,
   refreshActiveProfile: vi.fn(async () => undefined),
   selectProfile: vi.fn(),
   setProfileColor: vi.fn(),

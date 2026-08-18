@@ -89,11 +89,12 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     // "local". Activating the remote profile must flip it to "remote" — without
     // this, image attach uses path-based image.attach against the remote
     // gateway ("image not found: C:\\…") instead of image.attach_bytes.
-    getConnection.mockResolvedValue(remoteConn())
+    const descriptor = remoteConn()
+    getConnection.mockResolvedValue(descriptor)
 
     await ensureGatewayProfile('vps-remote')
 
-    expect(prepareGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect(prepareGatewayForProfile).toHaveBeenCalledWith('vps-remote', descriptor)
     expect(activateGateway).toHaveBeenCalledTimes(1)
     expect(getConnection).toHaveBeenCalledWith('vps-remote')
     expect($connection.get()?.mode).toBe('remote')
