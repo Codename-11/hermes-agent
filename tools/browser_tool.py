@@ -3504,10 +3504,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     "Consider upgrading Browserbase plan for proxy support."
                 )
             response["stealth_features"] = active_features
-            # Surface live viewer URL for cloud browser sessions
-            if session_info.get("live_url"):
-                response["live_url"] = session_info["live_url"]
-
         # Auto-take a compact snapshot so the model can act immediately
         # without a separate browser_snapshot call.
         try:

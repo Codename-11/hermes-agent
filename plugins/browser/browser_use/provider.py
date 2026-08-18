@@ -242,9 +242,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
         logger.info("Created Browser Use session %s", session_name)
 
         cdp_url = session_data.get("cdpUrl") or session_data.get("connectUrl") or ""
-        live_url = session_data.get("liveUrl") or ""
-
-        result = {
+        return {
             "session_name": session_name,
             "bb_session_id": session_data["id"],
             "cdp_url": cdp_url,
@@ -255,9 +253,6 @@ class BrowserUseBrowserProvider(BrowserProvider):
             "features": {"browser_use": True},
             "external_call_id": external_call_id,
         }
-        if live_url:
-            result["live_url"] = live_url
-        return result
 
     def close_session(self, session_id: str) -> bool:
         try:
