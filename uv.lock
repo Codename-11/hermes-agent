@@ -7,6 +7,24 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[options]
+exclude-newer = "2026-08-04T07:06:16.774262776Z"
+exclude-newer-span = "P14D"
+
+[options.exclude-newer-package]
+setuptools = false
+h2 = false
+vercel = false
+pillow = false
+unpaddedbase64 = false
+defusedxml = false
+aiohttp = false
+cryptography = false
+mcp = false
+python-olm = false
+nemo-relay = false
+huggingface-hub = false
+
 [manifest]
 overrides = [
     { name = "cryptography", specifier = ">=50,<51" },
@@ -1579,7 +1597,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.20.2"
+version = "0.20.4"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
