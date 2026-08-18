@@ -1602,6 +1602,109 @@ def test_live_sync_preserves_lockfile_when_manifest_is_also_modified(tmp_path):
     assert "package-lock.json" in changed
 
 
+def test_live_sync_discards_obsolete_case_collision_when_physical_blob_is_tracked(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    upper = "contributors/emails/agent@Agents-Mac-mini.local"
+    lower = "contributors/emails/agent@agents-Mac-mini.local"
+    physical = repo / upper
+    physical.parent.mkdir(parents=True)
+    physical.write_text("skip-agent\n", encoding="utf-8")
+    subprocess.run(["git", "add", upper], cwd=repo, check=True)
+    lower_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="momomojo\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"100644,{lower_blob},{lower}"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-m", "case collision"], cwd=repo, check=True, capture_output=True)
+    empty_tree = subprocess.run(
+        ["git", "mktree"], cwd=repo, input="", capture_output=True, text=True, check=True
+    ).stdout.strip()
+    target = subprocess.run(
+        ["git", "commit-tree", empty_tree, "-p", "HEAD", "-m", "remove collision"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/axiom", target], cwd=repo, check=True)
+    monkeypatch.setattr(axiom_update.os, "name", "nt")
+
+    discarded = axiom_update._discard_obsolete_live_case_collisions(
+        ["git"], repo, "origin/axiom"
+    )
+
+    assert discarded == [upper, lower]
+    assert not physical.exists()
+
+
+def test_live_sync_preserves_obsolete_case_collision_with_untracked_content(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    upper = "contributors/emails/agent@Agents-Mac-mini.local"
+    lower = "contributors/emails/agent@agents-Mac-mini.local"
+    physical = repo / upper
+    physical.parent.mkdir(parents=True)
+    physical.write_text("skip-agent\n", encoding="utf-8")
+    subprocess.run(["git", "add", upper], cwd=repo, check=True)
+    lower_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="momomojo\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"100644,{lower_blob},{lower}"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-m", "case collision"], cwd=repo, check=True, capture_output=True)
+    empty_tree = subprocess.run(
+        ["git", "mktree"], cwd=repo, input="", capture_output=True, text=True, check=True
+    ).stdout.strip()
+    target = subprocess.run(
+        ["git", "commit-tree", empty_tree, "-p", "HEAD", "-m", "remove collision"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/axiom", target], cwd=repo, check=True)
+    physical.write_text("real local edit\n", encoding="utf-8")
+    monkeypatch.setattr(axiom_update.os, "name", "nt")
+
+    discarded = axiom_update._discard_obsolete_live_case_collisions(
+        ["git"], repo, "origin/axiom"
+    )
+
+    assert discarded == []
+    assert physical.read_text(encoding="utf-8") == "real local edit\n"
+
+
 def test_checkpoint_resolved_handoff_commits_tracked_resolution_and_persists_sha(
     monkeypatch, tmp_path
 ):

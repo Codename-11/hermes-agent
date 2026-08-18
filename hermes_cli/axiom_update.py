@@ -2277,6 +2277,72 @@ def _discard_generated_live_lockfile_churn(
     return discarded
 
 
+def _discard_obsolete_live_case_collisions(
+    git_cmd: list[str], repo: Path, remote_ref: str
+) -> list[str]:
+    """Remove safe Windows aliases only when the target deletes the whole group."""
+    if os.name != "nt":
+        return []
+    indexed = subprocess.run(
+        git_cmd + ["ls-files", "-z"], cwd=repo, capture_output=True
+    )
+    target = subprocess.run(
+        git_cmd + ["ls-tree", "-r", "-z", "--name-only", remote_ref],
+        cwd=repo,
+        capture_output=True,
+    )
+    if indexed.returncode != 0 or target.returncode != 0:
+        return []
+
+    index_paths = [
+        value.decode("utf-8", errors="surrogateescape")
+        for value in indexed.stdout.split(b"\0")
+        if value
+    ]
+    target_keys = {
+        value.decode("utf-8", errors="surrogateescape").casefold()
+        for value in target.stdout.split(b"\0")
+        if value
+    }
+    groups: dict[str, list[str]] = {}
+    for path in index_paths:
+        groups.setdefault(path.casefold(), []).append(path)
+
+    discarded: list[str] = []
+    for key, paths in sorted(groups.items()):
+        if len(paths) < 2 or key in target_keys:
+            continue
+        physical = next((repo / path for path in paths if (repo / path).is_file()), None)
+        if physical is None:
+            continue
+        worktree_blob = subprocess.run(
+            git_cmd + ["hash-object", "--", str(physical)],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if worktree_blob.returncode != 0:
+            continue
+        index_blobs: set[str] = set()
+        for path in paths:
+            indexed_blob = subprocess.run(
+                git_cmd + ["rev-parse", f":{path}"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            )
+            if indexed_blob.returncode == 0:
+                index_blobs.add(indexed_blob.stdout.strip())
+        if worktree_blob.stdout.strip() not in index_blobs:
+            continue
+        try:
+            physical.unlink()
+        except OSError:
+            continue
+        discarded.extend(sorted(paths))
+    return discarded
+
+
 def _fast_forward_live_deploy_checkout(
     git_cmd: list[str],
     repo: Path,
@@ -2302,6 +2368,15 @@ def _fast_forward_live_deploy_checkout(
             + ", ".join(discarded)
         )
 
+    obsolete_collisions = _discard_obsolete_live_case_collisions(
+        git_cmd, repo, remote_ref
+    )
+    if obsolete_collisions:
+        print(
+            "  ✓ Removed obsolete case-colliding tracked aliases before live sync: "
+            + ", ".join(obsolete_collisions)
+        )
+
     ff_result = subprocess.run(
         git_cmd + ["merge", "--ff-only", remote_ref],
         cwd=repo,
@@ -2309,6 +2384,8 @@ def _fast_forward_live_deploy_checkout(
         text=True,
     )
     if ff_result.returncode != 0:
+        details = (ff_result.stderr or ff_result.stdout or "git merge --ff-only failed").strip()
+        print(f"  ✗ Live git fast-forward failed: {_bounded_text(details, 2000)}")
         return None
 
     return _count_changed_from_pre_update(git_cmd, repo, pre_update_head, fallback)
