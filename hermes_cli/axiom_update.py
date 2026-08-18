@@ -2235,6 +2235,48 @@ def _print_deploy_branch_handoff(
     print()
 
 
+def _discard_generated_live_lockfile_churn(
+    git_cmd: list[str], repo: Path
+) -> list[str]:
+    """Restore tracked npm lock-only churn without hiding manifest edits."""
+    unstaged = subprocess.run(
+        git_cmd + ["diff", "--name-only", "--diff-filter=M"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    staged = subprocess.run(
+        git_cmd + ["diff", "--cached", "--name-only"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if unstaged.returncode != 0 or staged.returncode != 0:
+        return []
+
+    unstaged_paths = {line.strip() for line in unstaged.stdout.splitlines() if line.strip()}
+    changed_paths = unstaged_paths | {
+        line.strip() for line in staged.stdout.splitlines() if line.strip()
+    }
+    discarded: list[str] = []
+    for lock_path in sorted(unstaged_paths):
+        path = Path(lock_path)
+        if path.name != "package-lock.json":
+            continue
+        manifest = str(path.with_name("package.json")).replace("\\", "/")
+        if manifest in changed_paths:
+            continue
+        restored = subprocess.run(
+            git_cmd + ["restore", "--worktree", "--", lock_path],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if restored.returncode == 0:
+            discarded.append(lock_path)
+    return discarded
+
+
 def _fast_forward_live_deploy_checkout(
     git_cmd: list[str],
     repo: Path,
@@ -2252,6 +2294,13 @@ def _fast_forward_live_deploy_checkout(
     )
     if fetch_deploy.returncode != 0:
         return None
+
+    discarded = _discard_generated_live_lockfile_churn(git_cmd, repo)
+    if discarded:
+        print(
+            "  ✓ Discarded generated npm lockfile churn before live sync: "
+            + ", ".join(discarded)
+        )
 
     ff_result = subprocess.run(
         git_cmd + ["merge", "--ff-only", remote_ref],

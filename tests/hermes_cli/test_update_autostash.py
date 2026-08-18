@@ -1556,6 +1556,52 @@ def test_checkpoint_resolved_handoff_rejects_untracked_files_before_commit(
     assert json.loads(marker.read_text(encoding="utf-8"))["phase"] == "resolve_pending"
 
 
+def test_live_sync_discards_generated_root_lockfile_churn(tmp_path):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "package.json").write_text('{"name":"test"}\n', encoding="utf-8")
+    (repo / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+    subprocess.run(["git", "add", "package.json", "package-lock.json"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+    (repo / "package-lock.json").write_text('{"runtime":"npm churn"}\n', encoding="utf-8")
+
+    discarded = axiom_update._discard_generated_live_lockfile_churn(["git"], repo)
+
+    assert discarded == ["package-lock.json"]
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout == ""
+    assert (repo / "package-lock.json").read_text(encoding="utf-8") == '{"lockfileVersion":3}\n'
+
+
+def test_live_sync_preserves_lockfile_when_manifest_is_also_modified(tmp_path):
+    from hermes_cli import axiom_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "package.json").write_text('{"name":"test"}\n', encoding="utf-8")
+    (repo / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+    subprocess.run(["git", "add", "package.json", "package-lock.json"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+    (repo / "package.json").write_text('{"name":"test","dependencies":{"x":"1"}}\n', encoding="utf-8")
+    (repo / "package-lock.json").write_text('{"intentional":"dependency update"}\n', encoding="utf-8")
+
+    discarded = axiom_update._discard_generated_live_lockfile_churn(["git"], repo)
+
+    assert discarded == []
+    changed = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert "package.json" in changed
+    assert "package-lock.json" in changed
+
+
 def test_checkpoint_resolved_handoff_commits_tracked_resolution_and_persists_sha(
     monkeypatch, tmp_path
 ):
