@@ -9,7 +9,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
-import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
+import { unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
 import { ingestBackendSkin } from '@/themes/backend-sync'
@@ -80,7 +80,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
 
     if (reclaimedRuntimeId) {
-      dropSessionState(reclaimedRuntimeId)
+      deps.evictSessionState(reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]
       // (just dropped) and its resume effect is gated on !runtimeId, so a
@@ -89,7 +89,6 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       // cache's entry, or resumeTile's warm path would hand the dead
       // runtime straight back instead of cold-resuming a live one.
       unbindTileRuntime(reclaimedRuntimeId)
-      deps.sessionStateByRuntimeIdRef.current.delete(reclaimedRuntimeId)
     }
 
     // The row's ended_at moved, so refresh the lists that render it.
