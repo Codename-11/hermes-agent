@@ -194,6 +194,80 @@ function frontPaneInGroup(paneId: string) {
  *  - closing the sole pane from a plugin disables that plugin, preserving the
  *    discoverable Settings → Plugins recovery path for single-pane plugins.
  */
+// HIDE-ONLY STRIP TABS (`hideOnly` chrome: sessions / Bots) — standing chrome
+// whose tab must never grow a ✕. Show/hide replaces Close for them: the zone
+// menu's Show/Hide rows and the auto-registered ⌘K toggles both land here.
+// Persisted separately from `$hiddenTreePanes` (whose persistence each side
+// binding owns) so a hidden Bots tab stays hidden across launches even though
+// dock enforcement re-adopts the pane into the sessions zone every boot.
+const HIDDEN_STRIP_TAB_KEY = 'hermes.desktop.hiddenStripTabs.v1'
+const PROFILE_HIDDEN_STRIP_TAB_KEY = 'hermes.desktop.profileHiddenStripTabs.v1'
+
+export const $hiddenStripTabs = profilePersistentAtom<ReadonlySet<string>>({
+  codec: {
+    decode: raw => new Set(Codecs.stringArray.decode(raw)),
+    encode: value => Codecs.stringArray.encode([...value])
+  },
+  fallback: () => new Set(),
+  key: PROFILE_HIDDEN_STRIP_TAB_KEY,
+  legacyKey: HIDDEN_STRIP_TAB_KEY
+})
+
+function saveHiddenStripTabs(next: ReadonlySet<string>) {
+  $hiddenStripTabs.set(next)
+}
+
+export function isStripTabHidden(paneId: string): boolean {
+  return $hiddenStripTabs.get().has(paneId)
+}
+
+/** Would hiding `paneId` leave its zone with no visible tab? Hiding the last
+ *  one strands an empty zone (or collapses the whole sidebar with no strip
+ *  left to right-click), so the setter refuses and says why. */
+function isLastShownInGroup(paneId: string): boolean {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, paneId) : null
+
+  if (!group) {
+    return false
+  }
+
+  const hidden = $hiddenTreePanes.get()
+
+  return !group.panes.some(id => id !== paneId && !hidden.has(id))
+}
+
+/** Show/hide a hide-only chrome tab (the Close replacement for `hideOnly`
+ *  panes). Returns false when the hide was refused — the zone must keep at
+ *  least one visible tab, so the LAST shown tab can't be hidden. */
+export function setStripTabHidden(paneId: string, hidden: boolean): boolean {
+  if (hidden && isLastShownInGroup(paneId)) {
+    notify({
+      kind: 'info',
+      title: translateNow('zones.lastTabKeptTitle'),
+      message: translateNow('zones.lastTabKeptBody')
+    })
+
+    return false
+  }
+
+  const next = toggledSet($hiddenStripTabs.get(), paneId, hidden)
+
+  if (next) {
+    saveHiddenStripTabs(next)
+  }
+
+  setTreePaneHidden(paneId, hidden)
+
+  return true
+}
+
+// Boot hydration: re-apply persisted hides through the same chrome-hidden set
+// the strips render from ($hiddenTreePanes starts empty every launch).
+for (const paneId of $hiddenStripTabs.get()) {
+  setTreePaneHidden(paneId, true)
+}
+
 const paneClosers: Record<string, () => void> = {}
 const paneOpeners: Record<string, () => void> = {}
 
@@ -355,6 +429,12 @@ const isUncloseablePane = (paneId: string): boolean =>
     (registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable
   )
 
+/** Hide-only chrome tabs (sessions / Bots): excluded from every close verb —
+ *  Close-others / Close-all sweeping the sessions strip must not take standing
+ *  chrome with it. They hide through `setStripTabHidden` instead. */
+export const isHideOnlyPane = (paneId: string): boolean =>
+  Boolean((registry.getArea('panes').find(c => c.id === paneId)?.data as { hideOnly?: boolean } | undefined)?.hideOnly)
+
 /** A pane that belongs to a CHAT tab strip — the workspace or a session tile.
  *  Chat surfaces only: this gates where a session may DOCK (drops, ⌘T's "+"),
  *  not which zones the generic tab verbs serve — that's `isMainStripPane`. */
@@ -452,8 +532,8 @@ function closeableTreeSiblings(paneId: string): { others: string[]; right: strin
   const idx = panes.indexOf(paneId)
 
   return {
-    others: panes.filter(id => id !== paneId && !isUncloseablePane(id)),
-    right: panes.filter((id, i) => i > idx && !isUncloseablePane(id))
+    others: panes.filter(id => id !== paneId && !isUncloseablePane(id) && !isHideOnlyPane(id)),
+    right: panes.filter((id, i) => i > idx && !isUncloseablePane(id) && !isHideOnlyPane(id))
   }
 }
 
@@ -461,7 +541,11 @@ function closeableTreeSiblings(paneId: string): { others: string[]; right: strin
 export function treeTabCloseTargets(paneId: string): { all: number; others: number; right: number } {
   const { others, right } = closeableTreeSiblings(paneId)
 
-  return { all: others.length + (isUncloseablePane(paneId) ? 0 : 1), others: others.length, right: right.length }
+  return {
+    all: others.length + (isUncloseablePane(paneId) || isHideOnlyPane(paneId) ? 0 : 1),
+    others: others.length,
+    right: right.length
+  }
 }
 
 /**
@@ -503,7 +587,32 @@ export function closeAllTreeTabs(paneId: string): void {
   const tree = $layoutTree.get()
   const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
 
-  panes.filter(id => !isUncloseablePane(id)).forEach(closeTabPane)
+  panes.filter(id => !isUncloseablePane(id) && !isHideOnlyPane(id)).forEach(closeTabPane)
+}
+
+/** Hide-only chrome tabs in `groupId` (sessions / Bots), with live hidden
+ *  state — the zone menu's Show/Hide rows. Resolved when the menu OPENS (same
+ *  contract as the close-verb counts), never subscribed from a zone render. */
+export function hideOnlyZoneTabs(groupId: string): { hidden: boolean; id: string; title: string }[] {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroup(tree, groupId) : null
+
+  if (!group) {
+    return []
+  }
+
+  const panes = registry.getArea('panes')
+  const hidden = $hiddenTreePanes.get()
+
+  return group.panes.flatMap(id => {
+    const pane = panes.find(p => p.id === id)
+
+    if (!(pane?.data as { hideOnly?: boolean } | undefined)?.hideOnly) {
+      return []
+    }
+
+    return [{ hidden: hidden.has(id), id, title: String(pane?.title ?? id) }]
+  })
 }
 
 /** Pane ids in the tree under a `${prefix}:` namespace — lets a mirror prune
@@ -874,6 +983,12 @@ export function revealTreePane(paneId: string) {
   if ($dismissedPanes.get().has(paneId)) {
     setPaneDismissed(paneId, false)
     adoptContributedPanes()
+  }
+
+  // Reveal beats a hide too: clear the persisted hide-only record, or the
+  // pane pops back hidden on the next launch even though it's on screen now.
+  if ($hiddenStripTabs.get().has(paneId)) {
+    saveHiddenStripTabs(toggledSet($hiddenStripTabs.get(), paneId, false) ?? $hiddenStripTabs.get())
   }
 
   const side = treeSideOfPane(paneId)
@@ -1800,6 +1915,11 @@ export function resetLayoutTree() {
   // placement back to the app (user-placed pins cleared).
   $dismissedPanes.set(new Set())
   saveUserPlaced(new Set())
+  // Hide-only chrome tabs (sessions / Bots) come back too — clear their
+  // persisted hides through the setter so $hiddenTreePanes agrees.
+  for (const paneId of [...$hiddenStripTabs.get()]) {
+    setStripTabHidden(paneId, false)
+  }
   $layoutTree.set(defaultTree)
   markActivePreset('default')
   // Owners PRE-PLACE their panes into the fresh default (session tiles stack
