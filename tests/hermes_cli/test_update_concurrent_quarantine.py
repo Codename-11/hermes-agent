@@ -244,7 +244,7 @@ def test_detect_gateway_launcher_instances_excludes_current_launcher(_winp, tmp_
 
 
 # ---------------------------------------------------------------------------
-# _quarantine_running_hermes_exe — retry + reboot-deferred fallback
+# _quarantine_running_hermes_exe — retry, then report
 # ---------------------------------------------------------------------------
 
 
@@ -265,51 +265,26 @@ def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_quarantine_does_not_schedule_running_shim_for_reboot(
-    _winp, tmp_path, capsys, monkeypatch
-):
-    """A delayed rename without a replacement would remove Hermes on reboot."""
+def test_quarantine_reports_a_lock_it_cannot_break(_winp, tmp_path, capsys, monkeypatch):
+    """Every retry failed: name the likely culprits, queue nothing for reboot."""
     shim = tmp_path / "hermes.exe"
     shim.write_bytes(b"locked")
 
     def always_fails(self, target):
         raise OSError(32, "The process cannot access the file (simulated lock)")
 
-    scheduled_calls: list[tuple[Path, Path]] = []
-
-    def fake_schedule(s: Path, q: Path) -> bool:
-        scheduled_calls.append((s, q))
-        return True
-
     monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
-    with patch.object(Path, "rename", always_fails), patch.object(
-        cli_main, "_schedule_replace_on_reboot", fake_schedule
-    ), patch("time.sleep", lambda *_a, **_k: None):
-        with pytest.raises(PermissionError, match="holding it open"):
-            cli_main._quarantine_running_hermes_exe(tmp_path)
+    with patch.object(Path, "rename", always_fails), patch(
+        "time.sleep", lambda *_a, **_k: None
+    ):
+        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
 
-    captured = capsys.readouterr().out
-    assert scheduled_calls == []
-    assert "reboot" not in captured.lower()
-    assert "re-run `hermes update`" in captured
+    captured = capsys.readouterr().out.lower()
 
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_quarantine_fails_closed_when_running_shim_cannot_move(
-    _winp, tmp_path, monkeypatch
-):
-    shim = tmp_path / "hermes.exe"
-    shim.write_bytes(b"locked")
-
-    def always_fails(self, target):
-        raise PermissionError(32, "simulated lock")
-
-    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda _d: [shim])
-    with patch.object(Path, "rename", always_fails), patch.object(
-        cli_main, "_schedule_replace_on_reboot", return_value=False
-    ), patch("time.sleep", lambda *_a, **_k: None):
-        with pytest.raises(PermissionError, match="holding it open"):
-            cli_main._quarantine_running_hermes_exe(tmp_path)
+    assert pairs == []
+    # A clear message, not raw [WinError 32], and no reboot promise we can't keep.
+    assert "could not quarantine" in captured
+    assert "reboot" not in captured
 
 
 
@@ -384,7 +359,9 @@ def test_pause_windows_gateways_for_update_waits_for_force_killed_pids(
     assert wait_calls == [[101], [202, 303]]
     assert terminated == [(202, True), (303, True)]
 
-    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
+    marker = json.loads(
+        (profile_home / ".gateway-planned-stop.json").read_text(encoding="utf-8")
+    )
     assert marker["target_pid"] == 101
     assert marker["stopper_pid"] == os.getpid()
 

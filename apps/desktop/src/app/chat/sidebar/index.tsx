@@ -497,8 +497,11 @@ export function ChatSidebar({
 
   // Profile scope = the "workspace switcher" context. Concrete scope shows only
   // that profile's sessions (clean rows, no per-row tags); ALL fans every
-  // profile in, grouped by profile below. Single-profile users land here with
-  // scope === their only profile, so nothing is filtered out.
+  // profile in. Grouped rendering stays gated on `showAllProfiles` (multi-profile
+  // + ALL) so a single-profile user is never stranded in a grouped view with no
+  // rail — but the *data* still has to fan in when the persisted scope is ALL
+  // (Grouping → Profile). Filtering that pool against the `__all__` sentinel
+  // matches nothing and empties recents + pins.
   // Archived rows are excluded from the sessions query, so Archived is a view of
   // its own set rather than a filter over this one — a flat list of archived
   // rows, no project tree, no date or status dividers.

@@ -16,7 +16,7 @@ import {
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { desktopGit, isGitEndpointMissingError } from '@/lib/desktop-git'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
 import {
@@ -1238,7 +1238,7 @@ export async function startWorkInRepo(
     // backend's /api/git mirror, and an older backend may predate it. The raw
     // failure ("Expected JSON … but got HTML" / a bare 404) reads like a git
     // error — name the real remedy instead of degrading silently.
-    if (isDesktopFsRemoteMode() && isGitEndpointMissingError(err)) {
+    if (isDesktopFsRemoteMode() && isMissingRestEndpoint(err)) {
       throw new Error(translateNow('sidebar.projects.worktreeStaleBackend'))
     }
 
