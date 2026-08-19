@@ -906,6 +906,10 @@ Protected behavior:
 - hidden profiles are excluded consistently from the profile rail, condensed
   picker, rail keyboard slots/cycling, All Profiles browsing/groups, and the
   sidebar profile filter;
+- the profile rail highlight, condensed picker, and relative keyboard cycling
+  follow the explicit sidebar browse profile, not the active gateway route. A
+  shared remote gateway may legitimately keep the primary socket/profile active
+  while the operator browses another remote profile handle;
 - profile data, sessions, direct links, explicit search results, ownership tags,
   connection settings, and Manage Profiles remain intact and addressable;
 - right-clicking a named profile rail icon offers **New chat**, which creates an
@@ -966,6 +970,8 @@ cd apps/desktop
 npm run typecheck
 NODE_ENV=test npm run test:ui -- \
   src/lib/profile-persisted.test.ts \
+  src/store/profile.test.ts \
+  src/store/profile-scope-routing.test.ts \
   src/store/profile-workspace-persistence.test.ts \
   src/store/profile-share.test.ts \
   src/themes/profile-theme.test.ts \

@@ -514,9 +514,10 @@ export const $profileScope = computed([$showAllProfiles, $browsedProfile], (show
   showAll ? ALL_PROFILES : normalizeProfileKey(browsed)
 )
 
-// Switch the active context to `name`: leave "All profiles" mode, point new
-// chats at it, and swap the single live gateway onto its backend (which moves
-// $activeGatewayProfile → name, so $profileScope follows).
+// Switch the active context to `name`: leave "All profiles" mode, move the
+// sidebar browse scope immediately, point new chats at it, and activate its
+// backend route independently. A shared remote route may keep the primary
+// gateway profile unchanged, so browse state must not wait for that activation.
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
@@ -601,7 +602,7 @@ export function cycleProfile(direction: 1 | -1): void {
     return
   }
 
-  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($activeGatewayProfile.get()))
+  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($browsedProfile.get()))
   const start = current < 0 ? (direction === 1 ? -1 : 0) : current
   const next = (start + direction + keys.length) % keys.length
 

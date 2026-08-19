@@ -55,7 +55,6 @@ import { cn } from '@/lib/utils'
 import { $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import {
-  $activeGatewayProfile,
   $hiddenProfiles,
   $profileColors,
   $profileCreateRequest,
@@ -126,7 +125,6 @@ export function ProfileRail() {
   const profiles = useStore($profiles)
   const hiddenProfiles = useStore($hiddenProfiles)
   const scope = useStore($profileScope)
-  const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const newSessionTabAction = useStore($newSessionTabAction)
@@ -171,7 +169,7 @@ export function ProfileRail() {
   }, [condensed])
 
   const isAll = scope === ALL_PROFILES
-  const activeKey = normalizeProfileKey(gatewayProfile)
+  const activeKey = normalizeProfileKey(scope)
   const defaultProfile = railProfiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 

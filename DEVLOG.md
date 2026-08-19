@@ -1,5 +1,32 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-19 — Restore browse-owned profile selection after source routing
+
+### Summary
+
+Restored the Desktop profile rail's selected state after the source/profile
+routing campaign reintroduced gateway-owned highlighting for shared remotes.
+
+### Details
+
+- Profile rail highlighting and the condensed picker follow the explicit
+  sidebar browse scope; gateway state remains authoritative only for request and
+  socket routing.
+- Relative profile keyboard navigation advances from the browsed profile rather
+  than the shared primary socket owner.
+- Added a regression for the keyboard sibling path and retained the existing
+  browse-scope authority tests.
+- Kept the invariant in Desktop core. Axiom Enhancements owns optional
+  presentation settings and Update Control UI, not profile/session routing.
+
+### Verification
+
+- Focused profile state and browse-scope regressions: 17 passing on
+  Axiom-Desktop.
+- Desktop renderer/Electron/E2E TypeScript typecheck.
+- Changed-file ESLint was unavailable because the Windows root dependency
+  install could not resolve `eslint`.
+
 ## 2026-08-17 — Restore plugin pane exits and saved cold-start skins
 
 ### Summary

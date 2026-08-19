@@ -22,7 +22,10 @@ vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
 const {
   $activeGatewayProfile,
+  $browsedProfile,
   $profiles,
+  $showAllProfiles,
+  cycleProfile,
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
@@ -57,6 +60,8 @@ beforeEach(() => {
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $browsedProfile.set('default')
+  $showAllProfiles.set(false)
   $connection.set(localConn())
   $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
@@ -124,6 +129,18 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(invalidateProfileScopedQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('profile rail navigation', () => {
+  it('cycles from the browsed profile when a shared remote gateway remains on the primary profile', () => {
+    $profiles.set([profile('default', true), profile('mizu'), profile('victor')])
+    $activeGatewayProfile.set('victor')
+    $browsedProfile.set('mizu')
+
+    cycleProfile(1)
+
+    expect($browsedProfile.get()).toBe('victor')
   })
 })
 
