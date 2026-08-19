@@ -1036,6 +1036,7 @@ class TestNodeRuntimeNpmResolution:
                 hm, "_desktop_packaged_executable", side_effect=[packaged_exe, None]
             ) as packaged,
             patch.object(hm, "_desktop_dist_exists", return_value=False),
+            patch.object(hm, "_desktop_shortcut_exists", return_value=False),
             patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
             patch.object(hm, "_desktop_build_needed", return_value=True),
             patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,

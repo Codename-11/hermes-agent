@@ -96,23 +96,24 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect($connection.get()?.mode).toBe('local')
   })
 
-  it('fails closed when the Desktop connection descriptor bridge is unavailable', async () => {
+  it('keeps switching when the Desktop connection descriptor bridge is unavailable', async () => {
     vi.stubGlobal('window', { hermesDesktop: {} })
 
-    await expect(ensureGatewayProfile('vps-remote')).rejects.toThrow('connection routing is unavailable')
+    await ensureGatewayProfile('vps-remote')
 
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
-    expect($activeGatewayProfile.get()).toBe('default')
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect($activeGatewayProfile.get()).toBe('vps-remote')
+    // Best-effort: boot/reconnect resyncs later; do not clear the prior route.
     expect($connection.get()?.mode).toBe('local')
   })
 
-  it('fails before switching the gateway or active profile when the descriptor fetch fails', async () => {
+  it('keeps switching and preserves the prior connection when descriptor lookup fails', async () => {
     getConnection.mockRejectedValue(new Error('backend unreachable'))
 
-    await expect(ensureGatewayProfile('vps-remote')).rejects.toThrow('backend unreachable')
+    await ensureGatewayProfile('vps-remote')
 
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
-    expect($activeGatewayProfile.get()).toBe('default')
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect($activeGatewayProfile.get()).toBe('vps-remote')
     expect($connection.get()?.mode).toBe('local')
   })
 
