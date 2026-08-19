@@ -24,9 +24,9 @@ def test_current_checkout_repairs_failed_node_deps(capsys):
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
     m.return_value._build_web_ui.assert_not_called()
-    completion.assert_called_once()
-    assert "could not be repaired" in completion.call_args[0][0]
+    completion.assert_not_called()
     out = capsys.readouterr().out
+    assert "could not be repaired" in out
     assert "Node.js refresh failed for: ui-tui, web workspaces" in out
     assert "Fix npm and re-run `hermes update`." in out
 
@@ -49,3 +49,21 @@ def test_current_checkout_healthy_node_deps_reports_up_to_date():
         had_desktop_app_before_update=True,
     )
     completion.assert_called_once_with("✓ Already up to date!")
+
+
+def test_current_checkout_reports_stale_desktop_when_repair_fails(capsys):
+    completion = MagicMock()
+    with patch.object(
+        update_cmd, "_update_node_dependencies", return_value=[]
+    ), patch.object(update_cmd, "_desktop_install_intent", return_value=True), patch.object(
+        update_cmd, "_rebuild_desktop_after_update", return_value=False
+    ), patch.object(update_cmd, "_m") as m:
+        repair_ok = update_cmd._repair_node_deps_on_current_checkout(completion)
+
+    assert repair_ok is False
+    m.return_value._build_web_ui.assert_called_once()
+    completion.assert_not_called()
+    message = capsys.readouterr().out
+    assert "Desktop" in message
+    assert "stale" in message.lower()
+    assert "Already up to date" not in message

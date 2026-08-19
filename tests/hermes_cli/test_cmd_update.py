@@ -422,6 +422,136 @@ class TestCmdUpdateBranchFallback:
         verify_scripts.assert_called_once_with(
             [sys.executable, "-m", "pip"], env=None
         )
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_exits_nonzero_when_desktop_repair_fails(
+        self, mock_run, _mock_which, mock_args
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/NousResearch/hermes-agent.git",
+        ), patch.object(
+            hm, "_venv_core_imports_healthy", return_value=(True, "ok")
+        ), patch.object(
+            hm, "_verify_console_scripts_installed"
+        ), patch.object(
+            update_cmd, "_repair_node_deps_on_current_checkout", return_value=False
+        ), pytest.raises(SystemExit) as exc:
+            cmd_update(mock_args)
+
+        assert exc.value.code == 1
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_repaired_venv_still_fails_when_desktop_repair_fails(
+        self, mock_run, _mock_which, mock_args, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        monkeypatch.setenv("HERMES_ACTION_ID", "d" * 32)
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/NousResearch/hermes-agent.git",
+        ), patch.object(
+            update_cmd,
+            "_venv_core_imports_healthy",
+            side_effect=[(False, "broken"), (True, "ok")],
+        ), patch.object(
+            hm, "_abort_dependency_sync_if_self_locked"
+        ), patch.object(
+            hm, "_install_python_dependencies_with_optional_fallback"
+        ), patch.object(
+            hm, "_refresh_active_lazy_features"
+        ), patch.object(
+            hm, "_restore_active_tool_dependencies"
+        ), patch.object(
+            hm, "_clear_update_incomplete_marker"
+        ), patch.object(
+            update_cmd, "_write_update_incomplete_marker"
+        ), patch(
+            "hermes_cli.managed_uv.update_managed_uv"
+        ), patch(
+            "hermes_cli.managed_uv.ensure_uv", return_value=None
+        ), patch.object(
+            update_cmd, "_repair_node_deps_on_current_checkout", return_value=False
+        ) as repair, patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as gateway_exit, pytest.raises(SystemExit) as exc:
+            cmd_update(mock_args)
+
+        assert exc.value.code == 1
+        repair.assert_called_once()
+        gateway_exit.assert_called_once_with(False)
+        assert "hermes-update completed" not in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_exits_nonzero_when_venv_repair_stays_unhealthy(
+        self, mock_run, _mock_which, mock_args, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        monkeypatch.setenv("HERMES_ACTION_ID", "e" * 32)
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/NousResearch/hermes-agent.git",
+        ), patch.object(
+            update_cmd,
+            "_venv_core_imports_healthy",
+            side_effect=[(False, "broken"), (False, "still broken")],
+        ), patch.object(
+            hm, "_abort_dependency_sync_if_self_locked"
+        ), patch.object(
+            hm, "_install_python_dependencies_with_optional_fallback"
+        ), patch.object(
+            hm, "_refresh_active_lazy_features"
+        ), patch.object(
+            hm, "_restore_active_tool_dependencies"
+        ), patch.object(
+            hm, "_clear_update_incomplete_marker"
+        ), patch.object(
+            update_cmd, "_write_update_incomplete_marker"
+        ), patch(
+            "hermes_cli.managed_uv.update_managed_uv"
+        ), patch(
+            "hermes_cli.managed_uv.ensure_uv", return_value=None
+        ), patch.object(
+            update_cmd, "_repair_node_deps_on_current_checkout"
+        ) as repair, patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as gateway_exit, pytest.raises(SystemExit) as exc:
+            cmd_update(mock_args)
+
+        assert exc.value.code == 1
+        repair.assert_not_called()
+        gateway_exit.assert_called_once_with(False)
+        out = capsys.readouterr().out
+        assert "still unhealthy" in out
+        assert "hermes-update completed" not in out
+
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(

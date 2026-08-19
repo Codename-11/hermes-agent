@@ -75,3 +75,52 @@ def test_version_info_prints_all_preview_digests(monkeypatch, capsys):
     assert "Update available: 30 commits behind" in out
     assert "DIGEST: Pending deploy branch changes" in out
     assert "DIGEST: Pending upstream changes" in out
+
+
+def test_version_info_does_not_claim_up_to_date_when_desktop_is_stale(
+    monkeypatch, capsys
+):
+    from hermes_cli import banner, main
+
+    monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
+    monkeypatch.setattr(
+        main,
+        "_desktop_packaged_executable",
+        lambda _desktop: Path("C:/Hermes/Hermes.exe"),
+    )
+    monkeypatch.setattr(
+        main, "_desktop_packaged_artifact_current", lambda *_args: None
+    )
+    monkeypatch.setattr(main, "_desktop_build_needed", lambda *_args, **_kwargs: True)
+
+    main._print_version_info(check_updates=True)
+
+    out = capsys.readouterr().out
+    assert "Source: Up to date" in out
+    assert "Desktop: stale" in out
+    assert "\nUp to date\n" not in out
+
+
+def test_version_info_reports_unverifiable_desktop_instead_of_up_to_date(
+    monkeypatch, capsys
+):
+    from hermes_cli import banner, main
+
+    monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
+    monkeypatch.setattr(
+        main,
+        "_desktop_packaged_executable",
+        lambda _desktop: Path("C:/Hermes/Hermes.exe"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_desktop_build_needed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unreadable")),
+    )
+
+    main._print_version_info(check_updates=True)
+
+    out = capsys.readouterr().out
+    assert "Source: Up to date" in out
+    assert "Desktop: unable to verify" in out
+    assert "\nUp to date\n" not in out

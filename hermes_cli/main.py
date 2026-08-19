@@ -5743,10 +5743,27 @@ def _print_version_info(*, check_updates: bool = True) -> None:
         from hermes_cli.config import recommended_update_command
 
         behind = check_for_updates()
-        if behind == UPDATE_AVAILABLE_NO_COUNT:
-            print(
-                f"Update available — run '{recommended_update_command()}'"
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        desktop_state = "not-installed"
+        try:
+            desktop_installed = (
+                _desktop_packaged_executable(desktop_dir) is not None
+                or _desktop_stamp_indicates_packaged_build()
+                or _desktop_shortcut_exists()
             )
+            if desktop_installed:
+                desktop_state = (
+                    "stale"
+                    if _desktop_build_needed(
+                        desktop_dir, PROJECT_ROOT, source_mode=False
+                    )
+                    else "current"
+                )
+        except Exception:
+            desktop_state = "unknown"
+
+        if behind == UPDATE_AVAILABLE_NO_COUNT:
+            print(f"Update available — run '{recommended_update_command()}'")
         elif behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
             print(
@@ -5755,7 +5772,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
             )
             # Preview digest — walks the pending commit range and prints a
             # categorized top-10-per-bucket view so the operator can decide
-            # whether to update right now.  Opt out with HERMES_VERSION_NO_PREVIEW=1.
+            # whether to update right now. Opt out with HERMES_VERSION_NO_PREVIEW=1.
             if os.environ.get("HERMES_VERSION_NO_PREVIEW") != "1":
                 try:
                     from hermes_cli.banner import get_update_preview_ranges
@@ -5763,15 +5780,29 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 
                     for base, target, title in get_update_preview_ranges(PROJECT_ROOT):
                         digest = compute_pending_digest(
-                            PROJECT_ROOT, base, target,
-                            title=title,
+                            PROJECT_ROOT, base, target, title=title
                         )
                         if digest:
                             print(digest)
                 except Exception:
                     pass  # preview is best-effort — never fail `hermes version`
         elif behind == 0:
-            print("Up to date")
+            if desktop_state == "stale":
+                print("Source: Up to date")
+                print(
+                    "Desktop: stale packaged build — run "
+                    f"'{recommended_update_command()}' to repair it"
+                )
+            elif desktop_state == "unknown":
+                print("Source: Up to date")
+                print("Desktop: unable to verify packaged build state")
+            else:
+                print("Up to date")
+
+        if desktop_state == "stale" and behind != 0:
+            print("Desktop: stale packaged build — the update must rebuild it")
+        elif desktop_state == "unknown" and behind != 0:
+            print("Desktop: unable to verify packaged build state")
     except Exception:
         pass
 
@@ -6243,29 +6274,77 @@ def _run_npm_install_deterministic(
             # WIP fork/branch, or `npm ci` may not be available on very old npm.
         return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
 
-    result = _attempt(npm)
-    if result.returncode == 0:
-        return result
+    lockfile = cwd / "package-lock.json"
+    lockfile_existed = lockfile.is_file()
+    try:
+        original_lockfile = lockfile.read_bytes() if lockfile_existed else None
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            [npm],
+            1,
+            "",
+            f"Hermes could not snapshot package-lock.json before npm install: {exc}",
+        )
 
-    # An npm outside the root package.json's `engines.npm` range fails every
-    # command here identically (the `npm install` fallback included), so the
-    # failure is worth exactly one repair attempt. `maybe_repair_npm_engine`
-    # returns the npm to retry with — the same one after an in-place upgrade
-    # of a Hermes-managed install, or a freshly provisioned managed npm when
-    # the failing npm belongs to the user's own toolchain.
-    from hermes_cli.npm_engine import maybe_repair_npm_engine
+    restore_error: Optional[OSError] = None
+    try:
+        result = _attempt(npm)
+        if result.returncode != 0:
+            # An npm outside the root package.json's `engines.npm` range fails
+            # every command here identically, so the failure is worth exactly
+            # one repair attempt.
+            from hermes_cli.npm_engine import maybe_repair_npm_engine
 
-    combined = f"{result.stdout or ''}\n{result.stderr or ''}"
-    repaired_npm = maybe_repair_npm_engine(npm, combined)
-    if not repaired_npm:
-        return result
-    # The repaired npm may be a freshly provisioned managed one whose shebang
-    # and lifecycle scripts resolve `node` from PATH — put the managed tree
-    # first so they find the managed Node, not the mismatched system one.
-    from hermes_constants import with_hermes_node_path
+            combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+            repaired_npm = maybe_repair_npm_engine(npm, combined)
+            if repaired_npm:
+                # A freshly provisioned managed npm needs its sibling Node first.
+                from hermes_constants import with_hermes_node_path
 
-    run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
-    return _attempt(repaired_npm)
+                run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
+                result = _attempt(repaired_npm)
+    finally:
+        # npm versions disagree about peer/optional metadata even under
+        # ``--no-save``. Managed installs must never rewrite the operator's
+        # tracked lockfile, including a pre-existing local edit. Restore the
+        # exact bytes observed before the install on both success and failure.
+        try:
+            restore_tmp: Optional[Path] = None
+            if original_lockfile is not None and (
+                not lockfile.is_file() or lockfile.read_bytes() != original_lockfile
+            ):
+                import tempfile
+
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=f".{lockfile.name}.hermes-restore-",
+                    dir=str(lockfile.parent),
+                )
+                restore_tmp = Path(tmp_name)
+                with os.fdopen(fd, "wb") as tmp_file:
+                    tmp_file.write(original_lockfile)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+                os.replace(restore_tmp, lockfile)
+            elif not lockfile_existed and lockfile.exists():
+                lockfile.unlink()
+        except OSError as exc:
+            if restore_tmp is not None:
+                try:
+                    restore_tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            restore_error = exc
+            logger.error("Could not restore package-lock.json after npm install: %s", exc)
+
+    if restore_error is not None:
+        stderr = (result.stderr or "") + (
+            f"\nHermes could not restore package-lock.json after npm install: "
+            f"{restore_error}"
+        )
+        return subprocess.CompletedProcess(
+            result.args, result.returncode or 1, result.stdout, stderr
+        )
+    return result
 
 
 def _run_npm_watching_for_engine_failure(
@@ -6606,20 +6685,26 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
             if not spec.match_file(rel):
                 _hash_file(p)
 
-    # Walk apps/desktop/ — prune ignored directories in-place
-    desktop_dir = project_root / "apps" / "desktop"
-    for dirpath, dirnames, filenames in os.walk(desktop_dir, topdown=True):
-        # Prune ignored directories so we never descend into them
-        dirnames[:] = [
-            d for d in dirnames
-            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
-        ]
+    # Walk Desktop and its directly bundled shared workspace, pruning ignored
+    # directories in-place so generated output never feeds the stamp.
+    for source_dir in (
+        project_root / "apps" / "desktop",
+        project_root / "apps" / "shared",
+    ):
+        for dirpath, dirnames, filenames in os.walk(source_dir, topdown=True):
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if not spec.match_file(
+                    str((Path(dirpath) / d).relative_to(project_root))
+                )
+            ]
 
-        for fn in sorted(filenames):
-            fp = Path(dirpath) / fn
-            rel = str(fp.relative_to(project_root))
-            if not spec.match_file(rel):
-                _hash_file(fp)
+            for fn in sorted(filenames):
+                fp = Path(dirpath) / fn
+                rel = str(fp.relative_to(project_root))
+                if not spec.match_file(rel):
+                    _hash_file(fp)
 
     return h.hexdigest()
 
@@ -6694,6 +6779,95 @@ def _renderer_bundle_torn(dist_dir: Path) -> bool:
     return False
 
 
+def _run_git_for_desktop_artifact(
+    args: list[str], *, cwd: Path
+) -> subprocess.CompletedProcess:
+    """Run a bounded Git probe for packaged Desktop artifact verification."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=15,
+    )
+
+
+def _desktop_packaged_artifact_current(
+    desktop_dir: Path, project_root: Path
+) -> Optional[bool]:
+    """Return whether the package contains every Desktop change in ``HEAD``.
+
+    ``None`` means the checkout is not inspectable, so non-git/ZIP installs can
+    fall back to the external content-hash stamp without a false stale verdict.
+    """
+    executable = _desktop_packaged_executable(desktop_dir)
+    if executable is None:
+        return False
+    resources = (
+        executable.parent.parent / "Resources"
+        if sys.platform == "darwin"
+        else executable.parent / "resources"
+    )
+    git_managed = (project_root / ".git").exists()
+    try:
+        stamp = json.loads(
+            (resources / "install-stamp.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False if git_managed else None
+    if not isinstance(stamp, dict):
+        return False if git_managed else None
+    commit = stamp.get("commit")
+    source = stamp.get("source")
+    dirty = stamp.get("dirty")
+    if source not in {"ci", "local", "fallback"}:
+        return False if git_managed else None
+    if source == "fallback":
+        return False if git_managed else None
+    schema_version = stamp.get("schemaVersion")
+    if type(schema_version) is not int or schema_version != 1 or not isinstance(dirty, bool):
+        return False if git_managed else None
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-fA-F]{40}", commit) is None:
+        return False if git_managed else None
+    if re.fullmatch(r"0{40}", commit):
+        return False if git_managed else None
+    # A dirty stamp's commit cannot describe the bytes that were packaged.
+    # Let the external content hash decide freshness instead of claiming either
+    # current or stale from incomplete Git metadata.
+    if dirty:
+        return None
+    try:
+        ancestry = _run_git_for_desktop_artifact(
+            ["merge-base", "--is-ancestor", commit, "HEAD"], cwd=project_root
+        )
+        if ancestry.returncode == 1:
+            return False
+        if ancestry.returncode != 0:
+            return False if git_managed else None
+        result = _run_git_for_desktop_artifact(
+            [
+                "rev-list",
+                "--count",
+                f"{commit}..HEAD",
+                "--",
+                "apps/desktop",
+                "apps/shared",
+            ],
+            cwd=project_root,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False if git_managed else None
+    if result.returncode != 0:
+        return False if git_managed else None
+    try:
+        return int((result.stdout or "").strip()) == 0
+    except ValueError:
+        return False if git_managed else None
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """Return True when the desktop build output is stale, missing, or torn.
 
@@ -6715,6 +6889,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     dist_dir = _renderer_bundle_dir(desktop_dir, source_mode=source_mode)
     if dist_dir is not None and _renderer_bundle_torn(dist_dir):
         print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
+        return True
+
+    if not source_mode and _desktop_packaged_artifact_current(desktop_dir, project_root) is False:
+        print("  ⚠ The packaged Desktop build is behind the current checkout; rebuilding it")
         return True
 
     stamp_file = _desktop_stamp_path()
@@ -8198,6 +8376,26 @@ def cmd_gui(args: argparse.Namespace):
                 ):
                     sys.exit(1)
                 packaged_executable = verified_executable
+
+                artifact_current = _desktop_packaged_artifact_current(
+                    desktop_dir, PROJECT_ROOT
+                )
+                if artifact_current is False:
+                    print(
+                        "✗ Desktop packaging exited successfully, but the embedded "
+                        "build stamp is stale or missing."
+                    )
+                    try:
+                        _desktop_stamp_path().unlink()
+                    except OSError:
+                        pass
+                    if packaged_executable is not None and sys.platform == "win32":
+                        restored = _rollback_desktop_from_backup(packaged_executable)
+                        if restored is not None:
+                            print(
+                                "  ↩ Restored the previous working Desktop build from backup."
+                            )
+                    sys.exit(1)
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)

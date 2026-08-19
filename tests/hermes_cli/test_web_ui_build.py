@@ -12,6 +12,7 @@ freshness check is a no-op and the OOM rebuild always runs.
 """
 
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -116,6 +117,58 @@ class TestWebUIBuildNeeded:
 
 
 class TestBuildWebUISkipsWhenFresh:
+
+    def test_deterministic_install_restores_exact_lockfile_bytes(self, tmp_path):
+        lockfile = tmp_path / "package-lock.json"
+        original = b'{"lockfileVersion":3,"local":"preserve-me"}\n'
+        lockfile.write_bytes(original)
+
+        def mutate_lockfile(*_args, **_kwargs):
+            lockfile.write_bytes(b'{"lockfileVersion":3,"peer":true}\n')
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch(
+            "hermes_cli.main._run_npm_watching_for_engine_failure",
+            side_effect=mutate_lockfile,
+        ):
+            result = _run_npm_install_deterministic("npm", tmp_path)
+
+        assert result.returncode == 0
+        assert lockfile.read_bytes() == original
+
+    def test_deterministic_install_fails_when_lockfile_cannot_be_restored(
+        self, tmp_path
+    ):
+        lockfile = tmp_path / "package-lock.json"
+        lockfile.write_bytes(b'{"original":true}\n')
+
+        def mutate_lockfile(*_args, **_kwargs):
+            lockfile.write_bytes(b'{"mutated":true}\n')
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch(
+            "hermes_cli.main._run_npm_watching_for_engine_failure",
+            side_effect=mutate_lockfile,
+        ), patch("hermes_cli.main.os.replace", side_effect=OSError("locked")):
+            result = _run_npm_install_deterministic("npm", tmp_path)
+
+        assert result.returncode != 0
+        assert "package-lock.json" in (result.stderr or "")
+
+    def test_deterministic_install_does_not_run_without_lockfile_snapshot(
+        self, tmp_path
+    ):
+        lockfile = tmp_path / "package-lock.json"
+        lockfile.write_text("{}", encoding="utf-8")
+
+        with patch.object(Path, "read_bytes", side_effect=OSError("denied")), patch(
+            "hermes_cli.main._run_npm_watching_for_engine_failure"
+        ) as npm_run:
+            result = _run_npm_install_deterministic("npm", tmp_path)
+
+        assert result.returncode != 0
+        assert "snapshot package-lock.json" in (result.stderr or "")
+        npm_run.assert_not_called()
 
 
 

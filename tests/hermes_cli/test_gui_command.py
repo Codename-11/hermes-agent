@@ -6,7 +6,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -94,9 +94,219 @@ def _make_packaged_executable(root: Path, monkeypatch) -> Path:
         exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
     exe.parent.mkdir(parents=True, exist_ok=True)
     exe.write_text("", encoding="utf-8")
+    resources = (
+        exe.parent.parent / "Resources" if sys.platform == "darwin" else exe.parent / "resources"
+    )
+    resources.mkdir(parents=True, exist_ok=True)
+    (resources / "install-stamp.json").write_text(
+        '{"schemaVersion":1,"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"dirty":false,"source":"local"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_run_git_for_desktop_artifact",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, stdout="0\n", stderr=""),
+    )
     if sys.platform not in ("darwin", "win32"):
         (exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
     return exe
+
+
+def test_desktop_build_needed_when_packaged_commit_is_behind(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    resources = packaged_exe.parent / "resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    (resources / "install-stamp.json").write_text(
+        '{"schemaVersion":1,"commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+        '"dirty":false,"source":"local"}',
+        encoding="utf-8",
+    )
+    external_stamp = tmp_path / "desktop-build-stamp.json"
+    external_stamp.write_text(
+        '{"contentHash":"same","sourceMode":false}', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(cli_main, "_desktop_stamp_path", lambda: external_stamp)
+    monkeypatch.setattr(cli_main, "_compute_desktop_content_hash", lambda _root: "same")
+    monkeypatch.setattr(cli_main, "_renderer_bundle_dir", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_run_git_for_desktop_artifact",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, stdout="7\n", stderr=""),
+        raising=False,
+    )
+
+    assert cli_main._desktop_build_needed(desktop_dir, root, source_mode=False) is True
+
+
+def test_packaged_desktop_from_divergent_history_is_stale(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setattr(
+        cli_main,
+        "_run_git_for_desktop_artifact",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
+    )
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is False
+
+
+def test_packaged_desktop_with_unresolvable_commit_is_stale_in_git_checkout(
+    tmp_path, monkeypatch
+):
+    root = _make_desktop_tree(tmp_path)
+    (root / ".git").mkdir()
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setattr(
+        cli_main,
+        "_run_git_for_desktop_artifact",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 128, stdout="", stderr="bad ref"),
+    )
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is False
+
+
+def test_non_git_fallback_stamp_is_unverifiable_not_stale(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    resources = packaged_exe.parent / "resources"
+    (resources / "install-stamp.json").write_text(
+        '{"schemaVersion":1,"commit":"0000000000000000000000000000000000000000",'
+        '"source":"fallback"}',
+        encoding="utf-8",
+    )
+    git_probe = MagicMock()
+    monkeypatch.setattr(cli_main, "_run_git_for_desktop_artifact", git_probe)
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is None
+    git_probe.assert_not_called()
+
+
+def test_dirty_managed_git_stamp_uses_content_hash_fallback(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / ".git").mkdir()
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    resources = packaged_exe.parent / "resources"
+    (resources / "install-stamp.json").write_text(
+        '{"schemaVersion":1,"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"dirty":true,"source":"local"}',
+        encoding="utf-8",
+    )
+    git_probe = MagicMock()
+    monkeypatch.setattr(cli_main, "_run_git_for_desktop_artifact", git_probe)
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is None
+    git_probe.assert_not_called()
+
+
+def test_malformed_managed_git_stamp_is_stale(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / ".git").mkdir()
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    resources = packaged_exe.parent / "resources"
+    (resources / "install-stamp.json").write_text(
+        '{"schemaVersion":99,"commit":"not-a-commit","dirty":false,"source":"local"}',
+        encoding="utf-8",
+    )
+    git_probe = MagicMock()
+    monkeypatch.setattr(cli_main, "_run_git_for_desktop_artifact", git_probe)
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is False
+    git_probe.assert_not_called()
+
+
+def test_boolean_stamp_schema_is_stale(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / ".git").mkdir()
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    resources = packaged_exe.parent / "resources"
+    (resources / "install-stamp.json").write_text(
+        '{"schemaVersion":true,"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"dirty":false,"source":"local"}',
+        encoding="utf-8",
+    )
+    git_probe = MagicMock()
+    monkeypatch.setattr(cli_main, "_run_git_for_desktop_artifact", git_probe)
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is False
+    git_probe.assert_not_called()
+
+
+def test_desktop_content_hash_tracks_shared_workspace(tmp_path):
+    root = _make_desktop_tree(tmp_path)
+    (root / ".gitignore").write_text("", encoding="utf-8")
+    shared = root / "apps" / "shared" / "src" / "index.ts"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("export const value = 1\n", encoding="utf-8")
+    before = cli_main._compute_desktop_content_hash(root)
+
+    shared.write_text("export const value = 2\n", encoding="utf-8")
+
+    assert cli_main._compute_desktop_content_hash(root) != before
+
+
+def test_clean_artifact_git_probe_includes_shared_workspace(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / ".git").mkdir()
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch)
+    calls = []
+
+    def run_git(args, **_kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
+
+    monkeypatch.setattr(cli_main, "_run_git_for_desktop_artifact", run_git)
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is True
+    rev_list = next(args for args in calls if args[0] == "rev-list")
+    assert rev_list[-2:] == ["apps/desktop", "apps/shared"]
+
+
+def test_unknown_managed_git_stamp_source_is_stale(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / ".git").mkdir()
+    desktop_dir = root / "apps" / "desktop"
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    resources = packaged_exe.parent / "resources"
+    (resources / "install-stamp.json").write_text(
+        '{"schemaVersion":1,"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"dirty":true,"source":"mystery"}',
+        encoding="utf-8",
+    )
+    git_probe = MagicMock()
+    monkeypatch.setattr(cli_main, "_run_git_for_desktop_artifact", git_probe)
+
+    assert cli_main._desktop_packaged_artifact_current(desktop_dir, root) is False
+    git_probe.assert_not_called()
+
+
+def test_gui_rejects_successful_pack_when_embedded_stamp_is_stale(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._desktop_packaged_artifact_current", return_value=False), \
+         patch("hermes_cli.main._ensure_desktop_exe_launchable", return_value=(packaged_exe, False)), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert exc.value.code == 1
 
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
@@ -109,12 +319,14 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._ensure_desktop_exe_launchable", return_value=(packaged_exe, False)), \
+         patch("hermes_cli.main._create_windows_desktop_shortcuts"), \
          patch("hermes_cli.main._register_linux_desktop_entry"), \
          patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
          pytest.raises(SystemExit) as exc:

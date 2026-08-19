@@ -2586,7 +2586,7 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
         logger.debug("Could not write npm lockfile hash cache")
 
 
-def _repair_node_deps_on_current_checkout(print_completion) -> None:
+def _repair_node_deps_on_current_checkout(print_completion) -> bool:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
     A current checkout does not imply healthy Node deps: a previous npm
@@ -2603,10 +2603,8 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     if node_failures:
         print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
         print("    Fix npm and re-run `hermes update`.")
-        print_completion(
-            "⚠ Checkout is current, but Node.js dependencies could not be repaired."
-        )
-        return
+        print("⚠ Checkout is current, but Node.js dependencies could not be repaired.")
+        return False
     # Pair the refresh with the web build like every other
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
@@ -2614,11 +2612,15 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     # A previous update may have advanced Git and then failed before reaching
     # the Desktop build. Git parity is therefore not Desktop artifact parity.
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    _rebuild_desktop_after_update(
+    desktop_ok = _rebuild_desktop_after_update(
         desktop_dir,
         had_desktop_app_before_update=_desktop_install_intent(desktop_dir),
     )
+    if not desktop_ok:
+        print("✗ Source checkout is current, but Hermes Desktop remains stale.")
+        return False
     print_completion("✓ Already up to date!")
+    return True
 
 
 def _update_node_dependencies() -> list[str]:
@@ -5361,10 +5363,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 healthy_after, detail_after = _venv_core_imports_healthy()
                 if healthy_after:
                     print("✓ Dependencies repaired!")
-                    _print_update_completion("✓ Update complete!")
+                    repair_ok = _repair_node_deps_on_current_checkout(
+                        _print_update_completion
+                    )
+                    if not repair_ok:
+                        if gateway_mode:
+                            _write_gateway_update_exit_code(False)
+                        _m()._resume_windows_gateways_after_update(
+                            _windows_gateway_resume
+                        )
+                        raise SystemExit(1)
                 else:
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
+                    if gateway_mode:
+                        _write_gateway_update_exit_code(False)
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    raise SystemExit(1)
             else:
                 if repair_uv:
                     verify_env = {
@@ -5378,7 +5395,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _m()._verify_console_scripts_installed(
                         [sys.executable, "-m", "pip"], env=None
                     )
-                _repair_node_deps_on_current_checkout(_print_update_completion)
+                repair_ok = _repair_node_deps_on_current_checkout(
+                    _print_update_completion
+                )
+                if not repair_ok:
+                    if gateway_mode:
+                        _write_gateway_update_exit_code(False)
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    raise SystemExit(1)
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(
