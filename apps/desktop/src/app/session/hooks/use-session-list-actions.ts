@@ -9,6 +9,7 @@ import {
   normalizeSessionSource,
   SIDEBAR_RECENTS_EXCLUDED_SOURCE_IDS
 } from '@/lib/session-source'
+import { gatewayActivationEpoch } from '@/store/gateway'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -113,6 +114,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   /** Refresh the active profile's messaging-platform sidebar slice. */
   const refreshMessagingSessions = useCallback(async () => {
     const sessionProfile = sidebarProfileForScope(profileScope)
+    const activationEpoch = gatewayActivationEpoch()
 
     // A callback captured before a profile switch may still be queued by an
     // event subscription. Do not let it start a request against the old scope.
@@ -130,7 +132,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (
         refreshMessagingSessionsRequestRef.current !== requestId ||
-        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile
+        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
+        gatewayActivationEpoch() !== activationEpoch
       ) {
         return
       }
@@ -152,6 +155,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const loadMoreMessagingForPlatform = useCallback(
     async (platform: string) => {
       const sessionProfile = sidebarProfileForScope(profileScope)
+      const activationEpoch = gatewayActivationEpoch()
 
       if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
         return
@@ -185,7 +189,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (
         loadMoreMessagingRequestRef.current[requestKey] !== requestId ||
-        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile
+        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile ||
+        gatewayActivationEpoch() !== activationEpoch
       ) {
         return
       }
@@ -222,6 +227,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   /** Refresh every sidebar session slice without committing an obsolete profile response. */
   const refreshSessions = useCallback(async () => {
     const sessionProfile = sidebarProfileForScope(profileScope)
+    const activationEpoch = gatewayActivationEpoch()
 
     if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
       return
@@ -266,7 +272,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (
         refreshSessionsRequestRef.current === requestId &&
-        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+        sidebarProfileForScope(profileScopeRef.current) === sessionProfile &&
+        gatewayActivationEpoch() === activationEpoch
       ) {
         const recents = result.recents
 
@@ -331,6 +338,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
       }
     } finally {
+      // The request id is enough here: a newer refresh owns its own loading
+      // state, while a failed source activation still needs the old request to
+      // clear the spinner even though it advanced the gateway epoch.
       if (showLoading && refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)
       }

@@ -6,7 +6,7 @@ import {
   type SidebarProjectTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
-import { getHermesConfig, type HermesGateway } from '@/hermes'
+import { getHermesConfig, hermesApi, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import {
   desktopDefaultCwd,
@@ -430,14 +430,28 @@ function applyPayload(payload: ProjectsPayload): void {
   $activeProjectId.set(payload.active_id ?? null)
 }
 
+let projectsRefreshGeneration = 0
+
 // Pull the full project list + active pointer. Best-effort: a failure (gateway
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
 export async function refreshProjects(): Promise<void> {
+  const generation = ++projectsRefreshGeneration
+  let gateway: HermesGateway | null = null
+
   try {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.list'))
+    gateway = (await activeProjectsContext()).gateway
+    const payload = await gatewayRequestOn<ProjectsPayload>(gateway, 'projects.list')
+
+    if (generation !== projectsRefreshGeneration || activeGateway() !== gateway) {
+      return
+    }
+
+    applyPayload(payload)
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
+    if (generation === projectsRefreshGeneration && (!gateway || activeGateway() === gateway)) {
+      markProjectsRpcFailure(err)
+    }
     // Backend may not be ready; keep the last known list.
   }
 }
@@ -614,59 +628,10 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
     const activeSessionId = $selectedStoredSessionId.get()
     const activeQuery = activeSessionId ? `&active_session_id=${encodeURIComponent(activeSessionId)}` : ''
 
-    const local = await window.hermesDesktop.api<ProjectTreePayload>({
+    const res = await hermesApi<ProjectTreePayload>({
       path: `/api/profiles/projects/tree?preview_limit=${PROJECT_QUICK_PREVIEW_LIMIT}${activeQuery}`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
-
-    // The local aggregate can only inspect profile databases on this machine.
-    // A profile-pinned remote is merely a local handle; its projects.db lives on
-    // another gateway, so query those handles directly without activating them.
-    const pinnedRemoteProfiles = (
-      await Promise.all(
-        $profiles.get().map(async profile => {
-          const connection = await window.hermesDesktop.getConnection(profile.name).catch(() => null)
-
-          return connection?.mode === 'remote' && connection.source === 'profile' ? profile.name : null
-        })
-      )
-    ).filter((profile): profile is string => Boolean(profile))
-
-    const remotePayloads = await Promise.all(
-      pinnedRemoteProfiles.map(async profile => {
-        try {
-          await openGatewayForProfile(profile)
-          const gateway = gatewayForProfile(profile)
-
-          if (!gateway || gateway.connectionState !== 'open') {
-            return null
-          }
-
-          const payload = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
-            preview_limit: PROJECT_QUICK_PREVIEW_LIMIT,
-            active_session_id: activeSessionId
-          })
-
-          return { payload, profile }
-        } catch {
-          return null
-        }
-      })
-    )
-
-    const remotes = remotePayloads.filter((item): item is NonNullable<typeof item> => Boolean(item))
-
-    const res: ProjectTreePayload = {
-      active_id: local.active_id,
-      projects: mergeProjectTrees([
-        local.projects ?? [],
-        ...remotes.map(({ payload, profile }) => tagProjectTreeProfile(payload.projects ?? [], profile))
-      ]),
-      scoped_session_ids: [
-        ...(local.scoped_session_ids ?? []),
-        ...remotes.flatMap(({ payload }) => payload.scoped_session_ids ?? [])
-      ]
-    }
 
     // A profile switch mid-flight leaves this payload describing the wrong
     // scope; the newer refresh owns the tree.
