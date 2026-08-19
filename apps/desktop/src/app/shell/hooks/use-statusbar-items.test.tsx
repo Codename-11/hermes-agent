@@ -73,7 +73,7 @@ describe('useStatusbarItems version update badges', () => {
     resetStores()
   })
 
-  it('reports client upstream carried/behind disparity in the footer statusbar tooltip', () => {
+  it('keeps client update status generic when fork disparity is present', () => {
     $desktopVersion.set({
       appVersion: '0.16.0',
       electronVersion: '40.9.3',
@@ -95,12 +95,13 @@ describe('useStatusbarItems version update badges', () => {
     renderProbe()
 
     expect(screen.getByTestId('client-label').textContent).toBe('v0.16.0 (+18)')
-    expect(screen.getByTestId('client-detail').textContent).toBe('+259 carried, 18 behind')
-    expect(screen.getByTestId('client-title').textContent).toContain('Pending backend update: 18 from upstream/main')
-    expect(screen.getByTestId('client-title').textContent).toContain('upstream/main: +259 carried, 18 behind')
+    expect(screen.getByTestId('client-detail').textContent).toBe('15a76ce')
+    expect(screen.getByTestId('client-title').textContent).toContain('18 commits behind axiom')
+    expect(screen.getByTestId('client-title').textContent).not.toContain('upstream/main')
+    expect(screen.getByTestId('client-title').textContent).not.toContain('carried')
   })
 
-  it('reports remote backend deploy/upstream disparity in the footer statusbar tooltip', () => {
+  it('keeps remote backend update status generic when deploy disparity is present', () => {
     $connection.set({
       baseUrl: 'http://127.0.0.1:9119',
       isFullscreen: false,
@@ -132,8 +133,9 @@ describe('useStatusbarItems version update badges', () => {
     renderProbe(true)
 
     expect(screen.getByTestId('backend-label').textContent).toBe('backend v0.16.0 (+18)')
-    expect(screen.getByTestId('backend-title').textContent).toContain('Pending backend update: 18 from upstream/main')
-    expect(screen.getByTestId('backend-title').textContent).toContain('Pending backend update: 18 upstream commits.')
+    expect(screen.getByTestId('backend-title').textContent).toContain('18 commits behind main')
+    expect(screen.getByTestId('backend-title').textContent).not.toContain('upstream/main')
+    expect(screen.getByTestId('backend-title').textContent).not.toContain('deploy branch')
   })
 })
 

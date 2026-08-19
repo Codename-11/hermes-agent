@@ -187,6 +187,16 @@ Update history is the bounded Hermes-owned `logs/update-history.json` index. Suc
 
 Every selected install (Desktop client or connected backend) must expose the update lineage as three distinct authorities: **Hermes upstream** (`upstream/main`) → **Axiom** (`origin/<deploy>`) → **Local** (the running checkout). The status contract keeps deploy commits (`Local..Axiom`) separate from upstream commits (`Axiom..upstream/main`); Update Control renders both ranges independently so upstream activity is readable at a glance without double-counting deploy-only work.
 
+Detailed fork lineage is plugin-owned presentation. Core About, statusbar, and
+the generic update overlay expose only ordinary version/update availability and
+actions; they do not render deploy-branch names, carried counts, upstream-behind
+counts, or reconciliation copy. Core still transports `upstreamAhead`,
+`upstreamBehind`, deploy/upstream ranges, and commits through the typed
+`host.updates` status contract so Axiom Enhancements can render the complete
+three-layer view. The presentation hunks originally introduced by `baa9310d8e`,
+the fork-specific portions of `539ba566fa`, and `ec26757c04` are retired; retain
+the generic scrollable overlay, commit-history bounds, and update controls.
+
 The plugin renderer source and generated disk artifact are protected in
 `axiom-agent-library/plugins/desktop/axiom-enhancements/`. Core protected files:
 `apps/desktop/electron/main.ts`,

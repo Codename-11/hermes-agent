@@ -41,30 +41,6 @@ function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
 }
 
-function backendBreakdown(status: DesktopUpdateStatus | null, target: UpdateTarget): string | null {
-  if (target !== 'backend' || !status) {
-    return null
-  }
-
-  const parts = []
-  const deployBehind = status.deployBehind ?? 0
-  const upstreamBehind = status.upstreamBehind ?? 0
-
-  if (deployBehind > 0) {
-    parts.push(`${deployBehind} from ${status.deployBranch ?? 'deploy branch'}`)
-  }
-
-  if (upstreamBehind > 0) {
-    parts.push(`${upstreamBehind} from ${status.upstreamBranch ?? 'upstream/main'}`)
-  }
-
-  if (parts.length > 0) {
-    return `Pending backend update: ${parts.join(', ')}. Hermes update will reconcile upstream into the deploy branch and refresh the running backend.`
-  }
-
-  return status.backendMessage ?? null
-}
-
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
@@ -263,7 +239,6 @@ function IdleView({
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
   // instead of generic filler.
   const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
-  const breakdown = backendBreakdown(status, target)
 
   return (
     <div className="flex max-h-[min(44rem,calc(100vh-2rem))] min-h-0 flex-col">
@@ -276,12 +251,6 @@ function IdleView({
             {body}
           </DialogDescription>
         </div>
-
-        {breakdown && (
-          <div className="mt-5 rounded-xl border border-border/70 bg-muted/20 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-            {breakdown}
-          </div>
-        )}
       </div>
 
       <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-6 pr-8">

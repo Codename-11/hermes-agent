@@ -325,9 +325,6 @@ export function useStatusbarItems({
       restarting: updateApply.stage === 'restart',
       sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
       target: 'client',
-      upstreamAhead: updateStatus?.upstreamAhead,
-      upstreamBehind: updateStatus?.upstreamBehind,
-      upstreamBranch: updateStatus?.upstreamBranch,
       updateAvailable: updateStatus?.updateAvailable,
       version: desktopVersion?.appVersion
     })
@@ -357,9 +354,6 @@ export function useStatusbarItems({
     updateStatus?.behind,
     updateStatus?.branch,
     updateStatus?.currentSha,
-    updateStatus?.upstreamAhead,
-    updateStatus?.upstreamBehind,
-    updateStatus?.upstreamBranch,
     updateStatus?.updateAvailable
   ])
 
@@ -373,17 +367,12 @@ export function useStatusbarItems({
     const status = resolveVersionStatus({
       applying,
       applyMessage: backendUpdateApply.message,
-      backendMessage: backendUpdateStatus?.backendMessage,
       behind: backendUpdateStatus?.behind ?? 0,
       copy,
-      deployBehind: backendUpdateStatus?.deployBehind,
-      deployBranch: backendUpdateStatus?.deployBranch,
       remote: true,
       restarting: backendUpdateApply.stage === 'restart',
       target: 'backend',
       updateAvailable: backendUpdateStatus?.updateAvailable,
-      upstreamBehind: backendUpdateStatus?.upstreamBehind,
-      upstreamBranch: backendUpdateStatus?.upstreamBranch,
       version: statusSnapshot?.version
     })
 

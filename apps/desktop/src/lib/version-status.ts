@@ -29,12 +29,9 @@ export interface VersionStatusInput {
   applying: boolean
   /** Latest line from the apply stream — leads the tooltip while applying. */
   applyMessage?: string
-  backendMessage?: string
   behind?: number
   branch?: string
   copy: VersionStatusCopy
-  deployBehind?: number
-  deployBranch?: string
   /** Remote mode: the client is one of two versions on screen, so it says so. */
   remote: boolean
   /** The apply reached the restart stage — labels `restart`, not `update`. */
@@ -42,9 +39,6 @@ export interface VersionStatusInput {
   /** Client only: short commit sha of the running build. */
   sha?: null | string
   target: UpdateTarget
-  upstreamAhead?: number
-  upstreamBehind?: number
-  upstreamBranch?: string
   /** An update the commit count can't express (shallow clones, pip installs). */
   updateAvailable?: boolean
   version?: null | string
@@ -64,19 +58,13 @@ export interface VersionStatusResult {
 export function resolveVersionStatus({
   applyMessage,
   applying,
-  backendMessage,
   behind = 0,
   branch,
   copy,
-  deployBehind = 0,
-  deployBranch,
   remote,
   restarting,
   sha = null,
   target,
-  upstreamAhead = 0,
-  upstreamBehind = 0,
-  upstreamBranch,
   updateAvailable,
   version = null
 }: VersionStatusInput): VersionStatusResult {
@@ -102,41 +90,19 @@ export function resolveVersionStatus({
   // backend that knows it's stale but can't count (pip, non-git checkout).
   const hint = busy ? '' : behind > 0 ? ` (+${behind})` : available ? ` (${copy.update})` : ''
 
-  const pending = [
-    deployBehind > 0 && `${deployBehind} from ${deployBranch ?? 'deploy branch'}`,
-    upstreamBehind > 0 && `${upstreamBehind} from ${upstreamBranch ?? 'upstream/main'}`
-  ].filter(Boolean)
-  const disparity = upstreamBranch
-    ? `${upstreamBranch}: ${[
-        upstreamAhead > 0 && `+${upstreamAhead} carried`,
-        upstreamBehind > 0 && `${upstreamBehind} behind`,
-        upstreamAhead <= 0 && upstreamBehind <= 0 && 'aligned'
-      ]
-        .filter(Boolean)
-        .join(', ')}`
-    : null
-
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
-    !busy && pending.length > 0 && `Pending backend update: ${pending.join(', ')}`,
-    !busy && pending.length === 0 && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
+    !busy && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
     !busy && behind <= 0 && available && copy.update,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
-    client && branch && copy.branch(branch),
-    !busy && disparity,
-    !busy && backendMessage
+    client && branch && copy.branch(branch)
   ]
     .filter(Boolean)
     .join(' · ')
 
   return {
-    detail:
-      !busy && disparity && (upstreamAhead > 0 || upstreamBehind > 0)
-        ? disparity.replace(`${upstreamBranch}: `, '')
-        : client && version && sha && !busy && !remote
-          ? sha
-          : undefined,
+    detail: client && version && sha && !busy && !remote ? sha : undefined,
     hasUpdate: !busy && available,
     label: busy ? `${base} · ${restarting ? copy.restart : copy.update}` : `${base}${hint}`,
     tooltip: tooltip || undefined,

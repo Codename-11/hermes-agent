@@ -219,6 +219,7 @@ describe('checkBackendUpdates', () => {
       deploy_branch: 'origin/axiom',
       deploy_behind: 0,
       upstream_branch: 'upstream/main',
+      upstream_ahead: 7,
       upstream_behind: 2,
       commits: [{ sha: 'abc1234', summary: 'feat: x', author: 'a', at: 1 }]
     })
@@ -232,6 +233,7 @@ describe('checkBackendUpdates', () => {
     expect(result?.deployBranch).toBe('origin/axiom')
     expect(result?.deployBehind).toBe(0)
     expect(result?.upstreamBranch).toBe('upstream/main')
+    expect(result?.upstreamAhead).toBe(7)
     expect(result?.upstreamBehind).toBe(2)
     expect(result?.backendMessage).toContain('upstream commits')
     expect(result?.supported).toBe(true)

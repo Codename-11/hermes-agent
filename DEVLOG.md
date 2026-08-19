@@ -1,5 +1,32 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-19 — Move detailed fork disparity into Axiom Enhancements
+
+### Summary
+
+Made Axiom Enhancements the sole detailed deploy/upstream/local update cockpit
+while keeping generic update availability and actions in Desktop core.
+
+### Details
+
+- Backend update translation now preserves `upstreamAhead` through the typed
+  `host.updates` snapshot alongside the existing upstream/deploy fields.
+- Core About, statusbar, and update overlay no longer render branch-specific
+  carried/behind or reconciliation detail.
+- The shared version resolver now describes only generic version, commit-diff,
+  update, and restart state; generic overlay sizing, scrolling, changelog, and
+  update actions remain unchanged.
+- Axiom Enhancements v0.5.0 renders `+N carried`, `N awaiting reconciliation`,
+  and aligned states in its three-layer Update Control view.
+
+### Verification
+
+- Focused Desktop update/SDK/version/statusbar regressions: 76 passing.
+- Desktop renderer/Electron/E2E TypeScript typecheck, changed-file ESLint, and
+  production build.
+- Axiom Enhancements contract smoke and 33 focused tests; Agent Library catalog
+  validation.
+
 ## 2026-08-19 — Restore browse-owned profile selection after source routing
 
 ### Summary

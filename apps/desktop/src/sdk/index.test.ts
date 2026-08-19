@@ -37,6 +37,8 @@ describe('host.updates', () => {
       commits: [{ at: 1, author: 'Nous', sha: 'client-sha', summary: 'Client update' }],
       deployCommits: [{ at: 2, author: 'Axiom', sha: 'deploy-sha', summary: 'Axiom update' }],
       upstreamCommits: [{ at: 3, author: 'Nous', sha: 'upstream-sha', summary: 'Upstream update' }],
+      upstreamAhead: 259,
+      upstreamBehind: 18,
       fetchedAt: 1,
       supported: true
     }
@@ -55,6 +57,8 @@ describe('host.updates', () => {
     expect(client?.commits?.[0]).not.toBe(clientStatus.commits[0])
     expect(client?.deployCommits?.[0]).not.toBe(clientStatus.deployCommits[0])
     expect(client?.upstreamCommits?.[0]).not.toBe(clientStatus.upstreamCommits[0])
+    expect(client?.upstreamAhead).toBe(259)
+    expect(client?.upstreamBehind).toBe(18)
     expect(backend).not.toBe(backendStatus)
   })
 
