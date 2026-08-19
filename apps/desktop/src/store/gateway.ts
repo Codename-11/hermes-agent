@@ -755,7 +755,10 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+export async function ensureGatewayForProfile(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<void> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
@@ -770,7 +773,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // primary instead of dialing a doomed duplicate socket at the same
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key)) {
+  if (await sharedPrimaryRoute(key, resolvedConnection)) {
     applyActive(g.primaryProfile, activationEpoch)
 
     return
