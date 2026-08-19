@@ -15,7 +15,7 @@ import {
   selectDesktopPaths,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
-import { desktopGit, isGitEndpointMissingError } from '@/lib/desktop-git'
+import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
