@@ -1915,11 +1915,13 @@ export function resetLayoutTree() {
   // placement back to the app (user-placed pins cleared).
   $dismissedPanes.set(new Set())
   saveUserPlaced(new Set())
+
   // Hide-only chrome tabs (sessions / Bots) come back too — clear their
   // persisted hides through the setter so $hiddenTreePanes agrees.
   for (const paneId of [...$hiddenStripTabs.get()]) {
     setStripTabHidden(paneId, false)
   }
+
   $layoutTree.set(defaultTree)
   markActivePreset('default')
   // Owners PRE-PLACE their panes into the fresh default (session tiles stack
