@@ -320,61 +320,7 @@
       "title": "Axiom Desktop session convergence and profile-safe live status"
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:ui",
-            "--",
-            "src/store/gateway-agent-scope.test.ts",
-            "src/store/gateway-shared-remote.test.ts",
-            "src/store/profile-agent-activation.test.ts",
-            "src/store/profile-gateway-real-path.test.ts",
-            "src/store/profile.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/store/gateway-agent-scope.test.ts",
-            "apps/desktop/src/store/gateway-shared-remote.test.ts",
-            "apps/desktop/src/store/profile-agent-activation.test.ts",
-            "apps/desktop/src/store/profile-gateway-real-path.test.ts",
-            "apps/desktop/src/store/profile.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-profile-gateway-activation-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-profile-gateway-activation-typecheck"
-        },
-        {
-          "argv": [
-            "npx",
-            "eslint",
-            "src/store/gateway.ts",
-            "src/store/profile.ts",
-            "src/store/gateway-agent-scope.test.ts",
-            "src/store/gateway-shared-remote.test.ts",
-            "src/store/profile-agent-activation.test.ts",
-            "src/store/profile-gateway-real-path.test.ts",
-            "src/store/profile.test.ts"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-profile-gateway-activation-lint"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Axiom Desktop session convergence and profile-safe live status",
         "path": "FORK.md"
@@ -385,19 +331,12 @@
       "domain_id": "desktop-session-and-profile-convergence",
       "id": "desktop-profile-gateway-activation",
       "notes": [
-        "Extracted from the broader Desktop session-convergence contract as an independently replayable subcarry; declaration-only carries remain incomplete until they gain their own immutable replay metadata."
+        "Historical provenance is retained for audit only. The carry was removed from axiom after exact live remote profile switching continued to regress.",
+        "Do not restore the replay branch without a new upstream-based design and real remote default \u2192 named \u2192 default \u2192 all-profiles E2E proof."
       ],
       "order": 35,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/store/gateway-agent-scope.test.ts",
-        "apps/desktop/src/store/gateway-shared-remote.test.ts",
-        "apps/desktop/src/store/gateway.ts",
-        "apps/desktop/src/store/profile-agent-activation.test.ts",
-        "apps/desktop/src/store/profile-gateway-real-path.test.ts",
-        "apps/desktop/src/store/profile.test.ts",
-        "apps/desktop/src/store/profile.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "commit",
@@ -415,26 +354,10 @@
           "revision": "99b5f3cbc7cc0e201dbf1c97328382cb9862cd3d"
         }
       ],
-      "replay": {
-        "base_commit": "f43eabee5f36e11448086ee8ee17c499958e81bf",
-        "commits": [
-          "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6",
-          "45fc462e9bb240ef535476cbda6c65c0294d21b4",
-          "99b5f3cbc7cc0e201dbf1c97328382cb9862cd3d"
-        ],
-        "kind": "commit_series",
-        "source_ref": "origin/carry/desktop-profile-gateway-activation"
-      },
-      "retirement": "Retire when upstream atomically activates profile-scoped gateways with equivalent shared-remote reuse, agent scoping, failure rollback, and real profile-to-gateway integration coverage.",
-      "status": "active",
-      "summary": "Preserve atomic profile gateway activation, shared remote gateway reuse, connection-qualified profile-rail routing, profile-qualified agent scope, and rollback-safe profile switching.",
-      "tests": [
-        "apps/desktop/src/store/gateway-agent-scope.test.ts",
-        "apps/desktop/src/store/gateway-shared-remote.test.ts",
-        "apps/desktop/src/store/profile-agent-activation.test.ts",
-        "apps/desktop/src/store/profile-gateway-real-path.test.ts",
-        "apps/desktop/src/store/profile.test.ts"
-      ],
+      "retirement": "Retired on 2026-08-20 after three failed forward fixes. Current upstream profile switching is the authority; do not replay this carry.",
+      "status": "retired",
+      "summary": "Historical atomic profile-gateway activation experiment; reverted after repeated live regressions in remote profile/default switching.",
+      "tests": [],
       "title": "Axiom Desktop profile gateway activation"
     },
     {

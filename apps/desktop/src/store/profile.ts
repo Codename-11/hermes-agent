@@ -1,13 +1,7 @@
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
-import {
-  getApiRequestConnection,
-  getProfiles,
-  hermesApi,
-  setApiRequestProfile,
-  STARTUP_REQUEST_TIMEOUT_MS
-} from '@/hermes'
+import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -19,15 +13,9 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import {
-  $gateway,
-  openGatewayForAgent,
-  openGatewayForProfile,
-  prepareGatewayForAgent,
-  prepareGatewayForProfile
-} from '@/store/gateway'
+import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
 import { activateChangeEventsProfile } from '@/store/live-sync'
-import { $connection, setConnection } from '@/store/session'
+import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -287,33 +275,6 @@ const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
-// Preserve the selected registry source when a profile-rail action targets a
-// named profile. A profile name is only unique inside its connection; reducing
-// (connectionId, profile) to a bare profile lets the legacy local/profile table
-// silently retarget a remote click to a same-named local backend (#88680).
-function activeProfileConnectionId(): null | string {
-  // Prefer the gateway registry's live scope while a secondary is active; the
-  // selected registry source may also be the PRIMARY socket, whose internal
-  // activeGatewayConnectionId() is intentionally null. In that primary case,
-  // fall back to the published descriptor identity used by $activeConnectionId
-  // and the statusbar.
-  const connectionId = (getApiRequestConnection() ?? $connection.get()?.connectionId ?? '').trim()
-
-  return connectionId || null
-}
-
-function openActiveProfileRoute(profile: string): Promise<void> {
-  const connectionId = activeProfileConnectionId()
-
-  return connectionId ? openGatewayForAgent(connectionId, profile) : openGatewayForProfile(profile)
-}
-
-function ensureActiveProfileRoute(profile: string): Promise<void> {
-  const connectionId = activeProfileConnectionId()
-
-  return connectionId ? ensureGatewayAgent(connectionId, profile) : ensureGatewayProfile(profile)
-}
-
 export function prewarmProfileBackend(name: string): void {
   const key = normalizeProfileKey(name)
 
@@ -328,16 +289,15 @@ export function prewarmProfileBackend(name: string): void {
   }
 
   prewarmedAt.set(key, now)
-  openActiveProfileRoute(key).catch(() => undefined)
+  openGatewayForProfile(key).catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null
 
 // The target profile's connection descriptor (mode / baseUrl / …), resolved
-// before the socket work so the same descriptor can open the gateway and the
-// switch can publish the profile pointer and $connection in one frame. Without
-// this, $connection seeds from the PRIMARY backend at boot and only refreshes
-// on sleep/wake — activating a
+// CONCURRENTLY with the socket work so the switch can publish the profile
+// pointer and $connection in one frame. Without this, $connection seeds from
+// the PRIMARY backend at boot and only refreshes on sleep/wake — activating a
 // *background* profile left it describing the primary, with the wrong `mode`
 // for everything that branches on local-vs-remote (#46651: path-based
 // `image.attach` against a remote gateway, /api/fs/* and /api/media on the
@@ -401,19 +361,20 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    // Resolve once, then prepare the socket without publishing. The exact
-    // descriptor object classifies the route and dials a dedicated secondary,
-    // so one-time tickets are never fetched or minted twice.
-    const connection = await resolveConnectionForProfile(target)
-    const activate = await prepareGatewayForProfile(target, connection)
+    // ensureGatewayForProfile opens (or reuses) the target's socket and points
+    // the active gateway at it — without closing the profile you came from.
+    // The descriptor resolves concurrently so nothing awaits between the
+    // activation and the publication below: the old post-activation
+    // syncConnectionToActiveProfile await left a window where $gateway
+    // already targeted the new backend while $connection still described the
+    // previous one, and remote-aware paths announced the wrong mode (#46651).
+    const [connection] = await Promise.all([resolveConnectionForProfile(target), ensureGatewayForProfile(target)])
 
-    // ONE publication frame: the activation thunk synchronously publishes the
-    // gateway inside the same Nanostores batch as its companion stores.
+    // ONE publication frame. batch() defers Nanostores' notifications to the
+    // end of the callback, so the profile pointer and the connection
+    // descriptor become visible together; a null descriptor (no bridge, or a
+    // failed best-effort lookup) keeps the previous one — fail open.
     batch(() => {
-      if (!activate()) {
-        return
-      }
-
       $activeGatewayProfile.set(target)
 
       if (connection) {
@@ -483,19 +444,27 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    // Resolve the registry descriptor once and hand that exact object to the
-    // prepared socket path. A null result deliberately falls back to the
-    // gateway's normal lookup, preserving fail-open switching.
-    const descriptor = await resolveConnectionForAgent(connection, target)
-    const activate = await prepareGatewayForAgent(connection, target, descriptor)
+    // Descriptor resolves concurrently with the dial, same as the profile
+    // path, so no await sits between the activation and the publication.
+    const [descriptor, activated] = await Promise.all([
+      resolveConnectionForAgent(connection, target),
+      ensureGatewayForAgent(connection, target)
+    ])
 
+    if (!activated) {
+      // The target stopped existing mid-dial (source edited/removed). Keep
+      // every atom on the previous backend; the caller's surfaces re-check
+      // what's active. Log so a dead agent click is diagnosable (#89622's
+      // silence lesson) — but never fail the whole switch closed here.
+      console.warn(`[profile] agent gateway activation for "${connection}:${target}" did not land`)
+
+      return
+    }
+
+    // ONE publication frame, profile pointer + descriptor together. A null
+    // descriptor keeps the previous one — fail open, resynced by
+    // boot/reconnect later.
     batch(() => {
-      if (!activate()) {
-        console.warn(`[profile] agent gateway activation for "${connection}:${target}" did not land`)
-
-        return
-      }
-
       $activeGatewayProfile.set(target)
 
       if (descriptor) {
@@ -562,7 +531,7 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureActiveProfileRoute(target)
+  void ensureGatewayProfile(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -575,7 +544,7 @@ export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureActiveProfileRoute(target)
+  void ensureGatewayProfile(target)
 }
 
 export function setShowAllProfiles(value: boolean): void {
