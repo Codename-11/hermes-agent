@@ -7,6 +7,7 @@ const gatewayMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hermes', () => ({
+  getApiRequestConnection: vi.fn(() => 'homelab'),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   hermesApi: vi.fn(),
   HermesGateway: class {
@@ -46,15 +47,17 @@ vi.mock('@/store/live-sync', () => ({ activateChangeEventsProfile: vi.fn() }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
-const { $activeGatewayProfile, ensureGatewayAgent } = await import('./profile')
+const { $activeGatewayProfile, ensureGatewayAgent, selectProfile } = await import('./profile')
 const { activeGateway, closeSecondaryGateways, configureGatewayRegistry, setPrimaryGateway } = await import('./gateway')
 const { $connection } = await import('./session')
 
 const descriptor = {
   authMode: 'token',
   baseUrl: 'https://homelab.invalid',
+  connectionId: 'homelab',
   mode: 'remote',
   profile: 'research',
+  registryScoped: true,
   token: 'single-ticket',
   wsUrl: 'wss://homelab.invalid/api/ws?token=single-ticket'
 } as HermesConnection
@@ -91,6 +94,17 @@ describe('profile caller composed with the real gateway registry', () => {
     expect(gatewayMocks.connect).toHaveBeenCalledWith(descriptor.wsUrl)
     expect(activeGateway()).not.toBeNull()
     expect($activeGatewayProfile.get()).toBe('research')
+    expect($connection.get()).toBe(descriptor)
+  })
+
+  it('keeps a profile-rail selection on the active registry source', async () => {
+    $connection.set({ ...descriptor, profile: 'default' })
+    selectProfile('research')
+
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledOnce())
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'research' })
+    expect(gatewayMocks.connect).toHaveBeenCalledWith(descriptor.wsUrl)
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('research'))
     expect($connection.get()).toBe(descriptor)
   })
 })

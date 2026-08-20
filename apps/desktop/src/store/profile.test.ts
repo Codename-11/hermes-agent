@@ -19,11 +19,28 @@ const prepareGatewayForProfile = vi.fn(
 )
 
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+const openGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => undefined)
+
+const prepareGatewayForAgent = vi.fn(
+  async (
+    _connectionId: null | string,
+    _profile: string,
+    _resolvedConnection?: HermesConnection | null
+  ): Promise<() => boolean> => activateGateway
+)
+
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, openGatewayForProfile, prepareGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({
+  $gateway,
+  openGatewayForAgent,
+  openGatewayForProfile,
+  prepareGatewayForAgent,
+  prepareGatewayForProfile
+}))
 vi.mock('@/hermes', () => ({
+  getApiRequestConnection: vi.fn<() => null | string>(() => null),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
 }))
@@ -38,13 +55,15 @@ const {
   cycleProfile,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  newSessionInProfile,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  selectProfile
 } = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
-const { getProfiles } = await import('@/hermes')
+const { getApiRequestConnection, getProfiles } = await import('@/hermes')
 
 const profile = (name: string, isDefault = false): ProfileInfo => ({
   has_env: false,
@@ -64,19 +83,28 @@ const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
 
 const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
 
+const getConnectionFor = vi.fn<
+  (payload: { connectionId?: null | string; profile?: null | string }) => Promise<HermesConnection>
+>()
+
 beforeEach(() => {
   getConnection.mockReset()
+  getConnectionFor.mockReset()
   prepareGatewayForProfile.mockReset()
   prepareGatewayForProfile.mockResolvedValue(activateGateway)
+  prepareGatewayForAgent.mockReset()
+  prepareGatewayForAgent.mockResolvedValue(activateGateway)
   activateGateway.mockClear()
   openGatewayForProfile.mockClear()
+  openGatewayForAgent.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $browsedProfile.set('default')
   $showAllProfiles.set(false)
   $connection.set(localConn())
   $profiles.set([])
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  vi.stubGlobal('window', { hermesDesktop: { getConnection, getConnectionFor } })
+  vi.mocked(getApiRequestConnection).mockReturnValue(null)
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
 })
@@ -84,6 +112,49 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   $connection.set(null)
+})
+
+describe('profile rail route preservation (#88680)', () => {
+  it('keeps a named profile on the active registered remote source', async () => {
+    const descriptor = remoteConn({ connectionId: 'homelab', profile: 'mizu', registryScoped: true })
+
+    $connection.set(remoteConn({ connectionId: 'homelab', profile: 'default', registryScoped: true }))
+    getConnectionFor.mockResolvedValue(descriptor)
+
+    selectProfile('mizu')
+
+    await vi.waitFor(() => expect(prepareGatewayForAgent).toHaveBeenCalledOnce())
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'mizu' })
+    expect(prepareGatewayForAgent).toHaveBeenCalledWith('homelab', 'mizu', descriptor)
+    expect(getConnection).not.toHaveBeenCalled()
+    expect($connection.get()?.connectionId).toBe('homelab')
+  })
+
+  it('prewarms and starts fresh chats on the active registered source', async () => {
+    const descriptor = remoteConn({ connectionId: 'homelab', profile: 'mizu', registryScoped: true })
+
+    $connection.set(remoteConn({ connectionId: 'homelab', profile: 'default', registryScoped: true }))
+    getConnectionFor.mockResolvedValue(descriptor)
+
+    prewarmProfileBackend('mizu')
+    newSessionInProfile('mizu')
+
+    expect(openGatewayForAgent).toHaveBeenCalledWith('homelab', 'mizu')
+    await vi.waitFor(() => expect(prepareGatewayForAgent).toHaveBeenCalledOnce())
+    expect(getConnection).not.toHaveBeenCalled()
+  })
+
+  it('retains the legacy profile route when no registry source is active', async () => {
+    const descriptor = localConn({ profile: 'mizu' })
+
+    getConnection.mockResolvedValue(descriptor)
+
+    selectProfile('mizu')
+
+    await vi.waitFor(() => expect(prepareGatewayForProfile).toHaveBeenCalledOnce())
+    expect(getConnection).toHaveBeenCalledWith('mizu')
+    expect(getConnectionFor).not.toHaveBeenCalled()
+  })
 })
 
 describe('ensureGatewayProfile → $connection sync (#46651)', () => {

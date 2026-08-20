@@ -1,7 +1,13 @@
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
-import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import {
+  getApiRequestConnection,
+  getProfiles,
+  hermesApi,
+  setApiRequestProfile,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -13,9 +19,15 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, openGatewayForProfile, prepareGatewayForAgent, prepareGatewayForProfile } from '@/store/gateway'
+import {
+  $gateway,
+  openGatewayForAgent,
+  openGatewayForProfile,
+  prepareGatewayForAgent,
+  prepareGatewayForProfile
+} from '@/store/gateway'
 import { activateChangeEventsProfile } from '@/store/live-sync'
-import { setConnection } from '@/store/session'
+import { $connection, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -275,6 +287,32 @@ const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
+// Preserve the selected registry source when a profile-rail action targets a
+// named profile. A profile name is only unique inside its connection; reducing
+// (connectionId, profile) to a bare profile lets the legacy local/profile table
+// silently retarget a remote click to a same-named local backend (#88680).
+function activeProfileConnectionId(): null | string {
+  // The selected registry source may be the PRIMARY socket. The gateway pool's
+  // internal activeGatewayConnectionId() is intentionally null for every
+  // primary, but the published descriptor still carries its registry identity
+  // and is what $activeConnectionId / the statusbar use.
+  const connectionId = ($connection.get()?.connectionId ?? getApiRequestConnection() ?? '').trim()
+
+  return connectionId || null
+}
+
+function openActiveProfileRoute(profile: string): Promise<void> {
+  const connectionId = activeProfileConnectionId()
+
+  return connectionId ? openGatewayForAgent(connectionId, profile) : openGatewayForProfile(profile)
+}
+
+function ensureActiveProfileRoute(profile: string): Promise<void> {
+  const connectionId = activeProfileConnectionId()
+
+  return connectionId ? ensureGatewayAgent(connectionId, profile) : ensureGatewayProfile(profile)
+}
+
 export function prewarmProfileBackend(name: string): void {
   const key = normalizeProfileKey(name)
 
@@ -289,7 +327,7 @@ export function prewarmProfileBackend(name: string): void {
   }
 
   prewarmedAt.set(key, now)
-  openGatewayForProfile(key).catch(() => undefined)
+  openActiveProfileRoute(key).catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null
@@ -523,7 +561,7 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  void ensureActiveProfileRoute(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -536,7 +574,7 @@ export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  void ensureActiveProfileRoute(target)
 }
 
 export function setShowAllProfiles(value: boolean): void {
