@@ -34,7 +34,7 @@ Usage:
     hermes honcho identity                 # Show AI peer identity representation
     hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
     hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
+    hermes --version           Show version and update status
     hermes update              Update to latest version
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
@@ -67,6 +67,7 @@ except ModuleNotFoundError:
 # visible console when this process is windowless (pythonw gateway + every
 # kanban worker).  No-op on POSIX; never raises.
 from hermes_cli._subprocess_compat import suppress_platform_ver_console
+from hermes_cli.cli_output import line_input
 
 suppress_platform_ver_console()
 
@@ -179,6 +180,7 @@ def _run_and_exit_oneshot(
     model: object = None,
     provider: object = None,
     toolsets: object = None,
+    skills: object = None,
     usage_file: object = None,
 ) -> None:
     try:
@@ -189,6 +191,7 @@ def _run_and_exit_oneshot(
             model=model,
             provider=provider,
             toolsets=toolsets,
+            skills=skills,
             usage_file=usage_file,
         )
     except KeyboardInterrupt:
@@ -466,7 +469,6 @@ from hermes_cli.subcommands.import_agent import build_import_agent_parser
 from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
-from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
@@ -3137,22 +3139,50 @@ def cmd_chat(args):
         except Exception:
             pass
 
-    # Sync bundled skills on every CLI launch. Runs in a background daemon
-    # thread: the sync is idempotent, hash-gated (unchanged skills are
+    # Sync bundled skills on every CLI launch. Normally runs in a background
+    # daemon thread: the sync is idempotent, hash-gated (unchanged skills are
     # skipped), and nothing on the banner path depends on it, yet the scan
     # alone costs ~120-170ms of rglob/hashing on the startup path. Skill
     # loading happens at agent init (first message), by which point the
-    # sync has long finished; a same-instant race would only matter in the
-    # rare launch right after `hermes update` changed a bundled skill.
+    # sync has long finished.
+    #
+    # FIRST RUN is the exception: with an empty ~/.hermes/skills the banner
+    # prefetch races the background sync, caches an empty skills index, and
+    # the very first launch greets the user with "No skills installed ·
+    # 0 skills" while 69 bundled skills land milliseconds later (full-surface
+    # CLI QA sweep, Aug 2026). Run the sync in the foreground exactly once —
+    # only when the skills dir has no SKILL.md yet — so the first impression
+    # matches reality; every later launch keeps the background path.
+    def _skills_dir_is_unseeded() -> bool:
+        try:
+            from hermes_cli.config import get_hermes_home
+            skills_dir = Path(get_hermes_home()) / "skills"
+            if not skills_dir.is_dir():
+                return True
+            return next(skills_dir.rglob("SKILL.md"), None) is None
+        except Exception:
+            return False
+
     def _skills_sync_bg() -> None:
         try:
             _sync_bundled_skills_for_startup()
         except Exception:
             pass
 
-    threading.Thread(
-        target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
-    ).start()
+    if _skills_dir_is_unseeded():
+        _skills_sync_bg()
+        # The banner prefetch thread (started above) may have scanned the
+        # still-empty dir and cached an empty skills index — drop it so the
+        # banner recomputes against the freshly seeded tree.
+        try:
+            import hermes_cli.banner as _banner_mod
+            _banner_mod._available_skills_cache = None
+        except Exception:
+            pass
+    else:
+        threading.Thread(
+            target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
+        ).start()
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
@@ -3246,6 +3276,7 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "run_budget": getattr(args, "run_budget", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
@@ -3363,11 +3394,11 @@ def cmd_whatsapp(args):
             response = "n"
         if response.lower() in {"y", "yes"}:
             if wa_mode == "bot":
-                phone = input(
+                phone = line_input(
                     "  Phone numbers that can message the bot (comma-separated): "
                 ).strip()
             else:
-                phone = input("  Your phone number (e.g. 15551234567): ").strip()
+                phone = line_input("  Your phone number (e.g. 15551234567): ").strip()
             if phone:
                 save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
                 print(f"  ✓ Updated to: {phone}")
@@ -3375,11 +3406,11 @@ def cmd_whatsapp(args):
         print()
         if wa_mode == "bot":
             print("  Who should be allowed to message the bot?")
-            phone = input(
+            phone = line_input(
                 "  Phone numbers (comma-separated, or * for anyone): "
             ).strip()
         else:
-            phone = input("  Your phone number (e.g. 15551234567): ").strip()
+            phone = line_input("  Your phone number (e.g. 15551234567): ").strip()
         if phone:
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
             print(f"  ✓ Allowed users set: {phone}")
@@ -4433,7 +4464,7 @@ def _aux_flow_provider_model(
         print(f"No curated model list for {provider_slug}.")
         print("Enter a model slug manually (blank = use provider default):")
         try:
-            val = input("Model: ").strip()
+            val = line_input("Model: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -4474,7 +4505,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         url_prompt = (
             f"Base URL [{current_base_url}]: " if current_base_url else "Base URL: "
         )
-        url = input(url_prompt).strip()
+        url = line_input(url_prompt).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -4488,7 +4519,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
             if current_model
             else "Model slug (optional): "
         )
-        model = input(model_prompt).strip()
+        model = line_input(model_prompt).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -4872,6 +4903,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_for_each_systemd_gateway_unit",
         "_format_concurrent_instances_message",
         "_format_time_ago",
+        "_handoff_reapable_backend_pids",
         "_format_venv_python_holders_message",
         "_gateway_prompt",
         "_get_origin_url",
@@ -5808,7 +5840,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 
 
 def cmd_version(args):
-    """Show version."""
+    """Show version (--version/-V flag)."""
     _print_version_info(check_updates=True)
 
 
@@ -9108,38 +9140,160 @@ def _recover_core_update_marker_locked() -> None:
             print(f"    {sys.executable} -m pip install -e '.[all]'")
 
 
-def _windows_running_hermes_launcher_locked() -> bool:
-    """True when a venv ``hermes*.exe`` shim is this process or an ancestor.
+def _norm_exe_path(path) -> str:
+    """Case-folded resolved path, for comparing executables on Windows."""
+    try:
+        return str(Path(path).resolve()).lower()
+    except OSError:
+        return str(path).lower()
 
-    Best-effort: returns False when psutil is unavailable or inspection fails.
+
+def _windows_shim_in_process_chain() -> Path | None:
+    """The venv console shim this process runs from or under, if any.
+
+    ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with
+    the shim itself as its script, and that keeps the shim open — without
+    ``FILE_SHARE_DELETE`` — for the whole process lifetime. So every
+    ``hermes ...`` command holds its own shim, and an editable install run
+    from one can never rewrite it (#88838, #89599).
+
+    Two independent probes, because either can come up empty. Process
+    ancestry finds the launcher when it is a separate parent process, but
+    needs psutil. This process's own launch paths (``sys.argv[0]``,
+    ``__main__.__file__``, the module spec origin) cover the rest — the
+    runpy/zipapp launch puts ``<shim>\\__main__.py`` there, which a plain
+    argv[0] check misses.
+
+    Candidates are intersected with the project venv's own shims, so a
+    ``hermes.exe`` belonging to some other install never matches.
     """
     if not _is_windows():
-        return False
+        return None
     scripts_dir = _venv_scripts_dir()
     if scripts_dir is None:
-        return False
-    shims = _hermes_exe_shims(scripts_dir)
+        return None
+    shims = {_norm_exe_path(shim): shim for shim in _hermes_exe_shims(scripts_dir)}
     if not shims:
-        return False
-    shim_set: set[str] = set()
-    for shim in shims:
-        try:
-            shim_set.add(str(shim.resolve()).lower())
-        except OSError:
-            shim_set.add(str(shim).lower())
+        return None
+
+    def _match(candidate) -> Path | None:
+        path = Path(candidate)
+        if path.name.lower() == "__main__.py":
+            path = path.parent
+        return shims.get(_norm_exe_path(path))
+
+    candidates: list[str] = list(sys.argv[:1])
+    main_mod = sys.modules.get("__main__")
+    for attr in (getattr(main_mod, "__file__", None),
+                 getattr(getattr(main_mod, "__spec__", None), "origin", None)):
+        if attr:
+            candidates.append(attr)
+    for candidate in candidates:
+        matched = _match(candidate)
+        if matched is not None:
+            return matched
+
     try:
         import psutil
 
         me = psutil.Process()
         for proc in [me] + list(me.parents()):
             try:
-                exe_norm = str(Path(proc.exe()).resolve()).lower()
+                matched = _match(proc.exe())
             except Exception:
                 continue
-            if exe_norm in shim_set:
-                return True
+            if matched is not None:
+                return matched
     except Exception:
+        return None
+    return None
+
+
+def _windows_running_hermes_launcher_locked() -> bool:
+    """True when a venv ``hermes*.exe`` shim is this process or an ancestor.
+
+    Best-effort: returns False when psutil is unavailable or inspection fails.
+    """
+    return _windows_shim_in_process_chain() is not None
+
+
+# Set on the re-exec'd child so it can never spawn another one.
+_UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
+
+
+def _reexec_dependency_sync_off_windows_shim() -> bool:
+    """Hand the dependency sync to the venv interpreter, off the console shim.
+
+    Returns True when a child was spawned and the caller must exit at once,
+    releasing the shim before the child reaches ``pip install -e .``. Returns
+    False to continue the sync in-process.
+
+    Called at the dependency-sync boundary, NOT at the top of the command —
+    the same placement rule as the native-module deferral beside it, and for
+    the same reason (#86735): a hand-off that fires before the fetch detaches
+    every run, including the ``Already up to date!`` no-op that never touches
+    the venv at all, and it takes the interactive prompts with it. By the time
+    we reach here the code swap is done and every question — stash, branch
+    switch, config migration — has already been asked and answered in the
+    user's own console. Only the venv rewrite is left, and that is the single
+    step that genuinely cannot run from inside the shim.
+
+    ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with
+    the shim as its script and holds it open without ``FILE_SHARE_DELETE`` for
+    the whole command, so the quarantine rename is refused and uv fails to
+    replace it with os error 32 (#88838, #89599).
+
+    A child is required, and waiting on it cannot work: this process holds the
+    handle the child needs released, so a parent that waits deadlocks against
+    the work it is waiting for. Windows has no exec to escape with either.
+    The shell therefore returns while the install runs on; the child keeps the
+    console and prints its own result, and ``--gateway`` writes the true exit
+    code to ``.update_exit_code`` for the gateway watcher.
+
+    The child re-runs ``hermes update``, so the whole remaining flow — the
+    dependency sync and the node/web/lazy-refresh tail behind it — still
+    happens exactly once. ``_UPDATE_REEXEC_ENV`` marks it so it cannot spawn
+    another child, and so the "already up to date" early return does not
+    swallow the sync it was spawned to perform (the checkout is current by
+    now; that is the point).
+
+    The caller has already written ``.update-incomplete``, so a child that
+    dies mid-install is finished by the next launch's recovery instead of
+    leaving a half-synced venv. Anything that stops the hand-off (no venv
+    python, spawn refused) returns False and syncs in-process, where the
+    pre-existing os-error-32 path and its marker recovery still apply.
+    """
+    if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
         return False
+    shim = _windows_shim_in_process_chain()
+    if shim is None:
+        return False
+
+    from hermes_constants import venv_python_path
+
+    python_exe = venv_python_path(shim.parent.parent, windows=True)
+    cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
+    if python_exe.is_file():
+        try:
+            subprocess.Popen(
+                cmd,
+                env={**os.environ, _UPDATE_REEXEC_ENV: "1"},
+                stdin=subprocess.DEVNULL,
+            )
+            print(
+                f"→ Windows: {shim.name} cannot replace itself while it runs; "
+                "finishing the dependency install under the venv Python."
+            )
+            print(
+                "  The code update is already applied. The install continues "
+                "below and this shell returns right away."
+            )
+            return True
+        except OSError as exc:
+            logger.debug("Dependency-sync hand-off via %s failed: %s", python_exe, exc)
+        print(f"  ⚠ Could not hand the dependency install off {shim.name}.")
+        print("    Continuing in-process; if it cannot replace the shim, run:")
+        print(f"    {subprocess.list2cmdline(cmd)}")
     return False
 
 
@@ -9152,7 +9306,10 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
     except Exception:
         uv_bin = None
     if uv_bin:
-        env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        from hermes_constants import project_venv_dir
+
+        venv_dir = project_venv_dir(PROJECT_ROOT) or PROJECT_ROOT / "venv"
+        env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)}
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -9205,10 +9362,11 @@ def _is_windows() -> bool:
 
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    from hermes_constants import project_venv_dir, venv_bin_dir
+
+    venv_dir = project_venv_dir(PROJECT_ROOT)
+    if venv_dir is None:
         return None
-    from hermes_constants import venv_bin_dir
 
     scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None
@@ -9258,6 +9416,10 @@ def _quarantine_running_hermes_exe(
        would remove the old launcher on reboot without creating a replacement.
     3. Print a clear warning naming the most likely culprit (running
        Hermes Desktop / gateway / REPL).
+
+    The updater's own launcher is normally removed from this lock class by
+    ``_reexec_dependency_sync_off_windows_shim``. The fail-closed path remains
+    necessary for other processes that still hold a shim open.
 
     Returns the list of (original, quarantined) pairs so the caller can roll
     back if the install itself fails before uv writes a replacement.
@@ -9315,6 +9477,80 @@ def _quarantine_running_hermes_exe(
     return moved
 
 
+_PENDING_RENAME_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager"
+_PENDING_RENAME_VALUE = "PendingFileRenameOperations"
+
+
+def _filter_pending_shim_renames(
+    entries: list[str], shims: list[Path]
+) -> tuple[list[str], int]:
+    """Drop shim-quarantine pairs from a PendingFileRenameOperations value.
+
+    The value is a flat REG_MULTI_SZ of (source, target) pairs, and other
+    installers share it, so only pairs matching our own
+    ``<shim>`` -> ``<shim>.old.<stamp>`` naming are removed. Returns the
+    entries to keep and how many pairs were dropped.
+    """
+    import ntpath
+
+    def _norm(value: str) -> str:
+        path = str(value).lstrip("!")
+        if path.startswith("\\??\\"):
+            path = path[4:]
+        return ntpath.normcase(ntpath.normpath(path))
+
+    shim_paths = {_norm(str(shim)) for shim in shims}
+    kept: list[str] = []
+    removed = 0
+    for index in range(0, len(entries) - 1, 2):
+        source, target = entries[index], entries[index + 1]
+        source_norm = _norm(source)
+        if source_norm in shim_paths and _norm(target).startswith(f"{source_norm}.old."):
+            removed += 1
+        else:
+            kept.extend((source, target))
+    if len(entries) % 2:
+        kept.append(entries[-1])
+    return kept, removed
+
+
+def _cleanup_pending_shim_renames(scripts_dir: Path) -> int:
+    """Drop reboot renames older Hermes versions queued for our shims.
+
+    Hermes used to fall back to ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``
+    when the quarantine rename failed. Those entries outlive the update that
+    queued them, so at the next boot they move away whatever now sits at the
+    shim path — including a shim a later repair just wrote. Needs elevation
+    to remove (same as it needed to create); a no-op otherwise.
+    """
+    if not _is_windows():
+        return 0
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _PENDING_RENAME_KEY,
+            0,
+            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+        ) as key:
+            entries, value_type = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
+            if value_type != winreg.REG_MULTI_SZ or not isinstance(entries, list):
+                return 0
+            kept, removed = _filter_pending_shim_renames(
+                entries, _hermes_exe_shims(scripts_dir)
+            )
+            if not removed:
+                return 0
+            if kept:
+                winreg.SetValueEx(key, _PENDING_RENAME_VALUE, 0, winreg.REG_MULTI_SZ, kept)
+            else:
+                winreg.DeleteValue(key, _PENDING_RENAME_VALUE)
+            return removed
+    except (OSError, ValueError):
+        return 0
+
+
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
     """Roll back ``_quarantine_running_hermes_exe`` if uv didn't write replacements."""
     for original, quarantined in moved:
@@ -9365,7 +9601,7 @@ def _run_quarantined_install(
 
 
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
-    """Sweep ``hermes.exe.old.*`` left by prior updates.
+    """Sweep ``hermes.exe.old.*`` and stale reboot renames left by prior updates.
 
     Called early on every hermes invocation. The .old files are unlocked once
     their owning process exited, so deletion succeeds the next run. Silent
@@ -9377,6 +9613,7 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
         scripts_dir = _venv_scripts_dir()
     if scripts_dir is None:
         return
+    _cleanup_pending_shim_renames(scripts_dir)
     try:
         for stale in scripts_dir.glob("*.exe.old.*"):
             try:
@@ -10396,7 +10633,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         "mcp",
         "sessions",
         "insights",
-        "version",
         "update",
         "uninstall",
         "profile",
@@ -11245,7 +11481,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     print()
     try:
-        username = input("  Username [admin]: ").strip() or "admin"
+        username = line_input("  Username [admin]: ").strip() or "admin"
         password = getpass.getpass("  Password: ")
         confirm = getpass.getpass("  Confirm password: ")
     except (EOFError, KeyboardInterrupt):
@@ -11842,7 +12078,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "verify",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -12173,6 +12409,7 @@ def _try_fast_chat_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -12201,7 +12438,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return False
 
     if _is_termux_fast_version_argv(argv):
-        _print_version_info(check_updates=False)
+        _print_version_info(check_updates=True)
         return True
 
     first = _first_positional_argv()
@@ -12219,7 +12456,7 @@ def _try_termux_fast_cli_launch() -> bool:
     args = parser.parse_args(_coalesce_session_name_args(argv))
 
     if getattr(args, "version", False):
-        _print_version_info(check_updates=False)
+        _print_version_info(check_updates=True)
         return True
 
     if getattr(args, "oneshot", None):
@@ -12230,6 +12467,7 @@ def _try_termux_fast_cli_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -12711,6 +12949,57 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
+    # worktree command — audit/reclaim accumulated git worktrees + branches
+    # =========================================================================
+    worktree_parser = subparsers.add_parser(
+        "worktree",
+        help="Audit and reclaim accumulated git worktrees and merged branches",
+        description=(
+            "Attended reclaim for the .worktrees/ directory hermes -w sessions "
+            "accumulate. Never deletes uncommitted tracked changes, unique "
+            "unpushed commits, or in-use trees; untracked-only scratch is "
+            "archived to ~/.hermes/archive/worktree-prune/ before removal. See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/cli#worktree-cleanup"
+        ),
+    )
+    worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_action")
+    worktree_list = worktree_subparsers.add_parser(
+        "list",
+        aliases=["ls", "audit"],
+        help="Classify every tree: age, size, verdict, reason (default action)",
+    )
+    worktree_list.add_argument("--repo", help="Repo root (default: current repo)")
+    worktree_prune = worktree_subparsers.add_parser(
+        "prune",
+        help="Remove safe trees and delete fully-merged local branches",
+    )
+    worktree_prune.add_argument("--repo", help="Repo root (default: current repo)")
+    worktree_prune.add_argument(
+        "--dry-run", action="store_true",
+        help="Show the plan without changing anything",
+    )
+    worktree_prune.add_argument(
+        "--trees-only", action="store_true",
+        help="Only remove worktrees; leave local branches alone",
+    )
+    worktree_prune.add_argument(
+        "--branches-only", action="store_true",
+        help="Only delete merged local branches; leave worktrees alone",
+    )
+
+    def _dispatch_worktree(_args):
+        from hermes_cli.worktree_cmd import cmd_worktree
+
+        # argparse aliases set dest to the literal typed string ("ls"/"audit").
+        action = getattr(_args, "worktree_action", None)
+        if action in ("ls", "audit"):
+            _args.worktree_action = "list"
+        return cmd_worktree(_args)
+
+    worktree_parser.set_defaults(func=_dispatch_worktree)
+
+
+    # =========================================================================
     # secrets command — external secret managers (Bitwarden, 1Password)
     # =========================================================================
     secrets_parser = subparsers.add_parser(
@@ -13071,7 +13360,7 @@ def main():
     # own argparse tree.  No hardcoded plugin commands in main.py.
     #
     # Skipped when the invocation is already targeting a known built-in
-    # subcommand — ``hermes --help``, ``hermes version``, ``hermes logs``,
+    # subcommand — ``hermes --help``, ``hermes logs``,
     # etc.  This avoids eagerly importing every bundled plugin module
     # (google.cloud.pubsub_v1, aiohttp, grpc, PIL …) which costs
     # 500-650ms on typical installs.
@@ -13642,6 +13931,11 @@ def main():
         help="Also delete archived sessions (excluded by default)",
     )
     sessions_prune.add_argument(
+        "--include-pinned",
+        action="store_true",
+        help="Also delete pinned sessions (excluded by default — pin is a keep flag)",
+    )
+    sessions_prune.add_argument(
         "--never-active",
         action="store_true",
         help=(
@@ -13941,10 +14235,8 @@ def main():
     # =========================================================================
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
 
-    # =========================================================================
-    # version command  (parser built in hermes_cli/subcommands/version.py)
-    # =========================================================================
-    build_version_parser(subparsers, cmd_version=cmd_version)
+    # NOTE: the `hermes version` subcommand was removed — `hermes --version`
+    # / `-V` now carries the full output including update status.
 
     # =========================================================================
     # update command  (parser built in hermes_cli/subcommands/update.py)
@@ -14108,6 +14400,7 @@ def main():
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 

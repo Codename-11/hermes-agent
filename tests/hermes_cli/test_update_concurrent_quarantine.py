@@ -177,11 +177,12 @@ def test_quarantine_lock_aborts_and_keeps_launcher(
         with pytest.raises(RuntimeError, match="could not quarantine"):
             cli_main._quarantine_running_hermes_exe(tmp_path)
 
-    captured = capsys.readouterr().out
+    captured = capsys.readouterr().out.lower()
 
     assert shim.exists()
-    assert "close hermes desktop" in captured.lower()
-    assert "stop the gateway" in captured.lower()
+    assert "close hermes desktop" in captured
+    assert "stop the gateway" in captured
+    assert "reboot" not in captured
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -301,7 +302,9 @@ def test_pause_windows_gateways_for_update_waits_for_force_killed_pids(
     assert wait_calls == [[101], [202, 303]]
     assert terminated == [(202, True), (303, True)]
 
-    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
+    marker = json.loads(
+        (profile_home / ".gateway-planned-stop.json").read_text(encoding="utf-8")
+    )
     assert marker["target_pid"] == 101
     assert marker["stopper_pid"] == os.getpid()
 
