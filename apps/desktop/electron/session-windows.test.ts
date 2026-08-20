@@ -106,12 +106,21 @@ test('sessionWindowKey separates cloned-profile copies of the same session id', 
 test('buildInstanceWindowUrl carries a requested profile before the hash route', () => {
   assert.equal(
     buildInstanceWindowUrl({ devServer: 'http://localhost:5173', profile: 'worker profile' }),
-    'http://localhost:5173/?profile=worker%20profile#/'
+    'http://localhost:5173/?peer=1&profile=worker%20profile#/'
   )
 })
 
-test('buildInstanceWindowUrl stays plain when no profile is requested', () => {
-  assert.equal(buildInstanceWindowUrl({ devServer: 'http://localhost:5173' }), 'http://localhost:5173/')
+test('buildInstanceWindowUrl marks a full peer without selecting a specialized renderer', () => {
+  const url = buildInstanceWindowUrl({ devServer: 'http://localhost:5173/' })
+
+  assert.equal(url, 'http://localhost:5173/?peer=1')
+  assert.ok(!url.includes('win='))
+})
+
+test('buildInstanceWindowUrl marks a packaged full peer', () => {
+  const url = buildInstanceWindowUrl({ rendererIndexPath: '/opt/app/index.html' })
+
+  assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
 })
 
 test('instanceWindowBounds cascades a new window off its source bounds', () => {

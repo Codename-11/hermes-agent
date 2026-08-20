@@ -23,6 +23,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
@@ -44,8 +45,12 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { sessionTileKey, sessionTilePaneId } from '@/store/session-states'
-import { sessionTileDelegate } from '@/store/session-states'
+import {
+  $focusedStoredSessionId,
+  sessionTileDelegate,
+  sessionTileKey,
+  sessionTilePaneId
+} from '@/store/session-states'
 import { $transcriptTailBySessionId } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -380,6 +385,13 @@ const ChatViewContent = memo(function ChatViewContent({
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
+  // Multi-pane dimming: only the focused surface paints at full strength, so
+  // two sessions side by side read as "this one, and that one over there".
+  // A selector, not a plain useStore — the focused id changes on click, and a
+  // boolean bails every other surface out of the re-render. Sole surface ⇒
+  // always focused (the atom falls back to the primary's selection), so a
+  // single-pane workspace never dims.
+  const surfaceFocused = useStoreSelector($focusedStoredSessionId, focused => focused === storedId)
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
   const ownerProfile = useStore(view.$profile)
@@ -588,6 +600,7 @@ const ChatViewContent = memo(function ChatViewContent({
         className
       )}
       data-chat-surface=""
+      data-chat-unfocused={surfaceFocused ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}

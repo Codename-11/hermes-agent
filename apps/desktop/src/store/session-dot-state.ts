@@ -29,7 +29,7 @@ import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $activeGatewayProfile } from './profile-scope'
-import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
+import { $cronSessions, $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionKeys,
   $draftSessionIds,
@@ -194,4 +194,28 @@ export const $sessionDotStateById = computed(
 
     return (dotStates = stableRecord(dotStates, next))
   }
+)
+
+/** Listed, non-archived rows whose resolved status is unread. Alias keys in
+ *  `$sessionDotStateById` are ignored unless they are themselves a listed row. */
+export function unreadSessionCount(
+  byId: Readonly<Record<string, SessionDotState>>,
+  ...lists: Array<readonly { archived?: boolean; id: string }[]>
+): number {
+  let n = 0
+
+  for (const rows of lists) {
+    for (const row of rows) {
+      if (!row.archived && byId[row.id] === 'unread') {
+        n++
+      }
+    }
+  }
+
+  return n
+}
+
+export const $unreadSessionCount = computed(
+  [$sessionDotStateById, $sessions, $cronSessions, $messagingSessions],
+  (byId, sessions, cron, messaging) => unreadSessionCount(byId, sessions, cron, messaging)
 )

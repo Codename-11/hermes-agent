@@ -84,21 +84,22 @@ function sessionWindowKey(sessionId: string, profile?: string) {
   return target ? `${target}\u0000${sessionId}` : sessionId
 }
 
-// Full peer windows normally load the plain renderer URL. A profile-icon
-// opener carries its target before the hash so the new renderer joins that
-// profile immediately instead of inheriting an unrelated last-used profile.
+// Full peer windows render the ordinary app shell, so they deliberately do
+// not use the `win` query parameter that selects a specialized renderer. The
+// peer marker keeps the already-running backend, while an optional profile
+// target lets profile-icon openers join the requested profile immediately.
 function buildInstanceWindowUrl({ devServer, profile, rendererIndexPath }: any = {}) {
   const target = typeof profile === 'string' ? profile.trim() : ''
+  const query = target ? `?peer=1&profile=${encodeURIComponent(target)}` : '?peer=1'
+  const route = target ? '#/' : ''
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
 
-    return target ? `${base}/?profile=${encodeURIComponent(target)}#/` : `${base}/`
+    return `${base}/${query}${route}`
   }
 
-  const base = pathToFileURL(rendererIndexPath).toString()
-
-  return target ? `${base}?profile=${encodeURIComponent(target)}#/` : base
+  return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app

@@ -14,7 +14,8 @@ import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, ArchiveOff, Loader2, Trash2 } from '@/lib/icons'
+import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { untombstoneSessions } from '@/store/projects'
 import { setSessions } from '@/store/session'
@@ -77,7 +78,13 @@ export function SessionsSettings() {
 
   const remove = useCallback(
     async (session: SessionInfo) => {
-      if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
+      const ok = await confirm({
+        confirmLabel: s.deletePermanently,
+        destructive: true,
+        title: s.deleteConfirm(sessionTitle(session))
+      })
+
+      if (!ok) {
         return
       }
 

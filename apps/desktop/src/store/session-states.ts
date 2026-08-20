@@ -1236,6 +1236,15 @@ export const $focusedSessionProfile = computed([$focusedSessionTile, $activeGate
   normalizeProfileKey(tile?.profile ?? profile)
 )
 
+/** Every session currently OPEN as a surface: the primary's selection plus
+ *  every tile's stored id. The sidebar highlights all of them (the focused one
+ *  at full strength, the rest dimmed) so a multi-pane workspace shows which
+ *  chats are on screen, not just the one being typed into. */
+export const $openStoredSessionIds = computed(
+  [$selectedStoredSessionId, $sessionTiles],
+  (selected, tiles) => new Set([...(selected ? [selected] : []), ...tiles.map(t => t.storedSessionId)])
+)
+
 /** Live runtime id of the focused session. */
 export const $focusedRuntimeId = computed(
   [$focusedSessionTile, $activeSessionId],

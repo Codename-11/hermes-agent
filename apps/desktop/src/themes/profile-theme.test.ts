@@ -15,10 +15,10 @@ const cases = [
     pref: skinPref as unknown as Pref,
     fallback: DEFAULT_SKIN_NAME,
     a: 'ember',
-    b: 'midnight',
+    b: 'catppuccin',
     junk: 'nope'
   },
-  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'light', a: 'dark', b: 'system', junk: 'dusk' }
+  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'light', junk: 'dusk' }
 ]
 
 describe.each(cases)('per-profile $name', ({ name, pref, fallback, a, b, junk }) => {
@@ -55,5 +55,23 @@ describe('cold-start appearance profile handoff', () => {
   it('follows the live profile after gateway adoption, including an authoritative default', () => {
     expect(resolveAppearanceProfile('default', 'victor', true)).toBe('default')
     expect(resolveAppearanceProfile('sentinel', 'victor', true)).toBe('sentinel')
+  })
+})
+
+// A fresh profile follows the OS. This defaulted to `light`, so a dark-mode
+// desktop got a white window on first launch — and, once translucency became
+// per-appearance, light's much heavier tint along with it. Main already
+// defaulted its own themeSource to 'system', so the two disagreed at boot.
+describe('a profile that has never chosen a mode', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('follows the OS rather than forcing light', () => {
+    expect(modePref.resolve('default')).toBe('system')
+    expect(modePref.resolve('work')).toBe('system')
+  })
+
+  it('still honours an explicit choice', () => {
+    modePref.assign('default', 'light')
+    expect(modePref.resolve('default')).toBe('light')
   })
 })
