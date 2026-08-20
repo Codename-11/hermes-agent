@@ -408,13 +408,19 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "45fc462e9bb240ef535476cbda6c65c0294d21b4"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "99b5f3cbc7cc0e201dbf1c97328382cb9862cd3d"
         }
       ],
       "replay": {
         "base_commit": "f43eabee5f36e11448086ee8ee17c499958e81bf",
         "commits": [
           "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6",
-          "45fc462e9bb240ef535476cbda6c65c0294d21b4"
+          "45fc462e9bb240ef535476cbda6c65c0294d21b4",
+          "99b5f3cbc7cc0e201dbf1c97328382cb9862cd3d"
         ],
         "kind": "commit_series",
         "source_ref": "origin/carry/desktop-profile-gateway-activation"
