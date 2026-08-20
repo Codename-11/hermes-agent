@@ -1787,7 +1787,8 @@ export function useSessionActions({
         (sessionProfile == null || normalizeProfileKey(session.profile) === normalizeProfileKey(sessionProfile))
       // Archived rows are excluded from $sessions, so resolve and evict from
       // both stores while retaining profile-qualified identity.
-      const removed = $sessions.get().find(ownsTarget) ?? $archivedSessions.get().find(ownsTarget)
+      const removedFromMain = $sessions.get().find(ownsTarget)
+      const removed = removedFromMain ?? $archivedSessions.get().find(ownsTarget)
       const primaryProfile = activeSessionId
         ? sessionStateByRuntimeIdRef.current.get(activeSessionId)?.profile
         : undefined
