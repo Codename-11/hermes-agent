@@ -7,6 +7,8 @@ Live branch: `axiom`
 
 This file records the protected behavior and historical inventory for the Axiom-maintained Hermes fork. The concise operator-facing contract for Docker-Server + Axiom-Desktop lives in `docs/axiom-fork-contract.md`.
 
+`fork-carries.json` is the authoritative ordered manifest for Phase 1 carry IDs, dependencies, provenance, exact repository-internal protected paths, focused test paths, declared read-only checks, and retirement criteria. `FORK.md` remains the authoritative prose contract for the behavior those manifest rows protect, plus historical notes and merge guidance.
+
 Do **not** treat generated counts or old commit inventories in this file as live status. For current state, run:
 
 ```bash
@@ -14,6 +16,8 @@ cd /home/bailey/.hermes/hermes-agent
 scripts/fork-status.py          # read-only local status
 scripts/fork-status.py --fetch  # optional read-only fetch before reporting
 scripts/fork-status.py --desktop # optional read-only Axiom-Desktop SSH probe
+python scripts/fork_carry_manifest.py validate --json
+python scripts/fork_carry_manifest.py status --json
 ```
 
 ## Current fork state
@@ -1360,6 +1364,8 @@ Hotspot interpretation:
 Run from the candidate merge worktree using the repo venv:
 
 ```bash
+python scripts/fork_carry_manifest.py validate --json
+python scripts/fork_carry_manifest.py status --json
 python -m py_compile \
   gateway/platforms/api_server.py \
   gateway/run.py \
@@ -1373,6 +1379,8 @@ python -m py_compile \
   agent/moa_loop.py \
   agent/auxiliary_client.py
 ```
+
+The manifest commands are read-only inventory/status surfaces. They validate declarations and render manifest status; they do **not** execute any declared carry checks.
 
 Focused test suite:
 

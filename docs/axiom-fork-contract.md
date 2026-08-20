@@ -30,8 +30,11 @@ Use these surfaces deliberately; do not duplicate live branch counts by hand:
 | Surface | Purpose |
 | --- | --- |
 | `docs/axiom-fork-contract.md` | Canonical concise branch/Desktop/update contract. |
-| `FORK.md` | Protected behavior inventory, retired fork surface, historical fork-only commit classification, and validation expectations. |
+| `fork-carries.json` + `fork-carries.schema.json` | Canonical ordered carry manifest and schema for IDs, provenance, exact repo paths, focused test paths, declared checks, and retirement criteria. |
+| `FORK.md` | Detailed prose carry contract, retired fork surface, historical fork-only commit classification, and validation expectations. |
 | `scripts/fork-status.py` | Read-only live status report for branch divergence, dirty files, Sentinel sync state, and optional Axiom-Desktop SSH branch check. |
+| `python scripts/fork_carry_manifest.py validate --json` | Read-only manifest validation; checks declarations only and never executes carry checks. |
+| `python scripts/fork_carry_manifest.py status --json` | Read-only manifest inventory/status report; never executes carry checks. |
 | Obsidian `3. System/Operations/Hermes Axiom Sync Runbook.md` | Operational procedure for upstream integration and live deployment separation. |
 | `~/SYSTEM.md` / Hermes Overview | Quick-start pointers only; keep them short and point back here/runbook. |
 
@@ -41,7 +44,11 @@ Before updating, resolving conflicts, or checking whether Docker-Server and Axio
 cd ~/.hermes/hermes-agent
 scripts/fork-status.py
 scripts/fork-status.py --desktop   # optional; read-only, requires reachable Windows SSH
+python scripts/fork_carry_manifest.py validate --json
+python scripts/fork_carry_manifest.py status --json
 ```
+
+The manifest commands are read-only inventory surfaces. They validate/report declarations only and do **not** execute any carry checks listed in `fork-carries.json`.
 
 ## Update contract
 
