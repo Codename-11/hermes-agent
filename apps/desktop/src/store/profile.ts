@@ -292,11 +292,12 @@ const prewarmedAt = new Map<string, number>()
 // (connectionId, profile) to a bare profile lets the legacy local/profile table
 // silently retarget a remote click to a same-named local backend (#88680).
 function activeProfileConnectionId(): null | string {
-  // The selected registry source may be the PRIMARY socket. The gateway pool's
-  // internal activeGatewayConnectionId() is intentionally null for every
-  // primary, but the published descriptor still carries its registry identity
-  // and is what $activeConnectionId / the statusbar use.
-  const connectionId = ($connection.get()?.connectionId ?? getApiRequestConnection() ?? '').trim()
+  // Prefer the gateway registry's live scope while a secondary is active; the
+  // selected registry source may also be the PRIMARY socket, whose internal
+  // activeGatewayConnectionId() is intentionally null. In that primary case,
+  // fall back to the published descriptor identity used by $activeConnectionId
+  // and the statusbar.
+  const connectionId = (getApiRequestConnection() ?? $connection.get()?.connectionId ?? '').trim()
 
   return connectionId || null
 }

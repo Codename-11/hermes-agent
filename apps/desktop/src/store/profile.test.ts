@@ -144,6 +144,20 @@ describe('profile rail route preservation (#88680)', () => {
     expect(getConnection).not.toHaveBeenCalled()
   })
 
+  it('prefers the active gateway source over a stale connection descriptor when returning to default', async () => {
+    const descriptor = remoteConn({ connectionId: 'homelab', profile: 'default', registryScoped: true })
+
+    vi.mocked(getApiRequestConnection).mockReturnValue('homelab')
+    $connection.set(localConn({ connectionId: 'local', profile: 'mizu', registryScoped: true }))
+    getConnectionFor.mockResolvedValue(descriptor)
+
+    selectProfile('default')
+
+    await vi.waitFor(() => expect(prepareGatewayForAgent).toHaveBeenCalledOnce())
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' })
+    expect(prepareGatewayForAgent).toHaveBeenCalledWith('homelab', 'default', descriptor)
+  })
+
   it('retains the legacy profile route when no registry source is active', async () => {
     const descriptor = localConn({ profile: 'mizu' })
 
