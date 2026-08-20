@@ -1,7 +1,5 @@
 import type * as React from 'react'
 
-import { setTerminalTakeover } from '@/app/right-sidebar/store'
-import { createTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -10,7 +8,6 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { copyPath, revealPath } from '@/store/projects'
-import { openReview } from '@/store/review'
 
 import { SidebarRowLead } from '../chrome'
 
@@ -51,8 +48,8 @@ export function WorkspaceAddButton({ label, onClick }: { label: string; onClick:
 }
 
 // Reveals the next page of already-loaded rows within a workspace/worktree.
-// Keep the action labeled: inside a project, an unlabeled ellipsis is
-// indistinguishable from the adjacent actions menus.
+// Hangs off the lane instead of sitting in a row, so it repeats the row's
+// trailing inset (SidebarRowShell's `pr-2`) to stay on the edge the rows stop at.
 export function WorkspaceShowMoreButton({
   count,
   label,
@@ -66,13 +63,16 @@ export function WorkspaceShowMoreButton({
   const text = t.sidebar.showMoreIn(count, label)
 
   return (
-    <button
-      className="ml-5 self-start bg-transparent py-1 text-[0.6875rem] text-(--ui-text-tertiary) underline-offset-2 hover:text-foreground hover:underline"
-      onClick={onClick}
-      type="button"
-    >
-      {text}
-    </button>
+    <Tip label={text}>
+      <button
+        aria-label={text}
+        className="mr-2 ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="ellipsis" size="0.75rem" />
+      </button>
+    </Tip>
   )
 }
 
@@ -99,25 +99,6 @@ function useWorkspaceItems({ path, onRemove }: { path: null | string; onRemove: 
         key: 'copy',
         label: p.copyPath,
         onSelect: () => void copyPath(path)
-      })}
-      {renderActionItem(kit, {
-        disabled: !path,
-        icon: 'terminal',
-        key: 'terminal',
-        label: p.openTerminal,
-        onSelect: () => {
-          if (path) {
-            createTerminal(path)
-            setTerminalTakeover(true)
-          }
-        }
-      })}
-      {renderActionItem(kit, {
-        disabled: !path,
-        icon: 'diff',
-        key: 'review',
-        label: p.openReview,
-        onSelect: () => openReview(path)
       })}
       <kit.Separator />
       {renderActionItem(kit, {
