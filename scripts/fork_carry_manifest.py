@@ -29,7 +29,7 @@ CARRY_REQUIRED = (
     "checks",
     "retirement",
 )
-CARRY_OPTIONAL = ("references", "notes")
+CARRY_OPTIONAL = ("references", "notes", "replay")
 CHECK_REQUIRED = ("id", "cwd", "argv", "env", "covers")
 KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -76,6 +76,8 @@ def _field_type_diagnostics(carry: dict[str, Any], location: str) -> list[str]:
         diagnostics.append(f"{location}.ownership: must be one of: core, mixed, plugin")
     if "contract" in carry and not isinstance(carry["contract"], dict):
         diagnostics.append(f"{location}.contract: must be an object")
+    if "replay" in carry and not isinstance(carry["replay"], dict):
+        diagnostics.append(f"{location}.replay: must be an object")
     for field in ("depends_on", "provenance", "paths", "tests", "checks", "references", "notes"):
         if field in carry and not isinstance(carry[field], list):
             diagnostics.append(f"{location}.{field}: must be an array")
@@ -188,6 +190,41 @@ def _content_diagnostics(carries: list[Any]) -> list[str]:
                 for value_index, value in enumerate(values):
                     if not isinstance(value, str):
                         diagnostics.append(f"{base}.{field}[{value_index}]: must be a string")
+        replay = carry.get("replay")
+        if isinstance(replay, dict):
+            location = f"{base}.replay"
+            diagnostics.extend(
+                _object_shape(
+                    replay,
+                    location,
+                    ("kind", "source_ref", "base_commit", "commits"),
+                )
+            )
+            if replay.get("kind") != "commit_series":
+                diagnostics.append(f"{location}.kind: must be 'commit_series'")
+            source_ref = replay.get("source_ref")
+            if not isinstance(source_ref, str) or not source_ref.strip():
+                diagnostics.append(f"{location}.source_ref: must be nonblank")
+            base_commit = replay.get("base_commit")
+            if not isinstance(base_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", base_commit):
+                diagnostics.append(
+                    f"{location}.base_commit: must be exactly 40 lowercase hexadecimal characters"
+                )
+            commits = replay.get("commits")
+            if not isinstance(commits, list) or not commits:
+                diagnostics.append(f"{location}.commits: must be a nonempty array")
+            else:
+                seen_commits: set[str] = set()
+                for commit_index, commit in enumerate(commits):
+                    commit_location = f"{location}.commits[{commit_index}]"
+                    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+                        diagnostics.append(
+                            f"{commit_location}: must be exactly 40 lowercase hexadecimal characters"
+                        )
+                    if isinstance(commit, str) and commit in seen_commits:
+                        diagnostics.append(f"{commit_location}: duplicate commit '{commit}'")
+                    if isinstance(commit, str):
+                        seen_commits.add(commit)
         provenance = carry.get("provenance")
         if not isinstance(provenance, list):
             continue

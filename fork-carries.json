@@ -325,6 +325,112 @@
           "argv": [
             "npm",
             "run",
+            "test:ui",
+            "--",
+            "src/store/gateway-agent-scope.test.ts",
+            "src/store/gateway-shared-remote.test.ts",
+            "src/store/profile-agent-activation.test.ts",
+            "src/store/profile-gateway-real-path.test.ts",
+            "src/store/profile.test.ts"
+          ],
+          "covers": [
+            "apps/desktop/src/store/gateway-agent-scope.test.ts",
+            "apps/desktop/src/store/gateway-shared-remote.test.ts",
+            "apps/desktop/src/store/profile-agent-activation.test.ts",
+            "apps/desktop/src/store/profile-gateway-real-path.test.ts",
+            "apps/desktop/src/store/profile.test.ts"
+          ],
+          "cwd": "apps/desktop",
+          "env": {
+            "NODE_ENV": "test"
+          },
+          "id": "desktop-profile-gateway-activation-ui"
+        },
+        {
+          "argv": [
+            "npm",
+            "run",
+            "typecheck"
+          ],
+          "covers": [],
+          "cwd": "apps/desktop",
+          "env": {},
+          "id": "desktop-profile-gateway-activation-typecheck"
+        },
+        {
+          "argv": [
+            "npx",
+            "eslint",
+            "src/store/gateway.ts",
+            "src/store/profile.ts",
+            "src/store/gateway-agent-scope.test.ts",
+            "src/store/gateway-shared-remote.test.ts",
+            "src/store/profile-agent-activation.test.ts",
+            "src/store/profile-gateway-real-path.test.ts",
+            "src/store/profile.test.ts"
+          ],
+          "covers": [],
+          "cwd": "apps/desktop",
+          "env": {},
+          "id": "desktop-profile-gateway-activation-lint"
+        }
+      ],
+      "contract": {
+        "heading": "Axiom Desktop session convergence and profile-safe live status",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-session-convergence"
+      ],
+      "domain_id": "desktop-session-and-profile-convergence",
+      "id": "desktop-profile-gateway-activation",
+      "notes": [
+        "Extracted from the broader Desktop session-convergence contract as an independently replayable subcarry; declaration-only carries remain incomplete until they gain their own immutable replay metadata."
+      ],
+      "order": 35,
+      "ownership": "core",
+      "paths": [
+        "apps/desktop/src/store/gateway-agent-scope.test.ts",
+        "apps/desktop/src/store/gateway-shared-remote.test.ts",
+        "apps/desktop/src/store/gateway.ts",
+        "apps/desktop/src/store/profile-agent-activation.test.ts",
+        "apps/desktop/src/store/profile-gateway-real-path.test.ts",
+        "apps/desktop/src/store/profile.test.ts",
+        "apps/desktop/src/store/profile.ts"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6"
+        }
+      ],
+      "replay": {
+        "base_commit": "f43eabee5f36e11448086ee8ee17c499958e81bf",
+        "commits": [
+          "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6"
+        ],
+        "kind": "commit_series",
+        "source_ref": "origin/carry/desktop-profile-gateway-activation"
+      },
+      "retirement": "Retire when upstream atomically activates profile-scoped gateways with equivalent shared-remote reuse, agent scoping, failure rollback, and real profile-to-gateway integration coverage.",
+      "status": "active",
+      "summary": "Preserve atomic profile gateway activation, shared remote gateway reuse, profile-qualified agent scope, and rollback-safe profile switching.",
+      "tests": [
+        "apps/desktop/src/store/gateway-agent-scope.test.ts",
+        "apps/desktop/src/store/gateway-shared-remote.test.ts",
+        "apps/desktop/src/store/profile-agent-activation.test.ts",
+        "apps/desktop/src/store/profile-gateway-real-path.test.ts",
+        "apps/desktop/src/store/profile.test.ts"
+      ],
+      "title": "Axiom Desktop profile gateway activation"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "npm",
+            "run",
             "typecheck"
           ],
           "covers": [],

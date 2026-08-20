@@ -454,6 +454,40 @@ def test_optional_references_and_notes_are_string_arrays(tmp_path: Path) -> None
     assert "carries[0].notes[0]: must be a string" in diagnostics
 
 
+def test_optional_commit_series_replay_metadata_is_valid(tmp_path: Path) -> None:
+    manifest = minimal_manifest(tmp_path)
+    manifest["carries"][0]["replay"] = {  # type: ignore[index]
+        "kind": "commit_series",
+        "source_ref": "origin/carry/example-carry",
+        "base_commit": "1" * 40,
+        "commits": ["2" * 40, "3" * 40],
+    }
+
+    assert load_module().validate_manifest(manifest, tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("replay", "expected"),
+    [
+        ([], "replay: must be an object"),
+        ({"kind": "tag", "source_ref": "x", "base_commit": "1" * 40, "commits": ["2" * 40]}, "replay.kind: must be 'commit_series'"),
+        ({"kind": "commit_series", "source_ref": " ", "base_commit": "1" * 40, "commits": ["2" * 40]}, "replay.source_ref: must be nonblank"),
+        ({"kind": "commit_series", "source_ref": "x", "base_commit": "short", "commits": ["2" * 40]}, "replay.base_commit: must be exactly 40 lowercase hexadecimal characters"),
+        ({"kind": "commit_series", "source_ref": "x", "base_commit": "1" * 40, "commits": []}, "replay.commits: must be a nonempty array"),
+        ({"kind": "commit_series", "source_ref": "x", "base_commit": "1" * 40, "commits": ["2" * 40, "2" * 40]}, "duplicate commit"),
+        ({"kind": "commit_series", "source_ref": "x", "base_commit": "1" * 40, "commits": ["G" * 40]}, "must be exactly 40 lowercase hexadecimal characters"),
+        ({"kind": "commit_series", "source_ref": "x", "base_commit": "1" * 40, "commits": ["2" * 40], "extra": True}, "replay: unknown field 'extra'"),
+    ],
+)
+def test_invalid_replay_metadata_is_rejected(
+    tmp_path: Path, replay: object, expected: str
+) -> None:
+    manifest = minimal_manifest(tmp_path)
+    manifest["carries"][0]["replay"] = replay  # type: ignore[index]
+
+    assert any(expected in item for item in load_module().validate_manifest(manifest, tmp_path))
+
+
 def test_all_provenance_kinds_are_valid(tmp_path: Path) -> None:
     manifest = minimal_manifest(tmp_path)
     manifest["carries"][0]["provenance"] = [  # type: ignore[index]
@@ -621,8 +655,12 @@ def test_schema_matches_locked_v1_structure() -> None:
     assert carry["allOf"][0]["if"]["properties"]["status"]["const"] == "active"
     for field in ("paths", "tests", "checks"):
         assert carry["allOf"][0]["then"]["properties"][field]["minItems"] == 1
-    for definition in ("contract", "commit", "pull_request", "manual", "check"):
+    for definition in ("contract", "commit", "pull_request", "manual", "check", "replay"):
         assert schema["$defs"][definition]["additionalProperties"] is False
+    replay = schema["$defs"]["replay"]
+    assert replay["properties"]["kind"] == {"const": "commit_series"}
+    assert replay["properties"]["commits"]["minItems"] == 1
+    assert replay["properties"]["commits"]["uniqueItems"] is True
     assert schema["$defs"]["commit"]["properties"]["revision"]["pattern"] == "^[0-9a-fA-F]{40}$"
     provenance = carry["properties"]["provenance"]
     assert provenance["minItems"] == 1

@@ -30,11 +30,13 @@ Use these surfaces deliberately; do not duplicate live branch counts by hand:
 | Surface | Purpose |
 | --- | --- |
 | `docs/axiom-fork-contract.md` | Canonical concise branch/Desktop/update contract. |
-| `fork-carries.json` + `fork-carries.schema.json` | Canonical ordered carry manifest and schema for IDs, provenance, exact repo paths, focused test paths, declared checks, and retirement criteria. |
+| `fork-carries.json` + `fork-carries.schema.json` | Canonical ordered carry manifest and schema for IDs, provenance, exact repo paths, focused test paths, declared checks, retirement criteria, and optional immutable replay metadata. Carries without replay metadata remain declaration-only/incomplete. |
 | `FORK.md` | Detailed prose carry contract, retired fork surface, historical fork-only commit classification, and validation expectations. |
 | `scripts/fork-status.py` | Read-only live status report for branch divergence, dirty files, Sentinel sync state, and optional Axiom-Desktop SSH branch check. |
 | `python scripts/fork_carry_manifest.py validate --json` | Read-only manifest validation; checks declarations only and never executes carry checks. |
 | `python scripts/fork_carry_manifest.py status --json` | Read-only manifest inventory/status report; never executes carry checks. |
+| `python scripts/fork_carry_replay.py plan --json` | Deterministic local report separating replay-ready carries from incomplete active declarations; performs no Git mutation or checks. |
+| `python scripts/fork_carry_replay.py probe --carry desktop-profile-gateway-activation --json` | Local disposable-worktree applicability probe for the first extracted carry. Checks are opt-in with `--run-checks`; no fetch, push, updater, or live-worktree checkout. |
 | Obsidian `3. System/Operations/Hermes Axiom Sync Runbook.md` | Operational procedure for upstream integration and live deployment separation. |
 | `~/SYSTEM.md` / Hermes Overview | Quick-start pointers only; keep them short and point back here/runbook. |
 

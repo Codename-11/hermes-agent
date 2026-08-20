@@ -7,7 +7,7 @@ Live branch: `axiom`
 
 This file records the protected behavior and historical inventory for the Axiom-maintained Hermes fork. The concise operator-facing contract for Docker-Server + Axiom-Desktop lives in `docs/axiom-fork-contract.md`.
 
-`fork-carries.json` is the authoritative ordered manifest for Phase 1 carry IDs, dependencies, provenance, exact repository-internal protected paths, focused test paths, declared read-only checks, and retirement criteria. `FORK.md` remains the authoritative prose contract for the behavior those manifest rows protect, plus historical notes and merge guidance.
+`fork-carries.json` is the authoritative ordered manifest for carry IDs, dependencies, provenance, exact repository-internal protected paths, focused test paths, declared checks, retirement criteria, and optional immutable replay metadata. `FORK.md` remains the authoritative prose contract for the behavior those manifest rows protect, plus historical notes and merge guidance. A carry without a `replay` object is declaration-only/incomplete, not replay-ready.
 
 Do **not** treat generated counts or old commit inventories in this file as live status. For current state, run:
 
@@ -18,7 +18,11 @@ scripts/fork-status.py --fetch  # optional read-only fetch before reporting
 scripts/fork-status.py --desktop # optional read-only Axiom-Desktop SSH probe
 python scripts/fork_carry_manifest.py validate --json
 python scripts/fork_carry_manifest.py status --json
+python scripts/fork_carry_replay.py plan --json
+python scripts/fork_carry_replay.py probe --carry desktop-profile-gateway-activation --json
 ```
+
+The replay commands are a Phase 2 local pilot. `plan` is read-only and reports the one extracted replay-ready carry separately from the remaining declaration-only carries. `probe` uses a disposable detached worktree and does not run declared checks unless `--run-checks` is explicit; it never fetches, pushes, updates the live worktree, or cuts over the updater. This does **not** claim that the full carry stack is replay-ready.
 
 ## Current fork state
 
