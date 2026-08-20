@@ -54,6 +54,8 @@ interface Secondary {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
   reconnecting: boolean
+  /** Preparation-owned dials suppress only their active composer publication. */
+  statePublicationSuppressions: number
   /** True when a foreground/prewarmed consumer owns this entry beyond one RPC. */
   retained: boolean
   // While true the entry auto-reconnects on drop; pruning flips it off so a
@@ -229,14 +231,20 @@ export function activeGatewayConnectionId(): null | string {
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect
 // flipping the foreground enabled/disabled state.
-function reportGatewayState(profile: string, state: ConnectionState): void {
+function reportGatewayState(
+  profile: string,
+  state: ConnectionState,
+  { publishIfActive = true }: { publishIfActive?: boolean } = {}
+): void {
   // Any socket opening replays parked prompts; hold OS notifications so a
-  // launch/reconnect doesn't alert about state that already existed.
+  // launch/reconnect doesn't alert about state that already existed. This is
+  // transport bookkeeping, so prepared activations still establish it while
+  // their active/global UI publication is muted.
   if (state === 'open') {
     markNativeNotifyBaseline()
   }
 
-  if (normKey(profile) === g.activeKey) {
+  if (publishIfActive && normKey(profile) === g.activeKey) {
     setGatewayState(state)
   }
 }
@@ -302,15 +310,40 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary, resolvedConnection?: HermesConnection | null): Promise<void> {
+async function openSecondary(
+  entry: Secondary,
+  resolvedConnection?: HermesConnection | null,
+  { publishIfActive = true }: { publishIfActive?: boolean } = {}
+): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
     return
   }
 
+  const suppressStatePublication = !publishIfActive
+
+  if (suppressStatePublication) {
+    entry.statePublicationSuppressions = Number.isFinite(entry.statePublicationSuppressions)
+      ? entry.statePublicationSuppressions + 1
+      : 1
+  }
+
+  const releaseStatePublicationSuppression = (): void => {
+    if (suppressStatePublication) {
+      entry.statePublicationSuppressions = Math.max(0, entry.statePublicationSuppressions - 1)
+    }
+  }
+
   if (entry.connectPromise) {
-    await entry.connectPromise
+    // A descriptor supplied after a dial starts cannot replace that dial:
+    // every joiner observes the in-flight connection as the authority rather
+    // than minting a second ticket/socket for the same pooled entry.
+    try {
+      await entry.connectPromise
+    } finally {
+      releaseStatePublicationSuppression()
+    }
 
     return
   }
@@ -346,7 +379,10 @@ async function openSecondary(entry: Secondary, resolvedConnection?: HermesConnec
       return
     }
 
-    if (g.activeKey === entry.scope) {
+    // Publication authority is entry-level because a preparation can join a
+    // normal reconnect after it started. Consult the live lease count at
+    // completion instead of freezing the originating call's option.
+    if (!(entry.statePublicationSuppressions > 0) && g.activeKey === entry.scope) {
       publishActiveConnection(conn)
     }
 
@@ -361,6 +397,8 @@ async function openSecondary(entry: Secondary, resolvedConnection?: HermesConnec
     if (entry.connectPromise === pending) {
       entry.connectPromise = null
     }
+
+    releaseStatePublicationSuppression()
   }
 }
 
@@ -454,6 +492,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectTimer: null,
     reconnectAttempt: 0,
     reconnecting: false,
+    statePublicationSuppressions: 0,
     retained: false,
     wantOpen: true,
     activationLeaseUntil: 0
@@ -465,7 +504,9 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     g.config?.onEvent({ ...event, profile, ...(connectionId ? { connectionId } : {}) })
   )
   entry.offState = gateway.onState(state => {
-    reportGatewayState(scope, state)
+    reportGatewayState(scope, state, {
+      publishIfActive: !(entry.statePublicationSuppressions > 0)
+    })
 
     if (state === 'open') {
       entry.reconnectAttempt = 0
@@ -702,13 +743,18 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   }
 }
 
-export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
+// Prepare a registry-scoped activation without publishing it. The caller owns
+// the synchronous publication frame and invokes the returned thunk inside its
+// own batch with the companion profile/connection stores.
+export async function prepareGatewayForAgent(
+  connectionId: null | string,
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<() => boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
-    await ensureGatewayForProfile(profile)
-
-    return true
+    return prepareGatewayForProfile(profile, resolvedConnection)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -716,105 +762,121 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   }
 
   const activationEpoch = beginGatewayActivation()
-
-  let entry = g.secondaries.get(scope)
-
-  if (!entry) {
-    entry = createSecondary(profile, connectionId)
-  }
+  const entry = g.secondaries.get(scope) ?? createSecondary(profile, connectionId)
 
   entry.retained = true
   entry.wantOpen = true
-  // Lease the entry against the live-work pruner for the whole dial: the
-  // switch target is not yet active and has no live sessions, so a prune
-  // recompute firing mid-spawn would otherwise dispose it and this
-  // activation would fail (#89622).
   entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
-  if (!isOpen(entry.gateway)) {
-    clearTimer(entry)
-    entry.reconnectAttempt = 0
+  try {
+    if (!isOpen(entry.gateway)) {
+      clearTimer(entry)
+      entry.reconnectAttempt = 0
 
-    try {
-      await openSecondary(entry)
-    } catch {
-      scheduleReconnect(entry)
+      try {
+        await openSecondary(entry, resolvedConnection, { publishIfActive: false })
+      } catch {
+        scheduleReconnect(entry)
+      }
     }
+  } finally {
+    entry.activationLeaseUntil = 0
   }
 
-  // The activation is settling either way — release the prune lease.
-  entry.activationLeaseUntil = 0
+  const prepared = entry
 
-  // A source edit/remove may dispose this entry while its dial is still in
-  // flight. Only the still-registered, still-owned activation may publish.
-  const activated =
-    entry.wantOpen &&
-    g.secondaries.get(scope) === entry &&
-    Boolean(entry.connection) &&
-    applyActive(scope, activationEpoch)
+  return () => {
+    const activated =
+      prepared.wantOpen &&
+      g.secondaries.get(scope) === prepared &&
+      Boolean(prepared.connection) &&
+      applyActive(scope, activationEpoch)
 
-  if (activated && entry.connection) {
-    publishActiveConnection(entry.connection)
+    if (activated && prepared.connection) {
+      publishActiveConnection(prepared.connection)
+    }
+
+    return activated
   }
-
-  return activated
 }
 
-// Make `profile` the active gateway, lazily opening its socket if needed. The
-// primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(
+export async function ensureGatewayForAgent(
+  connectionId: null | string,
   profile: string,
   resolvedConnection?: HermesConnection | null
-): Promise<void> {
+): Promise<boolean> {
+  return (await prepareGatewayForAgent(connectionId, profile, resolvedConnection))()
+}
+
+// Prepare a profile activation without publishing it. A successful descriptor
+// is used for both route classification and the socket dial; a null descriptor
+// keeps the fail-open fallback lookup owned by the gateway.
+export async function prepareGatewayForProfile(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<() => boolean> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    applyActive(key, activationEpoch)
-
-    return
+    return () => applyActive(key, activationEpoch)
   }
 
-  // Global-remote share (routing case 3): one remote host serves every
-  // profile through the PRIMARY socket, scoped per request. Activate the
-  // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor — $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key, resolvedConnection)) {
-    applyActive(g.primaryProfile, activationEpoch)
+  let connection = resolvedConnection
 
-    return
-  }
-
-  let entry = g.secondaries.get(key)
-
-  if (!entry) {
-    entry = createSecondary(key)
-  }
-
-  entry.retained = true
-  entry.wantOpen = true
-  // Lease the entry against the live-work pruner for the whole dial — the
-  // profile-door twin of the agent path's lease above (#89622).
-  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
-
-  if (!isOpen(entry.gateway)) {
-    clearTimer(entry)
-    entry.reconnectAttempt = 0
-
+  if (!connection) {
     try {
-      await openSecondary(entry)
+      connection = (await window.hermesDesktop?.getConnection(key)) ?? null
     } catch {
-      scheduleReconnect(entry)
+      connection = null
     }
   }
 
-  // The activation is settling either way — release the prune lease.
-  entry.activationLeaseUntil = 0
-
-  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
-    publishActiveConnection(entry.connection)
+  if (await sharedPrimaryRoute(key, connection)) {
+    return () => applyActive(g.primaryProfile, activationEpoch)
   }
+
+  const entry = g.secondaries.get(key) ?? createSecondary(key)
+
+  entry.retained = true
+  entry.wantOpen = true
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+
+  try {
+    if (!isOpen(entry.gateway)) {
+      clearTimer(entry)
+      entry.reconnectAttempt = 0
+
+      try {
+        await openSecondary(entry, connection, { publishIfActive: false })
+      } catch {
+        scheduleReconnect(entry)
+      }
+    }
+  } finally {
+    entry.activationLeaseUntil = 0
+  }
+
+  const prepared = entry
+
+  return () => {
+    const activated = prepared.wantOpen && g.secondaries.get(key) === prepared && applyActive(key, activationEpoch)
+
+    if (activated && prepared.connection) {
+      publishActiveConnection(prepared.connection)
+    }
+
+    return activated
+  }
+}
+
+// Existing callers that do not need to coordinate companion stores keep the
+// eager wrappers. Background sockets remain open after route selection.
+export async function ensureGatewayForProfile(
+  profile: string,
+  resolvedConnection?: HermesConnection | null
+): Promise<void> {
+  ;(await prepareGatewayForProfile(profile, resolvedConnection))()
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

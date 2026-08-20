@@ -6,13 +6,23 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-const ensureGatewayForProfile = vi.fn(async () => undefined)
-const ensureGatewayForAgent = vi.fn(async () => undefined)
+const TARGET_GATEWAY = { id: 'target-socket' }
+
+const activateGateway = vi.fn(() => {
+  $gateway.set(TARGET_GATEWAY)
+
+  return true
+})
+
+const prepareGatewayForProfile = vi.fn(
+  async (_profile: string, _resolvedConnection?: HermesConnection | null): Promise<() => boolean> => activateGateway
+)
+
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({ $gateway, openGatewayForProfile, prepareGatewayForProfile }))
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
@@ -56,7 +66,9 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 
 beforeEach(() => {
   getConnection.mockReset()
-  ensureGatewayForProfile.mockClear()
+  prepareGatewayForProfile.mockReset()
+  prepareGatewayForProfile.mockResolvedValue(activateGateway)
+  activateGateway.mockClear()
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
@@ -85,7 +97,9 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 
     await ensureGatewayProfile('vps-remote')
 
-    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect(prepareGatewayForProfile).toHaveBeenCalledWith('vps-remote', descriptor)
+    expect(prepareGatewayForProfile.mock.calls[0]?.[1]).toBe(descriptor)
+    expect(activateGateway).toHaveBeenCalledOnce()
     expect(getConnection).toHaveBeenCalledWith('vps-remote')
     expect($connection.get()?.mode).toBe('remote')
     expect($connection.get()?.profile).toBe('vps-remote')
@@ -108,6 +122,9 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     await ensureGatewayProfile('vps-remote')
 
     // Best-effort: boot/reconnect resyncs later; we must not null it out here.
+    expect(prepareGatewayForProfile).toHaveBeenCalledWith('vps-remote', null)
+    expect(activateGateway).toHaveBeenCalledOnce()
+    expect($activeGatewayProfile.get()).toBe('vps-remote')
     expect($connection.get()?.mode).toBe('local')
   })
 
@@ -118,7 +135,7 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     await ensureGatewayProfile('vps-remote')
 
     expect(getConnection).not.toHaveBeenCalled()
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect(prepareGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
   })
 })
@@ -129,6 +146,56 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(invalidateProfileScopedQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('profile activation publication', () => {
+  it('publishes gateway, profile, and connection as one observable tuple', async () => {
+    const descriptor = remoteConn()
+    getConnection.mockResolvedValue(descriptor)
+    const seen: Array<{ connection?: string; gateway: unknown; profile: string }> = []
+
+    const observe = () =>
+      seen.push({
+        connection: $connection.get()?.profile,
+        gateway: $gateway.get(),
+        profile: $activeGatewayProfile.get()
+      })
+
+    const stops = [
+      $gateway.listen(() => observe()),
+      $activeGatewayProfile.listen(() => observe()),
+      $connection.listen(() => observe())
+    ]
+
+    try {
+      await ensureGatewayProfile('vps-remote')
+    } finally {
+      stops.forEach(stop => stop())
+    }
+
+    expect(seen).toHaveLength(3)
+    expect(seen).toEqual(
+      Array(3).fill({ connection: 'vps-remote', gateway: TARGET_GATEWAY, profile: 'vps-remote' })
+    )
+  })
+
+  it('publishes nothing when the prepared activation is superseded', async () => {
+    const descriptor = remoteConn()
+    getConnection.mockResolvedValue(descriptor)
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
+    const seen: unknown[] = []
+    const stop = $gateway.listen(gateway => seen.push(gateway))
+
+    try {
+      await ensureGatewayProfile('vps-remote')
+    } finally {
+      stop()
+    }
+
+    expect(seen).toEqual([])
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.profile).toBe('default')
   })
 })
 
@@ -150,7 +217,7 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     expect(openGatewayForProfile).toHaveBeenCalledWith('warm-basic')
     // Pre-warm must never activate — that's the click's job.
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect(prepareGatewayForProfile).not.toHaveBeenCalled()
   })
 
   it('skips the profile the gateway is already on', () => {

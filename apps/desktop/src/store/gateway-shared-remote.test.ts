@@ -15,34 +15,52 @@ const gatewayMocks = vi.hoisted(() => ({
   connect: vi.fn(async (_wsUrl: string): Promise<void> => {
     throw new Error('dialed a socket for a shared-primary profile')
   }),
-  setConnection: vi.fn()
+  markNativeNotifyBaseline: vi.fn(),
+  setConnection: vi.fn(),
+  setGatewayState: vi.fn()
 }))
 
 vi.mock('@/hermes', () => ({
   setApiRequestConnection: vi.fn(),
   HermesGateway: class {
     connectionState = 'closed'
-    connect = async (wsUrl: string): Promise<void> => {
-      await gatewayMocks.connect(wsUrl)
-      this.connectionState = 'open'
+    private readonly stateListeners = new Set<(state: string) => void>()
+
+    private emitState(state: string): void {
+      this.connectionState = state
+      this.stateListeners.forEach(listener => listener(state))
     }
-    close = vi.fn()
+
+    connect = async (wsUrl: string): Promise<void> => {
+      this.emitState('connecting')
+      await gatewayMocks.connect(wsUrl)
+      this.emitState('open')
+    }
+    close = vi.fn(() => {
+      this.emitState('closed')
+    })
     onEvent = vi.fn(() => () => {})
-    onState = vi.fn(() => () => {})
+    onState = vi.fn((listener: (state: string) => void) => {
+      this.stateListeners.add(listener)
+
+      return () => this.stateListeners.delete(listener)
+    })
   }
 }))
 vi.mock('@/store/session', () => ({
   setConnection: gatewayMocks.setConnection,
-  setGatewayState: vi.fn()
+  setGatewayState: gatewayMocks.setGatewayState
 }))
-vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
+vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: gatewayMocks.markNativeNotifyBaseline }))
 
 const {
   $gateway,
+  activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureActiveGatewayOpen,
   ensureGatewayForProfile,
+  prepareGatewayForProfile,
   setPrimaryGateway
 } = await import('./gateway')
 
@@ -124,6 +142,160 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect(gatewayMocks.connect).toHaveBeenCalledOnce()
     expect(gatewayMocks.connect).toHaveBeenCalledWith(remoteWsUrl)
     expect($gateway.get()).not.toBe(primary)
+  })
+
+  it('reuses a pre-resolved pooled descriptor for classification and the exact socket dial', async () => {
+    const primary = makePrimary()
+
+    const getConnection = vi.fn(async () => ({
+      authMode: 'token',
+      baseUrl: 'https://wrong.invalid',
+      mode: 'remote',
+      profile: 'worker',
+      token: 'second-ticket',
+      wsUrl: 'wss://wrong.invalid/api/ws?token=second-ticket'
+    }))
+
+    const descriptor = {
+      authMode: 'token',
+      baseUrl: 'https://worker.invalid',
+      mode: 'remote',
+      profile: 'worker',
+      token: 'only-ticket',
+      wsUrl: 'wss://worker.invalid/api/ws?token=only-ticket'
+    }
+
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop({ getConnection })
+    gatewayMocks.connect.mockResolvedValueOnce(undefined)
+
+    await ensureGatewayForProfile('worker', descriptor as never)
+
+    expect(getConnection).not.toHaveBeenCalled()
+    expect(gatewayMocks.connect).toHaveBeenCalledOnce()
+    expect(gatewayMocks.connect).toHaveBeenCalledWith(descriptor.wsUrl)
+  })
+
+  it('reconnects an active closed profile silently until its prepared activation is invoked', async () => {
+    const primary = makePrimary()
+    const onActiveConnectionChanged = vi.fn()
+
+    const descriptor = {
+      authMode: 'token',
+      baseUrl: 'https://worker.invalid',
+      mode: 'remote',
+      profile: 'worker',
+      token: 'only-ticket',
+      wsUrl: 'wss://worker.invalid/api/ws?token=only-ticket'
+    }
+
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn(), primaryProfile: 'default' } as never)
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop({ getConnection: vi.fn(async () => descriptor) })
+    gatewayMocks.connect.mockResolvedValue(undefined)
+
+    await ensureGatewayForProfile('worker', descriptor as never)
+    expect(onActiveConnectionChanged).toHaveBeenCalledOnce()
+
+    onActiveConnectionChanged.mockClear()
+    gatewayMocks.connect.mockClear()
+    ;(activeGateway() as unknown as { close: () => void }).close()
+    gatewayMocks.setGatewayState.mockClear()
+
+    const activate = await prepareGatewayForProfile('worker', descriptor as never)
+
+    expect(gatewayMocks.connect).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+    expect(gatewayMocks.setGatewayState).not.toHaveBeenCalled()
+
+    expect(activate()).toBe(true)
+    expect(onActiveConnectionChanged).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).toHaveBeenCalledWith(descriptor)
+    expect(gatewayMocks.setGatewayState).toHaveBeenCalledOnce()
+    expect(gatewayMocks.setGatewayState).toHaveBeenCalledWith('open')
+  })
+
+  it('mutes a joined in-flight reconnect until prepared activation and releases its suppression lease', async () => {
+    const primary = makePrimary()
+    const onActiveConnectionChanged = vi.fn()
+    let resolveReconnect!: () => void
+
+    const descriptor = {
+      authMode: 'token',
+      baseUrl: 'https://worker.invalid',
+      mode: 'remote',
+      profile: 'worker',
+      token: 'reconnect-ticket',
+      wsUrl: 'wss://worker.invalid/api/ws?token=reconnect-ticket'
+    }
+
+    const suppliedAfterDialStarted = {
+      ...descriptor,
+      token: 'too-late-ticket',
+      wsUrl: 'wss://worker.invalid/api/ws?token=too-late-ticket'
+    }
+
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn(), primaryProfile: 'default' } as never)
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop({ getConnection: vi.fn(async () => descriptor) })
+    gatewayMocks.connect.mockResolvedValueOnce(undefined)
+
+    await ensureGatewayForProfile('worker', descriptor as never)
+
+    onActiveConnectionChanged.mockClear()
+    gatewayMocks.markNativeNotifyBaseline.mockClear()
+    gatewayMocks.connect.mockClear()
+    gatewayMocks.connect.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          resolveReconnect = resolve
+        })
+    )
+    ;(activeGateway() as unknown as { close: () => void }).close()
+    gatewayMocks.setGatewayState.mockClear()
+
+    // A normal reconnect owns the dial first. Preparation must join that exact
+    // promise: the already-running descriptor remains authoritative.
+    const reconnecting = ensureActiveGatewayOpen()
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledOnce())
+    const preparing = prepareGatewayForProfile('worker', suppliedAfterDialStarted as never)
+    await Promise.resolve()
+    await Promise.resolve()
+    gatewayMocks.setGatewayState.mockClear()
+
+    resolveReconnect()
+    await reconnecting
+    const activate = await preparing
+
+    expect(gatewayMocks.connect).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+    expect(gatewayMocks.setGatewayState).not.toHaveBeenCalled()
+    expect(gatewayMocks.markNativeNotifyBaseline).toHaveBeenCalledOnce()
+
+    expect(activate()).toBe(true)
+    expect(onActiveConnectionChanged).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).toHaveBeenCalledWith(descriptor)
+    expect(gatewayMocks.setGatewayState).toHaveBeenCalledOnce()
+    expect(gatewayMocks.setGatewayState).toHaveBeenCalledWith('open')
+
+    // A later ordinary reconnect publishes normally, proving the preparation
+    // lease was released rather than leaking its suppression counter.
+    onActiveConnectionChanged.mockClear()
+    gatewayMocks.setGatewayState.mockClear()
+    gatewayMocks.markNativeNotifyBaseline.mockClear()
+    gatewayMocks.connect.mockClear()
+    gatewayMocks.connect.mockResolvedValueOnce(undefined)
+    ;(activeGateway() as unknown as { close: () => void }).close()
+    gatewayMocks.setGatewayState.mockClear()
+
+    await ensureActiveGatewayOpen()
+
+    expect(onActiveConnectionChanged).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).toHaveBeenCalledWith(descriptor)
+    expect(gatewayMocks.setGatewayState).toHaveBeenCalledTimes(2)
+    expect(gatewayMocks.setGatewayState).toHaveBeenNthCalledWith(1, 'connecting')
+    expect(gatewayMocks.setGatewayState).toHaveBeenNthCalledWith(2, 'open')
+    expect(gatewayMocks.markNativeNotifyBaseline).toHaveBeenCalledOnce()
   })
 
   it('refreshes the active connection after a pooled profile reconnect succeeds', async () => {

@@ -19,15 +19,27 @@ vi.mock('@/hermes', () => ({
   setApiRequestConnection: vi.fn(),
   HermesGateway: class {
     connectionState = 'closed'
+    private readonly stateListeners = new Set<(state: string) => void>()
+
+    private emitState(state: string): void {
+      this.connectionState = state
+      this.stateListeners.forEach(listener => listener(state))
+    }
+
     connect = async (wsUrl: string): Promise<void> => {
+      this.emitState('connecting')
       await gatewayMocks.connect(wsUrl)
-      this.connectionState = 'open'
+      this.emitState('open')
     }
     close = (): void => {
-      this.connectionState = 'closed'
+      this.emitState('closed')
     }
     onEvent = vi.fn(() => () => {})
-    onState = vi.fn(() => () => {})
+    onState = vi.fn((listener: (state: string) => void) => {
+      this.stateListeners.add(listener)
+
+      return () => this.stateListeners.delete(listener)
+    })
   }
 }))
 vi.mock('@/store/session', () => ({
@@ -41,9 +53,11 @@ const {
   activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  disposeSecondariesForConnection,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   isActivePrimary,
+  prepareGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway
 } = await import('./gateway')
@@ -92,6 +106,95 @@ afterEach(() => {
 })
 
 describe('registry-agent scope eviction (activeGateway must never silently hit the primary)', () => {
+  it('reuses one successful registry descriptor for the exact socket dial', async () => {
+    const descriptor = { ...agentConn, token: 'only-ticket', wsUrl: 'wss://homelab.invalid/api/ws?token=only-ticket' }
+
+    const getConnectionFor = vi.fn(async () => ({
+      ...agentConn,
+      token: 'second-ticket',
+      wsUrl: 'wss://wrong.invalid/api/ws?token=second-ticket'
+    }))
+
+    setPrimaryGateway(makePrimary() as never, 'default')
+    installDesktop({ getConnection: vi.fn(async () => descriptor), getConnectionFor })
+
+    const activate = await prepareGatewayForAgent('homelab', 'research', descriptor as never)
+
+    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect(gatewayMocks.connect).toHaveBeenCalledOnce()
+    expect(gatewayMocks.connect).toHaveBeenCalledWith(descriptor.wsUrl)
+    expect(activate()).toBe(true)
+  })
+
+  it('reconnects an active closed agent silently until its prepared activation is invoked', async () => {
+    const onActiveConnectionChanged = vi.fn()
+
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
+    setPrimaryGateway(makePrimary() as never, 'default')
+    installAgentDesktop()
+
+    await ensureGatewayForAgent('homelab', 'research')
+    expect(onActiveConnectionChanged).toHaveBeenCalledOnce()
+
+    onActiveConnectionChanged.mockClear()
+    gatewayMocks.connect.mockClear()
+    ;(activeGateway() as unknown as { close: () => void }).close()
+    gatewayMocks.setGatewayState.mockClear()
+
+    const activate = await prepareGatewayForAgent('homelab', 'research', agentConn as never)
+
+    expect(gatewayMocks.connect).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+    expect(gatewayMocks.setGatewayState).not.toHaveBeenCalled()
+
+    expect(activate()).toBe(true)
+    expect(onActiveConnectionChanged).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).toHaveBeenCalledWith(agentConn)
+    expect(gatewayMocks.setGatewayState).toHaveBeenCalledOnce()
+    expect(gatewayMocks.setGatewayState).toHaveBeenCalledWith('open')
+  })
+
+  it('rejects a prepared activation superseded by a real gateway activation epoch', async () => {
+    const onActiveConnectionChanged = vi.fn()
+
+    const sourceB = {
+      ...agentConn,
+      baseUrl: 'https://source-b.invalid',
+      token: 'source-b-ticket',
+      wsUrl: 'wss://source-b.invalid/api/ws?token=source-b-ticket'
+    }
+
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
+    setPrimaryGateway(makePrimary() as never, 'default')
+    installAgentDesktop()
+
+    const activateA = await prepareGatewayForAgent('source-a', 'research', agentConn as never)
+    const activateB = await prepareGatewayForAgent('source-b', 'research', sourceB as never)
+
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+    expect(activateB()).toBe(true)
+    expect(onActiveConnectionChanged).toHaveBeenCalledOnce()
+    expect(onActiveConnectionChanged).toHaveBeenLastCalledWith(sourceB)
+
+    onActiveConnectionChanged.mockClear()
+    expect(activateA()).toBe(false)
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+  })
+
+  it('rejects a prepared activation after its exact registry entry is disposed', async () => {
+    const onActiveConnectionChanged = vi.fn()
+
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
+    setPrimaryGateway(makePrimary() as never, 'default')
+    installAgentDesktop()
+
+    const activate = await prepareGatewayForAgent('removed-source', 'research', agentConn as never)
+    disposeSecondariesForConnection('removed-source')
+
+    expect(activate()).toBe(false)
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+  })
+
   it('activates the agent socket, not the primary, for a registry scope', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
