@@ -8,12 +8,20 @@ import type { ProfileInfo } from '@/types/hermes'
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
+const openGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({
+  $gateway,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForAgent,
+  openGatewayForProfile
+}))
 vi.mock('@/hermes', () => ({
+  getApiRequestConnection: vi.fn(() => null),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
 }))
@@ -29,7 +37,8 @@ const {
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  selectProfile
 } = await import('./profile')
 
 const { $connection } = await import('./session')
@@ -56,7 +65,9 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 
 beforeEach(() => {
   getConnection.mockReset()
+  ensureGatewayForAgent.mockClear()
   ensureGatewayForProfile.mockClear()
+  openGatewayForAgent.mockClear()
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
@@ -120,6 +131,25 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('registered-source profile rail routing', () => {
+  it('keeps a remote primary source when the rail returns to default', async () => {
+    $activeGatewayProfile.set('mizu')
+    $browsedProfile.set('mizu')
+    $connection.set(
+      remoteConn({
+        connectionId: 'homelab',
+        profile: 'mizu',
+        registryScoped: true
+      })
+    )
+
+    selectProfile('default')
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('homelab', 'default'))
+
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
 })
 

@@ -1,7 +1,13 @@
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
-import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import {
+  getApiRequestConnection,
+  getProfiles,
+  hermesApi,
+  setApiRequestProfile,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -13,9 +19,15 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import {
+  $gateway,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForAgent,
+  openGatewayForProfile
+} from '@/store/gateway'
 import { activateChangeEventsProfile } from '@/store/live-sync'
-import { setConnection } from '@/store/session'
+import { $connection, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -275,6 +287,37 @@ const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
+// A profile name is only unique inside its registered source. Rail actions are
+// browse-owned, so they must retain the source serving the live gateway instead
+// of reducing (connectionId, profile) to a legacy local profile route.
+function activeProfileConnectionId(): null | string {
+  // Secondary registry routes publish their source through the gateway pool.
+  // A registered remote may also be the primary socket, where that pool value
+  // is intentionally null; in that case the published descriptor is authority.
+  const gatewaySource = (getApiRequestConnection() ?? '').trim()
+
+  if (gatewaySource) {
+    return gatewaySource
+  }
+
+  const connection = $connection.get()
+  const descriptorSource = connection?.registryScoped ? (connection.connectionId ?? '').trim() : ''
+
+  return descriptorSource || null
+}
+
+function openActiveProfileRoute(profile: string): Promise<void> {
+  const connectionId = activeProfileConnectionId()
+
+  return connectionId ? openGatewayForAgent(connectionId, profile) : openGatewayForProfile(profile)
+}
+
+function ensureActiveProfileRoute(profile: string): Promise<void> {
+  const connectionId = activeProfileConnectionId()
+
+  return connectionId ? ensureGatewayAgent(connectionId, profile) : ensureGatewayProfile(profile)
+}
+
 export function prewarmProfileBackend(name: string): void {
   const key = normalizeProfileKey(name)
 
@@ -289,7 +332,7 @@ export function prewarmProfileBackend(name: string): void {
   }
 
   prewarmedAt.set(key, now)
-  openGatewayForProfile(key).catch(() => undefined)
+  openActiveProfileRoute(key).catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null
@@ -531,7 +574,7 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  void ensureActiveProfileRoute(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -544,7 +587,7 @@ export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  void ensureActiveProfileRoute(target)
 }
 
 export function setShowAllProfiles(value: boolean): void {
