@@ -358,8 +358,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]", busy_policy="dispatch",
                execute="gateway_commands"),
-    CommandDef("help", "Show available commands", "Info", busy_policy="dispatch",
-               execute="gateway_help"),
+    CommandDef("help", "Show available commands (/help skills lists skill commands, /help <text> filters)", "Info", busy_policy="dispatch",
+               execute="gateway_help", args_hint="[skills|<filter>]"),
+    CommandDef("palette", "Open the fuzzy command palette (also Ctrl+P)", "Info",
+               cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch"),
     CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
@@ -433,6 +435,23 @@ def _build_description(cmd: CommandDef) -> str:
         return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
     return cmd.description
 
+
+# Help renderer sub-grouping: the "Session" category accumulated ~46 commands
+# spanning genuinely different concerns (lifecycle, context, background/async).
+# Rather than re-tag every CommandDef (category is load-bearing for gateway
+# help + other surfaces), the /help renderer splits Session into readable
+# sub-headers using these command-name sets. Any Session command not listed
+# here falls under the base "Session" header. Names are bare (no leading /).
+HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
+    "Context": (
+        "compress", "compact", "context", "ctx", "status",
+    ),
+    "Background & Automation": (
+        "background", "bg", "btw", "agents", "tasks", "queue", "q", "steer",
+        "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
+        "moa", "journey", "learning", "memory-graph",
+    ),
+}
 
 _PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
 
