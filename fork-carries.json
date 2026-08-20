@@ -403,19 +403,25 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "45fc462e9bb240ef535476cbda6c65c0294d21b4"
         }
       ],
       "replay": {
         "base_commit": "f43eabee5f36e11448086ee8ee17c499958e81bf",
         "commits": [
-          "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6"
+          "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6",
+          "45fc462e9bb240ef535476cbda6c65c0294d21b4"
         ],
         "kind": "commit_series",
         "source_ref": "origin/carry/desktop-profile-gateway-activation"
       },
       "retirement": "Retire when upstream atomically activates profile-scoped gateways with equivalent shared-remote reuse, agent scoping, failure rollback, and real profile-to-gateway integration coverage.",
       "status": "active",
-      "summary": "Preserve atomic profile gateway activation, shared remote gateway reuse, profile-qualified agent scope, and rollback-safe profile switching.",
+      "summary": "Preserve atomic profile gateway activation, shared remote gateway reuse, connection-qualified profile-rail routing, profile-qualified agent scope, and rollback-safe profile switching.",
       "tests": [
         "apps/desktop/src/store/gateway-agent-scope.test.ts",
         "apps/desktop/src/store/gateway-shared-remote.test.ts",
