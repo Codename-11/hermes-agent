@@ -5483,6 +5483,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
+        # Rotating task-oriented composer placeholder (C-09), chosen once per
+        # session so it stays stable while the empty input box is on screen.
+        try:
+            from hermes_cli.tips import get_random_composer_placeholder
+            self._composer_placeholder = get_random_composer_placeholder()
+        except Exception:
+            self._composer_placeholder = ""
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
         # Holds the exact list used for index resolution; one-shot (cleared on
@@ -9168,6 +9175,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
 
+        # Reasoning level (C-02): resolve the effective effort for display.
+        reasoning_label = None
+        try:
+            rc = getattr(agent, "reasoning_config", None) or getattr(self, "reasoning_config", None)
+            if isinstance(rc, dict):
+                if rc.get("enabled") is False:
+                    reasoning_label = "off"
+                elif rc.get("effort"):
+                    reasoning_label = str(rc.get("effort"))
+            show_r = getattr(self, "show_reasoning", None)
+            if reasoning_label:
+                reasoning_label += f" (display: {'on' if show_r else 'off'})" if show_r is not None else ""
+        except Exception:
+            reasoning_label = None
+
+        # Approval mode (C-02).
+        approval_label = None
+        try:
+            from tools.approval import _get_approval_mode, is_approval_bypass_active_for_session
+            approval_label = _get_approval_mode()
+            try:
+                if is_approval_bypass_active_for_session(getattr(self, "session_key", "") or ""):
+                    approval_label += " (YOLO bypass active)"
+            except Exception:
+                pass
+        except Exception:
+            approval_label = None
+
+        # Context window usage (C-02): reuse the status-bar snapshot which
+        # already computes tokens / max / percent.
+        ctx_label = None
+        try:
+            snap = self._get_status_bar_snapshot()
+            ctx_tokens = snap.get("context_tokens") or 0
+            ctx_max = snap.get("context_length")
+            ctx_pct = snap.get("context_percent")
+            if ctx_max:
+                left = ""
+                if isinstance(ctx_pct, (int, float)):
+                    left = f"{max(0, 100 - int(ctx_pct))}% left · "
+                ctx_label = f"{left}{ctx_tokens:,} / {ctx_max:,} tokens used"
+        except Exception:
+            ctx_label = None
+
         lines = [
             "Hermes CLI Status",
             "",
@@ -9176,8 +9227,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ]
         if title:
             lines.append(f"Title: {title}")
+        lines.append(f"Model: {model} ({provider})")
+        if reasoning_label:
+            lines.append(f"Reasoning: {reasoning_label}")
+        if approval_label:
+            lines.append(f"Approvals: {approval_label}")
+        if ctx_label:
+            lines.append(f"Context: {ctx_label}")
         lines.extend([
-            f"Model: {model} ({provider})",
             f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",
@@ -10531,6 +10588,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "filter": "",
         }
         self._invalidate(min_interval=0.0)
 
@@ -10644,6 +10702,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
+
+    @staticmethod
+    def _filter_model_picker_entries(entries: list, query: str) -> list:
+        """Return (original_index, label) pairs for entries matching ``query``.
+
+        Subsequence ("fuzzy") match, case-insensitive: the query characters
+        must appear in order in the label. An empty query matches everything.
+        Crucially the returned pairs carry the ORIGINAL index into ``entries``,
+        so a selection in the filtered view still resolves to exactly one
+        concrete model — filtering only narrows the list, it never introduces
+        an ambiguous or fuzzy *resolution* (the anti-"claude→old-model" rule).
+        """
+        pairs = list(enumerate(entries))
+        q = (query or "").strip().lower()
+        if not q:
+            return pairs
+
+        def _subseq(needle: str, hay: str) -> bool:
+            it = iter(hay)
+            return all(ch in it for ch in needle)
+
+        out = [(i, e) for (i, e) in pairs if _subseq(q, str(e).lower())]
+        return out
 
     @staticmethod
     def _compute_model_picker_viewport(
@@ -10874,24 +10955,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             state["provider_data"] = provider_data
             state["model_list"] = model_list
             state["selected"] = 0
+            state["filter"] = ""
+            state["_filtered_pairs"] = None
             self._invalidate(min_interval=0.0)
             return
         if stage == "model":
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
-            back_idx = len(model_list)
-            cancel_idx = len(model_list) + 1
+            # Map the selected row through the active fuzzy filter so the
+            # index lines up with what the picker is currently showing. The
+            # filtered pair carries the ORIGINAL index into model_list, so the
+            # resolved model is always one concrete, unambiguous entry.
+            filtered_pairs = state.get("_filtered_pairs")
+            if filtered_pairs is None:
+                filtered_pairs = list(enumerate(model_list))
+            visible_labels = [e for (_i, e) in filtered_pairs]
+            back_idx = len(visible_labels)
+            cancel_idx = len(visible_labels) + 1
             if selected == back_idx:
                 state["stage"] = "provider"
+                state["filter"] = ""
+                state["_filtered_pairs"] = None
                 state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
                 self._close_model_picker()
                 return
-            if selected < len(model_list):
+            if 0 <= selected < len(visible_labels):
                 from hermes_cli.model_switch import switch_model
-                chosen_model = model_list[selected]
+                chosen_model = visible_labels[selected]
                 result = switch_model(
                     raw_input=chosen_model,
                     current_provider=self.provider or "",
@@ -17995,13 +18088,57 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
             else:
-                max_idx = len(state.get("model_list") or []) + 1
+                # +1 for "← Back" and Cancel over the filtered visible rows.
+                _fp = state.get("_filtered_pairs")
+                _visible = len(_fp) if _fp is not None else len(state.get("model_list") or [])
+                max_idx = _visible + 1
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            event.app.invalidate()
+
+        def _model_picker_typing_active() -> bool:
+            # Type-to-filter is only live on the model stage (concrete list).
+            st = self._model_picker_state
+            return bool(st) and st.get("stage") == "model"
+
+        def _make_model_filter_char_handler(ch: str):
+            def handler(event):
+                st = self._model_picker_state
+                if not st or st.get("stage") != "model":
+                    return
+                st["filter"] = (st.get("filter", "") or "") + ch
+                st["selected"] = 0
+                st["_scroll_offset"] = 0
+                event.app.invalidate()
+            return handler
+
+        # Printable ASCII (space through ~) narrows the model list as you type.
+        import string as _string
+        for _ch in _string.digits + _string.ascii_letters + "-_.:/ ":
+            kb.add(_ch, filter=Condition(_model_picker_typing_active))(
+                _make_model_filter_char_handler(_ch)
+            )
+
+        @kb.add('backspace', filter=Condition(_model_picker_typing_active))
+        def model_picker_filter_backspace(event):
+            st = self._model_picker_state
+            if not st:
+                return
+            cur = st.get("filter", "") or ""
+            st["filter"] = cur[:-1]
+            st["selected"] = 0
+            st["_scroll_offset"] = 0
             event.app.invalidate()
 
         @kb.add('escape', filter=Condition(lambda: bool(self._model_picker_state)), eager=True)
         def model_picker_escape(event):
-            """ESC closes the /model picker."""
+            """ESC clears an active filter first, else closes the picker."""
+            st = self._model_picker_state
+            if st and st.get("stage") == "model" and (st.get("filter") or ""):
+                st["filter"] = ""
+                st["selected"] = 0
+                st["_scroll_offset"] = 0
+                event.app.invalidate()
+                return
             self._close_model_picker()
             event.app.current_buffer.reset()
             event.app.invalidate()
@@ -18721,7 +18858,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _stash_hint = ""
             if _stash_hint:
                 return _stash_hint
-            return ""
+            # Idle + empty composer: show a rotating task-oriented example to
+            # nudge the user toward a high-value first action (C-09). Chosen
+            # once per session (self._composer_placeholder) so it stays stable
+            # while being read, not flickering every render.
+            return getattr(cli_ref, "_composer_placeholder", "") or ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
 
@@ -19298,9 +19439,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
-                if model_list:
-                    hint = f"Select a model ({len(model_list)} available)"
+                # Fuzzy filter: narrow the concrete model list by the typed
+                # query. Selection still resolves to a real entry (see the
+                # filtered_pairs index mapping in the selection handler), so
+                # this never introduces an ambiguous model resolution.
+                _query = state.get("filter", "") or ""
+                filtered_pairs = cli_ref._filter_model_picker_entries(model_list, _query)
+                state["_filtered_pairs"] = filtered_pairs
+                model_labels = [e for (_i, e) in filtered_pairs]
+                choices = list(model_labels) + ["← Back", "Cancel"]
+                if _query:
+                    hint = (
+                        f"Filter: {_query}▏  ({len(model_labels)}/{len(model_list)} match "
+                        "— type to narrow, Backspace to clear)"
+                    )
+                elif model_list:
+                    hint = f"Select a model ({len(model_list)} available) — type to filter"
                 else:
                     hint = "No models listed for this provider. Use Back or Cancel."
 
