@@ -47,8 +47,7 @@ import {
   ALL_PROFILES,
   ensureGatewayProfile,
   newSessionInProfile,
-  normalizeProfileKey,
-  refreshActiveProfile
+  normalizeProfileKey
 } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
@@ -577,8 +576,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another source or profile must re-pull that
-  // source's model/config/profile state. Two sources commonly both expose a
-  // `default` profile, so profile alone is not a sufficient identity.
+  // source's model/config state. The profile rail roster is source-owned and
+  // refreshed by boot/connection-switch and rail lifecycle paths; refreshing
+  // it here through the newly active profile replaces a remote gateway's
+  // multi-profile catalog with that profile backend's narrower list.
   const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
   const lastGatewayScopeRef = useRef(gatewayScope)
 
@@ -595,7 +596,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // click still wins.
     void refreshCurrentModel(true)
     void refreshHermesConfig(true)
-    void refreshActiveProfile()
     resetProjectTreeState()
   }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
 
