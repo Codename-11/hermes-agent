@@ -27,6 +27,7 @@ import type { ClientSessionState } from '@/app/types'
 import {
   $narrowViewport,
   $paneVisible,
+  collapseTreePane,
   registerPaneCloser,
   removeTreePane,
   revealTreePane
@@ -878,6 +879,15 @@ export const host = {
 
     if (id) {
       revealTreePane(id)
+    }
+  },
+
+  /** Minimize the zone containing an existing pane to its tab rail. */
+  collapsePane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (id) {
+      collapseTreePane(id)
     }
   },
 

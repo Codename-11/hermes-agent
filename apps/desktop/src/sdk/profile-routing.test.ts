@@ -14,6 +14,7 @@ vi.mock('@/components/pane-shell/tree/store', async () => {
   return {
     $narrowViewport: atom(false),
     $paneVisible: vi.fn(() => atom(false)),
+    collapseTreePane: vi.fn(),
     registerPaneCloser: vi.fn(),
     removeTreePane: vi.fn(),
     revealTreePane: vi.fn()
@@ -116,7 +117,7 @@ vi.mock('@/store/gateway', async () => {
 
 const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
-const { revealTreePane } = await import('@/components/pane-shell/tree/store')
+const { collapseTreePane, revealTreePane } = await import('@/components/pane-shell/tree/store')
 const { deleteProfile } = await import('@/hermes')
 const { applyUpdates, checkUpdates, $updateStatus } = await import('@/store/updates')
 
@@ -185,6 +186,11 @@ describe('connection-aware plugin host APIs', () => {
 
     expect(revealTreePane).toHaveBeenNthCalledWith(1, 'test:control')
     expect(revealTreePane).toHaveBeenNthCalledWith(2, 'test:control')
+  })
+
+  it('collapses a plugin pane through the generic tree primitive', () => {
+    host.collapsePane('test:control')
+    expect(collapseTreePane).toHaveBeenCalledWith('test:control')
   })
 
   it('exposes only status, refresh, and the standard guarded apply flow', async () => {
