@@ -1,7 +1,7 @@
-import { atom, type WritableAtom } from 'nanostores'
+import type { WritableAtom } from 'nanostores'
 
 import { type Codec, Codecs } from './persisted'
-import { readKey, writeKey } from './storage'
+import { createScopedPersistence } from './scoped-persisted'
 
 // ── Connection-scoped persistence ───────────────────────────────────────────
 // Multiple Desktop windows share one renderer origin — and therefore one
@@ -47,24 +47,15 @@ export function connectionScopeSuffix(connection: ConnectionScopeDescriptor | nu
   return `.remote.${base}.${profile}`
 }
 
-interface ScopedEntry<T> {
-  $value: WritableAtom<T>
-  codec: Codec<T>
-  fallback: T
-  key: string
-  /** True while a rescope is applying a loaded value — the persistence
-   *  subscriber must not echo that read back into storage. */
-  applying: boolean
-}
-
-let activeSuffix = ''
-
-const registry: ScopedEntry<any>[] = []
+const persistence = createScopedPersistence<string>({
+  initialScope: '',
+  storageKey: (key, suffix) => key + suffix
+})
 const scopeListeners = new Set<() => void>()
 
 /** The suffix for the connection the window is currently on. */
 export function activeConnectionScopeSuffix(): string {
-  return activeSuffix
+  return persistence.activeScope() ?? ''
 }
 
 /** Observe scope changes (fires BEFORE the scoped atoms repaint, so
@@ -75,50 +66,13 @@ export function onConnectionScopeChange(listener: () => void): () => void {
   return () => void scopeListeners.delete(listener)
 }
 
-function loadEntry<T>(entry: ScopedEntry<T>): T {
-  const raw = readKey(entry.key + activeSuffix)
-
-  if (raw === null) {
-    return entry.fallback
-  }
-
-  try {
-    return entry.codec.decode(raw)
-  } catch {
-    return entry.fallback
-  }
-}
-
 /**
  * A `persistentAtom` whose storage key carries the active connection scope.
  * Reads seed from the current scope's key; writes land under it. When the
  * window's connection changes, every scoped atom reloads from the new scope.
  */
 export function connectionScopedAtom<T>(key: string, fallback: T, codec: Codec<T> = Codecs.json<T>()): WritableAtom<T> {
-  const entry: ScopedEntry<T> = { $value: atom<T>(fallback), applying: false, codec, fallback, key }
-  entry.$value.set(loadEntry(entry))
-  registry.push(entry)
-
-  // Persist CHANGES only — same creation-emission and rescope suppression
-  // rationale as persistentAtom: echoing a just-read value back out can
-  // clobber a storage snapshot another window is about to read.
-  let creationEmission = true
-
-  entry.$value.subscribe(value => {
-    if (creationEmission) {
-      creationEmission = false
-
-      return
-    }
-
-    if (entry.applying) {
-      return
-    }
-
-    writeKey(entry.key + activeSuffix, entry.codec.encode(value))
-  })
-
-  return entry.$value
+  return persistence.scopedPersistentAtom(key, fallback, codec)
 }
 
 /**
@@ -136,11 +90,9 @@ export function rescopeConnectionScopedStores(connection: ConnectionScopeDescrip
 
   const next = connectionScopeSuffix(connection)
 
-  if (next === activeSuffix) {
+  if (next === persistence.activeScope()) {
     return
   }
-
-  activeSuffix = next
 
   // Bookkeeping listeners first: pin-sync's mirrored/pending sets describe
   // the PREVIOUS backend and must be gone before the reload below triggers
@@ -149,13 +101,5 @@ export function rescopeConnectionScopedStores(connection: ConnectionScopeDescrip
     listener()
   }
 
-  for (const entry of registry) {
-    entry.applying = true
-
-    try {
-      entry.$value.set(loadEntry(entry))
-    } finally {
-      entry.applying = false
-    }
-  }
+  persistence.setScope(next)
 }
