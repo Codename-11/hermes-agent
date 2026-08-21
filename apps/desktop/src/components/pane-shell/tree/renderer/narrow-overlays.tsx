@@ -20,6 +20,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
+import { narrowHoverStripStyle } from './narrow-hover-strip'
 import { paneChrome } from './track-model'
 
 export function NarrowOverlays() {
@@ -130,7 +131,8 @@ export function NarrowOverlays() {
       {/* Hover-intent strips on each edge that has a collapsed pane. */}
       {sides.map(side => (
         <div
-          className={cn('absolute inset-y-0 z-30 w-1.5', side === 'left' ? 'left-0' : 'right-0')}
+          className="absolute inset-y-0 z-30"
+          data-narrow-hover-strip={side}
           key={side}
           onMouseEnter={() => {
             const first = collapsibles.find(p => sideOf(p) === side)
@@ -139,6 +141,7 @@ export function NarrowOverlays() {
               setReveal(current => (current?.pinned ? current : { id: first.id, pinned: false }))
             }
           }}
+          style={narrowHoverStripStyle(side)}
         />
       ))}
 

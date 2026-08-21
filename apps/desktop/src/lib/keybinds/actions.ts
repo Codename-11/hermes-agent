@@ -66,6 +66,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // chord, so ship it unbound there (rebindable in the panel) rather than
   // stealing the long-standing sidebar binding.
   { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
+  // One-shot dictation must remain reachable while the composer owns focus.
+  { id: 'composer.dictate', category: 'composer', defaults: ['mod+shift+d'] },
+  // These independent toggles remain opt-in bindings.
+  { id: 'composer.autoSpeak', category: 'composer', defaults: [] },
+  { id: 'composer.wakeWord', category: 'composer', defaults: [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },

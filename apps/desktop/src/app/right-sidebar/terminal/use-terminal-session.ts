@@ -892,6 +892,8 @@ export function useTerminalSession({
             })
           )
 
+          void terminalApi.subscribe(session.id)
+
           window.requestAnimationFrame(() => {
             term.clearSelection() // drop any selection painted over transient boot rows
           })

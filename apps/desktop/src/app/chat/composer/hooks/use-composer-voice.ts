@@ -14,9 +14,13 @@ import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/stor
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import type { ComposerTarget } from '../focus'
-import { onComposerVoiceToggleRequest } from '../focus'
+import {
+  onComposerAutoSpeakToggleRequest,
+  onComposerDictationToggleRequest,
+  onComposerVoiceToggleRequest
+} from '../focus'
 import { useComposerScope } from '../scope'
-import type { ChatBarProps } from '../types'
+import type { ChatBarProps, VoiceStatus } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
 import { useVoiceConversation } from './use-voice-conversation'
@@ -38,6 +42,18 @@ interface UseComposerVoiceArgs {
   /** This composer's focus-bus key — voice toggles targeting another
    *  composer (or the active one, when not us) are ignored. */
   target: ComposerTarget
+}
+
+export function canToggleDictation({
+  available,
+  disabled,
+  status
+}: {
+  available: boolean
+  disabled: boolean
+  status: VoiceStatus
+}): boolean {
+  return available && !disabled && status !== 'transcribing'
 }
 
 /**
@@ -198,6 +214,19 @@ export function useComposerVoice({
     [target, toggleVoiceConversation]
   )
 
+  useEffect(
+    () =>
+      onComposerDictationToggleRequest(toggled => {
+        if (
+          toggled === target &&
+          canToggleDictation({ available: Boolean(onTranscribeAudio), disabled, status: voiceStatus })
+        ) {
+          dictate()
+        }
+      }),
+    [dictate, disabled, onTranscribeAudio, target, voiceStatus]
+  )
+
   useEffect(() => {
     if (target === 'main' && !disabled && takeVoiceConversationStart(voiceStartRequest) && !voiceConversationActive) {
       setVoiceConversationActive(true)
@@ -279,6 +308,11 @@ export function useComposerVoice({
       notifyError(error, t.settings.config.autosaveFailed)
     )
   }, [t])
+
+  useEffect(
+    () => onComposerAutoSpeakToggleRequest(toggled => toggled === target && handleToggleAutoSpeak()),
+    [handleToggleAutoSpeak, target]
+  )
 
   useAutoSpeakReplies({
     conversationActive: voiceConversationActive,
