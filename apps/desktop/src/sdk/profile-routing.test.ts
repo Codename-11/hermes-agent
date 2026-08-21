@@ -106,7 +106,8 @@ const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
 
-const { requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } = await import('@/store/gateway')
+const { openGatewayForAgent, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
+  await import('@/store/gateway')
 
 const {
   $activeGatewayProfile,
@@ -301,6 +302,29 @@ describe('connection-aware plugin host APIs', () => {
 })
 
 describe('profile-aware plugin session opens', () => {
+  it('dials a uniquely routed remote bot instead of a missing local profile handle', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [
+          {
+            connectionId: 'homelab',
+            connectionKind: 'remote',
+            profile: 'victor'
+          }
+        ],
+        sources: [
+          { connectionId: 'local', kind: 'local', label: 'This device' },
+          { connectionId: 'homelab', kind: 'remote', label: 'Homelab' }
+        ]
+      }))
+    }
+
+    await host.openSession('bot-chat', { profile: 'victor', keepAllProfilesScope: true })
+
+    expect(openGatewayForAgent).toHaveBeenCalledWith('homelab', 'victor')
+    expect(openActiveProfileRoute).not.toHaveBeenCalled()
+  })
+
   it('waits until the target Bot Chat runtime and history are on main before resolving', async () => {
     vi.mocked(openActiveProfileRoute).mockImplementationOnce(async () => undefined)
 

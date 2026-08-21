@@ -221,6 +221,37 @@ async function requestPluginProfile<T>(
   )
 }
 
+async function resolvePluginSessionProfileRoute(profile: string): Promise<PluginProfileRoute | null> {
+  const getAgentRoster = window.hermesDesktop?.getAgentRoster
+
+  if (!getAgentRoster) {
+    return null
+  }
+
+  try {
+    const roster = await getAgentRoster()
+    const target = normalizeProfileKey(profile)
+    const currentConnectionId = $activeConnectionId.get()
+    const candidates = roster.agents.filter(agent => normalizeProfileKey(agent.profile) === target)
+    const chosen =
+      candidates.find(agent => currentConnectionId && agent.connectionId === currentConnectionId) ??
+      (candidates.length === 1 ? candidates[0] : null)
+
+    if (!chosen?.connectionId) {
+      return null
+    }
+
+    return {
+      connectionId: chosen.connectionId,
+      mode: chosen.connectionKind === 'local' ? 'local' : 'remote',
+      profile: target,
+      targetProfile: target
+    }
+  } catch {
+    return null
+  }
+}
+
 if (typeof window !== 'undefined') {
   const refresh = () => $viewport.set(readViewport())
   window.addEventListener('resize', refresh)
@@ -766,6 +797,7 @@ export const host = {
     const profile = (options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
     const expectHistory = options.expectHistory ?? false
+    const profileRoute = profile ? await resolvePluginSessionProfileRoute(targetProfile) : null
 
     const plan = planPluginOpenSession({
       activeProfile: $activeGatewayProfile.get(),
@@ -796,9 +828,13 @@ export const host = {
       // a plain navigation only opens the bot's gateway so session.resume can
       // hydrate, leaving chrome on the launch backend.
       const dial = plan.switchWorkspace
-        ? () => ensureActiveProfileRoute(plan.switchWorkspace as string)
+        ? profileRoute
+          ? () => ensureGatewayAgent(profileRoute.connectionId, profileRoute.profile)
+          : () => ensureActiveProfileRoute(plan.switchWorkspace as string)
         : plan.dialWithoutSwitching
-          ? () => openActiveProfileRoute(plan.dialWithoutSwitching as string)
+          ? profileRoute
+            ? () => openGatewayForAgent(profileRoute.connectionId, profileRoute.profile)
+            : () => openActiveProfileRoute(plan.dialWithoutSwitching as string)
           : null
 
       if (dial) {
