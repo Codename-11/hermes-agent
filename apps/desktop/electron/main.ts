@@ -180,11 +180,13 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
-import { cursorPointInWindow } from './hud-cursor'
+import { cursorPointInWindow, shouldFeedHudCursor } from './hud-cursor'
 import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
+import { sanitizeHudState } from './hud-window-geometry'
+import { bindHudCloseBehavior, suppressHudCloseBehavior } from './hud-window-lifecycle'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
@@ -11424,13 +11426,7 @@ function readHudState() {
   try {
     const raw = JSON.parse(fs.readFileSync(HUD_STATE_PATH, 'utf8'))
 
-    if (
-      [raw?.x, raw?.y, raw?.width, raw?.height].every(v => Number.isFinite(v)) &&
-      raw.width >= 380 &&
-      raw.height >= 160
-    ) {
-      return raw
-    }
+    return sanitizeHudState(raw, process.platform)
   } catch {
     // First run / unreadable — fall through to defaults.
   }
@@ -11501,14 +11497,13 @@ function registerHudSnapShortcut() {
 }
 
 /**
- * Feed the HUD renderer the cursor position on Linux.
+ * Feed the HUD renderer the cursor position where forwarding cannot reliably
+ * recover a click-through HUD (Windows/Linux).
  *
- * Everywhere else the renderer learns this from mousemove, which keeps arriving
- * while the window ignores the mouse because we pass `{ forward: true }`. That
- * option is macOS/Windows only. Without it a Linux HUD stops hearing the
- * pointer the moment it turns click-through, so it can never notice the pointer
- * coming back and stays transparent — the bar is there, and clicking it hits
- * whatever is behind. Main can still see the cursor, so it says so.
+ * macOS learns this from forwarded mousemove. Linux does not support forwarding;
+ * Windows nominally does, but transparent frameless windows can remain
+ * WS_EX_TRANSPARENT and miss the move that should re-arm the composer. Main can
+ * still see the cursor on both platforms, so it says so.
  *
  * Deliberately the same decision, just a different source for one input: the
  * renderer runs its usual hit test on the point it is handed. Re-deciding
@@ -11516,7 +11511,7 @@ function registerHudSnapShortcut() {
  * the main process.
  */
 function startHudCursorFeed(win: BrowserWindow) {
-  if (process.platform !== 'linux') {
+  if (!shouldFeedHudCursor(process.platform)) {
     return
   }
 
@@ -11693,7 +11688,7 @@ function spawnHudWindow(sessionId, profile) {
     }
   })
 
-  win.on('closed', () => {
+  bindHudCloseBehavior(win, () => {
     if (hudWindow === win) {
       hudWindow = null
     }
@@ -11743,7 +11738,7 @@ function openHudWindow(sessionId, profile) {
     if (profileKey && hudProfile !== profileKey) {
       const win = hudWindow
       hudWindow = null
-      win.removeAllListeners('closed')
+      suppressHudCloseBehavior(win)
       win.destroy()
 
       hudSessionId = sessionId || null
@@ -11788,8 +11783,8 @@ function closeHudWindow() {
   hudWindow = null
 
   if (win && !win.isDestroyed()) {
-    // Null'd first so the 'closed' handler doesn't broadcast a second time.
-    win.removeAllListeners('closed')
+    // Null'd first; suppress only restore/broadcast behavior, not cleanup.
+    suppressHudCloseBehavior(win)
     win.close()
   }
 
@@ -15219,7 +15214,7 @@ app.on('before-quit', event => {
   hudSnapShortcut.dispose()
 
   if (hudWindow && !hudWindow.isDestroyed()) {
-    hudWindow.removeAllListeners('closed')
+    suppressHudCloseBehavior(hudWindow)
     hudWindow.destroy()
   }
 

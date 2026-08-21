@@ -20,7 +20,8 @@ export const SIDEBAR_MAX_WIDTH = 360
 // want a narrow tree.
 export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
 export const FILE_BROWSER_MIN_WIDTH = '10rem'
-export const FILE_BROWSER_MAX_WIDTH = '20rem'
+// Fork skins can opt into a wider rail without carrying a TypeScript constant.
+export const FILE_BROWSER_MAX_WIDTH = 'var(--hermes-file-browser-max-width, 20rem)'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 // How deep the list reaches once a filter is on. A filter that only searches

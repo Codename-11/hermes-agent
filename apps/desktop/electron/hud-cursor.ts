@@ -1,17 +1,16 @@
 /**
- * Cursor→page coordinate math for the HUD's Linux click-through fallback.
+ * Cursor→page coordinate math for the HUD's Windows/Linux click-through fallback.
  *
  * The HUD decides whether to swallow the mouse by hit-testing the document
- * under the cursor, which needs a cursor position in CSS pixels. On macOS and
- * Windows that arrives for free: `setIgnoreMouseEvents(true, { forward: true })`
+ * under the cursor, which needs a cursor position in CSS pixels. On macOS that
+ * arrives for free: `setIgnoreMouseEvents(true, { forward: true })`
  * keeps mousemove flowing to the page even while the window is ignoring, so the
  * renderer can always see where the pointer is and re-arm when it returns to
- * the bar. `forward` is `@platform darwin,win32`. On Linux the moves stop the
- * instant the window starts ignoring, the renderer's last known point freezes,
- * and the HUD can never decide to be solid again — the bar goes permanently
- * untouchable.
+ * the bar. Linux does not support forwarding, while transparent frameless
+ * Windows windows can remain click-through despite it. In either case moves stop
+ * before the renderer can re-arm the composer.
  *
- * Main can still see the cursor, so on Linux it polls and pushes the position
+ * Main can still see the cursor, so on Windows/Linux it polls and pushes the position
  * in. This is the conversion that push needs, kept pure and separate because
  * the two unit mismatches in it are exactly what silently makes a hit test miss
  * by a hand's width.
@@ -27,6 +26,11 @@ interface Bounds {
   y: number
   width: number
   height: number
+}
+
+/** Poll native cursor state where transparent click-through forwarding cannot reliably re-arm the HUD. */
+export function shouldFeedHudCursor(platform: NodeJS.Platform): boolean {
+  return platform === 'linux' || platform === 'win32'
 }
 
 /**

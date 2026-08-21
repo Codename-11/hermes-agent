@@ -13,6 +13,7 @@ import nodePty from 'node-pty'
 import { resolveTerminalConnection } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
+import { createTerminalOutputRelay } from './terminal-output-relay'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
@@ -311,12 +312,6 @@ export function registerTerminalIpc({
         )
       : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
 
-    terminalSessions.set(id, {
-      pty: ptyProcess,
-      webContentsId: event.sender.id,
-      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
-    })
-
     const send = (suffix, payload) => {
       if (event.sender.isDestroyed()) {
         return
@@ -325,14 +320,40 @@ export function registerTerminalIpc({
       event.sender.send(terminalChannel(id, suffix), payload)
     }
 
-    ptyProcess.onData(data => send('data', data))
+    const output = createTerminalOutputRelay({
+      onData: data => send('data', data),
+      onExit: payload => {
+        terminalSessions.delete(id)
+        send('exit', payload)
+      }
+    })
+
+    terminalSessions.set(id, {
+      output,
+      pty: ptyProcess,
+      webContentsId: event.sender.id,
+      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
+    })
+
+    ptyProcess.onData(data => output.emit(data))
     ptyProcess.onExit(({ exitCode, signal }) => {
-      terminalSessions.delete(id)
-      send('exit', { code: exitCode, signal: signal || null })
+      output.exit({ code: exitCode, signal: signal || null })
     })
     event.sender.once('destroyed', () => disposeTerminalSession(id))
 
     return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
+  })
+
+  ipcMain.handle('hermes:terminal:subscribe', (_event, id) => {
+    const sessionInfo = terminalSessions.get(String(id || ''))
+
+    if (!sessionInfo) {
+      return false
+    }
+
+    sessionInfo.output.subscribe()
+
+    return true
   })
 
   ipcMain.handle('hermes:terminal:write', (_event, id, data) => {
