@@ -103,14 +103,20 @@ const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
 
-const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
-  await import('@/store/gateway')
+const {
+  $gateway,
+  openGatewayForProfile,
+  requestGatewayForAgent,
+  requestGatewayForProfile,
+  retireLocalProfileGateways
+} = await import('@/store/gateway')
 
 const {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $profiles,
   ensureGatewayProfile,
+  newSessionInProfile,
   refreshProfiles,
   setShowAllProfiles
 } = await import('@/store/profile')
@@ -142,11 +148,34 @@ afterEach(() => {
   setMockAtom($activeSessionId, null)
   setMockAtom($selectedStoredSessionId, null)
   setMockAtom($messages, [])
+  setMockAtom($gateway, null)
   $profiles.set([profile('cached-only')])
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('starts a cwd-aware chat without changing the legacy profile overload', () => {
+    host.newChat({ cwd: '/repos/plugin', profile: 'worker' })
+    expect(newSessionInProfile).toHaveBeenCalledWith('worker', { workspaceTarget: '/repos/plugin' })
+
+    host.newChat('legacy-worker')
+    expect(newSessionInProfile).toHaveBeenLastCalledWith('legacy-worker')
+  })
+
+  it('moves a stored session workspace through the active gateway', async () => {
+    const request = vi.fn(async () => ({ branch: 'main', cwd: '/repo', git_repo_root: '/repo' }))
+    setMockAtom($gateway, { request })
+
+    await expect(
+      host.moveSessionWorkspace({ cwd: '/repo', profile: 'worker', sessionId: 'stored-1' })
+    ).resolves.toMatchObject({ cwd: '/repo' })
+    expect(request).toHaveBeenCalledWith('session.workspace.move', {
+      cwd: '/repo',
+      profile: 'worker',
+      session_key: 'stored-1'
+    })
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 

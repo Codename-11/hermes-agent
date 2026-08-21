@@ -25,8 +25,11 @@ const {
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  newSessionInProfile,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  requestFreshSession,
+  takeFreshSessionWorkspaceTarget
 } = await import('./profile')
 
 const { $connection } = await import('./session')
@@ -67,6 +70,28 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   $connection.set(null)
+})
+
+describe('cwd-aware fresh profile sessions', () => {
+  it('carries an explicit workspace target exactly once', () => {
+    newSessionInProfile('worker', { workspaceTarget: '/repos/plugin' })
+
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: true, target: '/repos/plugin' })
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: false, target: undefined })
+  })
+
+  it('keeps the legacy profile-only path free of an explicit workspace choice', () => {
+    newSessionInProfile('worker')
+
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: false, target: undefined })
+  })
+
+  it('does not leak a workspace target across a newer unrelated fresh request', () => {
+    newSessionInProfile('worker', { workspaceTarget: '/repos/plugin' })
+    requestFreshSession()
+
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: false, target: undefined })
+  })
 })
 
 describe('ensureGatewayProfile → $connection sync (#46651)', () => {
