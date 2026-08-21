@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { artifactImageSrc, collectArtifactsForSession, loadArtifactsForSessions } from './artifact-utils'
+import {
+  artifactImageSrc,
+  artifactOpenTarget,
+  collectArtifactsForSession,
+  loadArtifactsForSessions
+} from './artifact-utils'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -31,8 +36,8 @@ describe('collectArtifactsForSession', () => {
     $connection.set(null)
   })
 
-  it('indexes plain https links from assistant text', () => {
-    const artifacts = collectArtifactsForSession(makeSession(), [
+  it('preserves the owner profile while indexing an all-profile session', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ profile: 'research' }), [
       {
         content: 'Reference: https://example.com/docs/getting-started',
         role: 'assistant',
@@ -44,6 +49,7 @@ describe('collectArtifactsForSession', () => {
     expect(artifacts[0]).toMatchObject({
       href: 'https://example.com/docs/getting-started',
       kind: 'link',
+      profile: 'research',
       value: 'https://example.com/docs/getting-started'
     })
   })
@@ -336,10 +342,11 @@ ${payload}
 
     const path = '/Users/me/.hermes/skills/work-esab/references/images/manual-step03.jpeg'
 
-    await expect(artifactImageSrc(path)).resolves.toBe('data:image/jpeg;base64,cmVtb3Rl')
+    await expect(artifactImageSrc(path, 'research')).resolves.toBe('data:image/jpeg;base64,cmVtb3Rl')
 
     expect(api).toHaveBeenCalledWith({
-      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2F.hermes%2Fskills%2Fwork-esab%2Freferences%2Fimages%2Fmanual-step03.jpeg'
+      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2F.hermes%2Fskills%2Fwork-esab%2Freferences%2Fimages%2Fmanual-step03.jpeg',
+      profile: 'research'
     })
   })
 })
@@ -393,5 +400,19 @@ describe('loadArtifactsForSessions', () => {
     expect(result.artifacts.map(artifact => artifact.sessionId)).toEqual(['session-1', 'session-3'])
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
+  })
+})
+
+describe('artifactOpenTarget', () => {
+  it('routes a remote file through its owner profile instead of its active-profile href', () => {
+    const artifact = collectArtifactsForSession(makeSession({ profile: 'artifact-owner' }), [
+      { content: 'Created: /tmp/generated/report.pdf', role: 'assistant' }
+    ])[0]!
+
+    expect(artifactOpenTarget(artifact, true)).toEqual({
+      kind: 'download',
+      path: '/tmp/generated/report.pdf',
+      profile: 'artifact-owner'
+    })
   })
 })

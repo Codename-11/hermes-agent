@@ -46,6 +46,7 @@ import {
   ARTIFACT_FILTERS,
   type ArtifactFilter,
   artifactImageSrc,
+  artifactOpenTarget,
   type ArtifactRecord,
   loadArtifactsForSessions
 } from './artifact-utils'
@@ -92,7 +93,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 }
 
 type CellCtx = {
-  onOpen: (href: string) => void | Promise<void>
+  onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
 }
 
@@ -270,22 +271,24 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }, [artifacts])
 
   const openArtifact = useCallback(
-    async (href: string) => {
+    async (artifact: ArtifactRecord) => {
       try {
-        // A gateway-local file resolves to file:// in remote mode (the file
-        // lives on the gateway, not this disk). Opening that locally fails —
-        // and an OAuth remote connection has no query token to build a download
-        // URL. Fetch the bytes over the authenticated fs bridge instead.
-        if (isRemoteGateway() && /^file:/i.test(href)) {
-          await downloadGatewayMediaFile(href)
+        const target = artifactOpenTarget(artifact, isRemoteGateway())
+
+        // Gateway-local files belong to the artifact's owner profile, which can
+        // differ from the currently active profile in this all-profile view.
+        // Always use the authenticated save bridge for file artifacts instead
+        // of opening an href assembled from the active connection.
+        if (target.kind === 'download') {
+          await downloadGatewayMediaFile(target.path, target.profile)
 
           return
         }
 
         if (window.hermesDesktop?.openExternal) {
-          await window.hermesDesktop.openExternal(href)
+          await window.hermesDesktop.openExternal(target.href)
         } else {
-          window.open(href, '_blank', 'noopener,noreferrer')
+          window.open(target.href, '_blank', 'noopener,noreferrer')
         }
       } catch (err) {
         notifyError(err, a.openFailed)
@@ -474,7 +477,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     let active = true
 
     setSrc('')
-    void artifactImageSrc(artifact.value)
+    void artifactImageSrc(artifact.value, artifact.profile)
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)
@@ -489,7 +492,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     return () => {
       active = false
     }
-  }, [artifact.href, artifact.id, artifact.value, onImageError])
+  }, [artifact.href, artifact.id, artifact.profile, artifact.value, onImageError])
 
   return (
     <article
@@ -590,7 +593,7 @@ const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: Art
   return (
     <ArtifactCellAction
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact.href)}
+      onClick={isLink ? undefined : () => void ctx.onOpen(artifact)}
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
