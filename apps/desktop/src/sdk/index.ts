@@ -232,9 +232,12 @@ async function resolvePluginSessionProfileRoute(profile: string): Promise<Plugin
     const target = normalizeProfileKey(profile)
     const currentConnectionId = $activeConnectionId.get()
     const candidates = roster.agents.filter(agent => normalizeProfileKey(agent.profile) === target)
+    const uniqueByConnection = new Map(candidates.map(agent => [agent.connectionId, agent]))
+    const primaryConnectionId = currentConnectionId ? null : roster.primaryConnectionId
     const chosen =
       candidates.find(agent => currentConnectionId && agent.connectionId === currentConnectionId) ??
-      (candidates.length === 1 ? candidates[0] : null)
+      candidates.find(agent => primaryConnectionId && agent.connectionId === primaryConnectionId) ??
+      (uniqueByConnection.size === 1 ? uniqueByConnection.values().next().value : null)
 
     if (!chosen?.connectionId) {
       return null

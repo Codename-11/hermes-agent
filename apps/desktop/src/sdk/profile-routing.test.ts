@@ -327,8 +327,14 @@ describe('profile-aware plugin session opens', () => {
             connectionId: 'homelab',
             connectionKind: 'remote',
             profile: 'victor'
+          },
+          {
+            connectionId: 'homelab',
+            connectionKind: 'remote',
+            profile: 'victor'
           }
         ],
+        primaryConnectionId: 'homelab',
         sources: [
           { connectionId: 'local', kind: 'local', label: 'This device' },
           { connectionId: 'homelab', kind: 'remote', label: 'Homelab' }

@@ -1071,6 +1071,9 @@ export interface DesktopRosterAgent {
 
 export interface DesktopAgentRoster {
   agents: DesktopRosterAgent[]
+  // Registry default source. Used only when the live descriptor has not
+  // published its connectionId yet (remote-primary cold start).
+  primaryConnectionId?: string
   sources: {
     connectionId: string
     label: string
