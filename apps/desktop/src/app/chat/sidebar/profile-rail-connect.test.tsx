@@ -2,6 +2,9 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { PROFILE_VISIBILITY_AREA } from '@/contrib/profile-visibility'
+import { registry } from '@/contrib/registry'
+
 import { ProfileRail } from './profile-switcher'
 
 // The rail's discoverability pills are navigation, not identity — assert the
@@ -57,7 +60,10 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
-vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))
+vi.mock('@/store/connections', () => ({
+  $activeConnectionId: atom('local'),
+  $hasMultipleConnections: atom(false)
+}))
 
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),
@@ -90,6 +96,29 @@ afterEach(() => {
 })
 
 describe('ProfileRail multi-gateway entry point', () => {
+  it('omits a plugin-hidden profile only on its qualified connection route', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'owned' },
+      { is_default: false, name: 'visible' }
+    ])
+
+    const dispose = registry.register({
+      area: PROFILE_VISIBILITY_AREA,
+      data: { hidden: [{ connectionId: 'local', profile: 'owned' }] },
+      id: 'test:hidden-profile',
+      source: 'plugin:test'
+    })
+
+    try {
+      render(<ProfileRail />)
+      expect(screen.queryByRole('button', { name: 'owned' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'visible' })).toBeTruthy()
+    } finally {
+      dispose()
+    }
+  })
+
   it('deep-links to the unified Settings → Gateways page from the rail', () => {
     render(<ProfileRail />)
 

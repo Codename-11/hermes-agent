@@ -33,6 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
+import type { DesktopUpdateApplyResult, DesktopUpdateStatus } from '@/global'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
 import {
   $gateway,
@@ -77,6 +78,7 @@ import {
   $sessionStates
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
+import { $updateStatus, applyUpdates, checkUpdates } from '@/store/updates'
 import type { UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
@@ -160,6 +162,25 @@ const $busyBySession = computed($sessionStates, states => {
 })
 
 const $viewport = atom<ViewportRect>(readViewport())
+
+const $pluginUpdateStatus = computed($updateStatus, status =>
+  status ? { ...status, commits: status.commits?.map(commit => ({ ...commit })) } : null
+)
+
+export interface PluginUpdateManagement {
+  /** Detached, readonly view of the standard Desktop updater status. */
+  status: ReadableAtom<DesktopUpdateStatus | null>
+  /** Re-run the standard Desktop update check. */
+  refresh: () => Promise<DesktopUpdateStatus | null>
+  /** Use the existing guarded Desktop update handoff. */
+  apply: () => Promise<DesktopUpdateApplyResult>
+}
+
+export interface PluginNewChatOptions {
+  /** Explicit workspace for the draft; null detaches it. */
+  cwd?: null | string
+  profile?: null | string
+}
 
 async function requestPluginProfile<T>(
   route: PluginProfileRoute | string,
@@ -426,6 +447,14 @@ export const host = {
     /** Window geometry ({ width, height, narrow }). */
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
+
+  /** Compact facade over the standard upstream updater. Prepared/staged and
+   * privileged lifecycle doors deliberately remain core-only. */
+  updates: {
+    status: readonlyAtom<DesktopUpdateStatus | null>($pluginUpdateStatus),
+    refresh: async () => checkUpdates(),
+    apply: async () => applyUpdates()
+  } satisfies PluginUpdateManagement,
 
   /** Toast into the app's notification stack. */
   notify,
@@ -791,12 +820,32 @@ export const host = {
     return close
   },
 
-  /** Start a fresh chat draft, optionally pointed at another profile (its
-   *  backend spins up in the background — same door the sidebar's per-profile
-   *  "+" uses). */
-  newChat: (profile?: null | string): void => {
-    newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+  /** Start a fresh chat draft, optionally pointed at another profile and/or an
+   *  explicit workspace cwd. The string overload remains the profile-only v1
+   *  contract. */
+  newChat: (profileOrOptions?: null | string | PluginNewChatOptions): void => {
+    const options =
+      profileOrOptions && typeof profileOrOptions === 'object' ? profileOrOptions : { profile: profileOrOptions }
+
+    const profile = (options.profile ?? '').trim() || $activeGatewayProfile.get()
+
+    if (options.cwd !== undefined) {
+      newSessionInProfile(profile, { workspaceTarget: options.cwd })
+    } else {
+      newSessionInProfile(profile)
+    }
+
     window.location.hash = '#/'
+  },
+
+  /** Restore, unhide, and focus an existing pane. The core primitive is
+   * idempotent, so repeated plugin intents never duplicate layout entries. */
+  revealPane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (id) {
+      revealTreePane(id)
+    }
   },
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
@@ -991,15 +1040,17 @@ export type {
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
+export { PROFILE_VISIBILITY_AREA } from '@/contrib/profile-visibility'
+
+// -- contracts ----------------------------------------------------------------
+
+export type { ProfileVisibilityContribution, ProfileVisibilityIdentity } from '@/contrib/profile-visibility'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
-
-// -- contracts ----------------------------------------------------------------
-
 export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `McpTab`
  *  takes; obtain the instance from `host.getGateway()`. */
@@ -1038,6 +1089,8 @@ export { formatModifierToken } from '@/lib/keybinds/combo'
  *  authors) + its translucent tag fill — so plugin-rendered identities read
  *  the same hue as everywhere else. */
 export { profileColor, profileColorSoft } from '@/lib/profile-color'
+
+export const PANES_AREA = 'panes'
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
@@ -1051,8 +1104,6 @@ export {
   type ReasoningEffort,
   reasoningEffortLabel
 } from '@/lib/reasoning-effort'
-
-export const PANES_AREA = 'panes'
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */

@@ -11,12 +11,27 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
-  return { $narrowViewport: atom(false) }
+  return {
+    $narrowViewport: atom(false),
+    $paneVisible: vi.fn(() => atom(false)),
+    registerPaneCloser: vi.fn(),
+    removeTreePane: vi.fn(),
+    revealTreePane: vi.fn()
+  }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
+vi.mock('@/store/updates', async () => {
+  const { atom } = await import('nanostores')
+
+  return {
+    $updateStatus: atom(null),
+    applyUpdates: vi.fn(),
+    checkUpdates: vi.fn()
+  }
+})
 vi.mock('@/store/session', async () => {
   const { atom } = await import('nanostores')
 
@@ -101,7 +116,9 @@ vi.mock('@/store/gateway', async () => {
 
 const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
+const { revealTreePane } = await import('@/components/pane-shell/tree/store')
 const { deleteProfile } = await import('@/hermes')
+const { applyUpdates, checkUpdates, $updateStatus } = await import('@/store/updates')
 
 const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
   await import('@/store/gateway')
@@ -111,6 +128,7 @@ const {
   $gatewaySwapTarget,
   $profiles,
   ensureGatewayProfile,
+  newSessionInProfile,
   refreshProfiles,
   setShowAllProfiles
 } = await import('@/store/profile')
@@ -147,6 +165,37 @@ afterEach(() => {
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('starts a cwd-aware chat without changing the legacy profile overload', () => {
+    host.newChat({ cwd: '/repos/plugin', profile: 'worker' })
+    expect(newSessionInProfile).toHaveBeenCalledWith('worker', { workspaceTarget: '/repos/plugin' })
+
+    host.newChat('legacy-worker')
+    expect(newSessionInProfile).toHaveBeenLastCalledWith('legacy-worker')
+  })
+
+  it('reveals a pane through the idempotent core reveal primitive', () => {
+    host.revealPane('test:control')
+    host.revealPane('test:control')
+
+    expect(revealTreePane).toHaveBeenNthCalledWith(1, 'test:control')
+    expect(revealTreePane).toHaveBeenNthCalledWith(2, 'test:control')
+  })
+
+  it('exposes only status, refresh, and the standard guarded apply flow', async () => {
+    const status = { behind: 2, supported: true, targetSha: 'next' }
+
+    ;($updateStatus as { set(value: unknown): void }).set(status)
+    vi.mocked(checkUpdates).mockResolvedValueOnce(status as never)
+    vi.mocked(applyUpdates).mockResolvedValueOnce({ handedOff: true, ok: true })
+
+    expect(Object.keys(host.updates).sort()).toEqual(['apply', 'refresh', 'status'])
+    expect(host.updates.status.get()).toEqual(status)
+    await expect(host.updates.refresh()).resolves.toEqual(status)
+    await expect(host.updates.apply()).resolves.toMatchObject({ ok: true })
+    expect(checkUpdates).toHaveBeenCalledOnce()
+    expect(applyUpdates).toHaveBeenCalledOnce()
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 

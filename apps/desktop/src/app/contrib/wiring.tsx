@@ -47,7 +47,8 @@ import {
   ensureGatewayProfile,
   newSessionInProfile,
   normalizeProfileKey,
-  refreshActiveProfile
+  refreshActiveProfile,
+  takeFreshSessionWorkspaceTarget
 } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
@@ -508,7 +509,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
+    const workspace = takeFreshSessionWorkspaceTarget(freshSessionRequest)
+    startFreshSessionDraft(workspace.specified ? { workspaceTarget: workspace.target } : undefined)
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another source or profile must re-pull that
