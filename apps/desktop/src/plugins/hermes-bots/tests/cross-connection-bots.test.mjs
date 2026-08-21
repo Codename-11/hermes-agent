@@ -63,8 +63,19 @@ test('botConnectionRoute: remote rows get a route descriptor, local rows do not'
 
   assert.equal(botConnectionRoute({ name: 'writer', connectionId: 'local' }), null)
   assert.equal(botConnectionRoute({ name: 'writer' }), null)
-  // remoteSource is required — an annotated ACTIVE row keeps the active door.
-  assert.equal(botConnectionRoute({ name: 'writer', connectionId: 'spark', sourceScoped: true }), null)
+  // Registered remotes stay explicit even when annotated as the active source;
+  // startup can restore Bot Chat before the active API route settles.
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(botConnectionRoute({ name: 'writer', connectionId: 'spark', sourceScoped: true }))
+    ),
+    {
+      connectionId: 'spark',
+      mode: 'remote',
+      profile: 'writer',
+      targetProfile: 'writer'
+    }
+  )
 
   const route = botConnectionRoute({ name: 'dixie', connectionId: 'mac-mini', remoteSource: true })
   assert.deepEqual(JSON.parse(JSON.stringify(route)), {

@@ -3327,12 +3327,13 @@ function botRosterKey(bot) {
 // active-gateway door. Feature-detected: older desktops without
 // requestProfile simply have no remote routes (callers fall back / disable).
 
-/** Route descriptor for a bot on another connection, or null for the local /
- *  active source (or when the desktop can't route). */
+/** Route descriptor for any bot on a registered non-local source. Even the
+ *  currently selected remote stays explicit: startup can restore Bot Chat
+ *  before that source becomes the active API route. */
 function botConnectionRoute(bot) {
   const id = String(bot?.connectionId || '').trim()
 
-  if (!bot?.remoteSource || !id || id === 'local' || typeof host.requestProfile !== 'function') {
+  if (!id || id === 'local' || typeof host.requestProfile !== 'function') {
     return null
   }
 
