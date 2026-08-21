@@ -77,13 +77,13 @@ export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
 
-export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+export async function resolveMediaDisplaySrc(path: string, profile?: null | string): Promise<string> {
   if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
     return path
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+    return gatewayMediaDataUrl(path, profile)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -188,8 +188,8 @@ export function isRemoteGateway(): boolean {
 // bridge. Remote Desktop artifacts can live anywhere the gateway can read
 // (workspace, skills, ~/.hermes/cache, etc.); /api/media is intentionally
 // narrower and rejects non-images plus images outside its media roots.
-export async function gatewayMediaDataUrl(path: string): Promise<string> {
-  return readDesktopFileDataUrl(filePathFromMediaPath(path))
+export async function gatewayMediaDataUrl(path: string, profile?: null | string): Promise<string> {
+  return readDesktopFileDataUrl(filePathFromMediaPath(path), profile)
 }
 
 // Remote-mode replacement for opening gateway-local file paths with file://.
@@ -198,7 +198,8 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
 // used by preview endpoints.
 export async function downloadGatewayMediaFile(
-  path: string
+  path: string,
+  profile?: null | string
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
   const file = filePathFromMediaPath(path)
   const conn = $connection.get()
@@ -209,7 +210,7 @@ export async function downloadGatewayMediaFile(
 
   return window.hermesDesktop.saveGatewayFile({
     path: file,
-    profile: conn?.profile,
+    profile: profile === undefined ? conn?.profile : profile,
     suggestedName: mediaName(file)
   })
 }

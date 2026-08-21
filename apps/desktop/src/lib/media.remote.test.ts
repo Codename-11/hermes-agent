@@ -234,15 +234,25 @@ describe('downloadGatewayMediaFile', () => {
   })
 
   it('downloads gateway files through the native desktop save bridge', async () => {
-    await expect(downloadGatewayMediaFile('file:///Users/me/project/a%20b.md')).resolves.toEqual({
+    await expect(downloadGatewayMediaFile('file:///Users/me/project/a%20b.md', 'artifact-owner')).resolves.toEqual({
       path: '/Users/me/Downloads/report.md',
       saved: true
     })
 
     expect(saveGatewayFile).toHaveBeenCalledWith({
       path: '/Users/me/project/a b.md',
-      profile: 'docker-gw',
+      profile: 'artifact-owner',
       suggestedName: 'a b.md'
+    })
+  })
+
+  it('preserves a null artifact owner instead of retargeting the active profile', async () => {
+    await downloadGatewayMediaFile('/Users/me/project/default.md', null)
+
+    expect(saveGatewayFile).toHaveBeenCalledWith({
+      path: '/Users/me/project/default.md',
+      profile: null,
+      suggestedName: 'default.md'
     })
   })
 

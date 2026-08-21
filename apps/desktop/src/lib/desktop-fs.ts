@@ -57,9 +57,13 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+function remoteFsApi<T>(
+  path: string,
+  body?: Record<string, unknown>,
+  profile: null | string | undefined = desktopFsProfile()
+): Promise<T> {
   return bridge().api<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
+    body ? { body, method: 'POST', path, profile } : { path, profile }
   )
 }
 
@@ -99,12 +103,16 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
+export async function readDesktopFileDataUrl(path: string, profile?: null | string): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readFileDataUrl(path)
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  const result = await remoteFsApi<string | { dataUrl?: string }>(
+    fsPath('read-data-url', path),
+    undefined,
+    profile === undefined ? desktopFsProfile() : profile
+  )
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }

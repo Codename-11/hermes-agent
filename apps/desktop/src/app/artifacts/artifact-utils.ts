@@ -11,6 +11,7 @@ export interface ArtifactRecord {
   value: string
   href: string
   label: string
+  profile: null | string
   sessionId: string
   sessionTitle: string
   timestamp: number
@@ -24,6 +25,18 @@ export interface ArtifactLoadFailure {
 export interface ArtifactLoadResult {
   artifacts: ArtifactRecord[]
   failures: ArtifactLoadFailure[]
+}
+
+export type ArtifactOpenTarget =
+  | { href: string; kind: 'external' }
+  | { kind: 'download'; path: string; profile: null | string }
+
+export function artifactOpenTarget(artifact: ArtifactRecord, remote: boolean): ArtifactOpenTarget {
+  if (remote && artifact.kind === 'file') {
+    return { kind: 'download', path: artifact.value, profile: artifact.profile }
+  }
+
+  return { href: artifact.href, kind: 'external' }
 }
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
@@ -184,14 +197,14 @@ function artifactHref(value: string): string {
   return value
 }
 
-export async function artifactImageSrc(value: string): Promise<string> {
+export async function artifactImageSrc(value: string, profile?: null | string): Promise<string> {
   // Delegate the whole local/remote ladder to the shared media resolver:
   // inline (http/data) stays as-is, remote gateway goes through the
   // authenticated fs bridge, local desktop through the Electron
   // readFileDataUrl, and bare non-path link values fall through untouched.
   // Reimplementing that ladder here would drift from resolveMediaDisplaySrc
   // and regress one of its legs (#83380).
-  return resolveMediaDisplaySrc(value)
+  return resolveMediaDisplaySrc(value, profile)
 }
 
 function artifactLabel(value: string): string {
@@ -416,6 +429,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         value,
         href: artifactHref(value),
         label: artifactLabel(value),
+        profile: session.profile ?? null,
         sessionId: session.id,
         sessionTitle: title,
         timestamp: artifactTimestamp(message, session)
