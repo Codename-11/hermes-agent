@@ -25,8 +25,11 @@ const {
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  newSessionInProfile,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  requestFreshSession,
+  takeFreshSessionWorkspaceTarget
 } = await import('./profile')
 
 const { $connection } = await import('./session')
@@ -123,6 +126,28 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(invalidateProfileScopedQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('cwd-aware fresh profile sessions', () => {
+  it('carries an explicit workspace target exactly once', () => {
+    newSessionInProfile('worker', { workspaceTarget: '/repos/plugin' })
+
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: true, target: '/repos/plugin' })
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: false, target: undefined })
+  })
+
+  it('does not turn the legacy profile-only path into an explicit workspace choice', () => {
+    newSessionInProfile('worker')
+
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: false, target: undefined })
+  })
+
+  it('does not leak a workspace target across a newer unrelated fresh request', () => {
+    newSessionInProfile('worker', { workspaceTarget: '/repos/plugin' })
+    requestFreshSession()
+
+    expect(takeFreshSessionWorkspaceTarget()).toEqual({ specified: false, target: undefined })
   })
 })
 

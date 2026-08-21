@@ -18,6 +18,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useCoreProfiles } from '@/contrib/react/use-core-profiles'
 import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
@@ -50,7 +51,6 @@ import {
   toggleSidebarStatusFilter
 } from '@/store/layout'
 import {
-  $profiles,
   $showAllProfiles,
   normalizeProfileKey,
   requestProfileCreate,
@@ -158,7 +158,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const projectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
   const showAllProfiles = useStore($showAllProfiles)
-  const profileNames = useStore($profiles).map(profile => normalizeProfileKey(profile.name))
+  const profileNames = useCoreProfiles().map(profile => normalizeProfileKey(profile.name))
   const narrowsByProfile = showAllProfiles && profileNames.length > 1
   const prFilter = useStore($sidebarPrFilter)
   const showArchived = useStore($sidebarShowArchived)

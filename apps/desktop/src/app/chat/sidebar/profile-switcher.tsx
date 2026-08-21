@@ -40,6 +40,7 @@ import {
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { useCoreProfiles } from '@/contrib/react/use-core-profiles'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -58,7 +59,6 @@ import {
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
-  $profiles,
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
@@ -119,7 +119,7 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
-  const profiles = useStore($profiles)
+  const profiles = useCoreProfiles()
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)

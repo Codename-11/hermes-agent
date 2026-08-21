@@ -42,8 +42,8 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   atoms): active session, per-session turn-busy, cwd, gateway socket status,
   model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
-  restart the gateway, subscribe to the gateway event stream, and inspect or
-  open the core-owned updater through `host.updates`.
+  restart the gateway, subscribe to the gateway event stream, and inspect,
+  refresh, or invoke the standard core-owned updater through `host.updates`.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
@@ -214,6 +214,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Core profile visibility | `PROFILE_VISIBILITY_AREA` | `data: { hidden: [{ connectionId, profile }] }` |
 
 ### Panes
 
@@ -313,6 +314,24 @@ ctx.register({
 ```
 
 Provide either `path` or `onSelect`; rows with neither are ignored.
+
+### Core profile visibility
+
+A plugin that owns profile identities rendered through its own UI can keep those
+rows out of core profile chrome without deleting or mutating the backend roster:
+
+```javascript
+ctx.register({
+  id: 'owned-profiles',
+  area: PROFILE_VISIBILITY_AREA,
+  data: { hidden: [{ connectionId: 'homelab', profile: 'worker' }] }
+})
+```
+
+Both fields are required. A bare profile name is ignored because two registered
+sources can expose the same name. Core-owned or malformed declarations fail
+open, the default profile remains visible, and routing/session stores continue
+to use the full authoritative inventory; filtering is presentation-only.
 
 ### Status bar and title bar
 
@@ -537,12 +556,14 @@ host.navigate('/route')                    // hash-route navigation
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
-host.newChat(profile?)                     // fresh chat draft, optionally in another profile
+host.newChat(profile?)                     // legacy profile-only fresh draft
+host.newChat({ profile?, cwd? })           // fresh draft with an explicit workspace; cwd: null detaches
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
+host.revealPane(paneId)                    // idempotently restore, unhide, and focus a pane
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
@@ -664,38 +685,20 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
-### Update status and lifecycle
+### Update status and apply
 
-The Axiom fork adds a narrow `host.updates` facade for plugins that need update
-observability and the core-owned staged lifecycle without becoming an updater:
+`host.updates` is a compact facade over the standard Desktop updater:
 
 ```ts
-const client = host.updates.getStatus('client')
-const backend = host.updates.getStatus('backend')
-const backendApply = host.updates.getBackendApply()
-const stage = await host.updates.getStage()
-const history = await host.updates.getHistory()
-
-await host.updates.prepare()
-await host.updates.restartAndApply()
-await host.updates.applyBackend()
+const status = useValue(host.updates.status)
+await host.updates.refresh()
+const result = await host.updates.apply()
 ```
 
-The client and backend are deliberately separate. `client` describes the
-Electron host's checkout and configured update branch; `backend` describes the
-active `hermes serve` runtime, which may be remote and have a different version
-or deploy state. Each call returns a detached snapshot (or `null` before core has
-published one), including `fetchedAt` when available. Mutating a returned object
-cannot change core update state.
-
-The named lifecycle methods are `refresh(target)`, `getStage()`, `prepare()`,
-`discardStage()`, `restartAndApply()`, `getHistory()`, `getBackendApply()`, and
-`applyBackend()`. Core owns target pinning, progress, dirty-tree validation,
-deploy reconciliation, package integrity, shutdown, rollback, reconnection, and
-relaunch. Plugins render the detached lifecycle snapshots themselves; there is
-no native-overlay redirect in this facade. There are intentionally no
-plugin-facing branch-write, arbitrary manifest path, shell, progress-event, or
-raw IPC methods.
+`status` is readonly and detached from the core store. `refresh()` uses the
+existing update check; `apply()` uses the same guarded handoff as the native
+Desktop UI. Prepared/staged lifecycle, branch writes, arbitrary manifest paths,
+shell, progress-event, and raw IPC doors remain core-only.
 
 ## Data layer — React Query + nanostores
 

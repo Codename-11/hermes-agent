@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { useCoreProfiles } from '@/contrib/react/use-core-profiles'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
@@ -76,7 +77,6 @@ import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
   $profileColors,
-  $profiles,
   $profileScope,
   ALL_PROFILES,
   messagingTotalsKey,
@@ -387,10 +387,15 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
-  const profiles = useStore($profiles)
+  const profiles = useCoreProfiles()
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
   const activeConnectionId = useStore($activeConnectionId)
+
+  const visibleProfileKeys = useMemo(
+    () => new Set(profiles.map(profile => normalizeProfileKey(profile.name))),
+    [profiles]
+  )
 
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
@@ -490,8 +495,12 @@ export function ChatSidebar({
   const scopedSessions = useMemo(() => {
     const pool = showArchived ? archivedSessions : sessions
 
-    return filterSessionsByProfileScope(pool, profileScope)
-  }, [sessions, archivedSessions, showArchived, profileScope])
+    const scoped = filterSessionsByProfileScope(pool, profileScope)
+
+    return profileScope === ALL_PROFILES
+      ? scoped.filter(session => visibleProfileKeys.has(normalizeProfileKey(session.profile)))
+      : scoped
+  }, [sessions, archivedSessions, showArchived, profileScope, visibleProfileKeys])
 
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded

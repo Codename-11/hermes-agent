@@ -14,7 +14,7 @@ import {
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { type NewChatWorkspaceTarget, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -199,8 +199,28 @@ export const $newChatProfile = atom<string | null>(null)
 // resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
 
+export interface FreshSessionWorkspaceIntent {
+  specified: boolean
+  target: NewChatWorkspaceTarget
+}
+
+let freshSessionWorkspaceIntent: (FreshSessionWorkspaceIntent & { generation: number }) | null = null
+
 export function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
+}
+
+/** Consume the optional workspace intent attached to the next fresh-draft
+ * request. One-shot so a later ordinary New Chat cannot inherit it. */
+export function takeFreshSessionWorkspaceTarget(
+  generation = $freshSessionRequest.get()
+): FreshSessionWorkspaceIntent {
+  const intent = freshSessionWorkspaceIntent
+  freshSessionWorkspaceIntent = null
+
+  return intent?.generation === generation
+    ? { specified: intent.specified, target: intent.target }
+    : { specified: false, target: undefined }
 }
 
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
@@ -514,8 +534,12 @@ export function selectProfile(name: string): void {
 // session list, where switching scope would throw away the browse state the user
 // is in. Points new chats at the profile and opens its backend so the next
 // message lands in the right place.
-export function newSessionInProfile(name: string): void {
+export function newSessionInProfile(name: string, options?: { workspaceTarget?: NewChatWorkspaceTarget }): void {
   const target = normalizeProfileKey(name)
+
+  freshSessionWorkspaceIntent = Object.hasOwn(options ?? {}, 'workspaceTarget')
+    ? { generation: $freshSessionRequest.get() + 1, specified: true, target: options?.workspaceTarget }
+    : null
   $newChatProfile.set(target)
   requestFreshSession()
   void ensureGatewayProfile(target)
