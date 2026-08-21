@@ -3854,6 +3854,19 @@ function Install-Desktop {
         if (Test-Path $sibling) { $npmExe = $sibling }
     }
 
+    # Desktop builds require devDependencies (vite, tsc, electron-builder), but
+    # this installer can be launched from environments that export
+    # NODE_ENV=production. npm then implicitly omits dev deps and the Desktop
+    # build fails at scripts/assert-root-install.cjs with "Run from repo root:
+    # npm ci" even though we just ran npm ci. Force a development install/build
+    # for this stage and restore the caller's environment before returning.
+    $prevNodeEnv = $env:NODE_ENV
+    $prevNpmProduction = $env:NPM_CONFIG_PRODUCTION
+    $prevNpmOmit = $env:NPM_CONFIG_OMIT
+    $env:NODE_ENV = "development"
+    $env:NPM_CONFIG_PRODUCTION = "false"
+    $env:NPM_CONFIG_OMIT = ""
+
     # 1. Workspace-level install so apps/desktop's deps (Electron, Vite,
     # node-pty prebuilds, etc.) actually land in node_modules. This is
     # the SAME `npm install` Install-NodeDeps does for browser tools,
@@ -3915,6 +3928,9 @@ function Install-Desktop {
         }
     } catch {
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        $env:NODE_ENV = $prevNodeEnv
+        $env:NPM_CONFIG_PRODUCTION = $prevNpmProduction
+        $env:NPM_CONFIG_OMIT = $prevNpmOmit
         Pop-Location
         throw
     }
@@ -4048,6 +4064,9 @@ function Install-Desktop {
         $env:CSC_IDENTITY_AUTO_DISCOVERY = $prevCSCAuto
         $env:WIN_CSC_LINK = $prevWinCscLink
         $env:WIN_CSC_KEY_PASSWORD = $prevWinCscKeyPassword
+        $env:NODE_ENV = $prevNodeEnv
+        $env:NPM_CONFIG_PRODUCTION = $prevNpmProduction
+        $env:NPM_CONFIG_OMIT = $prevNpmOmit
     }
     Pop-Location
 
@@ -4129,7 +4148,9 @@ function New-DesktopShortcuts {
 
         $targets = @(
             (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes.lnk'),
-            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk')
+            (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes Desktop.lnk'),
+            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk'),
+            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes Desktop.lnk')
         )
 
         foreach ($lnkPath in $targets) {

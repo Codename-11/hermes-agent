@@ -181,6 +181,11 @@ def _cmd_subscribe(args):
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
+    if getattr(args, "toolsets", ""):
+        route["toolsets"] = [
+            ts.strip() for ts in args.toolsets.split(",") if ts.strip()
+        ]
+
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
             print(
@@ -217,6 +222,8 @@ def _cmd_subscribe(args):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         label = "Message" if route.get("deliver_only") else "Prompt"
         print(f"  {label}: {prompt_preview}")
+    if route.get("toolsets"):
+        print(f"  Toolsets: {', '.join(route['toolsets'])}")
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
@@ -245,10 +252,13 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("toolsets"):
+            print(f"    Toolsets: {', '.join(route['toolsets'])}")
+        if route.get("skills"):
+            print(f"    Skills:  {', '.join(route['skills'])}")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()
-
 
 def _cmd_remove(args):
     name = args.name.strip().lower()

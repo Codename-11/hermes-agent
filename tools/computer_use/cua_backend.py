@@ -946,6 +946,16 @@ def _has_path_separator(value: str) -> bool:
     return os.sep in value or (os.altsep is not None and os.altsep in value)
 
 
+def _windows_canonical_cua_driver() -> str:
+    """Return the official Windows installer's current-junction executable."""
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        local_app_data = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return os.path.join(
+        local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"
+    )
+
+
 def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     """Return candidate cua-driver commands in resolution order.
 
@@ -965,29 +975,25 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
         # driver missing instead of silently picking a different binary.
         return [configured]
 
-    candidates = [_CUA_DRIVER_DEFAULT_CMD]
     home = os.path.expanduser("~")
     if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA") or os.path.join(
-            home, "AppData", "Local"
-        )
-        candidates.extend([
-            # Official cua-driver installer location on Windows. Freshly
-            # installed sessions inherit a stale PATH, so PATH lookup alone
-            # misses it until every Hermes process is restarted.
-            os.path.join(
-                local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"
-            ),
+        # Prefer the official installer's current-release junction over PATH.
+        # Legacy installers left standalone ~/.local/bin copies that otherwise
+        # win PATH forever and trigger the same upgrade every update run.
+        candidates = [
+            _windows_canonical_cua_driver(),
+            _CUA_DRIVER_DEFAULT_CMD,
             os.path.join(home, ".local", "bin", "cua-driver.exe"),
             os.path.join(home, ".local", "bin", "cua-driver"),
-        ])
+        ]
     else:
-        candidates.extend([
+        candidates = [
+            _CUA_DRIVER_DEFAULT_CMD,
             os.path.join(home, ".local", "bin", "cua-driver"),
             os.path.join(home, ".cargo", "bin", "cua-driver"),
             "/opt/homebrew/bin/cua-driver",
             "/usr/local/bin/cua-driver",
-        ])
+        ]
     return candidates
 
 
@@ -1008,6 +1014,19 @@ def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
             if resolved:
                 return resolved
     return None
+
+
+def cua_driver_path_conflict() -> Optional[tuple[str, str]]:
+    """Return ``(stale_path_entry, canonical)`` for a Windows PATH conflict."""
+    if sys.platform != "win32" or os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+        return None
+    canonical = resolve_cua_driver_cmd()
+    path_entry = shutil.which(_CUA_DRIVER_DEFAULT_CMD)
+    if not canonical or not path_entry:
+        return None
+    if os.path.normcase(os.path.realpath(canonical)) == os.path.normcase(os.path.realpath(path_entry)):
+        return None
+    return path_entry, canonical
 
 
 def cua_driver_binary_available() -> bool:

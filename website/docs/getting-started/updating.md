@@ -14,7 +14,7 @@ Update to the latest version with a single command:
 hermes update
 ```
 
-This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
+This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update. Standard git installs update from `main`; configured deploy branches update from their deploy branch after upstream changes have been merged into it.
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
@@ -24,8 +24,8 @@ This pulls the latest code from `main`, updates dependencies, and prompts you to
 
 When you run `hermes update`, the following steps occur:
 
-1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files that get modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md).
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md).
+2. **Git update** — pulls the selected branch, or transactionally merges upstream and fast-forwards a configured deploy branch.
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
@@ -78,7 +78,20 @@ You can pass `--keep-stash` to a terminal `hermes update` too if you want the sa
 
 ### Preview-only: `hermes update --check`
 
-Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares against the same branch target `hermes update` would use; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+
+### Fork and deploy branch installs
+
+Forked installs can track the official Hermes repository through an `upstream` remote while deploying from a fork branch such as `axiom`. In this mode, `hermes update` treats the deploy branch as the runnable artifact:
+
+1. Fetch `origin/<deploy-branch>` and `upstream/main`.
+2. If the live checkout is only behind `origin/<deploy-branch>`, fast-forward it.
+3. If upstream has new commits, merge `upstream/main` into the deploy branch in a temporary worktree, push the result to origin, then fast-forward the live checkout.
+4. If the upstream merge conflicts, leave the live checkout untouched and print a copy/paste handoff block with the repo path, retained worktree path, commits, and conflicted files.
+
+`hermes version` and `hermes update --check` use the same deploy-branch comparison: live `HEAD` versus `origin/<deploy-branch>`, plus upstream commits not yet merged into `origin/<deploy-branch>`. They do not use a stale local `main` branch as the deploy baseline.
+
+Local uncommitted changes are stashed before deploy-branch updates. When code actually changes, the stash is preserved instead of being reapplied automatically so the live checkout stays on the tested deploy branch. Restore it manually only after reviewing whether those changes are still intended.
 
 ### Fleet preview: `hermes update --plan`
 
@@ -114,7 +127,7 @@ Update backups protect an in-place update. If you're migrating your whole setup 
 
 ### Windows: another `hermes.exe` is running
 
-On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `hermes` REPL in another terminal, or a running gateway:
+On Windows, `hermes update` first pauses running Hermes gateway processes it can identify, then checks for any remaining `hermes.exe` process holding the venv's entry-point executable open. If a non-gateway process still has the shim loaded — most commonly the Hermes Desktop app's spawned backend or an open `hermes` REPL in another terminal — the update refuses to continue:
 
 ```
 $ hermes update
@@ -130,7 +143,7 @@ $ hermes update
   confirmed those processes will not write to the venv.
 ```
 
-Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
+Close the listed processes and re-run. A listed gateway usually means Hermes could not map or stop it; try `hermes gateway stop` once before killing the PID manually. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
 A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
 

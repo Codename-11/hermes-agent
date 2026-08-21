@@ -513,7 +513,7 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions():
+def _build_allowed_mentions(*, replied_user: Optional[bool] = None):
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
     Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
@@ -540,11 +540,15 @@ def _build_allowed_mentions():
             return default
         return raw in {"true", "1", "yes", "on"}
 
+    allow_replied_user = _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True)
+    if replied_user is not None:
+        allow_replied_user = bool(replied_user)
+
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
         roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        replied_user=allow_replied_user,
     )
 
 
@@ -3509,6 +3513,13 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             message_ids = []
+            allowed_mentions = None
+            if metadata and metadata.get("suppress_reply_mentions"):
+                # Bot-authored replies must not ping the bot they answer;
+                # allow_bots=mentions would otherwise admit that reply as a
+                # fresh turn and recreate the roundtable consensus loop.
+                allowed_mentions = _build_allowed_mentions(replied_user=False)
+
             # Build the reference from ids — no fetch_message round trip.
             reference = self._reply_reference_for_send(reply_to, channel)
 
@@ -3518,10 +3529,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs: Dict[str, Any] = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if allowed_mentions is not None:
+                        send_kwargs["allowed_mentions"] = allowed_mentions
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -3540,10 +3554,8 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        send_kwargs["reference"] = None
+                        msg = await channel.send(**send_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -6693,7 +6705,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _get_allow_bots(self) -> str:
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
-        return self._gate_env("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
+        raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
+        return str(raw or "none").lower().strip() or "none"
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs/names where no bot mention is required.
@@ -10323,7 +10336,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
     ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
-    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_ALLOW_BOTS``,
+    ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
     ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
@@ -10431,6 +10445,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["no_thread_channels"] = str(ntc)
         if not _skip_env_bridge and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
             os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+    # allow_bots: allow bot-authored messages through the message gate.
+    # none | mentions | all; scoped env wins over per-adapter config.
+    allow_bots_cfg = (
+        discord_cfg["allow_bots"] if "allow_bots" in discord_cfg
+        else platform_extra_cfg.get("allow_bots")
+    )
+    if allow_bots_cfg is not None:
+        seeded_extra["allow_bots"] = str(allow_bots_cfg).lower()
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOW_BOTS"):
+            os.environ["DISCORD_ALLOW_BOTS"] = str(allow_bots_cfg).lower()
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.

@@ -5911,6 +5911,12 @@ class GatewaySlashCommandsMixin:
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+
+        raw_update_args = (event.get_command_args() or "").strip()
+        if raw_update_args:
+            return "✗ `/update` no longer has modes. Run `/update` by itself."
+
+        update_argv = ["update", "--gateway"]
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -5983,7 +5989,7 @@ class GatewaySlashCommandsMixin:
                         sys.executable, "-c", helper,
                         str(output_path), str(exit_code_path),
                         sys.executable, "-m", "hermes_cli.main",
-                        "update", "--gateway",
+                        *update_argv,
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -5991,8 +5997,9 @@ class GatewaySlashCommandsMixin:
                 )
             else:
                 hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
+                update_argv_str = " ".join(shlex.quote(part) for part in update_argv)
                 update_cmd = (
-                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
+                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} {update_argv_str}"
                     f" > {shlex.quote(str(output_path))} 2>&1; "
                     # Avoid `status=$?`: `status` is a read-only special parameter
                     # in zsh, and this command string is copied/reused in macOS/zsh

@@ -978,7 +978,8 @@ def _(rid, params: dict) -> dict:
     target = str(params.get("session_key") or "").strip()
     if not target:
         return _err(rid, 4007, "session_key required")
-    raw = str(params.get("cwd", "") or "").strip()
+    unassigned = bool(params.get("unassigned"))
+    raw = os.path.expanduser("~") if unassigned else str(params.get("cwd", "") or "").strip()
     if not raw:
         return _err(rid, 4016, "cwd required")
     from hermes_constants import translate_cwd_for_wsl_backend
@@ -997,8 +998,11 @@ def _(rid, params: dict) -> dict:
                 live, live_sid = sess, sid
                 break
 
-    branch = _git_branch_for_cwd(resolved)
-    root = _git_common_repo_root_for_cwd(resolved)
+    # Home/unassigned keeps a valid runtime cwd for terminal/file tools while
+    # deliberately clearing the persisted Git identity that Project grouping
+    # consumes. The home path itself is excluded by the Project source policy.
+    branch = None if unassigned else _git_branch_for_cwd(resolved)
+    root = None if unassigned else _git_common_repo_root_for_cwd(resolved)
     with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)

@@ -439,6 +439,93 @@ def _detect_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
+# Product-name replacements applied to the relocated OAuth system prompt so
+# nothing in the preamble reads as a competing-product identity (Anthropic's
+# OAuth billing classifier fingerprints distinctive non-Claude-Code content).
+_OAUTH_TEXT_REPLACEMENTS = (
+    ("Hermes Agent", "Claude Code"),
+    ("Hermes agent", "Claude Code"),
+    ("hermes-agent", "claude-code"),
+    ("Nous Research", "Anthropic"),
+)
+# Wrapper tag for the relocated prompt on the first user message.
+_OAUTH_SYSTEM_CONTEXT_TAG = "system_context"
+
+
+def _sanitize_oauth_text(text: str) -> str:
+    """Mask competing-product identity references in OAuth-relocated prompt text."""
+    for old, new in _OAUTH_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
+def _to_oauth_wire_name(name: str) -> str:
+    """Encode a tool name for the Claude-Code OAuth wire.
+
+    Anthropic's OAuth billing classifier treats a single-underscore ``mcp_``
+    tool name as a third-party-app fingerprint and rejects the request with
+    HTTP 400 "Third-party apps now draw from extra usage, not plan limits".
+    Promote every leading ``mcp_`` to ``mcp__`` and prefix bare native tool
+    names so NOTHING on the wire carries a single-underscore ``mcp_``.
+
+    Idempotent on already-encoded names. See PR #47723.
+    """
+    if name.startswith("mcp__"):
+        return name  # already correct, don't double-prefix
+    if name.startswith("mcp_"):
+        # single-underscore native MCP tool -> promote to double
+        return "mcp__" + name[len("mcp_"):]
+    return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+
+
+def _prepend_oauth_system_context(messages, preamble: str) -> None:
+    """Prepend ``preamble`` as a cache-marked leading block of the first user message.
+
+    Used on the OAuth path to relocate the real system prompt out of ``system[]``
+    (which Anthropic's billing classifier fingerprints as third-party traffic)
+    and into the conversation, mirroring how Claude Code keeps only its identity
+    line in ``system[]``.
+
+    The relocated block carries a 5m ``cache_control`` marker (built via
+    ``prompt_caching._build_marker``) so the heavy prompt prefix is still cached
+    across turns — the first user message is a stable prefix within a
+    conversation, so the cache breakpoint simply moves from the system slot to
+    the first-user-message slot without breaking caching.
+
+    Note on the 4-breakpoint cap: the upstream ``apply_anthropic_cache_control``
+    pass places a marker on the (heavy) system block + the last 3 messages. When
+    the OAuth path below reduces ``system[]`` to the identity line, that system
+    marker is discarded along with the block it rode on, and this preamble marker
+    takes its place — net total stays at exactly 4 (verified by
+    ``test_oauth_relocation_respects_4_breakpoint_cap``).
+
+    Mutates ``messages`` in place. Handles user messages whose content is a
+    plain string or a list of content blocks, and synthesises a user message at
+    the front if none exists.
+    """
+    if not preamble:
+        return
+    from agent.prompt_caching import _build_marker
+    block = {
+        "type": "text",
+        "text": preamble,
+        "cache_control": _build_marker("5m"),
+    }
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = (
+                [block, {"type": "text", "text": content}] if content else [block]
+            )
+        elif isinstance(content, list):
+            msg["content"] = [block] + content
+        else:
+            msg["content"] = [block]
+        return
+    messages.insert(0, {"role": "user", "content": [block]})
+
 
 def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
@@ -1241,6 +1328,11 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     has already produced a valid token, adopt it and skip the POST entirely.
     Only fall back to refreshing ourselves when no fresh credential is found.
     """
+    caller_refresh_token = creds.get("refreshToken", "")
+    if not caller_refresh_token:
+        logger.debug("No refresh token available — cannot refresh")
+        return None
+
     # Claude Code may have already refreshed — adopt its token rather than
     # racing it with our (possibly already-rotated) refresh token. Only adopt
     # when the live re-read produced a DIFFERENT token with a real future
@@ -1248,7 +1340,13 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     # no-op, and a 0/absent ``expiresAt`` means "managed key / unknown expiry"
     # (see is_claude_code_token_valid) which must NOT be treated as a fresh
     # refresh here.
-    current = read_claude_code_credentials()
+    #
+    # Restrict this live re-read to credentials that came from Claude Code's
+    # credential sources (``source`` is attached by read_claude_code_credentials)
+    # or refresh-only stale callers. Otherwise a unit/integration caller that
+    # passes an arbitrary expired token can accidentally adopt the operator's
+    # unrelated host-local Claude credential and mask refresh failures.
+    current = read_claude_code_credentials() if (creds.get("source") or not creds.get("accessToken")) else None
     if current:
         current_token = current.get("accessToken", "")
         current_exp = current.get("expiresAt", 0) or 0
@@ -1261,10 +1359,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             logger.debug("Adopted Claude Code's already-refreshed OAuth token")
             return current_token
 
-    refresh_token = (current or {}).get("refreshToken", "") or creds.get("refreshToken", "")
-    if not refresh_token:
-        logger.debug("No refresh token available — cannot refresh")
-        return None
+    refresh_token = (current or {}).get("refreshToken", "") or caller_refresh_token
 
     try:
         refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
@@ -1385,6 +1480,15 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _is_claude_code_source_suppressed() -> bool:
+    """Check if the claude_code source is suppressed for the anthropic provider."""
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed("anthropic", "claude_code")
+    except ImportError:
+        return False
+
+
 def _resolve_anthropic_pool_token() -> Optional[str]:
     """Return the first available Anthropic OAuth token from credential_pool.
 
@@ -1438,12 +1542,13 @@ def resolve_anthropic_token() -> Optional[str]:
 
     Returns the token string or None.
     """
+    claude_code_suppressed = _is_claude_code_source_suppressed()
     creds: Optional[Dict[str, Any]] = None
     creds_loaded = False
 
     def _read_creds() -> Optional[Dict[str, Any]]:
         nonlocal creds, creds_loaded
-        if not creds_loaded:
+        if not claude_code_suppressed and not creds_loaded:
             creds = read_claude_code_credentials()
             creds_loaded = True
         return creds
@@ -1451,17 +1556,19 @@ def resolve_anthropic_token() -> Optional[str]:
     # 1. Hermes-managed OAuth/setup token env var
     token = _getenv("ANTHROPIC_TOKEN").strip()
     if token:
-        preferred = _prefer_refreshable_claude_code_token(token, _read_creds())
-        if preferred:
-            return preferred
+        if not claude_code_suppressed:
+            preferred = _prefer_refreshable_claude_code_token(token, _read_creds())
+            if preferred:
+                return preferred
         return token
 
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = _getenv("CLAUDE_CODE_OAUTH_TOKEN").strip()
     if cc_token:
-        preferred = _prefer_refreshable_claude_code_token(cc_token, _read_creds())
-        if preferred:
-            return preferred
+        if not claude_code_suppressed:
+            preferred = _prefer_refreshable_claude_code_token(cc_token, _read_creds())
+            if preferred:
+                return preferred
         return cc_token
 
     # 3. Regular API key. An explicit user-configured key must not be shadowed
@@ -1470,10 +1577,11 @@ def resolve_anthropic_token() -> Optional[str]:
     if api_key:
         return api_key
 
-    # 4. Claude Code credential file
-    resolved_claude_token = _resolve_claude_code_token_from_credentials(_read_creds())
-    if resolved_claude_token:
-        return resolved_claude_token
+    # 4. Claude Code credential file (skip if suppressed)
+    if not claude_code_suppressed:
+        resolved_claude_token = _resolve_claude_code_token_from_credentials(_read_creds())
+        if resolved_claude_token:
+            return resolved_claude_token
 
     # 5. Hermes credential_pool OAuth entry.
     resolved_pool_token = _resolve_anthropic_pool_token()
@@ -2413,15 +2521,20 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
         return {"role": "user", "content": content}
 
 
-def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
+def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> set[int]:
     """Strip tool_use blocks with no matching tool_result, and vice versa.
 
     Context compression or session truncation can remove either side of a
     tool-call pair, or insert messages between a tool_use and its result.
     Anthropic requires each tool_use to have a matching tool_result in the
     IMMEDIATELY FOLLOWING user message — a global ID match is not enough.
-    Mutates ``result`` in place.
+
+    Mutates ``result`` in place and returns assistant-message indices whose
+    content was mutated, because thinking signatures on those messages are no
+    longer valid.
     """
+    mutated_assistant_indices: set[int] = set()
+
     # Pass 1: For each assistant message with tool_use blocks, check that
     # EACH tool_use ID has a matching tool_result in the immediately following
     # user message.  Strip tool_use blocks that lack an adjacent result —
@@ -2464,11 +2577,13 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
         # _manage_thinking_signatures can demote the dead signature instead of
         # replaying it verbatim.  See hermes-agent: extended-thinking + parallel
         # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
-        if len(kept) != len(m["content"]) and any(
-            isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
-            for b in m["content"]
-        ):
-            m["_thinking_signature_invalidated"] = True
+        if len(kept) != len(m["content"]):
+            mutated_assistant_indices.add(i)
+            if any(
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+                for b in m["content"]
+            ):
+                m["_thinking_signature_invalidated"] = True
         m["content"] = kept if kept else [{"type": "text", "text": "(tool call removed)"}]
 
     # Pass 2: Rebuild the set of tool_use IDs that survived pass 1, then
@@ -2493,15 +2608,33 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
         if len(new_content) != len(m["content"]):
             m["content"] = new_content if new_content else [{"type": "text", "text": "(tool result removed)"}]
 
+    return mutated_assistant_indices
 
-def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+def _merge_consecutive_roles(
+    result: List[Dict[str, Any]],
+    mutated_assistant_indices: set[int] | None = None,
+) -> tuple[List[Dict[str, Any]], set[int]]:
     """Merge consecutive same-role messages to enforce Anthropic alternation.
 
-    Returns a new list (caller must rebind ``result``).
+    Returns ``(fixed_messages, mutated_assistant_indices)``.  The mutation set
+    is remapped from the original ``result`` indices to the new ``fixed``
+    indices, and assistant messages changed by merging are added because their
+    thinking signatures become invalid.
     """
-    fixed = []
-    for m in result:
+    incoming_mutated = set(mutated_assistant_indices or set())
+    fixed: List[Dict[str, Any]] = []
+    old_to_new_idx: dict[int, int] = {}
+    merged_mutated_fixed: set[int] = set()
+
+    for old_idx, m in enumerate(result):
         if fixed and fixed[-1]["role"] == m["role"]:
+            # Merging into the previous fixed entry — the previous entry's
+            # fixed index inherits mutation status from the merged message.
+            new_idx = len(fixed) - 1
+            old_to_new_idx[old_idx] = new_idx
+            if old_idx in incoming_mutated:
+                merged_mutated_fixed.add(new_idx)
             if m["role"] == "user":
                 prev_content = fixed[-1]["content"]
                 curr_content = m["content"]
@@ -2524,6 +2657,7 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
                 # Drop thinking blocks from the *second* message: their
                 # signature was computed against a different turn boundary
                 # and becomes invalid once merged.
+                merged_mutated_fixed.add(new_idx)
                 if isinstance(m["content"], list):
                     m["content"] = [
                         b for b in m["content"]
@@ -2542,12 +2676,24 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
                         curr_blocks = [{"type": "text", "text": curr_blocks}]
                     fixed[-1]["content"] = prev_blocks + curr_blocks
         else:
+            new_idx = len(fixed)
+            old_to_new_idx[old_idx] = new_idx
             fixed.append(m)
-    return fixed
+
+    # Remap orphan-stripping mutations from old result indices to new fixed indices.
+    mutated_fixed = set(merged_mutated_fixed)
+    for old_idx in incoming_mutated:
+        mapped = old_to_new_idx.get(old_idx)
+        if mapped is not None:
+            mutated_fixed.add(mapped)
+    return fixed, mutated_fixed
 
 
 def _manage_thinking_signatures(
-    result: List[Dict[str, Any]], base_url: str | None, model: str | None
+    result: List[Dict[str, Any]],
+    base_url: str | None,
+    model: str | None,
+    mutated_assistant_indices: set[int] | None = None,
 ) -> None:
     """Strip or preserve thinking blocks based on endpoint type.
 
@@ -2559,10 +2705,10 @@ def _manage_thinking_signatures(
     Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
     Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
     and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
-    endpoints speak the Anthropic protocol upstream but require unsigned
-    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
-    replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
-    hermes-agent#16748 (DeepSeek).
+    endpoints speak the Anthropic protocol upstream. Kimi accepts thinking
+    blocks as-is, while DeepSeek requires unsigned thinking blocks
+    (synthesised from ``reasoning_content``) on replayed assistant tool-call
+    messages. See hermes-agent#13848 (Kimi) and hermes-agent#16748 (DeepSeek).
 
     Nous Portal's ``/v1/messages`` route is the exception among third-party
     hosts: it proxies Claude to Anthropic/Vertex/Bedrock and validates the
@@ -2580,6 +2726,7 @@ def _manage_thinking_signatures(
         _is_third_party_anthropic_endpoint(base_url)
         and not _is_nous_portal_endpoint(base_url)
     )
+    _mutated_assistant_indices = set(mutated_assistant_indices or set())
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -2591,6 +2738,7 @@ def _manage_thinking_signatures(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
+        _is_mutated = idx in _mutated_assistant_indices
         if _is_kimi_family_endpoint(base_url, model):
             # Kimi does not enforce thinking signatures — replay as-is
             # (shared cleanup below still strips cache markers + the internal flag).
@@ -2608,8 +2756,11 @@ def _manage_thinking_signatures(
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:
-            # Third-party: strip ALL thinking blocks (signatures are proprietary).
+            # Third-party endpoint: strip ALL thinking blocks from every
+            # assistant message — signatures are Anthropic-proprietary.
             # Direct Anthropic: strip from non-latest assistant messages only.
+            # Latest mutated turns are handled below so their reasoning text can
+            # be demoted to a normal text block instead of silently discarded.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
@@ -2627,7 +2778,7 @@ def _manage_thinking_signatures(
             # and a bare signed block with no following tool_use is also invalid.
             # Demote ALL thinking blocks on this turn to text so the turn replays
             # cleanly and the model can re-plan from the surviving tool results.
-            signature_dead = bool(m.get("_thinking_signature_invalidated"))
+            signature_dead = bool(m.get("_thinking_signature_invalidated")) or _is_mutated
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
@@ -2894,10 +3045,21 @@ def convert_messages_to_anthropic(
         # Regular user message
         result.append(_convert_user_message(content))
 
-    _strip_orphaned_tool_blocks(result)
-    result = _merge_consecutive_roles(result)
+    _mutated_assistant_indices = _strip_orphaned_tool_blocks(result)
+    result, _mutated_assistant_indices = _merge_consecutive_roles(
+        result, _mutated_assistant_indices
+    )
+    _leading_user_inserted = bool(result and result[0].get("role") != "user")
     _ensure_leading_user_turn(result)
-    _manage_thinking_signatures(result, base_url, model)
+    if _leading_user_inserted:
+        # The synthetic leading user turn shifts every assistant index by one.
+        # Keep signature-invalidation bookkeeping aligned with the mutated list.
+        _mutated_assistant_indices = {
+            index + 1 for index in _mutated_assistant_indices
+        }
+    _manage_thinking_signatures(
+        result, base_url, model, _mutated_assistant_indices
+    )
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
 
@@ -2985,27 +3147,30 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
-        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        # 1. Collect + sanitize existing system text in one pass (string or
+        #    content blocks). Sanitizing inline avoids a second list rebuild.
+        extra_system_parts: List[str] = []
         if isinstance(system, list):
-            system = [cc_block] + system
+            for b in system:
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                    extra_system_parts.append(_sanitize_oauth_text(b["text"]))
         elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
-        else:
-            system = [cc_block]
+            extra_system_parts.append(_sanitize_oauth_text(system))
 
-        # 2. Sanitize system prompt — replace product name references
-        #    to avoid Anthropic's server-side content filters.
-        for block in system:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+        # 2. system[] = the official Claude Code identity line only.
+        system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
 
-        # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
+        # 3. Relocate the real prompt into a <system_context> preamble on the
+        #    first user message, with cache_control to preserve prompt caching.
+        if extra_system_parts:
+            preamble = (
+                f"<{_OAUTH_SYSTEM_CONTEXT_TAG}>\n"
+                + "\n\n".join(extra_system_parts).strip()
+                + f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
+            )
+            _prepend_oauth_system_context(anthropic_messages, preamble)
+
+        # 4. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
         #    billing classifier treats a single-underscore ``mcp_`` tool name as
         #    a third-party-app fingerprint and rejects the request with HTTP 400
@@ -3023,20 +3188,12 @@ def build_anthropic_kwargs(
         #    so any session with an MCP server configured still tripped the
         #    classifier. normalize_response reverses both forms via registry
         #    lookup so the dispatcher still sees the original name. GH-25255.
-        def _to_oauth_wire_name(name: str) -> str:
-            if name.startswith("mcp__"):
-                return name  # already correct, don't double-prefix
-            if name.startswith("mcp_"):
-                # single-underscore native MCP tool -> promote to double
-                return "mcp__" + name[len("mcp_"):]
-            return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
-
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
 
-        # 4. Apply the same normalization to tool names in message history
+        # 5. Apply the same normalization to tool names in message history
         #    (tool_use blocks) so replayed turns match the wire names above.
         for msg in anthropic_messages:
             content = msg.get("content")
@@ -3068,8 +3225,13 @@ def build_anthropic_kwargs(
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+            # Specific tool name. On the OAuth wire the named tool must match
+            # the encoded name in ``tools`` (the _to_oauth_wire_name pass
+            # above), otherwise Anthropic rejects the call with 400
+            # "tool_choice not in tools". Idempotent on already-encoded names;
+            # non-OAuth callers get the raw name unchanged.
+            name = _to_oauth_wire_name(tool_choice) if is_oauth else tool_choice
+            kwargs["tool_choice"] = {"type": "tool", "name": name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.

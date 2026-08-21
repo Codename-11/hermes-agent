@@ -29,12 +29,15 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
+    _normalize_route_toolsets,
     check_webhook_requirements,
 )
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +342,21 @@ class TestRenderDeliveryExtra:
         assert result["static"] == 42  # non-string left as-is
 
 
+class TestRouteToolsets:
+    def test_normalize_route_toolsets_missing_falls_back(self):
+        assert _normalize_route_toolsets(None) is None
+
+    def test_normalize_route_toolsets_accepts_comma_string(self):
+        assert _normalize_route_toolsets("web, terminal, file") == [
+            "web",
+            "terminal",
+            "file",
+        ]
+
+    def test_normalize_route_toolsets_filters_non_string_entries(self):
+        assert _normalize_route_toolsets(["web", 42, "", "file"]) == ["web", "file"]
+
+
 # ===================================================================
 # Event filtering
 # ===================================================================
@@ -495,6 +513,43 @@ class TestHTTPHandling:
             resp = await cli.post("/webhooks/nonexistent", json={"a": 1})
             assert resp.status == 404
 
+    @pytest.mark.asyncio
+    async def test_webhook_handler_returns_202(self):
+        """Valid request returns 202 Accepted."""
+        routes = {"test": {"secret": _INSECURE_NO_AUTH, "prompt": "hi"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/test", json={"data": "value"})
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+            assert data["route"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_route_toolsets_attached_to_message_event(self):
+        """A trusted route can override webhook platform toolsets for its run."""
+        routes = {
+            "trusted": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "hi",
+                "toolsets": ["web", "terminal", "file"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/trusted", json={"data": "value"})
+            assert resp.status == 202
+
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.enabled_toolsets == ["web", "terminal", "file"]
 
     @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
@@ -831,12 +886,129 @@ class TestDeliverCrossPlatformThreadId:
             "12345", "hello", metadata={"thread_id": "999"}
         )
 
+    @pytest.mark.asyncio
+    async def test_message_thread_id_passed_as_thread_id(self):
+        """message_thread_id from deliver_extra is mapped to thread_id in metadata."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "message_thread_id": "888",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata={"thread_id": "888"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_thread_id_sends_no_metadata(self):
+        """When no thread_id is present, metadata is None."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata=None
+        )
+
+    def test_resolve_media_delivery_target_matches_text_delivery(self):
+        """MEDIA attachments resolve to the same adapter/chat/thread as text."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        chat_id = "webhook:test:d-xyz"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "12345", "thread_id": "999"},
+        }
+
+        target = adapter.resolve_media_delivery_target(chat_id)
+
+        assert target is not None
+        assert target["adapter"] is mock_target
+        assert target["chat_id"] == "12345"
+        assert target["metadata"] == {"thread_id": "999"}
+        assert target["platform"] == Platform("telegram")
+
+
+class TestWebhookCrossPlatformMediaDelivery:
+    @pytest.mark.asyncio
+    async def test_post_stream_video_uses_cross_platform_target_adapter(self, tmp_path):
+        """A webhook route delivered to Discord sends MEDIA files via Discord, not webhook."""
+        media = tmp_path / "release.mp4"
+        media.write_bytes(b"fake-video")
+
+        webhook_adapter = _make_adapter()
+        webhook_adapter.send_video = AsyncMock()
+
+        discord_adapter = AsyncMock()
+        discord_adapter.name = "discord"
+        discord_adapter.send_video = AsyncMock(return_value=SendResult(success=True))
+
+        mock_runner_for_webhook = MagicMock()
+        mock_runner_for_webhook.adapters = {Platform("discord"): discord_adapter}
+        mock_runner_for_webhook.config.get_home_channel.return_value = None
+        webhook_adapter.gateway_runner = mock_runner_for_webhook
+
+        chat_id = "webhook:release:d-123"
+        webhook_adapter._delivery_info[chat_id] = {
+            "deliver": "discord",
+            "deliver_extra": {"chat_id": "discord-channel", "thread_id": "discord-thread"},
+        }
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._thread_metadata_for_source = MagicMock(return_value={"thread_id": "origin-thread"})
+        runner._reply_anchor_for_event = MagicMock(return_value=None)
+        event = MessageEvent(
+            text="",
+            source=SessionSource(platform=Platform("webhook"), chat_id=chat_id),
+        )
+
+        await GatewayRunner._deliver_media_from_response(
+            runner,
+            f"MEDIA:{media}",
+            event,
+            webhook_adapter,
+        )
+
+        webhook_adapter.send_video.assert_not_awaited()
+        discord_adapter.send_video.assert_awaited_once_with(
+            chat_id="discord-channel",
+            video_path=str(media.resolve()),
+            metadata={"thread_id": "discord-thread"},
+        )
+
 
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a
     non-loopback bind. Guards against accidentally exposing an unauthenticated
     webhook endpoint on a public interface."""
 
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_public_bind(self):
+        """INSECURE_NO_AUTH + 0.0.0.0 is refused before the server starts."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        with pytest.raises(ValueError, match="INSECURE_NO_AUTH"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_lan_ip(self):
+        """A LAN IP is treated as public."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="192.168.1.50", port=0)
+        with pytest.raises(ValueError, match="non-loopback"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_empty_host(self):
+        """Empty host is conservatively treated as non-loopback."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="", port=0)
+        with pytest.raises(ValueError, match="INSECURE_NO_AUTH"):
+            await adapter.connect()
 
     @pytest.mark.parametrize(
         "host",

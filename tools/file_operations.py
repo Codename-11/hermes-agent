@@ -1145,6 +1145,52 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _search_files_python_local(
+        self,
+        search_pattern: str,
+        search_root: Path,
+        limit: int,
+        offset: int,
+        *,
+        has_hidden_path_ancestor: bool,
+    ) -> Optional[SearchResult]:
+        """Search an existing local filesystem path without shelling out.
+
+        Native Windows installs can run this code from a Python process whose
+        fallback shell is ``cmd.exe`` rather than MSYS bash. In that context a
+        command named ``find`` is Windows FIND, not POSIX find, and native
+        ``C:\\...`` paths do not behave like the Unix command line the fallback
+        expects.  Use Python traversal for real local paths on Windows; remote
+        backend paths (Docker/SSH/etc.) simply do not exist locally and fall
+        through to the backend shell implementation.
+        """
+        if os.name != "nt":
+            return None
+        try:
+            root = search_root.resolve()
+            if not root.exists() or not root.is_dir():
+                return None
+            matches = []
+            for candidate in root.rglob(search_pattern):
+                if not candidate.is_file():
+                    continue
+                try:
+                    rel_parts = candidate.resolve().relative_to(root).parts
+                except ValueError:
+                    rel_parts = candidate.parts
+                if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
+                    continue
+                matches.append(candidate)
+            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            page = matches[offset:offset + limit]
+            return SearchResult(
+                files=[str(p) for p in page],
+                total_count=len(matches),
+                truncated=len(matches) > offset + limit,
+            )
+        except Exception:
+            return None
+
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Escape a path argument destined for a NATIVE Windows binary.
 
@@ -2977,6 +3023,16 @@ class ShellFileOperations(FileOperations):
         # find on wide trees).  Mirrors _search_content which already uses rg.
         if self._has_command('rg'):
             return self._search_files_rg(search_pattern, path, limit, offset)
+
+        local_result = self._search_files_python_local(
+            search_pattern,
+            search_root,
+            limit,
+            offset,
+            has_hidden_path_ancestor=has_hidden_path_ancestor,
+        )
+        if local_result is not None:
+            return local_result
 
         # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):

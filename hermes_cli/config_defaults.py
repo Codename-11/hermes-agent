@@ -569,16 +569,6 @@ DEFAULT_CONFIG = {
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
         },
-        # Authenticated browser-extension controller lane. When enabled, an
-        # extension that registers through the gateway can become the exact
-        # controller for a session's browser_* tools (fail-closed once bound).
-        # Local API registration additionally requires the API server bearer
-        # key. developer_mode gates the privileged capabilities
-        # (browser_cdp / browser_evaluate) — never negotiable without it.
-        "extension_control": {
-            "enabled": False,
-            "developer_mode": False,
-        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -1120,6 +1110,14 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "language": "",
         },
+        "update_review": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 45,
+            "extra_body": {},
+        },
         "memory_query_rewrite": {
             "provider": "auto",
             "model": "",
@@ -1416,6 +1414,7 @@ DEFAULT_CONFIG = {
         # only visible when show_reasoning is enabled.
         "show_commentary": True,
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
+        "benchmark_command": False,  # Enable /bench command in messaging gateway
         # NOTE: display.tool_progress_overrides is deprecated and no longer
         # seeded here — use display.platforms. A user-set value is still
         # honored at runtime (gateway display_config back-compat read) and
@@ -2194,6 +2193,15 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
+    # Buzz platform settings (gateway mode). These live under ``extra``
+    # because the plugin adapter consumes PlatformConfig.extra.
+    "buzz": {
+        "extra": {
+            "require_mention": True,        # Require @mention in shared channels
+            "thread_require_mention": True,  # Preserve strict historical behavior by default
+        },
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
@@ -2202,6 +2210,7 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
         "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
+        "allow_bots": "none",            # none|mentions|all: whether bot-authored messages can trigger this bot
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "missed_message_backfill": {

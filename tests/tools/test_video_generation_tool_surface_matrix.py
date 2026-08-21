@@ -261,6 +261,192 @@ def test_xai_text_only_via_tool_surface(matrix_env):
     assert result.get("temporary_url") == "https://xai-cdn/out.mp4"
 
 
+def test_xai_text_plus_image_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {"prompt": "animate this", "image_url": "https://example.com/img.png"},
+    )
+    assert result["success"] is True
+    assert result["modality"] == "image"
+    assert result["provider"] == "xai"
+
+    assert len(xai_calls) == 1
+    assert xai_calls[0]["url"].endswith("/videos/generations")
+    payload = xai_calls[0]["json"] or {}
+    assert payload["model"] == "grok-imagine-video-1.5"
+    assert payload["image"] == {"url": "https://example.com/img.png"}
+
+
+def test_xai_image_to_video_rejects_bare_file_id_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "animate this robot waving",
+            "image_url": "file_03eb65b1-aa97-482f-9ef0-b04f9172ea00",
+        },
+    )
+    assert result["success"] is False
+    assert result.get("error_type") == "invalid_image_url"
+    assert len(xai_calls) == 0
+
+
+def test_xai_reference_to_video_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "put the jacket from the reference on the runway model",
+            "reference_image_urls": [
+                "https://example.com/model.png",
+                "https://example.com/jacket.png",
+            ],
+            "duration": 15,
+        },
+    )
+    assert result["success"] is True
+    assert result["modality"] == "reference"
+    assert result["provider"] == "xai"
+
+    payload = xai_calls[0]["json"] or {}
+    assert xai_calls[0]["url"].endswith("/videos/generations")
+    assert payload["model"] == "grok-imagine-video"
+    assert payload["duration"] == 10
+    assert payload["reference_images"] == [
+        {"url": "https://example.com/model.png"},
+        {"url": "https://example.com/jacket.png"},
+    ]
+
+
+def test_xai_reference_to_video_rejects_bare_file_ids_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "use these references for a robot product shot",
+            "reference_image_urls": [
+                "file_03eb65b1-aa97-482f-9ef0-b04f9172ea00",
+                "file_54b48d6d-28ad-4982-9d72-bd3ac677c9bc",
+            ],
+        },
+    )
+    assert result["success"] is False
+    assert result.get("error_type") == "invalid_reference_image_urls"
+    assert len(xai_calls) == 0
+
+
+def test_xai_video_edit_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "make the sky stormy",
+            "video_url": "https://example.com/source.mp4",
+        },
+        tool_name="xai_video_edit",
+    )
+    assert result["success"] is True
+    assert result["modality"] == "edit"
+
+    payload = xai_calls[0]["json"] or {}
+    assert xai_calls[0]["url"].endswith("/videos/edits")
+    assert payload["model"] == "grok-imagine-video"
+    assert payload["video"] == {"url": "https://example.com/source.mp4"}
+    assert "duration" not in payload
+    assert "aspect_ratio" not in payload
+    assert "resolution" not in payload
+
+
+def test_xai_video_extend_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "the camera pulls back to reveal the city",
+            "video_url": "https://example.com/source.mp4",
+            "duration": 15,
+        },
+        tool_name="xai_video_extend",
+    )
+    assert result["success"] is True
+    assert result["modality"] == "extend"
+
+    payload = xai_calls[0]["json"] or {}
+    assert xai_calls[0]["url"].endswith("/videos/extensions")
+    assert payload["model"] == "grok-imagine-video"
+    assert payload["video"] == {"url": "https://example.com/source.mp4"}
+    assert payload["duration"] == 10
+    assert "resolution" not in payload
+
+
+def test_xai_video_edit_rejects_bare_file_id_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "make the sky stormy",
+            "video_url": "file-123",
+        },
+        tool_name="xai_video_edit",
+    )
+    assert result.get("success") is not True
+    assert "error" in result
+    assert "url" in result["error"].lower()
+    assert len(xai_calls) == 0
+
+
+def test_xai_video_extend_rejects_bare_file_id_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "continue into a sunrise",
+            "video_url": "file_25ac1c31-d6d8-48b2-8504-a97d282310c4",
+        },
+        tool_name="xai_video_extend",
+    )
+    assert result.get("success") is not True
+    assert "error" in result
+    assert "url" in result["error"].lower()
+    assert len(xai_calls) == 0
+
+
+def test_xai_explicit_model_override_via_tool_surface(matrix_env):
+    home, _, xai_calls = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "xai"}},
+        {
+            "prompt": "animate this",
+            "image_url": "https://example.com/img.png",
+            "model": "grok-imagine-video",
+        },
+    )
+    assert result["success"] is True
+
+    payload = xai_calls[0]["json"] or {}
+    assert payload["model"] == "grok-imagine-video"
+    assert payload["image"] == {"url": "https://example.com/img.png"}
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # tool-level `model` arg overrides config
 # ─────────────────────────────────────────────────────────────────────────

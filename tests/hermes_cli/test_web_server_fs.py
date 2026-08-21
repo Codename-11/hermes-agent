@@ -55,6 +55,28 @@ def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     assert response.status_code == 413
 
 
+def test_fs_ensure_directory_creates_missing_tree_only_on_post(client, tmp_path):
+    target = tmp_path / "typed" / "nested"
+
+    assert not target.exists()
+
+    response = client.post("/api/fs/ensure-directory", json={"path": str(target)})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "path": str(target)}
+    assert target.is_dir()
+
+
+def test_fs_ensure_directory_rejects_existing_file(client, tmp_path):
+    target = tmp_path / "not-a-directory"
+    target.write_text("x")
+
+    response = client.post("/api/fs/ensure-directory", json={"path": str(target)})
+
+    assert response.status_code == 400
+    assert target.read_text() == "x"
+
+
 def test_fs_download_streams_file_without_data_url_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 3)
     target = tmp_path / "report with spaces.pdf"
@@ -85,7 +107,10 @@ def test_fs_endpoints_require_auth(tmp_path):
     list_response = client.get("/api/fs/list", params={"path": str(tmp_path)})
     read_response = client.get("/api/fs/read-text", params={"path": str(target)})
     default_response = client.get("/api/fs/default-cwd")
+    mkdir_response = client.post("/api/fs/ensure-directory", json={"path": str(tmp_path / "new")})
 
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+    assert mkdir_response.status_code == 401
+    assert not (tmp_path / "new").exists()

@@ -382,11 +382,21 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
-               busy_policy="dispatch"),
+               args_hint="[resolve|consume]", busy_policy="dispatch"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
                args_hint="[nous|local]"),
+
+    # Model Routing & Benchmarking
+    # /route was owned by the now-shelved model-router plugin. Future
+    # gateway-only plugin commands should register via register_command
+    # with CommandDef-equivalent kwargs rather than adding built-ins here.
+    CommandDef("bench", "Run benchmark harness", "Tools & Skills",
+               args_hint="[list|run <suite>|results]",
+               subcommands=("list", "run", "results"),
+               cli_only=True,
+               gateway_config_gate="display.benchmark_command"),
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
@@ -426,31 +436,6 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
-# Backwards-compatible flat dict: "/command" -> description
-COMMANDS: dict[str, str] = {}
-for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
-        COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
-        for _alias in _cmd.aliases:
-            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
-
-# Backwards-compatible categorized dict
-COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
-for _cmd in COMMAND_REGISTRY:
-    if not _cmd.gateway_only:
-        _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
-        _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
-        for _alias in _cmd.aliases:
-            _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
-
-
-# Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
-SUBCOMMANDS: dict[str, list[str]] = {}
-for _cmd in COMMAND_REGISTRY:
-    if _cmd.subcommands:
-        SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
-
-
 # Help renderer sub-grouping: the "Session" category accumulated ~46 commands
 # spanning genuinely different concerns (lifecycle, context, background/async).
 # Rather than re-tag every CommandDef (category is load-bearing for gateway
@@ -468,33 +453,101 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Also extract subcommands hinted in args_hint via pipe-separated patterns
-# e.g. args_hint="[on|off|tts|status]" for commands that don't have explicit subcommands.
-# NOTE: If a command already has explicit subcommands, this fallback is skipped.
-# Use the `subcommands` field on CommandDef for intentional tab-completable args.
 _PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
-for _cmd in COMMAND_REGISTRY:
-    key = f"/{_cmd.name}"
-    if key in SUBCOMMANDS or not _cmd.args_hint:
-        continue
-    m = _PIPE_SUBS_RE.search(_cmd.args_hint)
-    if m:
-        SUBCOMMANDS[key] = m.group(0).split("|")
+
+
+# Backwards-compatible flat dict: "/command" -> description (populated by rebuild_lookups)
+COMMANDS: dict[str, str] = {}
+# Backwards-compatible categorized dict (populated by rebuild_lookups)
+COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
+# Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...] (populated by rebuild_lookups)
+SUBCOMMANDS: dict[str, list[str]] = {}
+
+
+def rebuild_lookups() -> None:
+    """Regenerate all derived lookups from the current COMMAND_REGISTRY.
+
+    Called at module import and any time a plugin appends a synthetic
+    CommandDef via :func:`register_plugin_command_def`. All lookup
+    containers are module-level dicts/sets mutated in place so late
+    imports (and modules that already captured the name) still see the
+    fresh state.
+    """
+    _COMMAND_LOOKUP.clear()
+    _COMMAND_LOOKUP.update(_build_command_lookup())
+
+    COMMANDS.clear()
+    COMMANDS_BY_CATEGORY.clear()
+    for cmd in COMMAND_REGISTRY:
+        if cmd.gateway_only:
+            continue
+        COMMANDS[f"/{cmd.name}"] = _build_description(cmd)
+        for alias in cmd.aliases:
+            COMMANDS[f"/{alias}"] = f"{cmd.description} (alias for /{cmd.name})"
+        cat = COMMANDS_BY_CATEGORY.setdefault(cmd.category, {})
+        cat[f"/{cmd.name}"] = COMMANDS[f"/{cmd.name}"]
+        for alias in cmd.aliases:
+            cat[f"/{alias}"] = COMMANDS[f"/{alias}"]
+
+    SUBCOMMANDS.clear()
+    for cmd in COMMAND_REGISTRY:
+        if cmd.subcommands:
+            SUBCOMMANDS[f"/{cmd.name}"] = list(cmd.subcommands)
+    # Fallback: extract pipe-separated args_hint patterns like "[on|off|status]".
+    # Skipped when explicit subcommands are already defined.
+    for cmd in COMMAND_REGISTRY:
+        key = f"/{cmd.name}"
+        if key in SUBCOMMANDS or not cmd.args_hint:
+            continue
+        m = _PIPE_SUBS_RE.search(cmd.args_hint)
+        if m:
+            SUBCOMMANDS[key] = m.group(0).split("|")
+
+    global GATEWAY_KNOWN_COMMANDS
+    GATEWAY_KNOWN_COMMANDS = frozenset(
+        name
+        for cmd in COMMAND_REGISTRY
+        if not cmd.cli_only or cmd.gateway_config_gate
+        for name in (cmd.name, *cmd.aliases)
+    )
+
+
+# Set of all command names + aliases recognized by the gateway.
+# Includes config-gated commands so the gateway can dispatch them
+# (the handler checks the config gate at runtime). Rebuilt by
+# rebuild_lookups() whenever COMMAND_REGISTRY changes.
+GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset()
+
+
+def register_plugin_command_def(cmd_def: CommandDef) -> bool:
+    """Append a plugin-supplied CommandDef to COMMAND_REGISTRY.
+
+    Used by :meth:`hermes_cli.plugins.PluginContext.register_command` to
+    give plugin commands first-class CommandDef treatment (help menus,
+    Telegram autocomplete, CLI tab-completion, subcommand completion).
+
+    Returns False and makes no changes when the name or any alias
+    collides with an existing entry — callers should log. The
+    registry's other collision guards (``PluginContext.register_command``
+    already rejects built-in names) make this a belt-and-suspenders
+    check for simultaneous plugin collisions.
+    """
+    all_names = (cmd_def.name, *cmd_def.aliases)
+    for name in all_names:
+        if name in _COMMAND_LOOKUP:
+            return False
+    COMMAND_REGISTRY.append(cmd_def)
+    rebuild_lookups()
+    return True
+
+
+# Initial population from the static registry at import time.
+rebuild_lookups()
 
 
 # ---------------------------------------------------------------------------
 # Gateway helpers
 # ---------------------------------------------------------------------------
-
-# Set of all command names + aliases recognized by the gateway.
-# Includes config-gated commands so the gateway can dispatch them
-# (the handler checks the config gate at runtime).
-GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
-    name
-    for cmd in COMMAND_REGISTRY
-    if not cmd.cli_only or cmd.gateway_config_gate
-    for name in (cmd.name, *cmd.aliases)
-)
 
 
 def is_gateway_known_command(name: str | None) -> bool:
@@ -1349,6 +1402,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /hermes update on Slack. Demoted to free the native slot /approvals now
 #     claims — without this entry /approvals tips the registry past the 50-cap
 #     and silently clamps /update off, breaking Telegram parity.
+#   - bench: config-gated benchmark harness; reached via /hermes bench on
+#     Slack so enabling it cannot displace an existing native slash.
 #   - heartbeat: session heartbeat management; reached via /hermes heartbeat
 #     on Slack. Added at the 50-cap — a native slot would clamp /insights.
 #   - refine: on-demand memory/skill review; reached via /hermes refine on
@@ -1366,7 +1421,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform"})
+_SLACK_VIA_HERMES_ONLY = frozenset({
+    "topup", "moa", "debug", "egress", "init", "version", "diff", "update",
+    "bench", "heartbeat", "refine", "pause", "whoami", "platform",
+})
 
 
 def _sanitize_slack_name(raw: str) -> str:

@@ -531,12 +531,6 @@ def plan_install(
     target_name = override_name or manifest.name
     canon = normalize_profile_name(target_name)
     validate_profile_name(canon)
-    if canon == "default":
-        raise DistributionError(
-            "Cannot install a distribution as 'default' — that is the built-in "
-            "root profile (~/.hermes).  Pass --name <name> to install under a "
-            "new profile."
-        )
     manifest.name = canon
     manifest.source = provenance
     # Stamped once here so plan_install() callers (both fresh install and
@@ -580,7 +574,6 @@ def _copy_dist_payload(
     ``USER_OWNED_EXCLUDE`` is copied.
     """
     target.mkdir(parents=True, exist_ok=True)
-
     def _copy_entry(entry: Path, dest: Path) -> None:
         if entry.is_dir():
             if dest.exists():
@@ -685,13 +678,16 @@ def install_distribution(
                 "or pass --force to overwrite."
             )
 
-        # Fresh install: config.yaml comes from the distribution.
+        # Fresh installs get config.yaml from the distribution. Existing
+        # profiles (including the built-in default/root profile) keep their
+        # host-local config unless the operator later opts into
+        # `profile update --force-config`.
         _bootstrap_user_dirs(plan.target_dir)
         _copy_dist_payload(
             plan.staged_dir,
             plan.target_dir,
             plan.manifest,
-            preserve_config=False,
+            preserve_config=plan.existing,
         )
 
         if create_alias:

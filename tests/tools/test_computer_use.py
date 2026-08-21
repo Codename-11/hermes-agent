@@ -89,6 +89,31 @@ class TestRegistration:
         assert cua_backend.resolve_cua_driver_cmd() == str(driver)
         assert cua_backend.cua_driver_binary_available() is True
 
+    def test_windows_prefers_canonical_install_over_stale_path(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        local_app_data = tmp_path / "LocalAppData"
+        canonical = (
+            local_app_data / "Programs" / "Cua" / "cua-driver" / "bin" /
+            "cua-driver.exe"
+        )
+        stale = str(tmp_path / ".local" / "bin" / "cua-driver.exe")
+        monkeypatch.setattr(cua_backend.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+
+        def fake_which(candidate):
+            if candidate == str(canonical):
+                return str(canonical)
+            if candidate == "cua-driver":
+                return stale
+            return None
+
+        monkeypatch.setattr(cua_backend.shutil, "which", fake_which)
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(canonical)
+        assert cua_backend.cua_driver_path_conflict() == (stale, str(canonical))
+
 
 # ---------------------------------------------------------------------------
 # Dispatch & action routing

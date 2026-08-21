@@ -8,7 +8,7 @@ in when an operator explicitly wants a different policy.
 
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -81,7 +81,10 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import _build_allowed_mentions  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter, _build_allowed_mentions  # noqa: E402
+from gateway.platforms.base import _thread_metadata_for_source  # noqa: E402
+from gateway.config import Platform  # noqa: E402
+from gateway.run import GatewayRunner  # noqa: E402
 
 
 # The four DISCORD_ALLOW_MENTION_* env vars that _build_allowed_mentions reads.
@@ -118,3 +121,94 @@ def test_env_var_opts_back_into_everyone(monkeypatch):
     assert am.replied_user is True
 
 
+def test_env_var_can_disable_users(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_USERS", "false")
+    am = _build_allowed_mentions()
+    assert am.users is False
+    # safe defaults elsewhere remain
+    assert am.everyone is False
+    assert am.roles is False
+    assert am.replied_user is True
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("true", True), ("True", True), ("TRUE", True),
+    ("1", True), ("yes", True), ("YES", True), ("on", True),
+    ("false", False), ("False", False), ("0", False),
+    ("no", False), ("off", False),
+    ("", False),                 # empty falls back to default (False for everyone)
+    ("garbage", False),          # unknown falls back to default
+    (" true ", True),            # whitespace tolerated
+])
+def test_everyone_boolean_parsing(monkeypatch, raw, expected):
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", raw)
+    am = _build_allowed_mentions()
+    assert am.everyone is expected
+
+
+def test_all_four_knobs_together(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_ROLES", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_USERS", "false")
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_REPLIED_USER", "false")
+    am = _build_allowed_mentions()
+    assert am.everyone is True
+    assert am.roles is True
+    assert am.users is False
+    assert am.replied_user is False
+
+
+def test_reply_mention_override_suppresses_replied_user_ping():
+    am = _build_allowed_mentions(replied_user=False)
+    assert am.everyone is False
+    assert am.roles is False
+    assert am.users is True
+    assert am.replied_user is False
+
+
+def test_discord_bot_thread_metadata_suppresses_reply_pings_without_thread():
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        is_bot=True,
+        thread_id=None,
+    )
+
+    assert _thread_metadata_for_source(source) == {"suppress_reply_mentions": True}
+
+
+def test_gateway_runner_discord_bot_metadata_suppresses_reply_pings_without_thread():
+    source = SimpleNamespace(
+        platform=Platform.DISCORD,
+        is_bot=True,
+        thread_id=None,
+    )
+    runner = GatewayRunner.__new__(GatewayRunner)
+
+    assert runner._thread_metadata_for_source(source) == {"suppress_reply_mentions": True}
+
+
+@pytest.mark.asyncio
+async def test_discord_send_forwards_reply_mention_suppression():
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=123)),
+        fetch_message=AsyncMock(),
+    )
+    adapter = DiscordAdapter.__new__(DiscordAdapter)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(return_value=channel),
+    )
+    adapter._reply_to_mode = "off"
+    adapter._nonconversational_messages = SimpleNamespace(mark_many=lambda _ids: None)
+    adapter._last_self_message_id = {}
+    adapter._record_discord_response = MagicMock()
+
+    result = await adapter.send(
+        "456",
+        "hello",
+        metadata={"suppress_reply_mentions": True},
+    )
+
+    assert result.success is True
+    allowed_mentions = channel.send.await_args.kwargs["allowed_mentions"]
+    assert allowed_mentions.replied_user is False

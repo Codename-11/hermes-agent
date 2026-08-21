@@ -7,6 +7,7 @@ claim for a given fire. Single-machine deployments always win (unaffected).
 These exercise the real store against a temp HERMES_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.
 """
+import importlib
 import threading
 import time
 
@@ -17,8 +18,17 @@ import pytest
 def temp_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME so jobs.json doesn't touch the real store."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # cron.jobs caches no home at import; get_hermes_home() reads the env live.
-    yield tmp_path
+    import cron.jobs as cron_jobs
+    importlib.reload(cron_jobs)
+    # NOTE: cron.jobs resolves its shared store paths (JOBS_FILE, CRON_DIR)
+    # from get_default_hermes_root() at IMPORT time, so reload after pointing
+    # HERMES_HOME at tmp_path. Otherwise an already-imported module would keep
+    # writing to the live root store.
+    try:
+        yield tmp_path
+    finally:
+        monkeypatch.undo()
+        importlib.reload(cron_jobs)
 
 
 def test_claim_succeeds_once_then_blocks(temp_home):

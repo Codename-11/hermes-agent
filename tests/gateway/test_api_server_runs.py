@@ -148,12 +148,95 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_start_rejects_profile_mismatch(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                "hermes_cli.profiles.get_active_profile_name",
+                return_value="victor",
+            ):
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "profile_key": "mizu"},
+                )
+                assert resp.status == 409
+                payload = await resp.json()
+        assert payload["error"]["code"] == "profile_mismatch"
+        assert adapter._run_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_start_accepts_matching_profile_and_reports_it(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                "hermes_cli.profiles.get_active_profile_name",
+                return_value="victor",
+            ), patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "profile": "victor"},
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                assert status["profile"] == "victor"
+
+    @pytest.mark.asyncio
+    async def test_start_applies_host_tool_allowlist(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "engagement_mode": "REVIEW",
+                        "forge_contract_version": "test-contract",
+                        "tool_allowlist": [],
+                        "runtime_policy": {
+                            "allowed_host_tools": [],
+                            "contract_version": "test-contract",
+                        },
+                    },
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+                for _ in range(20):
+                    if mock_create.called:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert mock_create.called
+                disabled = set(mock_create.call_args.kwargs.get("disabled_toolsets") or [])
+                assert {"terminal", "file", "code_execution", "desktop"} <= disabled
+                assert "delegation" not in disabled
+
+                status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
+                assert status_resp.status == 200
+                status = await status_resp.json()
+                assert status["engagement_mode"] == "REVIEW"
+                assert status["forge_contract_version"] == "test-contract"
+                assert status["host_tool_policy"]["allowed_host_tools"] == []
+                assert "terminal" in status["host_tool_policy"]["denied_toolsets"]
+
+    @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
-        """/v1/runs must bind the raw session id as the api_server chat_id
-        (like every other agent-entry route does via _run_agent): the async
-        delegation dispatch reads HERMES_SESSION_CHAT_ID to pick its wake
-        self-post target, and an empty binding forces background delegations
-        on this route back to synchronous execution."""
+        """/v1/runs binds the raw session id as the async wake target."""
         app = _create_runs_app(adapter)
         captured = {}
 
@@ -305,6 +388,26 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    @pytest.mark.asyncio
+    async def test_tool_events_get_stable_fifo_call_ids(self, adapter):
+        run_id = "run_tools"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        callback = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
+
+        callback("tool.started", "terminal", "first", {})
+        callback("tool.started", "terminal", "second", {})
+        callback("tool.completed", "terminal", duration=0.1, is_error=False)
+        callback("tool.completed", "terminal", duration=0.2, is_error=False)
+        await asyncio.sleep(0)
+
+        events = [adapter._run_streams[run_id].get_nowait() for _ in range(4)]
+        started = [event for event in events if event["event"] == "tool.started"]
+        completed = [event for event in events if event["event"] == "tool.completed"]
+        assert started[0]["call_id"] != started[1]["call_id"]
+        assert [event["call_id"] for event in completed] == [
+            event["call_id"] for event in started
+        ]
+
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""

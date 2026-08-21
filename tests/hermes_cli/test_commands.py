@@ -637,13 +637,298 @@ class TestDiscordSkillCmdKeyDispatch:
 class TestTelegramMenuCommands:
     """Integration: telegram_menu_commands enforces the 32-char limit."""
 
+    def test_all_names_within_limit(self):
+        menu, _ = telegram_menu_commands(max_commands=100)
+        for name, _desc in menu:
+            assert 1 <= len(name) <= _TG_NAME_LIMIT, (
+                f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
+            )
 
+    def test_operational_builtins_survive_thirty_command_cap(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "display:\n  tool_progress_command: true\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
+        menu, hidden = telegram_menu_commands(max_commands=30)
+        names = [name for name, _desc in menu]
 
+        assert len(names) == 30
+        assert hidden > 0
+        for name in (
+            "egress",
+            "debug",
+            "restart",
+            "update",
+            "verbose",
+            "commands",
+            "help",
+            "new",
+            "stop",
+            "status",
+        ):
+            assert name in names
 
+    def test_configured_priority_prepends_plugin_commands(self, tmp_path, monkeypatch):
+        """Configured Telegram priorities keep local/plugin commands visible."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
 
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - cmd-plugin\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: prepend\n"
+            "        priority:\n"
+            "          - lcm\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _hidden = telegram_menu_commands(max_commands=30)
 
+        names = [name for name, _desc in menu]
+        assert names[0] == "lcm"
+        assert "help" in names[1:]
+
+    def test_configured_priority_append_keeps_defaults_before_user_priority(self, tmp_path, monkeypatch):
+        """append mode preserves built-in defaults ahead of configured names."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - cmd-plugin\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: append\n"
+            "        priority:\n"
+            "          - lcm\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _hidden = telegram_menu_commands(max_commands=30)
+
+        names = [name for name, _desc in menu]
+        assert names.index("help") < names.index("lcm")
+
+    def test_configured_priority_replace_ignores_builtin_priority_order(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: replace\n"
+            "        priority:\n"
+            "          - status\n"
+            "          - help\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, _hidden = telegram_menu_commands(max_commands=5)
+        names = [name for name, _desc in menu]
+
+        assert names[:2] == ["status", "help"]
+
+    def test_telegram_menu_max_commands_uses_config_with_safe_bounds(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert telegram_menu_max_commands() == 60
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: 12\n"
+        )
+        assert telegram_menu_max_commands() == 12
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: 250\n"
+        )
+        assert telegram_menu_max_commands() == 100
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: 0\n"
+        )
+        assert telegram_menu_max_commands() == 1
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        max_commands: nope\n"
+        )
+        assert telegram_menu_max_commands() == 60
+
+    def test_telegram_menu_ignores_undocumented_command_menu_paths(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "telegram:\n"
+            "  command_menu:\n"
+            "    max_commands: 12\n"
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      command_menu:\n"
+            "        max_commands: 9\n"
+        )
+
+        assert telegram_menu_max_commands() == 60
+
+    def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
+        """Telegram menu generation should discover plugin slash commands on first access."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+        import hermes_cli.commands as commands_mod
+
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - cmd-plugin\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        snapshot = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            with patch.object(plugins_mod, "_plugin_manager", None):
+                menu, _ = telegram_menu_commands(max_commands=100)
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = snapshot
+            commands_mod.rebuild_lookups()
+
+        menu_names = {name for name, _ in menu}
+        assert "lcm" in menu_names
+
+    def test_plugin_command_with_subcommands_appears_in_menu(self, tmp_path, monkeypatch):
+        """A plugin command registered with subcommands gets a CommandDef and surfaces
+        in the Telegram menu via the core-commands path (not the skill-entries path)."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+        import hermes_cli.commands as commands_mod
+
+        plugin_dir = tmp_path / "plugins" / "route-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: route-plugin\nversion: 0.1.0\ndescription: Route plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command(\n"
+            "        'myroute', lambda a: 'ok',\n"
+            "        description='Custom routing',\n"
+            "        args_hint='[a|b|c]',\n"
+            "        subcommands=('a','b','c'),\n"
+            "        category='Configuration',\n"
+            "        gateway_only=True,\n"
+            "    )\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - route-plugin\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        snapshot = list(commands_mod.COMMAND_REGISTRY)
+        try:
+            with patch.object(plugins_mod, "_plugin_manager", None):
+                menu, _ = telegram_menu_commands(max_commands=100)
+                # Telegram bot commands derives from COMMAND_REGISTRY directly,
+                # so the synthesized CommandDef must appear there too.
+                from hermes_cli.commands import telegram_bot_commands, SUBCOMMANDS
+                bot_names = {name for name, _ in telegram_bot_commands()}
+                assert "myroute" in bot_names
+                assert SUBCOMMANDS.get("/myroute") == ["a", "b", "c"]
+        finally:
+            commands_mod.COMMAND_REGISTRY[:] = snapshot
+            commands_mod.rebuild_lookups()
+
+        menu_names = {name for name, _ in menu}
+        assert "myroute" in menu_names
+
+    def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
+        """Skills disabled for telegram should not appear in the menu."""
+        from unittest.mock import patch
+
+        # Set up a config with a telegram-specific disabled list
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - my-disabled-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Mock get_skill_commands to return two skills
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/my-disabled-skill": {
+                "name": "my-disabled-skill",
+                "description": "Should be hidden",
+                "skill_md_path": f"{fake_skills_dir}/my-disabled-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/my-disabled-skill",
+            },
+            "/my-enabled-skill": {
+                "name": "my-enabled-skill",
+                "description": "Should be visible",
+                "skill_md_path": f"{fake_skills_dir}/my-enabled-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/my-enabled-skill",
+            },
+        }
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            (tmp_path / "skills").mkdir(exist_ok=True)
+            menu, hidden = telegram_menu_commands(max_commands=100)
+
+        menu_names = {n for n, _ in menu}
+        assert "my_enabled_skill" in menu_names
+        assert "my_disabled_skill" not in menu_names
 
     def test_external_dir_skills_included_in_telegram_menu(self, tmp_path, monkeypatch):
         """External skills (``skills.external_dirs``) must appear in the Telegram menu.

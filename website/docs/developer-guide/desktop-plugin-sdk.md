@@ -42,7 +42,8 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   atoms): active session, per-session turn-busy, cwd, gateway socket status,
   model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
-  restart the gateway, subscribe to the gateway event stream.
+  restart the gateway, subscribe to the gateway event stream, and inspect or
+  open the core-owned updater through `host.updates`.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
@@ -64,8 +65,9 @@ your agent plugin's folder — see
 [One package, both SDKs](#one-package-both-sdks). Everything on this page is
 written against the disk door (what you and the agent write);
 [Bundled plugins](#bundled-plugins) notes the two
-differences. No desktop plugins ship in the core tree today — reference demos
-live in the companion
+differences. The Axiom fork exposes the generic typed update seam; Axiom-specific
+Update Control presentation is delivered as a separately installed disk plugin.
+Reference demos live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 repo.
 
@@ -253,6 +255,25 @@ panes, closing one dismisses only that pane and leaves the plugin's other panes,
 commands, and middleware active. **Reset layout** restores dismissed contributed
 panes.
 
+A singleton tab that should remain available through another entry point can
+explicitly opt into dismissal and reveal its own namespaced pane later:
+
+```javascript
+ctx.register({
+  id: 'control',
+  area: 'panes',
+  title: 'Control',
+  data: { closeBehavior: 'dismiss', placement: 'main' },
+  render: () => jsx(ControlPane, {})
+})
+
+// Status/palette/keybind handler: restores, unhides, and focuses the same tab.
+const openControl = () => ctx.panes.reveal('control')
+```
+
+`ctx.panes` is plugin-scoped: local id `control` resolves only to that plugin's
+fully namespaced pane id.
+
 ### Pages and sidebar nav
 
 A route mounts a full page in the workspace pane, like any built-in view. Pair it
@@ -278,6 +299,20 @@ ctx.registerMany([
 
 `codicon` is a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
 id. Navigate to a route from anywhere with `host.navigate('/my-page')`.
+
+A sidebar row can also be a direct action instead of a route. This is the right
+shape for reopening a dismissible pane without replacing the current workspace
+page:
+
+```javascript
+ctx.register({
+  id: 'control-nav',
+  area: SIDEBAR_NAV_AREA,
+  data: { label: 'Control', codicon: 'settings-gear', onSelect: openControl }
+})
+```
+
+Provide either `path` or `onSelect`; rows with neither are ignored.
 
 ### Status bar and title bar
 
@@ -629,6 +664,39 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
+### Update status and lifecycle
+
+The Axiom fork adds a narrow `host.updates` facade for plugins that need update
+observability and the core-owned staged lifecycle without becoming an updater:
+
+```ts
+const client = host.updates.getStatus('client')
+const backend = host.updates.getStatus('backend')
+const backendApply = host.updates.getBackendApply()
+const stage = await host.updates.getStage()
+const history = await host.updates.getHistory()
+
+await host.updates.prepare()
+await host.updates.restartAndApply()
+await host.updates.applyBackend()
+```
+
+The client and backend are deliberately separate. `client` describes the
+Electron host's checkout and configured update branch; `backend` describes the
+active `hermes serve` runtime, which may be remote and have a different version
+or deploy state. Each call returns a detached snapshot (or `null` before core has
+published one), including `fetchedAt` when available. Mutating a returned object
+cannot change core update state.
+
+The named lifecycle methods are `refresh(target)`, `getStage()`, `prepare()`,
+`discardStage()`, `restartAndApply()`, `getHistory()`, `getBackendApply()`, and
+`applyBackend()`. Core owns target pinning, progress, dirty-tree validation,
+deploy reconciliation, package integrity, shutdown, rollback, reconnection, and
+relaunch. Plugins render the detached lifecycle snapshots themselves; there is
+no native-overlay redirect in this facade. There are intentionally no
+plugin-facing branch-write, arbitrary manifest path, shell, progress-event, or
+raw IPC methods.
+
 ## Data layer — React Query + nanostores
 
 Plugins share the app's single `QueryClient`, so plugin queries cache, dedupe,
@@ -846,8 +914,11 @@ enable/disable contract as a disk plugin. The two differences:
 2. It's still lint-fenced to `@hermes/plugin-sdk` + `react` only — no `@/…` app
    internals.
 
-No desktop plugins ship in the core tree today; the shipped app stays uncluttered
-and demos live in the
+The separately installed **Axiom Enhancements** disk plugin uses
+`host.updates.getStatus()` for detached comparison and the named client/backend
+lifecycle methods while core performs every privileged operation. Its Update
+Control module registers a dismissible, reopenable main-pane tab plus sidebar,
+status-bar, and palette entry; it is not a workspace route. Demos still live in the
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo.
 
@@ -893,8 +964,8 @@ not treat this pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.updates.getStatus`, `.updates.refresh`, `.updates.getStage`, `.updates.getHistory`, and core-owned lifecycle methods) |
+| Plugin contract | `HermesPlugin`, `PluginContext` (including plugin-scoped `panes.reveal(localId)`), `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |

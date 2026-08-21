@@ -1036,6 +1036,36 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             ["web", "browser"],
         )
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_inherits_disabled_toolsets(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web", "delegation"]
+        parent.disabled_toolsets = ["terminal", "file", "code_execution", "desktop"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test disabled inheritance",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        disabled = MockAgent.call_args[1]["disabled_toolsets"]
+        self.assertEqual(
+            disabled[:4],
+            ["terminal", "file", "code_execution", "desktop"],
+        )
+        self.assertTrue(
+            {"clarify", "cronjob", "delegation", "memory"}.issubset(disabled)
+        )
+
 
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):

@@ -553,6 +553,7 @@ _MCP_LOG_LEVEL_MAP = {
 
 _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+_AUTO_CATALOG_MIN_TOOLS = 20
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
@@ -6769,6 +6770,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
+    direct_toolset_name = f"{toolset_name}-direct"
 
     # Selective tool loading: honour include/exclude lists from config.
     # Rules (matching issue #690 spec, extended with glob support):
@@ -6792,6 +6794,28 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             return not matches_name_filter(tool_name, exclude_set)
         return True
 
+    selected_tools = [tool for tool in server._tools if _should_register(tool.name)]
+    catalog_names = {"catalog.search", "catalog.describe", "catalog.call"}
+    selected_names = {tool.name for tool in selected_tools}
+    exposure = str(config.get("exposure", "auto") or "auto").strip().lower()
+    if exposure not in {"auto", "catalog", "direct", "off"}:
+        logger.warning(
+            "MCP server '%s': unknown exposure %r; using backward-compatible direct exposure",
+            name,
+            exposure,
+        )
+        exposure = "direct"
+    if exposure == "auto":
+        exposure = (
+            "catalog"
+            if catalog_names.issubset(selected_names)
+            and len(selected_tools) >= _AUTO_CATALOG_MIN_TOOLS
+            else "direct"
+        )
+    if exposure == "off":
+        logger.info("MCP server '%s': connected with schema exposure disabled", name)
+        return []
+
     check_fn = _make_check_fn(name)
     candidates: List[dict] = []
 
@@ -6801,20 +6825,16 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     # from data we control rather than re-reading server-supplied state.
     _record_tool_trust_metadata(name, config, server._tools)
 
-    for mcp_tool in server._tools:
-        if not _should_register(mcp_tool.name):
-            logger.debug(
-                "MCP server '%s': skipping tool '%s' (filtered by config)",
-                name,
-                mcp_tool.name,
-            )
-            continue
-
+    for mcp_tool in selected_tools:
         _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
         schema = _convert_mcp_schema(name, mcp_tool)
+        registration_toolset = toolset_name
+        if exposure == "catalog" and mcp_tool.name not in catalog_names:
+            registration_toolset = direct_toolset_name
         candidates.append(
             {
                 "registry_name": schema["name"],
+                "toolset": registration_toolset,
                 "origin": f"tool {mcp_tool.name!r}",
                 "schema": schema,
                 "handler": _make_tool_handler(
@@ -6832,12 +6852,14 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         "list_prompts": _make_list_prompts_handler,
         "get_prompt": _make_get_prompt_handler,
     }
-    for entry in _select_utility_schemas(name, server, config):
+    utility_entries = [] if exposure == "catalog" else _select_utility_schemas(name, server, config)
+    for entry in utility_entries:
         schema = entry["schema"]
         handler_key = entry["handler_key"]
         candidates.append(
             {
                 "registry_name": schema["name"],
+                "toolset": toolset_name,
                 "origin": f"generated utility {handler_key!r}",
                 "schema": schema,
                 "handler": handler_factories[handler_key](
@@ -6921,8 +6943,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         if (registry_name, candidate["origin"]) in shadowed_utilities:
             continue
 
+        registration_toolset = candidate["toolset"]
         existing_toolset = registry.get_toolset_for_tool(registry_name)
-        if existing_toolset and existing_toolset != toolset_name:
+        if existing_toolset and existing_toolset != registration_toolset:
             if existing_toolset.startswith("mcp-"):
                 logger.error(
                     "MCP server '%s': %s normalizes to '%s', already owned by "
@@ -6945,7 +6968,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
         registry.register(
             name=registry_name,
-            toolset=toolset_name,
+            toolset=registration_toolset,
             schema=candidate["schema"],
             handler=candidate["handler"],
             check_fn=candidate["check_fn"],
@@ -6955,7 +6978,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
         # The pre-check above is advisory only. Multiple servers connect in
         # parallel, so ToolRegistry.register() is the atomic ownership gate.
-        if registry.get_toolset_for_tool(registry_name) != toolset_name:
+        if registry.get_toolset_for_tool(registry_name) != registration_toolset:
             logger.error(
                 "MCP server '%s': registration of %s as '%s' was rejected by "
                 "the registry; skipping provenance/count updates",
@@ -6970,6 +6993,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
+        if exposure == "catalog" and registry.get_tool_names_for_toolset(direct_toolset_name):
+            registry.register_toolset_alias(f"{name}-direct", direct_toolset_name)
         # Write-through (#56832): refresh the on-disk schema cache after a
         # live connect so the next startup can lazily register this server
         # without spawning it. Cache failures never break registration.
@@ -6992,10 +7017,14 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                         "readOnlyHint": _annotation_read_only_hint(mcp_tool),
                     },
                 })
-            utility_payload = [
-                {"schema": entry["schema"], "handler_key": entry["handler_key"]}
-                for entry in _select_utility_schemas(name, server, config)
-            ]
+            utility_payload = (
+                []
+                if exposure == "catalog"
+                else [
+                    {"schema": entry["schema"], "handler_key": entry["handler_key"]}
+                    for entry in _select_utility_schemas(name, server, config)
+                ]
+            )
             write_cache_entry(
                 name,
                 config_fingerprint(config),
@@ -7037,6 +7066,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
+    direct_toolset_name = f"{toolset_name}-direct"
     fingerprint = config_fingerprint(config)
     tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
     tools_filter = config.get("tools") or {}
@@ -7053,6 +7083,33 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         if exclude_set:
             return not matches_name_filter(tool_name, exclude_set)
         return True
+
+    cached_tools = [
+        raw
+        for raw in tools_from_cache_entry(entry)
+        if isinstance(raw, dict)
+        and raw.get("name")
+        and _should_register(raw["name"])
+    ]
+    catalog_names = {"catalog.search", "catalog.describe", "catalog.call"}
+    selected_names = {raw["name"] for raw in cached_tools}
+    exposure = str(config.get("exposure", "auto") or "auto").strip().lower()
+    if exposure not in {"auto", "catalog", "direct", "off"}:
+        logger.warning(
+            "MCP server '%s' (lazy): unknown exposure %r; using direct exposure",
+            name,
+            exposure,
+        )
+        exposure = "direct"
+    if exposure == "auto":
+        exposure = (
+            "catalog"
+            if catalog_names.issubset(selected_names)
+            and len(cached_tools) >= _AUTO_CATALOG_MIN_TOOLS
+            else "direct"
+        )
+    if exposure == "off":
+        return []
 
     check_fn = _make_check_fn(name)
     # Trust-tier metadata for the lazy path: the cached manifest carries
@@ -7071,12 +7128,8 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         if isinstance(raw, dict) and raw.get("name")
     ]
     _record_tool_trust_metadata(name, config, cached_tool_objs)
-    for raw in tools_from_cache_entry(entry):
-        if not isinstance(raw, dict):
-            continue
-        raw_name = raw.get("name")
-        if not raw_name or not _should_register(raw_name):
-            continue
+    for raw in cached_tools:
+        raw_name = raw["name"]
         raw_schema = raw.get("inputSchema")
         mcp_tool = _CachedMCPTool(
             raw_name,
@@ -7088,8 +7141,11 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
         schema = _convert_mcp_schema(name, mcp_tool)
         registry_name = schema["name"]
+        registration_toolset = toolset_name
+        if exposure == "catalog" and raw_name not in catalog_names:
+            registration_toolset = direct_toolset_name
         existing_toolset = registry.get_toolset_for_tool(registry_name)
-        if existing_toolset and existing_toolset != toolset_name:
+        if existing_toolset and existing_toolset != registration_toolset:
             logger.warning(
                 "MCP server '%s' (lazy): cached tool '%s' collides with "
                 "toolset '%s' — skipping",
@@ -7098,14 +7154,14 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             continue
         registry.register(
             name=registry_name,
-            toolset=toolset_name,
+            toolset=registration_toolset,
             schema=schema,
             handler=_make_tool_handler(name, raw_name, tool_timeout),
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
         )
-        if registry.get_toolset_for_tool(registry_name) != toolset_name:
+        if registry.get_toolset_for_tool(registry_name) != registration_toolset:
             continue
         _track_mcp_tool_server(registry_name, name)
         registered_names.append(registry_name)
@@ -7116,7 +7172,8 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         "list_prompts": _make_list_prompts_handler,
         "get_prompt": _make_get_prompt_handler,
     }
-    for raw in utility_tools_from_cache_entry(entry):
+    utility_entries = [] if exposure == "catalog" else utility_tools_from_cache_entry(entry)
+    for raw in utility_entries:
         if not isinstance(raw, dict):
             continue
         schema = raw.get("schema")
@@ -7145,6 +7202,8 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
+        if exposure == "catalog" and registry.get_tool_names_for_toolset(direct_toolset_name):
+            registry.register_toolset_alias(f"{name}-direct", direct_toolset_name)
         with _lock:
             _lazy_server_configs[name] = dict(config)
             _lazy_server_fingerprints[name] = fingerprint

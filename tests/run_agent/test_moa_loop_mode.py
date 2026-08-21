@@ -215,6 +215,65 @@ moa:
     assert ref_event[2] == {"moa_index": 0, "moa_count": 1}
 
 
+def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
+    """MoA must not inject an output cap on reference or aggregator calls.
+
+    The preset's old hardcoded max_tokens=4096 truncated long aggregator
+    syntheses. MoA now passes max_tokens=None (no caller cap), so call_llm
+    omits the parameter and each model uses its real maximum. Regression for
+    the "no limit on MoA models" fix.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      max_tokens: 4096
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=1,
+    )
+    agent.run_conversation("solve this")
+
+    # Even with a preset max_tokens: 4096 present in config, neither the
+    # reference nor the aggregator call carries a cap — MoA passes None and
+    # call_llm omits the parameter so the model uses its full output budget.
+    ref_call = next(c for c in calls if c["task"] == "moa_reference")
+    agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert ref_call.get("max_tokens") is None
+    assert agg_call.get("max_tokens") is None
+
+
 def test_moa_generic_client_rebuild_preserves_virtual_facade(monkeypatch, tmp_path):
     """Generic client replacement must not install a native OpenAI client.
 
@@ -302,18 +361,275 @@ moa:
     assert "_moa_prepared_request" not in captured["api_kwargs"]
 
 
+def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
+    """Reference + aggregator slots must be called via their provider's real
+    runtime (resolve_runtime_provider), not a bare provider/model call.
+
+    This is the "call any model the way it's called elsewhere" contract: each
+    slot's resolved base_url/api_key is passed through to call_llm so the
+    provider's actual API surface (anthropic_messages, max_completion_tokens,
+    custom endpoints) applies — same as if the model were the acting model.
+    """
+    from agent import moa_loop
+
+    resolved = []
+
+    def fake_resolve(*, requested, target_model=None):
+        resolved.append((requested, target_model))
+        return {
+            "provider": requested,
+            "api_mode": "chat_completions",
+            "base_url": f"https://{requested}.example/v1",
+            "api_key": f"key-for-{requested}",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "minimax", "model": "MiniMax-M2"})
+    assert ("minimax", "MiniMax-M2") in resolved
+    assert rt["provider"] == "minimax"
+    assert rt["model"] == "MiniMax-M2"
+    assert rt["base_url"] == "https://minimax.example/v1"
+    assert rt["api_key"] == "key-for-minimax"
 
 
+def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
+    """Codex slots must not become custom chat-completions endpoints.
+
+    _slot_runtime forwards the resolved base_url/api_key/api_mode; the single
+    chokepoint that must NOT collapse openai-codex to provider=custom is
+    _resolve_task_provider_model (via _preserve_provider_with_base_url). If it
+    collapsed, the Codex auxiliary branch — Cloudflare headers + Responses
+    adapter for chatgpt.com/backend-api/codex — would be bypassed.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-oauth-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
+    # _slot_runtime forwards the resolved endpoint unconditionally now.
+    assert rt["provider"] == "openai-codex"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+    # The chokepoint preserves openai-codex identity despite the explicit
+    # base_url (api_mode is forwarded to call_llm directly, not the resolver).
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+    assert resolved_provider == "openai-codex"
+    assert base_url == "https://chatgpt.com/backend-api/codex"
 
 
+@pytest.mark.parametrize("provider", ["minimax-oauth", "qwen-oauth"])
+def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider):
+    """MoA can pass resolved endpoints for provider-backed slots without
+    call_llm flattening them to generic custom endpoints.
+
+    ``_slot_runtime`` resolves a provider-backed slot to ``provider`` plus a
+    concrete ``base_url``/``api_key``/``api_mode``; ``_run_reference`` then
+    forwards that dict to ``call_llm``. ``call_llm`` resolves the routing tuple
+    via ``_resolve_task_provider_model`` (which takes everything except
+    ``api_mode``, handled separately). The provider identity must survive that
+    resolution rather than being flattened to ``custom``.
+
+    NOTE: providers in the ``_slot_runtime`` name-preservation set (anthropic,
+    bedrock, nous, openai-codex, xai-oauth) are intentionally NOT forwarded —
+    they're covered by their own dedicated tests. This case covers the
+    forward-the-resolved-endpoint path for providers that are NOT in the set.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "anthropic_messages",
+            "base_url": f"https://{requested}.example/v1",
+            "api_key": f"token-for-{requested}",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": provider, "model": "test-model"})
+    # api_mode is forwarded to call_llm directly, not to _resolve_task_provider_model.
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, model, base_url, api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+
+    assert resolved_provider == provider
+    assert model == "test-model"
+    assert base_url == f"https://{provider}.example/v1"
+    assert api_key == f"token-for-{provider}"
 
 
+def test_moa_anthropic_slot_preserves_provider_identity(monkeypatch):
+    """Anthropic slots forward runtime details while preserving provider identity."""
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "anthropic_messages",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "anthropic-oauth-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "anthropic", "model": "claude-opus-4-8"})
+
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-opus-4-8"
+    assert rt["base_url"] == "https://api.anthropic.com"
+    assert rt["api_key"] == "anthropic-oauth-token"
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, _model, _base_url, _api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+    assert resolved_provider == "anthropic"
 
 
+def test_moa_copilot_reference_forwards_user_initiator_header(monkeypatch):
+    """Copilot MoA advisors must carry the same user-turn attribution as main calls.
+
+    Copilot Pro/Pro+ gates some premium chat models on the ``x-initiator``
+    request header. MoA references are direct fan-out for the user's current
+    turn, so Copilot advisors need ``x-initiator: user`` rather than inheriting
+    the Copilot language-server default attribution.
+    """
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": "copilot",
+            "model": "claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("copilot advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": "copilot", "model": "claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "copilot advice"
+    assert calls[0]["task"] == "moa_reference"
+    assert calls[0]["extra_headers"] == {"x-initiator": "user"}
 
 
+def test_moa_non_copilot_reference_does_not_forward_initiator_header(monkeypatch):
+    """The Copilot attribution header must stay scoped to Copilot advisors."""
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "openrouter-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("openrouter advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "openrouter advice"
+    assert calls[0]["task"] == "moa_reference"
+    assert calls[0]["extra_headers"] is None
 
 
+@pytest.mark.parametrize(
+    "provider_spelling",
+    ["copilot", "github-copilot", "github", "github-models", "Copilot", "copilot-acp"],
+)
+def test_moa_copilot_alias_spellings_forward_initiator_header(
+    monkeypatch, provider_spelling
+):
+    """Every Copilot alias spelling must trigger the x-initiator header.
+
+    Slot configs spell the provider inconsistently (github, github-copilot,
+    github-models, copilot-acp, mixed case); the header gate goes through the
+    auxiliary client's canonical alias normalization so all of them get the
+    user-turn attribution, not just the literal string "copilot".
+    """
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": provider_spelling,
+            "model": "claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("copilot advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": provider_spelling, "model": "claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "copilot advice"
+    assert calls[0]["extra_headers"] == {"x-initiator": "user"}
 
 
 def test_call_llm_extra_headers_reach_transport_create(monkeypatch):

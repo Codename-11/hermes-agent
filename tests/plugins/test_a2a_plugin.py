@@ -908,6 +908,7 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
     from gateway.config import PlatformConfig
 
     port = _free_port()
+    monkeypatch.setenv("A2A_HOST", "127.0.0.1")
     monkeypatch.setenv("A2A_PORT", str(port))
 
     adapter = A2AAdapter(PlatformConfig(enabled=True))

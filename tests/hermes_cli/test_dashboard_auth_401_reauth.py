@@ -347,6 +347,30 @@ class TestAutoSsoRedirect:
 
 
 
+    def test_single_password_provider_renders_login_not_auto_sso(self, gated_app):
+        """Password-only providers are interactive session providers, but not
+        redirect providers. With exactly one configured, the gate must render
+        /login so the credential form can POST to /auth/password-login instead
+        of auto-bouncing through /auth/login and calling start_login()."""
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+
+        class _PasswordOnly(StubAuthProvider):
+            name = "pwonly"
+            display_name = "Password Only"
+            supports_password = True
+
+            def start_login(self, *, redirect_uri: str):  # pragma: no cover - guard only
+                raise AssertionError("password-only provider must not auto-SSO")
+
+        clear_providers()
+        register_provider(_PasswordOnly())
+
+        r = gated_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
 
 # ---------------------------------------------------------------------------
 # Gate middleware: same-origin next= validation

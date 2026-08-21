@@ -319,6 +319,55 @@ class TestCacheLoadDescriptionScan:
 
         mock_scan.assert_called_once_with("playwright", "browser_navigate", "Navigate")
 
+    def test_cached_catalog_exposure_matches_live_registration(self):
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        entry = {
+            "fingerprint": "abc",
+            "tools": [
+                {
+                    "name": name,
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+                for name in (
+                    "catalog.search",
+                    "catalog.describe",
+                    "catalog.call",
+                    "issues.list",
+                )
+            ],
+            "utility_tools": [
+                {
+                    "schema": {
+                        "name": "mcp__forge__list_resources",
+                        "description": "",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                    "handler_key": "list_resources",
+                }
+            ],
+        }
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"):
+            names = mcp._register_from_cache_sync(
+                "forge", {"exposure": "catalog", "lazy": True}, entry
+            )
+
+        assert len(names) == 4
+        assert set(registry.get_tool_names_for_toolset("mcp-forge")) == {
+            "mcp__forge__catalog_search",
+            "mcp__forge__catalog_describe",
+            "mcp__forge__catalog_call",
+        }
+        assert registry.get_tool_names_for_toolset("mcp-forge-direct") == [
+            "mcp__forge__issues_list"
+        ]
+        assert "mcp__forge__list_resources" not in names
+        assert registry.get_toolset_alias_target("forge-direct") == "mcp-forge-direct"
+
 
 class TestResolveServerLazy:
     def test_default_off(self):

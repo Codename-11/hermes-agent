@@ -7,12 +7,11 @@ the best available backend without duplicating fallback logic.
 Resolution order for text tasks (auto mode):
   1. User's main provider + main model (used regardless of provider type —
      aggregators, direct API-key providers, native Anthropic, Codex, etc.)
-  2. OpenRouter  (OPENROUTER_API_KEY)
-  3. Nous Portal (~/.hermes/auth.json active provider)
-  4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  2. Nous Portal (~/.hermes/auth.json active provider)
+  3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
+  4. Native Anthropic
+  5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  6. None
 
 OpenRouter fallback cost guard: ``auxiliary.free_only: true`` restricts the
 step-2 fallback to ``:free`` SKUs; ``auxiliary.openrouter_model`` overrides
@@ -20,11 +19,10 @@ the default. A one-time WARNING is logged for non-``:free`` models.
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
-  2. OpenRouter
-  3. Nous Portal
-  4. Native Anthropic
-  5. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  6. None
+  2. Nous Portal
+  3. Native Anthropic
+  4. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  5. None
 
 Codex OAuth (ChatGPT-account auth) is intentionally NOT in either
 fallback chain: OpenAI gates this endpoint behind an undocumented,
@@ -40,8 +38,9 @@ Default "auto" follows the chains above.
 Payment / credit exhaustion fallback:
   When a resolved provider returns HTTP 402 or a credit-related error,
   call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+  auto-detection chain.  The Axiom deployment intentionally excludes
+  OpenRouter from auxiliary auto/fallback routing; OpenRouter is reserved for
+  explicit main-model fallback configuration only.
 """
 
 import contextlib
@@ -5897,7 +5896,7 @@ def _resolve_auto_route(
          on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
          user's picked model keeps behavior predictable — no surprise
          switches to a cheap fallback model for side tasks.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
+      2. Nous → custom → API-key providers (fallback
          chain, only used when the main provider has no working client).
     """
     global auxiliary_is_nous, _stale_base_url_warned
@@ -6073,7 +6072,7 @@ def _resolve_auto_route(
         tried.append(label)
     logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
                    "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
+                   "Authenticate Nous Portal or configure a local model in config.yaml.",
                    ", ".join(tried))
     return None, None, ""
 
@@ -7197,7 +7196,7 @@ def _strict_vision_backend_available(provider: str) -> bool:
 def get_available_vision_backends() -> List[str]:
     """Return the currently available vision backends in auto-selection order.
 
-    Order: active provider → OpenRouter → Nous → stop.  This is the single
+    Order: active provider → Nous → stop.  This is the single
     source of truth for setup, tool gating, and runtime auto-routing of
     vision tasks.
     """
@@ -7212,7 +7211,7 @@ def get_available_vision_backends() -> List[str]:
             client, _ = resolve_provider_client(main_provider, _read_main_model())
             if client is not None:
                 available.append(main_provider)
-    # 2. OpenRouter, 3. Nous — skip if already covered by main provider.
+    # 2. Nous — skip if already covered by main provider.
     for p in _VISION_AUTO_PROVIDER_ORDER:
         if p not in available and _strict_vision_backend_available(p):
             available.append(p)

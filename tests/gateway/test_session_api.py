@@ -168,6 +168,293 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_session_crud_and_message_history(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        create_resp = await cli.post("/api/sessions", json={"title": "Mobile chat", "model": "test-model"})
+        assert create_resp.status == 201
+        created = await create_resp.json()
+        session_id = created["session"]["id"]
+        assert created["object"] == "hermes.session"
+        assert created["session"]["title"] == "Mobile chat"
+
+        session_db.append_message(session_id, "user", "hello from phone")
+        session_db.append_message(session_id, "assistant", "hello from hermes")
+
+        list_resp = await cli.get("/api/sessions?limit=10&offset=0")
+        assert list_resp.status == 200
+        listed = await list_resp.json()
+        assert listed["object"] == "list"
+        assert [s["id"] for s in listed["data"]] == [session_id]
+        assert listed["data"][0]["message_count"] == 2
+
+        get_resp = await cli.get(f"/api/sessions/{session_id}")
+        assert get_resp.status == 200
+        got = await get_resp.json()
+        assert got["session"]["id"] == session_id
+        assert got["session"]["message_count"] == 2
+
+        messages_resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+        assert messages["object"] == "list"
+        assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
+        assert messages["data"][0]["content"] == "hello from phone"
+
+        patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
+        assert patch_resp.status == 200
+        patched = await patch_resp.json()
+        assert patched["session"]["title"] == "Renamed"
+
+        delete_resp = await cli.delete(f"/api/sessions/{session_id}")
+        assert delete_resp.status == 200
+        deleted = await delete_resp.json()
+        assert deleted == {"object": "hermes.session.deleted", "id": session_id, "deleted": True}
+        assert session_db.get_session(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_create_session_defaults_to_runtime_model_not_api_alias(adapter, session_db, monkeypatch):
+    """Empty session creates should persist the real LLM, not the API alias."""
+    adapter._model_name = "hermes-agent"
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        default_resp = await cli.post("/api/sessions", json={})
+        assert default_resp.status == 201
+        default_payload = await default_resp.json()
+        default_session_id = default_payload["session"]["id"]
+
+        explicit_resp = await cli.post("/api/sessions", json={"model": "explicit-model"})
+        assert explicit_resp.status == 201
+        explicit_payload = await explicit_resp.json()
+        explicit_session_id = explicit_payload["session"]["id"]
+
+    assert default_payload["session"]["model"] == "gpt-5.5"
+    assert session_db.get_session(default_session_id)["model"] == "gpt-5.5"
+    assert explicit_payload["session"]["model"] == "explicit-model"
+    assert session_db.get_session(explicit_session_id)["model"] == "explicit-model"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_forwards_request_model_to_agent(adapter, session_db, monkeypatch):
+    """Session chat endpoints should pass body.model through to _create_agent."""
+    session_id = session_db.create_session("model-override-session", "api_server", model="gpt-5.5")
+
+    captured = {}
+
+    original_create = adapter._create_agent.__func__
+
+    def _spy_create(self, **kwargs):
+        captured["requested_model"] = kwargs.get("requested_model")
+        return original_create(self, **kwargs)
+
+    monkeypatch.setattr(type(adapter), "_create_agent", _spy_create)
+
+    # Stub _run_agent to avoid needing a real AIAgent — we only care about
+    # whether requested_model reaches _create_agent.
+    async def _fake_run_agent(self, *, user_message, conversation_history, **kw):
+        captured["requested_model_in_run"] = kw.get("requested_model")
+        return {"final_response": "ok", "session_id": session_id}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    monkeypatch.setattr(type(adapter), "_run_agent", _fake_run_agent)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        # With explicit model
+        resp = await cli.post(
+            f"/api/sessions/{session_id}/chat",
+            json={"message": "hello", "model": "claude-opus-4"},
+        )
+        assert resp.status == 200
+        assert captured.get("requested_model_in_run") == "claude-opus-4"
+
+        # Without model — should be None
+        captured.clear()
+        resp2 = await cli.post(
+            f"/api/sessions/{session_id}/chat",
+            json={"message": "hello"},
+        )
+        assert resp2.status == 200
+        assert captured.get("requested_model_in_run") is None
+
+
+@pytest.mark.asyncio
+async def test_session_messages_follow_compression_tip(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server")
+    session_db.append_message(source_id, "user", "before compression")
+    # Empty the parent BEFORE closing it: the closed-parent write guard
+    # (CompressionSessionClosedError) refuses durable writes to a session
+    # ended by compression, so the legacy-state simulation must run first.
+    session_db.replace_messages(source_id, [])
+    session_db.end_session(source_id, "compression")
+    session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
+    session_db.append_message("tip-session", "user", "after compression")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        messages_resp = await cli.get(f"/api/sessions/{source_id}/messages")
+        assert messages_resp.status == 200
+        messages = await messages_resp.json()
+
+    assert messages["object"] == "list"
+    assert messages["session_id"] == "tip-session"
+    assert [m["content"] for m in messages["data"]] == ["after compression"]
+
+
+@pytest.mark.asyncio
+async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server", model="test-model")
+    session_db.set_session_title(source_id, "Original")
+    session_db.append_message(source_id, "user", "first path")
+    session_db.append_message(source_id, "assistant", "answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"title": "Alternative"})
+        assert resp.status == 201
+        payload = await resp.json()
+
+    fork = payload["session"]
+    assert payload["object"] == "hermes.session"
+    assert fork["id"] != source_id
+    assert fork["parent_session_id"] == source_id
+    assert fork["title"] == "Alternative"
+    assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
+    assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_loads_history_and_preserves_session_headers(auth_adapter, session_db):
+    session_id = session_db.create_session("chat-session", "api_server")
+    session_db.set_session_title(session_id, "Chat")
+    session_db.append_message(session_id, "user", "earlier")
+    session_db.append_message(session_id, "assistant", "prior answer")
+
+    mock_run = AsyncMock(return_value=({"final_response": "fresh answer", "session_id": session_id}, {"total_tokens": 3}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "next", "system_message": "stay focused"},
+                headers={"Authorization": "Bearer sk-test", "X-Hermes-Session-Key": "client-42"},
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+
+    assert resp.headers["X-Hermes-Session-Id"] == session_id
+    assert resp.headers["X-Hermes-Session-Key"] == "client-42"
+    assert payload["object"] == "hermes.session.chat.completion"
+    assert payload["session_id"] == session_id
+    assert payload["message"]["role"] == "assistant"
+    assert payload["message"]["content"] == "fresh answer"
+    mock_run.assert_awaited_once()
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_id"] == session_id
+    assert kwargs["gateway_session_key"] == "client-42"
+    assert kwargs["ephemeral_system_prompt"] == "stay focused"
+    history = kwargs["conversation_history"]
+    assert len(history) == 2
+    assert isinstance(history[0].pop("timestamp"), (int, float))
+    assert isinstance(history[1].pop("timestamp"), (int, float))
+    assert history == [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "prior answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
+    session_id = session_db.create_session("image-session", "api_server")
+    image_payload = [
+        {"type": "input_text", "text": "What's in this image?"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+    expected_user_message = [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+
+    mock_run = AsyncMock(return_value=({"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": image_payload},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["user_message"] == expected_user_message
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_accepts_multimodal_message(adapter, session_db):
+    session_id = session_db.create_session("image-stream-session", "api_server")
+    image_payload = [
+        {"type": "input_text", "text": "What's in this image?"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+    expected_user_message = [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        kwargs["stream_delta_callback"]("A cat.")
+        return {"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": image_payload},
+            )
+            assert resp.status == 200, await resp.text()
+            assert resp.headers["Content-Type"].startswith("text/event-stream")
+            body = await resp.text()
+
+    assert "event: assistant.completed" in body
+    assert captured_kwargs["user_message"] == expected_user_message
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(adapter, session_db):
+    session_id = session_db.create_session("stream-session", "api_server")
+    session_db.set_session_title(session_id, "Stream")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("Hello")
+        kwargs["stream_delta_callback"](" world")
+        kwargs["tool_progress_callback"]("reasoning.available", tool_name="_thinking", preview="thinking")
+        return {"final_response": "Hello world", "session_id": session_id}, {"total_tokens": 2}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "stream please"})
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/event-stream")
+            body = await resp.text()
+
+    assert "event: run.started" in body
+    assert "event: message.started" in body
+    assert "event: assistant.delta" in body
+    assert "Hello world" in body
+    assert "event: tool.progress" in body
+    assert "event: assistant.completed" in body
+    assert "event: run.completed" in body
+    assert "event: done" in body
+
+
+@pytest.mark.asyncio
 async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypatch):
     observed = {}
 

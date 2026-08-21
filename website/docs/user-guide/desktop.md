@@ -245,13 +245,78 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 
 ## Updating
 
-The app checks for updates in the background and offers a one-click update when one is ready.
+The app checks for updates in the background and offers a one-click update when
+one is ready. On the Axiom surface, the optional **Axiom Enhancements** disk plugin
+adds an Update Control tab, status-bar summary, and command-palette entry for
+viewing the local Desktop client and active backend snapshots without treating
+them as one target. Install the disk plugin, enable it under **Settings →
+Plugins**, then open **Update Control** from the
+status bar or command palette. It joins the same main tab strip as sessions;
+closing the tab leaves the plugin enabled so either entry point can reopen it.
 
 The desktop app and the Hermes backend it talks to update on separate clocks — the app package on your machine, the backend wherever it runs. When more than one update target exists (a remote gateway, or several registered gateways), the update affordances (**Update now** on the About panel, the ⌘K **Update Hermes** row, and the update-ready toast) update **everything**: the connected backend first, then every other eligible registered gateway (Hermes Cloud entries are platform-managed and skipped), and the desktop app itself last, since applying the client update relaunches the app. Single-machine installs keep the one-button experience.
 
 After any backend update, the app also re-checks its own version and warns with a one-click **Update desktop app** action if the GUI is still behind — so updating a remote backend can never silently leave you on a stale desktop build.
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
+
+### Client and backend freshness are separate
+
+- **Desktop client** means the Electron app and source checkout on the machine
+  where the window is running.
+- **Active backend** means the `hermes serve` runtime the app is connected to.
+  In remote or cloud mode, that normally lives on another machine.
+
+Updating one does not update the other. A fresh Windows client can be connected
+to an older backend, and a fresh backend can still be viewed through an older
+client. Update Control shows both and hands the active connection target to the
+native Hermes update overlay, which owns checks, confirmation, changelog display,
+dirty-tree handling, install, restart, and relaunch. The plugin never performs
+update mutation itself.
+
+### Fork and deploy update branches
+
+For Axiom-Desktop, set the client update branch explicitly to `axiom`. On
+Windows the selection is persisted at:
+
+```text
+%APPDATA%\Hermes\updates.json
+```
+
+```json
+{
+  "branch": "axiom"
+}
+```
+
+The configured update branch is independent of the checkout's current branch.
+For fork/deploy installations, read the three comparisons separately:
+
+1. **Checkout → deploy branch:** `HEAD...origin/axiom` tells you whether this
+   client has consumed the published Axiom result.
+2. **Deploy branch → upstream:** `origin/axiom...upstream/main` tells you whether
+   upstream work still needs reconciliation and publication to the deploy
+   branch.
+3. **Client → backend:** each target reports its own version, branch, and update
+   availability; equality is not implied by either Git comparison.
+
+### Verify the build that is actually running
+
+"Source is current" is only one layer. For a source-built Windows client,
+verify the Desktop build stamp at
+`%LOCALAPPDATA%\hermes\desktop-build-stamp.json`, compare its `contentHash`
+with the current Desktop source hash, inspect the expected executable under
+`%LOCALAPPDATA%\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe`,
+and confirm the running `Hermes.exe` process points to that file and started
+after the build. These checks distinguish:
+
+- checkout current, rebuild required;
+- build current, relaunch required; and
+- verified build currently running.
+
+Update Control reports Git/update readiness; it does not replace this build and
+running-process verification. Use **Open native updater** to refresh and manage
+the active connection target through core.
 
 ## Uninstalling
 

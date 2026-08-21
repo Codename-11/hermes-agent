@@ -991,6 +991,42 @@ class TestProfileRestoration:
             for name, content in files.items():
                 zf.writestr(name, content)
 
+    def test_import_creates_profile_wrappers(self, tmp_path, monkeypatch):
+        """Import auto-creates wrapper scripts for restored profiles."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Mock the wrapper dir to be inside tmp_path
+        wrapper_dir = tmp_path / ".local" / "bin"
+        wrapper_dir.mkdir(parents=True)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model:\n  provider: openrouter\n",
+            "profiles/coder/config.yaml": "model:\n  provider: anthropic\n",
+            "profiles/coder/.env": "ANTHROPIC_API_KEY=sk-test\n",
+            "profiles/researcher/config.yaml": "model:\n  provider: deepseek\n",
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        # Profile directories should exist
+        assert (hermes_home / "profiles" / "coder" / "config.yaml").exists()
+        assert (hermes_home / "profiles" / "researcher" / "config.yaml").exists()
+
+        # Wrapper scripts should be created
+        suffix = ".bat" if os.name == "nt" else ""
+        assert (wrapper_dir / f"coder{suffix}").exists()
+        assert (wrapper_dir / f"researcher{suffix}").exists()
+
+        # Wrappers should contain the right content
+        coder_wrapper = (wrapper_dir / f"coder{suffix}").read_text()
+        assert "hermes -p coder" in coder_wrapper
 
     def test_import_skips_profile_dirs_without_config(self, tmp_path, monkeypatch):
         """Import doesn't create wrappers for profile dirs without config."""
@@ -1015,8 +1051,39 @@ class TestProfileRestoration:
         run_import(args)
 
         # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
+        suffix = ".bat" if os.name == "nt" else ""
+        assert (wrapper_dir / f"valid{suffix}").exists()
         assert not (wrapper_dir / "empty").exists()
+
+    def test_import_without_profiles_module(self, tmp_path, monkeypatch):
+        """Import gracefully handles missing profiles module (fresh install)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "profiles/coder/config.yaml": "model: test\n",
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        # Simulate profiles module not being available
+        original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
+
+        def fake_import(name, *a, **kw):
+            if name == "hermes_cli.profiles":
+                raise ImportError("no profiles module")
+            return original_import(name, *a, **kw)
+
+        from hermes_cli.backup import run_import
+        with patch("builtins.__import__", side_effect=fake_import):
+            run_import(args)
+
+        # Files should still be restored even if wrappers can't be created
+        assert (hermes_home / "profiles" / "coder" / "config.yaml").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1370,7 +1437,7 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        assert any(Path(s).as_posix().endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -1681,6 +1748,8 @@ class TestMemoryProviderExternalPaths:
     def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
         """_external/ members restore to ~/<relpath>, not under HERMES_HOME,
         and credential-shaped files get 0600."""
+        if os.name == "nt":
+            pytest.skip("Windows does not expose POSIX mode-bit semantics")
         dst_home = tmp_path / "dst"
         dst_home.mkdir()
         hermes_home = dst_home / ".hermes"

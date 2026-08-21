@@ -62,12 +62,15 @@ hermes webhook subscribe <name> \
   --events "event1,event2" \
   --description "What this does" \
   --skills "skill1,skill2" \
+  --toolsets "web,terminal,file" \
   --deliver telegram \
   --deliver-chat-id "12345" \
   --secret "optional-custom-secret"
 ```
 
 Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
+
+`--toolsets` is optional and route-scoped. If omitted, webhook runs use `platform_toolsets.webhook` or the safe `hermes-webhook` default. Use route-level elevation only for trusted HMAC-signed automation where the caller and blast radius are controlled (for example, an owned GitHub Action that creates a bot branch/PR). Public PR/comment/issue webhook routes should usually omit it.
 
 ### Filter or transform payloads before the agent runs
 
@@ -190,6 +193,7 @@ Requires `--deliver` to be a real target (telegram, discord, slack, github_comme
 
 - Each subscription gets an auto-generated HMAC-SHA256 secret (or provide your own with `--secret`)
 - The webhook adapter validates signatures on every incoming POST
+- Webhook runs are safe-by-default; route-level `toolsets` can grant more capability to a specific trusted subscription without broadening every webhook route on the profile
 - Static routes from config.yaml cannot be overwritten by dynamic subscriptions
 - Subscriptions persist to `~/.hermes/webhook_subscriptions.json`
 

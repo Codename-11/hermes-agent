@@ -31,6 +31,8 @@ mcp_servers:
     # client_key: "/path/to/key.pem"  # optional, when key lives in a separate file
 
     enabled: true
+    exposure: auto
+    expose_on: [cli, discord]
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
@@ -54,6 +56,8 @@ mcp_servers:
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
 | `client_key` | string | HTTP | Path to the client private key, when `client_cert` is a string and the key is in a separate file |
 | `enabled` | bool | both | Skip the server entirely when false |
+| `exposure` | `auto`, `catalog`, `direct`, or `off` | both | Controls which connected server schemas are model-visible (default: `auto`) |
+| `expose_on` | string or list | both | Limits model-visible aliases to named Hermes platforms without disconnecting the server |
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |
@@ -114,6 +118,44 @@ Any other `${...}` reference falls through to the env-var lookup above.
 | `exclude` | string or list | Blacklist server-native MCP tools. Same exact-name / glob semantics as `include` |
 | `resources` | bool-like | Enable/disable `list_resources` + `read_resource` |
 | `prompts` | bool-like | Enable/disable `list_prompts` + `get_prompt` |
+
+## Schema exposure and activation
+
+Connectivity and model exposure are separate. An enabled MCP server can remain
+connected and authenticated while ordinary sessions receive only a small
+catalog bridge or no schemas at all.
+
+- `auto` (default): large servers exposing the complete `catalog.search`,
+  `catalog.describe`, and `catalog.call` bridge are catalog-only by default;
+  small or non-catalog servers retain direct exposure for compatibility.
+- `catalog`: expose only those three catalog operations. Other discovered
+  operations remain available in the opt-in `<server>-direct` tool profile.
+- `direct`: preserve legacy behavior and expose all filtered operations.
+- `off`: keep the server configured/connected but expose no model tools.
+
+Catalog-only mode is not a weaker authorization path. `catalog.call` invokes
+the server's normal operation and therefore retains its authorization and
+mutation checks.
+
+Use `expose_on` to scope the base catalog/direct alias by platform:
+
+```yaml
+mcp_servers:
+  forge:
+    url: "https://forge.example/api/mcp"
+    exposure: catalog
+    expose_on: [discord, api_server, webhook]
+
+platform_toolsets:
+  discord: [hermes-discord, forge]          # catalog bridge only
+  webhook: [hermes-webhook, forge-direct]   # explicit full profile
+```
+
+`<server>-direct` is a structured tool-profile selection; message text never
+activates it. Words such as “review”, “execute”, or “research” do not change a
+session's tools. Gateway/webhook route toolsets and platform toolsets are
+resolved at the session boundary and are part of the cached agent signature.
+The `no_mcp` sentinel blocks both base and `-direct` profiles.
 
 ## Filtering semantics
 

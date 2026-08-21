@@ -139,10 +139,10 @@ If you'd rather not track per-provider plan semantics at all, [Nous Portal](#nou
 
 Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
 
-:::caution Requires Claude Max "extra usage" credits
-When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account. **It only works if you're on a Claude Max plan and have purchased extra usage credits.** The base Max plan allowance (the usage included in Claude Code by default) is not consumed by Hermes — only the extra/overage credits you've added on top are. Claude Pro subscribers cannot use this path.
+:::tip Claude subscription billing
+When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes through the Claude Code OAuth credential lane for your Anthropic account. Claude Code usage such as `claude -p` is covered by the standard Claude subscription allowance rather than requiring separate "extra usage" credits; Hermes mirrors that lane for native Anthropic OAuth requests.
 
-If you don't have Max + extra credits, use an `ANTHROPIC_API_KEY` instead — requests are billed pay-per-token against that key's organization (standard API pricing, independent of any Claude subscription).
+If you prefer API billing, or if your subscription/account is not eligible for Claude Code OAuth usage, use an `ANTHROPIC_API_KEY` instead — requests are billed pay-per-token against that key's organization (standard API pricing, independent of any Claude subscription).
 :::
 
 ```bash

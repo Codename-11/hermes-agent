@@ -683,7 +683,9 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     except (OSError, UnicodeDecodeError):
         # OSError: file vanished or permission flipped between exists() and
         # read. UnicodeDecodeError: file holds non-UTF-8 / binary garbage
-        # (a truncated or clobbered status file). Either way it's unusable.
+        # (a truncated or clobbered status file; observed as stray 0x86 bytes
+        # in platform-status payloads on rapid reconnect). Either way, treat
+        # it as unusable so the caller can write a clean record.
         return None
     if not raw:
         return None

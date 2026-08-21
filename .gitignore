@@ -83,6 +83,8 @@ environments/benchmarks/evals/
 hermes_cli/web_dist/
 # Cross-process web UI build lock (flock target, always empty)
 .web_ui_build.lock
+# Lazy dependency refresh uses a separate interrupted-update breadcrumb.
+.lazy-refresh-incomplete
 apps/desktop/build/
 apps/desktop/dist/
 

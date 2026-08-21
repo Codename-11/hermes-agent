@@ -989,6 +989,250 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
+    """slash.exec expands any custom bundle through command.dispatch."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "slash_worker": worker,
+    }
+    fake_bundles = {
+        "/analysis-pack": {
+            "name": "analysis-pack",
+            "skills": ["source-check", "claim-audit"],
+        }
+    }
+    fake_msg = (
+        '[IMPORTANT: The user has invoked the "analysis-pack" skill bundle.]\n\n'
+        "User instruction: compare vector databases"
+    )
+
+    with patch("agent.skill_bundles.get_skill_bundles", return_value=fake_bundles), \
+         patch(
+             "agent.skill_bundles.build_bundle_invocation_message",
+             return_value=(fake_msg, ["source-check", "claim-audit"], []),
+         ):
+        resp = server.handle_request({
+            "id": "r-bundle-slash",
+            "method": "slash.exec",
+            "params": {
+                "command": "analysis-pack compare vector databases",
+                "session_id": sid,
+            },
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "send",
+        "message": fake_msg,
+        "notice": "⚡ Loading bundle: analysis-pack (2 skills)",
+        # UIs render this invocation; `message` stays model-facing scaffolding.
+        "display": "/analysis-pack",
+    }
+    assert worker.calls == []
+
+
+def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
+    """Plugin slash commands return normal slash.exec output without using the worker."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-slash",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "plugin:hello"}
+    assert worker.calls == []
+
+
+def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
+    """Plugin discovery failures must not break ordinary slash-worker commands."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        side_effect=RuntimeError("discovery boom"),
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-lookup-failure",
+            "method": "slash.exec",
+            "params": {"command": "help", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "worker:help"}
+    assert worker.calls == ["help"]
+
+
+def test_slash_exec_plugin_handler_error_returns_output(server):
+    """Plugin handler failures return slash output so the TUI does not redispatch."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    def handler(arg):
+        raise RuntimeError(f"handler boom: {arg}")
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: handler if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-handler-error",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "Plugin command error: handler boom: hello"}
+    assert worker.calls == []
+
+
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan", "learn create a skill from https://example.com/docs"])
+def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
+    """slash.exec must route _pending_input commands to command.dispatch
+    internally instead of returning the old 4018 "use command.dispatch"
+    fallback error (#48848). Some TUI clients failed that client-side
+    fallback, dropping the input and surfacing "empty command".
+
+    The contract is that slash.exec produces exactly the response
+    command.dispatch would for the same command — no fragile retry hop.
+    """
+    base, _, arg = cmd.partition(" ")
+
+    def fresh_session():
+        return {"session_key": "test-session", "agent": None}
+
+    sid = "test-session"
+
+    # Response from the (new) internal routing in slash.exec.
+    server._sessions[sid] = fresh_session()
+    routed = server.handle_request({
+        "id": "r1",
+        "method": "slash.exec",
+        "params": {"command": cmd, "session_id": sid},
+    })
+
+    # Response from calling command.dispatch directly with the parsed parts.
+    server._sessions[sid] = fresh_session()
+    direct = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": base, "arg": arg, "session_id": sid},
+    })
+
+    # slash.exec must no longer emit the old client-fallback rejection.
+    if "error" in routed:
+        assert "pending-input command" not in routed["error"]["message"]
+
+    # Internal routing must yield the same payload as command.dispatch.
+    assert routed.get("result") == direct.get("result")
+    assert routed.get("error") == direct.get("error")
+
+
+def test_slash_exec_rejects_gateway_only_plugin_commands(server):
+    """gateway-only plugin commands must fall through to command.dispatch."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    fake_entry = {
+        "handler": lambda *_a, **_k: {"title": "Card"},
+        "returns_card": True,
+    }
+
+    with patch("hermes_cli.commands.resolve_command", return_value=MagicMock(gateway_only=True)), \
+         patch("hermes_cli.plugins.get_plugin_command_entry", return_value=fake_entry):
+        resp = server.handle_request({
+            "id": "r_plugin_redirect",
+            "method": "slash.exec",
+            "params": {"command": "route status", "session_id": sid},
+        })
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "gateway-only plugin command" in resp["error"]["message"]
+
+
+def test_command_dispatch_renders_plugin_cards_and_passes_session_id(server):
+    """First-class plugin commands with returns_card render cleanly in the TUI."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    seen = {}
+
+    def _handler(raw_args, session_id=None):
+        seen["raw_args"] = raw_args
+        seen["session_id"] = session_id
+        return {
+            "title": "🔀 Model Routing Status",
+            "fields": [{"name": "Router", "value": "Enabled ✓", "inline": True}],
+            "footer": "/route status",
+        }
+
+    fake_entry = {"handler": _handler, "returns_card": True}
+
+    with patch("hermes_cli.plugins.get_plugin_command_entry", return_value=fake_entry):
+        resp = server.handle_request({
+            "id": "r_plugin_card",
+            "method": "command.dispatch",
+            "params": {"name": "route", "arg": "status", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "plugin"
+    assert result["output"].startswith("**🔀 Model Routing Status**")
+    assert "**Router:** Enabled ✓" in result["output"]
+    assert seen == {"raw_args": "status", "session_id": sid}
+
+
 def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     """slash.exec must resolve get_skill_commands() against the session's own
     profile_home rather than the gateway process's ambient HERMES_HOME

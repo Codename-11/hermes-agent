@@ -19,6 +19,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
+| **Shared rooms with multiple Hermes bots** | Use explicit `@mentions`, set `thread_require_mention: true`, keep free-response channels empty, and leave `allow_bots` at `none` unless you are deliberately testing bot-authored turns. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
 
 :::tip
@@ -341,6 +342,7 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  allow_bots: "none"              # none | mentions | all for bot-authored messages
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
     enabled: false
     channels: []                  # Empty uses free_response_channels
@@ -379,6 +381,18 @@ discord:
   require_mention: true
   thread_require_mention: true    # multi-bot setup
 ```
+
+#### `discord.allow_bots`
+
+**Type:** string — **Default:** `"none"`
+
+Controls whether bot-authored Discord messages can trigger this bot:
+
+- `none` — ignore all bot-authored messages. Safest default.
+- `mentions` — accept bot-authored messages only when they directly mention this bot.
+- `all` — accept all bot-authored messages. Use only in tightly controlled channels.
+
+For shared rooms with multiple bots, prefer `allow_bots: "none"` plus human-authored `@mentions`. If you deliberately enable bot-authored turns, also set `thread_require_mention: true` and avoid free-response channels to reduce cascade risk.
 
 #### `discord.free_response_channels`
 
@@ -927,5 +941,4 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
 

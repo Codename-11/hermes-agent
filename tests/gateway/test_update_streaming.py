@@ -160,6 +160,58 @@ class TestUpdateCommandGatewayFlag:
         assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
+    @pytest.mark.asyncio
+    async def test_rejects_removed_update_modes(self, tmp_path):
+        """Typed gateway updates expose the same single-command UX as the CLI."""
+        runner = _make_runner()
+        event = _make_event("/update resolve")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "no longer has modes" in result
+        mock_popen.assert_not_called()
+        assert not (hermes_home / ".update_pending.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_windows_update_passes_single_command_argv(self, tmp_path):
+        """Windows helper receives the same bare update argv as other hosts."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.windows_detach_popen_kwargs", return_value={}), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        call_args = mock_popen.call_args[0][0]
+        assert call_args[-2:] == ["update", "--gateway"]
+        assert "stream progress" in result
+
 
 # ---------------------------------------------------------------------------
 # _watch_update_progress — output streaming

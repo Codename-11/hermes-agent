@@ -59,7 +59,6 @@ from agent.conversation_compression import (
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
 )
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import (
@@ -2683,6 +2682,7 @@ from gateway.platforms.base import (
     MessageType,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
+    _thread_metadata_for_source as _base_thread_metadata_for_source,
     build_auto_tts_output_path,
     merge_pending_message_event,
     utf16_len,
@@ -17702,6 +17702,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "bench":
+            return await self._handle_bench_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -17770,16 +17773,106 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import get_plugin_command_entry
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
+                plugin_entry = get_plugin_command_entry(command.replace("_", "-"))
+                if plugin_entry:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    handler = plugin_entry["handler"]
+
+                    # Plugin handlers may declare they can return an InfoCard
+                    # dict instead of a plain string (returns_card=True). The
+                    # legacy handle_route_command hook path sniffed the return
+                    # value unconditionally; we mirror that behavior so both
+                    # opt-in card plugins and curious string-returners get
+                    # rendered correctly.
+                    returns_card_hint = bool(plugin_entry.get("returns_card"))
+
+                    # Handler may or may not accept session_id — try the
+                    # kwarg form first so card-aware plugin handlers can
+                    # scope state per-session;
+                    # fall back to the legacy args-only form.
+                    try:
+                        session_id = None
+                        try:
+                            source_obj = event.source
+                            session_entry = self.session_store.get_or_create_session(source_obj)
+                            session_id = session_entry.session_id
+                        except Exception:
+                            session_id = None
+                        if session_id is not None:
+                            try:
+                                result = handler(
+                                    user_args,
+                                    session_id=session_id,
+                                    gateway=self,
+                                    event=event,
+                                )
+                            except TypeError:
+                                try:
+                                    result = handler(user_args, session_id=session_id)
+                                except TypeError:
+                                    result = handler(user_args)
+                        else:
+                            try:
+                                result = handler(user_args, gateway=self, event=event)
+                            except TypeError:
+                                result = handler(user_args)
+                    except Exception as inner:
+                        logger.exception(
+                            "Plugin '%s' command '/%s' handler raised",
+                            plugin_entry.get("plugin", "?"),
+                            command,
+                        )
+                        return f"✗ Command failed: {inner}"
                     if asyncio.iscoroutine(result):
                         result = await result
+
+                    if result is None:
+                        return None
+
+                    # Card-aware dispatch: if the plugin opted in via
+                    # returns_card=True (or happens to return a dict shaped
+                    # like an InfoCard), route through adapter.send_info_card
+                    # and return None so the outer text-send path doesn't
+                    # duplicate the message.
+                    if returns_card_hint or isinstance(result, dict):
+                        try:
+                            from gateway.cards import is_card, render_card_as_text
+                        except Exception:
+                            is_card = lambda _v: False  # noqa: E731
+                            render_card_as_text = None
+
+                        if is_card(result):
+                            source_obj = event.source
+                            adapter = self.adapters.get(source_obj.platform)
+                            metadata = (
+                                {"thread_id": source_obj.thread_id}
+                                if getattr(source_obj, "thread_id", None)
+                                else None
+                            )
+                            if adapter is not None and hasattr(adapter, "send_info_card"):
+                                try:
+                                    sent = await adapter.send_info_card(
+                                        chat_id=source_obj.chat_id,
+                                        card=result,
+                                        metadata=metadata,
+                                    )
+                                    if getattr(sent, "success", False):
+                                        return None
+                                except Exception:
+                                    logger.exception(
+                                        "send_info_card failed for plugin '%s' "
+                                        "command '/%s' — falling back to text",
+                                        plugin_entry.get("plugin", "?"),
+                                        command,
+                                    )
+                            if render_card_as_text is not None:
+                                return render_card_as_text(result)
+                            return str(result)
+
                     return str(result) if result else None
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
@@ -20168,6 +20261,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                enabled_toolsets_override=getattr(event, "enabled_toolsets", None),
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -22229,6 +22323,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # stale inspected content), not an attachment request.
             adapter.extract_images(cleaned)
 
+            delivery_adapter = adapter
+            delivery_chat_id = event.source.chat_id
+            delivery_platform = event.source.platform
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
@@ -22237,6 +22334,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._reply_anchor_for_event(event),
                 )
             )
+
+            # Webhook text delivery can target another platform (e.g. Discord).
+            # Route post-stream MEDIA: attachments to that same target adapter;
+            # the origin webhook adapter has no native media sender and its
+            # medialess fallback intentionally does not expose host file paths.
+            resolver = getattr(adapter, "resolve_media_delivery_target", None)
+            if callable(resolver):
+                try:
+                    target = resolver(event.source.chat_id)
+                except Exception as _resolve_err:
+                    logger.debug("[%s] Media delivery target resolution failed: %s", adapter.name, _resolve_err)
+                    target = None
+                if target:
+                    delivery_adapter = target.get("adapter") or delivery_adapter
+                    delivery_chat_id = target.get("chat_id") or delivery_chat_id
+                    delivery_platform = target.get("platform") or delivery_platform
+                    _thread_meta = target.get("metadata")
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -22259,37 +22373,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
-                        chat_id=event.source.chat_id,
+                    await delivery_adapter.send_multiple_images(
+                        chat_id=delivery_chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
                 except Exception as e:
-                    logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    logger.warning("[%s] Post-stream image batch delivery failed: %s", delivery_adapter.name, e)
 
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
-                            chat_id=event.source.chat_id,
+                    if should_send_media_as_audio(delivery_platform, ext, is_voice=is_voice):
+                        await delivery_adapter.send_voice(
+                            chat_id=delivery_chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
-                            chat_id=event.source.chat_id,
+                        await delivery_adapter.send_video(
+                            chat_id=delivery_chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
-                            chat_id=event.source.chat_id,
+                        await delivery_adapter.send_document(
+                            chat_id=delivery_chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
                 except Exception as e:
-                    logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    logger.warning("[%s] Post-stream media delivery failed: %s", delivery_adapter.name, e)
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -23309,11 +23423,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_assistant = None
         try:
             for message in reversed(await self._session_db.get_messages(session_id)):
-                if message.get("role") != "assistant":
-                    continue
-                projected = project_compaction_message_for_display(message)
-                if projected is not None and projected.get("content"):
-                    last_assistant = str(projected.get("content"))
+                if message.get("role") == "assistant" and message.get("content"):
+                    last_assistant = str(message.get("content"))
                     break
         except Exception:
             last_assistant = None
@@ -23653,14 +23764,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
+        platform = getattr(source, "platform", None)
         metadata = self._thread_metadata_for_target(
-            getattr(source, "platform", None),
+            platform,
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
-        if getattr(source, "platform", None) == Platform.SLACK:
+        if platform == Platform.DISCORD and getattr(source, "is_bot", False):
+            # Bot-authored Discord turns should not reply-ping the bot that just
+            # spoke; with allow_bots=mentions that implicit ping can become a
+            # new turn even without any multi-agent orchestration feature.
+            metadata = dict(metadata or {})
+            metadata["suppress_reply_mentions"] = True
+        if platform == Platform.SLACK:
             # Per-turn egress identity (R3-5, connector PR gateway-gateway#210).
             # Slack's chat.startStream requires recipient_user_id (+
             # recipient_team_id) when streaming to a channel, and the relay
@@ -23813,6 +23931,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         prompt_path = _hermes_home / ".update_prompt.json"
+        brief_prompt_path = _hermes_home / ".update_brief_prompt.json"
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -23925,6 +24044,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await _flush_buffer()
 
                 # Send final status
+                exit_code = 1
                 try:
                     exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
                     exit_code = int(exit_code_raw)
@@ -23944,9 +24064,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
 
+                # Agent-summary injection: if `hermes update` dropped a
+                # .update_brief_prompt.json file, inject its prompt as a
+                # synthetic user turn in the originating session so the
+                # agent posts a natural-language summary in this channel.
+                if exit_code == 0 and brief_prompt_path.exists():
+                    try:
+                        brief_data = json.loads(brief_prompt_path.read_text())
+                        brief_prompt_text = brief_data.get("prompt", "").strip()
+                        if brief_prompt_text:
+                            synth_source = self._build_process_event_source(
+                                {"session_key": session_key}
+                            )
+                            if synth_source is not None:
+                                synth_event = MessageEvent(
+                                    text=brief_prompt_text,
+                                    message_type=MessageType.TEXT,
+                                    source=synth_source,
+                                    internal=True,
+                                )
+                                logger.info(
+                                    "Injecting update-brief summarize prompt for %s",
+                                    session_key,
+                                )
+                                await adapter.handle_message(synth_event)
+                    except Exception as inj_err:
+                        logger.warning(
+                            "Update brief prompt injection failed: %s", inj_err,
+                        )
+
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
-                          exit_code_path, prompt_path):
+                          exit_code_path, prompt_path, brief_prompt_path):
                     p.unlink(missing_ok=True)
                 (_hermes_home / ".update_response").unlink(missing_ok=True)
                 _up_done = self._peek_session_state(session_key)
@@ -27881,6 +28030,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -27901,7 +28051,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
+                channel_prompt=channel_prompt,
+                enabled_toolsets_override=enabled_toolsets_override,
+                moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
@@ -27914,7 +28066,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
+                channel_prompt=channel_prompt,
+                enabled_toolsets_override=enabled_toolsets_override,
+                moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
@@ -28057,6 +28211,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -28099,9 +28254,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        enabled_toolsets = self._resolve_enabled_toolsets_for_source(
-            user_config, source, platform_key
-        )
+        if enabled_toolsets_override is not None:
+            from hermes_cli.tools_config import _get_platform_tools
+
+            route_config = dict(user_config)
+            route_platform_toolsets = dict(route_config.get("platform_toolsets") or {})
+            route_platform_toolsets[platform_key] = [
+                str(ts) for ts in enabled_toolsets_override
+            ]
+            route_config["platform_toolsets"] = route_platform_toolsets
+            enabled_toolsets = sorted(_get_platform_tools(route_config, platform_key))
+        else:
+            enabled_toolsets = self._resolve_enabled_toolsets_for_source(
+                user_config, source, platform_key
+            )
         agent_cfg_local = user_config.get("agent") or {}
         from agent.skill_utils import parse_config_string_list
 
@@ -29875,6 +30041,92 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
 
         return response
+
+
+    async def _handle_bench_command(self, event: MessageEvent) -> str:
+        """Handle /bench command - run benchmark harness."""
+        args_full = event.get_command_args().strip()
+        args_parts = args_full.split() if args_full else []
+
+        if not args_parts:
+            # Show usage
+            return (
+                "🏁 **Hermes Benchmark Harness**\n\n"
+                "**Commands:**\n"
+                "• `/bench list` — List available task suites\n"
+                "• `/bench run <suite>` — Run a benchmark suite\n"
+                "• `/bench results` — Show recent benchmark results\n\n"
+                "_Example:_ `/bench run coding/`"
+            )
+
+        subcommand = args_parts[0].lower()
+        bench_script = os.path.expanduser("~/.hermes/bench/bench.py")
+
+        if not os.path.exists(bench_script):
+            return "🏁 ✗ Benchmark harness not found at ~/.hermes/bench/bench.py"
+
+        try:
+            import asyncio
+
+            if subcommand == "list":
+                # List available suites
+                proc = await asyncio.create_subprocess_exec(
+                    "python3", bench_script, "list",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+
+                if proc.returncode == 0:
+                    output = stdout.decode().strip()
+                    return f"🏁 **Available Task Suites**\n\n```\n{output}\n```"
+                error = stderr.decode().strip()
+                return f"🏁 ✗ List failed: {error}"
+
+            if subcommand == "run":
+                if len(args_parts) < 2:
+                    return "🏁 ✗ Usage: `/bench run <suite>` (e.g., `/bench run coding/`)"
+
+                suite = args_parts[1]
+
+                # This is a long-running operation, so run it in the background
+                return (
+                    f"🏁 **Starting benchmark suite:** `{suite}`\n\n"
+                    "_This may take several minutes. Results will be streamed here..._\n"
+                    "_(Note: Use /bench results to see results from previous runs)_"
+                )
+
+            if subcommand == "results":
+                # Show recent results
+                proc = await asyncio.create_subprocess_exec(
+                    "python3", bench_script, "results",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+
+                if proc.returncode == 0:
+                    output = stdout.decode().strip()
+                    if not output:
+                        return "🏁 No benchmark results found"
+
+                    # Truncate very long output
+                    if len(output) > 3000:
+                        output = output[:3000] + "\n\n... (truncated)"
+
+                    return f"🏁 **Recent Benchmark Results**\n\n```\n{output}\n```"
+                error = stderr.decode().strip()
+                return f"🏁 ✗ Results query failed: {error}"
+
+            return (
+                f"🏁 ✗ Unknown subcommand: `{subcommand}`\n\n"
+                "**Valid commands:** list, run, results"
+            )
+
+        except asyncio.TimeoutError:
+            return "🏁 ✗ Benchmark command timed out (30s limit)"
+        except Exception as e:
+            return f"🏁 ✗ Benchmark command failed: {str(e)}"
 
 
 def _run_planned_stop_watcher(

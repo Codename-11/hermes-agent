@@ -2144,7 +2144,9 @@ def _dump_subagent_timeout_diagnostic(
 
         _w("## Toolsets")
         enabled = getattr(child, "enabled_toolsets", None)
+        disabled = getattr(child, "disabled_toolsets", None)
         _w(f"  enabled_toolsets:  {enabled!r}")
+        _w(f"  disabled_toolsets: {disabled!r}")
         tool_names = getattr(child, "valid_tool_names", None)
         if tool_names:
             _w(f"  loaded tool count: {len(tool_names)}")

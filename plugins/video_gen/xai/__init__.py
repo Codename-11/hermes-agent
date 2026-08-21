@@ -54,7 +54,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_EXTEND_DURATION = 6
 
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
-VALID_RESOLUTIONS = {"480p", "720p"}
+VALID_RESOLUTIONS = {"480p", "720p", "1080p"}
 MAX_REFERENCE_IMAGES = 7
 
 
@@ -610,9 +610,6 @@ async def _generate_xai_video_async(
 
     if normalized_aspect_ratio not in VALID_ASPECT_RATIOS:
         normalized_aspect_ratio = DEFAULT_ASPECT_RATIO
-    if normalized_resolution not in VALID_RESOLUTIONS:
-        normalized_resolution = DEFAULT_RESOLUTION
-
     modality_used = "reference" if refs else ("image" if image_input else "text")
     resolved_model = _resolve_model_for_modality(
         model,
@@ -632,6 +629,27 @@ async def _generate_xai_video_async(
                 prompt=prompt,
             )
         resolved_model = DEFAULT_TEXT_TO_VIDEO_MODEL
+
+    if normalized_resolution not in VALID_RESOLUTIONS:
+        normalized_resolution = DEFAULT_RESOLUTION
+    elif (
+        normalized_resolution == "1080p"
+        and not (
+            modality_used == "image"
+            and resolved_model == DEFAULT_IMAGE_TO_VIDEO_MODEL
+        )
+    ):
+        return error_response(
+            error=(
+                "xAI 1080p video generation is only supported for fresh "
+                f"image-to-video requests using {DEFAULT_IMAGE_TO_VIDEO_MODEL}; "
+                f"got mode={modality_used}, model={resolved_model}"
+            ),
+            error_type="unsupported_resolution",
+            provider="xai",
+            model=resolved_model,
+            prompt=prompt,
+        )
 
     clamped_duration = _clamp_duration(duration, has_reference_images=bool(refs))
     payload = {

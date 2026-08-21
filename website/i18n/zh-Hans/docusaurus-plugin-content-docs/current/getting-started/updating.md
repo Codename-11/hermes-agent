@@ -54,7 +54,7 @@ updates:
 
 ### Windows：另一个 `hermes.exe` 正在运行
 
-在 Windows 上，如果 `hermes update` 检测到另一个 `hermes.exe` 进程持有 venv 入口点可执行文件的句柄，它将拒绝运行 — 最常见的情况是 Hermes Desktop 应用启动的后端进程、另一个终端中打开的 `hermes` REPL，或正在运行的 gateway：
+在 Windows 上，`hermes update` 会先暂停它能识别到的正在运行的 Hermes gateway 进程，然后再检查是否仍有其他 `hermes.exe` 进程持有 venv 入口点可执行文件的句柄。如果仍有非 gateway 进程加载了该 shim — 最常见的是 Hermes Desktop 应用启动的后端进程，或另一个终端中打开的 `hermes` REPL — 更新将拒绝继续：
 
 ```
 $ hermes update
@@ -70,7 +70,7 @@ $ hermes update
   confirmed those processes will not write to the venv.
 ```
 
-关闭列出的进程后重试。如果你确定并发进程不会造成干扰（极少见 — 通常仅在杀毒软件 shim 被误判时有用），可传入 `--force` 跳过检查。此时更新程序仍会以指数退避方式重试 `.exe` 重命名操作，对于顽固的文件锁，会通过 `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` 将替换操作安排在下次重启时执行，以确保更新能够完成。
+关闭列出的进程后重试。如果列出的是 gateway，通常表示 Hermes 无法映射或停止它；手动终止 PID 前，先尝试运行一次 `hermes gateway stop`。如果你确定并发进程不会造成干扰（极少见 — 通常仅在杀毒软件 shim 被误判时有用），可传入 `--force` 跳过检查。此时更新程序仍会以指数退避方式重试 `.exe` 重命名操作，对于顽固的文件锁，会通过 `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` 将替换操作安排在下次重启时执行，以确保更新能够完成。
 
 预期输出如下：
 

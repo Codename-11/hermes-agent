@@ -1,0 +1,1442 @@
+{
+  "carries": [
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "py_compile",
+            "hermes_cli/axiom_update.py",
+            "hermes_cli/main.py"
+          ],
+          "covers": [],
+          "cwd": ".",
+          "env": {},
+          "id": "deploy-branch-update-pycompile"
+        },
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_update_check.py",
+            "tests/hermes_cli/test_update_autostash.py",
+            "tests/hermes_cli/test_update_stale_dashboard.py",
+            "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_cmd_update.py"
+          ],
+          "covers": [
+            "tests/hermes_cli/test_update_check.py",
+            "tests/hermes_cli/test_update_autostash.py",
+            "tests/hermes_cli/test_update_stale_dashboard.py",
+            "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_cmd_update.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "deploy-branch-update-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Fork footprint reduction \u2014 extracted modules",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "deploy-updater-and-update-control",
+      "id": "deploy-branch-update",
+      "order": 10,
+      "ownership": "core",
+      "paths": [
+        "hermes_cli/main.py",
+        "hermes_cli/axiom_update.py",
+        "hermes_cli/update_ui.py",
+        "scripts/check-merge-drops.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "67c281241664ccc398feda765a422ec991dcf992"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "7fe6222e6731254ec9fe694bda41e403ce57e625"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "0c3a6261cecbfc8c44addebd04399e79ce1daa0d"
+        }
+      ],
+      "retirement": "Retire only after upstream owns an equivalent deploy-branch-aware, transactional update/reconciliation flow and the fork-owned axiom_update seam is no longer needed.",
+      "status": "active",
+      "summary": "Keep deploy-aware Hermes update/version flows transactional, publish-only on origin/axiom, and resume bounded conflict resolution without mutating live source prematurely.",
+      "tests": [
+        "tests/hermes_cli/test_update_check.py",
+        "tests/hermes_cli/test_update_autostash.py",
+        "tests/hermes_cli/test_update_stale_dashboard.py",
+        "tests/hermes_cli/test_update_concurrent_quarantine.py",
+        "tests/hermes_cli/test_cmd_update.py"
+      ],
+      "title": "Axiom deploy-branch update and reconciliation"
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Axiom Desktop update-service plugin seam",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "deploy-branch-update"
+      ],
+      "domain_id": "deploy-updater-and-update-control",
+      "id": "desktop-update-service-plugin-seam",
+      "notes": [
+        "External plugin paths under axiom-agent-library/plugins/desktop/axiom-enhancements are intentionally omitted from paths because the Phase 1 manifest is repository-internal only.",
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ],
+      "order": 20,
+      "ownership": "mixed",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom-maintained Desktop Update Control plugin seam and typed updater facade; private renderer lives outside this repository.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Expose a typed Desktop updater facade and staged update lifecycle without bundling Axiom-specific presentation in core.",
+      "tests": [],
+      "title": "Axiom Desktop Update Control plugin seam and staged update lifecycle"
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Axiom Desktop session convergence and profile-safe live status",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-session-and-profile-convergence",
+      "id": "desktop-session-convergence",
+      "order": 30,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "6616b11beff300750e48dbfb9816a22961800f95"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "7d37b0ef4aac9f98a1124e0ea7d867dcabd3c359"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "5705aa6ab8c2a4089a3b8088e2776a65a96eef32"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "4510638d86f14f62f8a99adf51d4c9a70ea0abbf"
+        },
+        {
+          "kind": "pull_request",
+          "number": 69739,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Preserve profile-qualified runtime ownership, reconnect reconciliation, stale-async fencing, reclaim eviction, and causal steer ordering across concurrent Desktop sessions.",
+      "tests": [],
+      "title": "Axiom Desktop session convergence and profile-safe live status",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Axiom Desktop session convergence and profile-safe live status",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-session-convergence"
+      ],
+      "domain_id": "desktop-session-and-profile-convergence",
+      "id": "desktop-profile-gateway-activation",
+      "notes": [
+        "Historical provenance is retained for audit only. The carry was removed from axiom after exact live remote profile switching continued to regress.",
+        "Do not restore the replay branch without a new upstream-based design and real remote default \u2192 named \u2192 default \u2192 all-profiles E2E proof."
+      ],
+      "order": 35,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "a6368fb6e0f92f3246a1d6ee88edcbe6bac0d2f6"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "45fc462e9bb240ef535476cbda6c65c0294d21b4"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "99b5f3cbc7cc0e201dbf1c97328382cb9862cd3d"
+        }
+      ],
+      "retirement": "Retired on 2026-08-20 after three failed forward fixes. Current upstream profile switching is the authority; do not replay this carry.",
+      "status": "retired",
+      "summary": "Historical atomic profile-gateway activation experiment; reverted after repeated live regressions in remote profile/default switching.",
+      "tests": [],
+      "title": "Axiom Desktop profile gateway activation"
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Desktop remote profile handles \u2014 local carry pending upstream equivalent",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-session-convergence"
+      ],
+      "domain_id": "desktop-session-and-profile-convergence",
+      "id": "desktop-remote-profile-handles",
+      "order": 40,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "pull_request",
+          "number": 39337,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Discover profiles exposed by a selected remote gateway and pin them as local profile handles with stable routing metadata.",
+      "tests": [],
+      "title": "Desktop remote profile handles",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Desktop profile visibility, profile-scoped tabs, and workspace appearance \u2014 local carry pending upstream equivalent",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-session-convergence",
+        "desktop-remote-profile-handles"
+      ],
+      "domain_id": "desktop-session-and-profile-convergence",
+      "id": "desktop-profile-workspaces",
+      "order": 50,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom Desktop-local profile visibility and workspace-scoping carry pending upstream equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired after exact upstream control proved this carry caused remote profile/session regressions; current upstream Desktop is authoritative.",
+      "status": "retired",
+      "summary": "Keep Desktop-local profile hiding, clicked-profile new chat/window actions, and complete per-profile workspace persistence without cancelling background work.",
+      "tests": [],
+      "title": "Desktop profile visibility, profile-scoped tabs, and workspace appearance",
+      "notes": [
+        "Retired 2026-08-21 after exact upstream Desktop control passed remote all-profiles sessions and Bot Mode while the carry stack collapsed profile/session state."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Desktop unified multi-profile session identity",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-session-convergence",
+        "desktop-remote-profile-handles"
+      ],
+      "domain_id": "desktop-session-and-profile-convergence",
+      "id": "desktop-multi-profile-session-identity",
+      "order": 60,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom All Profiles identity tuple carry pending upstream equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired after exact upstream control proved this carry caused remote profile/session regressions; current upstream Desktop is authoritative.",
+      "status": "retired",
+      "summary": "Treat All Profiles session identity as the tuple of profile and session id throughout selection, navigation, cache bypass, resume, and upsert behavior.",
+      "tests": [],
+      "title": "Desktop unified multi-profile session identity",
+      "notes": [
+        "Retired 2026-08-21 after exact upstream Desktop control passed remote all-profiles sessions and Bot Mode while the carry stack collapsed profile/session state."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Axiom Desktop hybrid Projects overview and typed project paths",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-remote-profile-handles"
+      ],
+      "domain_id": "desktop-projects-and-worktrees",
+      "id": "desktop-hybrid-projects",
+      "order": 70,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "001f984b5c49652e461b7779ddd651d5fc251a64"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Keep Projects primary beside separate Recent Sessions, typed local/remote project paths, source filtering, and pinned remote-profile project discovery.",
+      "tests": [],
+      "title": "Axiom Desktop hybrid Projects overview and typed project paths",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Axiom Desktop Project/worktree session lifecycle",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-hybrid-projects"
+      ],
+      "domain_id": "desktop-projects-and-worktrees",
+      "id": "desktop-project-worktree-lifecycle",
+      "order": 80,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom Desktop project/worktree lifecycle carry pending upstream equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Provide separate main-checkout, new isolated worktree, current-session retarget, existing-worktree entry, and return-to-project flows.",
+      "tests": [],
+      "title": "Axiom Desktop Project/worktree session lifecycle",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Desktop project overview, default project, and in-chat live status \u2014 local carry pending upstream equivalent",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-hybrid-projects",
+        "desktop-session-convergence"
+      ],
+      "domain_id": "desktop-projects-and-worktrees",
+      "id": "desktop-project-default-live-status",
+      "order": 90,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom default-project selection and in-chat live-status carry pending upstream equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Keep project disclosure independent from Recent Sessions, persist a profile-qualified default project for new sessions, and show session-scoped Working/Waiting-for-input status in composer surfaces.",
+      "tests": [],
+      "title": "Desktop project overview, default project, and in-chat live status",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Axiom Desktop voice keybinds",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-voice-terminal-and-hud",
+      "id": "desktop-voice-keybinds",
+      "order": 100,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "633be559740307e122edad21a622531d26b20ce8"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Keep dictation, read-aloud, wake word, and voice-conversation controls distinct, rebindable, and scoped to the active composer and owning profile.",
+      "tests": [],
+      "title": "Axiom Desktop voice keybinds",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Axiom Desktop Terminal shortcut and startup delivery",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-voice-terminal-and-hud",
+      "id": "desktop-terminal-startup",
+      "order": 110,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom Desktop terminal rail and PTY startup buffering carry pending upstream equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Expose an idempotent Terminal rail entry and prevent prompt output or immediate exits from being lost before renderer listeners attach.",
+      "tests": [],
+      "title": "Axiom Desktop Terminal shortcut and lossless startup delivery",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Windows HUD stability \u2014 local carry pending upstream equivalent",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-voice-terminal-and-hud",
+      "id": "windows-hud-stability",
+      "order": 120,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "pull_request",
+          "number": 82455,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Preserve packaged Windows HUD geometry stability, click-through recovery, bounded persisted geometry, and close-time cursor cleanup.",
+      "tests": [],
+      "title": "Windows HUD stability",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Desktop native OAuth orchestration \u2014 local carry pending upstream equivalent",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-remote-files-and-auth",
+      "id": "desktop-native-oauth-single-flight",
+      "order": 130,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom native OAuth single-flight and capability-gated fallback carry pending upstream equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Keep RFC 8252 native sign-in single-flight per gateway and prevent silent fallback to embedded cookie auth after native-PKCE failures.",
+      "tests": [],
+      "title": "Desktop native OAuth orchestration",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Desktop OAuth remote artifact opening \u2014 local carry pending upstream equivalent",
+        "path": "FORK.md"
+      },
+      "depends_on": [
+        "desktop-native-oauth-single-flight",
+        "desktop-remote-profile-handles"
+      ],
+      "domain_id": "desktop-remote-files-and-auth",
+      "id": "desktop-oauth-remote-artifacts",
+      "order": 140,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "description": "Axiom Desktop OAuth remote artifact preview/open/download carry pending upstream equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Preview, download, open, and reveal gateway-local artifacts and MEDIA links through the owning remote profile\u2019s authenticated OAuth session.",
+      "tests": [],
+      "title": "Desktop OAuth remote artifact opening",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/cron/test_cron_profile_storage.py",
+            "tests/cron/test_cron_profile_isolation.py",
+            "tests/cron/test_cron_script.py"
+          ],
+          "covers": [
+            "tests/cron/test_cron_profile_storage.py",
+            "tests/cron/test_cron_profile_isolation.py",
+            "tests/cron/test_cron_script.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "shared-cron-profile-ownership-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Axiom shared cron registry and generic profile ownership",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "shared-cron-and-dashboard-profile-isolation",
+      "id": "shared-cron-profile-ownership",
+      "order": 150,
+      "ownership": "core",
+      "paths": [
+        "cron/jobs.py",
+        "cron/scheduler.py"
+      ],
+      "provenance": [
+        {
+          "description": "Axiom shared cron registry and owner-profile execution carry.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retire when upstream provides a cross-profile shared registry with equivalent owner isolation, owner-home execution, and a root-shared tick lock.",
+      "status": "active",
+      "summary": "Keep one platform-root cron registry while executing each job under its explicit owner profile, owner home, and profile runtime.",
+      "tests": [
+        "tests/cron/test_cron_profile_storage.py",
+        "tests/cron/test_cron_profile_isolation.py",
+        "tests/cron/test_cron_script.py"
+      ],
+      "title": "Axiom shared cron registry and generic profile ownership"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "npm",
+            "test",
+            "--",
+            "--run",
+            "src/lib/pty-attach-token.test.ts"
+          ],
+          "covers": [
+            "web/src/lib/pty-attach-token.test.ts"
+          ],
+          "cwd": "web",
+          "env": {},
+          "id": "dashboard-profile-pty-attachments-web"
+        },
+        {
+          "argv": [
+            "npm",
+            "run",
+            "typecheck"
+          ],
+          "covers": [],
+          "cwd": "web",
+          "env": {},
+          "id": "dashboard-profile-pty-attachments-typecheck"
+        }
+      ],
+      "contract": {
+        "heading": "Dashboard chat profile-scoped PTY attachments",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "shared-cron-and-dashboard-profile-isolation",
+      "id": "dashboard-profile-pty-attachments",
+      "order": 160,
+      "ownership": "core",
+      "paths": [
+        "web/src/pages/ChatPage.tsx",
+        "web/src/lib/pty-attach-token.ts"
+      ],
+      "provenance": [
+        {
+          "description": "Axiom dashboard PTY attachment token scoping carry.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retire when upstream scopes dashboard PTY keep-alive identity by profile or backend validation immutably binds attachment tokens to profile metadata.",
+      "status": "active",
+      "summary": "Prevent Dashboard Chat from reattaching a selected profile to a PTY created under another profile by qualifying the keep-alive token with profile identity.",
+      "tests": [
+        "web/src/lib/pty-attach-token.test.ts"
+      ],
+      "title": "Dashboard chat profile-scoped PTY attachments"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "py_compile",
+            "gateway/platforms/api_server.py",
+            "model_tools.py",
+            "agent/runtime_tool_policy.py"
+          ],
+          "covers": [],
+          "cwd": ".",
+          "env": {},
+          "id": "forge-integration-pycompile"
+        },
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/gateway/test_forge_plugin.py",
+            "tests/gateway/test_api_server_runs.py",
+            "tests/gateway/test_api_server_toolset.py",
+            "tests/agent/test_runtime_tool_policy.py",
+            "tests/test_model_tools.py",
+            "tests/tools/test_delegate.py"
+          ],
+          "covers": [
+            "tests/gateway/test_forge_plugin.py",
+            "tests/gateway/test_api_server_runs.py",
+            "tests/gateway/test_api_server_toolset.py",
+            "tests/agent/test_runtime_tool_policy.py",
+            "tests/test_model_tools.py",
+            "tests/tools/test_delegate.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "forge-integration-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Protected behavior contract",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "platform-plugin-policy",
+      "id": "forge-integration",
+      "order": 170,
+      "ownership": "mixed",
+      "paths": [
+        "plugins/platforms/forge/adapter.py",
+        "agent/runtime_tool_policy.py",
+        "model_tools.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "b14096f91e64e2f72495ef543d44ba62dee8d6a4"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "3074157868d7ef9b1827ebecf49c4075346ad19b"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "d95b9381e88cf82b30720d97f424fe9a9cd67c09"
+        }
+      ],
+      "retirement": "Retire only when upstream or a generic plugin seam provides equivalent delivery, draft, and inherited run-tool-policy behavior.",
+      "status": "active",
+      "summary": "Preserve Forge outbound delivery, silent no-op delivery, streaming drafts, and inherited per-run host tool policy.",
+      "tests": [
+        "tests/gateway/test_forge_plugin.py",
+        "tests/gateway/test_api_server_runs.py",
+        "tests/gateway/test_api_server_toolset.py",
+        "tests/agent/test_runtime_tool_policy.py",
+        "tests/test_model_tools.py",
+        "tests/tools/test_delegate.py"
+      ],
+      "title": "Forge integration"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "py_compile",
+            "gateway/run.py"
+          ],
+          "covers": [],
+          "cwd": ".",
+          "env": {},
+          "id": "webhook-route-toolsets-pycompile"
+        },
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/gateway/test_webhook_adapter.py",
+            "tests/hermes_cli/test_webhook_cli.py",
+            "tests/gateway/test_reasoning_command.py"
+          ],
+          "covers": [
+            "tests/gateway/test_webhook_adapter.py",
+            "tests/hermes_cli/test_webhook_cli.py",
+            "tests/gateway/test_reasoning_command.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "webhook-route-toolsets-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Protected behavior contract",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "platform-plugin-policy",
+      "id": "webhook-route-toolsets",
+      "order": 180,
+      "ownership": "core",
+      "paths": [
+        "gateway/platforms/webhook.py",
+        "gateway/run.py",
+        "hermes_cli/webhook.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "53bb3067d3c441c0b2b2861cf679e6eb4dc0f11c"
+        }
+      ],
+      "retirement": "Retire when upstream provides equivalent default-constrained route-level toolsets across webhook config, CLI subscription, event creation, and agent dispatch.",
+      "status": "active",
+      "summary": "Keep public webhook routes constrained by default while allowing trusted routes and CLI subscriptions to declare route-specific toolsets.",
+      "tests": [
+        "tests/gateway/test_webhook_adapter.py",
+        "tests/hermes_cli/test_webhook_cli.py",
+        "tests/gateway/test_reasoning_command.py"
+      ],
+      "title": "Webhook route-level toolsets"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "py_compile",
+            "agent/anthropic_adapter.py",
+            "agent/moa_loop.py",
+            "agent/auxiliary_client.py"
+          ],
+          "covers": [],
+          "cwd": ".",
+          "env": {},
+          "id": "proxy-provider-routing-pycompile"
+        },
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_proxy.py",
+            "tests/agent/test_anthropic_adapter.py",
+            "tests/run_agent/test_moa_loop_mode.py",
+            "tests/agent/test_auxiliary_main_first.py",
+            "tests/hermes_cli/test_moa_config.py",
+            "tests/gateway/test_moa_one_shot_restore.py"
+          ],
+          "covers": [
+            "tests/hermes_cli/test_proxy.py",
+            "tests/agent/test_anthropic_adapter.py",
+            "tests/run_agent/test_moa_loop_mode.py",
+            "tests/agent/test_auxiliary_main_first.py",
+            "tests/hermes_cli/test_moa_config.py",
+            "tests/gateway/test_moa_one_shot_restore.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "proxy-provider-routing-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Protected behavior contract",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "proxy-provider-routing",
+      "id": "proxy-provider-routing",
+      "order": 190,
+      "ownership": "core",
+      "paths": [
+        "hermes_cli/proxy/adapters/routed.py",
+        "agent/anthropic_adapter.py",
+        "gateway/builtin_hooks/boot_md.py",
+        "hermes_cli/runtime_provider.py",
+        "agent/moa_loop.py",
+        "agent/auxiliary_client.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "c4af1eeb94d9883ccda305418b6aebeeecd2abe6"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "efa7532cb11962273c34e0321effdd6bc6abb4a0"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "9071ab8118a291eba4d473bc099f326582c6c35e"
+        },
+        {
+          "kind": "pull_request",
+          "number": 47723,
+          "repository": "NousResearch/hermes-agent"
+        },
+        {
+          "kind": "pull_request",
+          "number": 23361,
+          "repository": "NousResearch/hermes-agent"
+        },
+        {
+          "kind": "pull_request",
+          "number": 47738,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retire only after upstream equivalence review covers authentication, request shaping, discovery, translation, MoA identity, inventory filtering, and dict-shaped config handling for the routed providers.",
+      "status": "active",
+      "summary": "Preserve routed OAuth adapters, Anthropic billing-lane request shaping, Codex/xAI/Nous discovery and translation, named MoA provider identity, safe inventory filtering, and dict-shaped local provider config handling.",
+      "tests": [
+        "tests/hermes_cli/test_proxy.py",
+        "tests/agent/test_anthropic_adapter.py",
+        "tests/run_agent/test_moa_loop_mode.py",
+        "tests/agent/test_auxiliary_main_first.py",
+        "tests/hermes_cli/test_moa_config.py",
+        "tests/gateway/test_moa_one_shot_restore.py"
+      ],
+      "title": "Proxy and provider routing"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "py_compile",
+            "hermes_cli/plugins.py",
+            "hermes_cli/commands.py",
+            "tui_gateway/server.py"
+          ],
+          "covers": [],
+          "cwd": ".",
+          "env": {},
+          "id": "tui-plugin-command-image-attach-pycompile"
+        },
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_plugins.py",
+            "tests/tui_gateway/test_protocol.py"
+          ],
+          "covers": [
+            "tests/hermes_cli/test_plugins.py",
+            "tests/tui_gateway/test_protocol.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "tui-plugin-command-image-attach-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Protected behavior contract",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "platform-plugin-policy",
+      "id": "tui-plugin-command-image-attach",
+      "order": 200,
+      "ownership": "core",
+      "paths": [
+        "hermes_cli/plugins.py",
+        "hermes_cli/commands.py",
+        "gateway/cards.py",
+        "tui_gateway/server.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "0fa48f73e0162a97414e7836227790a14ac70341"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "e57e5c5c830ff578b6c497665407cbe4ee4708e3"
+        }
+      ],
+      "retirement": "Retire only after current Relay/Desktop consumers no longer need image.attach.bytes and upstream-equivalent command metadata, session propagation, and card rendering exist.",
+      "status": "active",
+      "summary": "Keep plugin command metadata/cards available across CLI, gateway, and TUI dispatch, including gateway-only commands and image.attach.bytes for remote clients where still consumed.",
+      "tests": [
+        "tests/hermes_cli/test_plugins.py",
+        "tests/tui_gateway/test_protocol.py"
+      ],
+      "title": "TUI plugin-command cards and remote image attachment"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/agent/test_context_compressor.py",
+            "tests/plugins/memory/test_mempalace_provider.py"
+          ],
+          "covers": [
+            "tests/agent/test_context_compressor.py",
+            "tests/plugins/memory/test_mempalace_provider.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "local-neural-memory-operations-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Protected behavior contract",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "local-memory-and-mcp",
+      "id": "local-neural-memory-operations",
+      "order": 210,
+      "ownership": "mixed",
+      "paths": [
+        "plugins/memory/neural/neural_memory.py",
+        "agent/context_compressor.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "5ab369dad3a9063c5b95c13c64aff8842c1adaf5"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "8e43cfdd3ebce04b6bbfb68accc11627d622f56d"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "91270857ac488e742aba301123d4b8a6b7c43beb"
+        }
+      ],
+      "retirement": "Retire only after the Lucid/neural-memory and context-compression hunks are individually reviewed and either upstreamed or explicitly dropped without reviving retired MemPalace behavior.",
+      "status": "active",
+      "summary": "Prevent retired MemPalace behavior from returning, keep Lucid/neural-memory operations aligned with Axiom deployment, and preserve tested memory/context-compression behavior.",
+      "tests": [
+        "tests/agent/test_context_compressor.py",
+        "tests/plugins/memory/test_mempalace_provider.py"
+      ],
+      "title": "Local memory, Lucid, and neural-memory operations"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/tools/test_mcp_oauth_bidirectional.py",
+            "tests/tools/test_mcp_oauth_manager.py",
+            "-o",
+            "addopts="
+          ],
+          "covers": [
+            "tests/tools/test_mcp_oauth_bidirectional.py",
+            "tests/tools/test_mcp_oauth_manager.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "mcp-oauth-stream-concurrency-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Protected behavior contract",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "local-memory-and-mcp",
+      "id": "mcp-oauth-stream-concurrency",
+      "order": 220,
+      "ownership": "core",
+      "paths": [
+        "tools/mcp_oauth_manager.py"
+      ],
+      "provenance": [
+        {
+          "description": "Axiom MCP OAuth lock release workaround pending upstream SDK equivalent.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retire when the MCP Python SDK releases its OAuth context lock before yielding Streamable-HTTP application requests, or Hermes adopts an equivalent upstream workaround with regression coverage.",
+      "status": "active",
+      "summary": "Serialize credential work without holding the SDK OAuth lock across long-lived Streamable-HTTP/SSE application responses.",
+      "tests": [
+        "tests/tools/test_mcp_oauth_bidirectional.py",
+        "tests/tools/test_mcp_oauth_manager.py"
+      ],
+      "title": "MCP OAuth stream concurrency"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/gateway/test_buzz_adapter.py",
+            "tests/gateway/test_buzz_websocket.py",
+            "--tb=short"
+          ],
+          "covers": [
+            "tests/gateway/test_buzz_adapter.py",
+            "tests/gateway/test_buzz_websocket.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "buzz-active-thread-mentions-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Temporary upstream PR carries",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "temporary-upstream-pr-carries",
+      "id": "buzz-active-thread-mentions",
+      "order": 230,
+      "ownership": "mixed",
+      "paths": [
+        "cli-config.yaml.example",
+        "hermes_cli/config_defaults.py",
+        "plugins/platforms/buzz/adapter.py",
+        "website/docs/reference/environment-variables.md",
+        "website/docs/user-guide/messaging/buzz.md"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "84f78ea7e889f6d95ea38d4407dc2fb798c312fa"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "8e9f70510b8c519af6fc603b57df578dced585be"
+        },
+        {
+          "kind": "pull_request",
+          "number": 75049,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retire as a unit once upstream merges PR #75049 or equivalent behavior, while retaining the explicit thread_require_mention:false configuration where still desired.",
+      "status": "active",
+      "summary": "Allow an initial mention to admit Hermes into a Buzz thread so later authorized replies can dispatch without repeated mentions when explicitly configured.",
+      "tests": [
+        "tests/gateway/test_buzz_adapter.py",
+        "tests/gateway/test_buzz_websocket.py"
+      ],
+      "title": "Buzz active-thread mention policy"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_plugins.py"
+          ],
+          "covers": [
+            "tests/hermes_cli/test_plugins.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "bundled-platform-plugin-eager-load-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "RETIRED 2026-08-02 \u2014 PR #41711 A2A carry",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "platform-plugin-policy",
+      "id": "bundled-platform-plugin-eager-load",
+      "order": 240,
+      "ownership": "core",
+      "paths": [
+        "hermes_cli/plugins.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "9c06b9874d97023eaf17bc2c0ff60cf78f279b12"
+        },
+        {
+          "kind": "pull_request",
+          "number": 77109,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retire only when upstream plugin loading guarantees that enabled bundled platform plugins registering tools are eagerly visible without this seam.",
+      "status": "active",
+      "summary": "Ensure explicitly enabled bundled platform plugins that also register tools load eagerly so their outbound tools appear in hermes tools.",
+      "tests": [
+        "tests/hermes_cli/test_plugins.py"
+      ],
+      "title": "Eager loading for explicitly enabled bundled platform plugins with tools"
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Current Desktop remote-file/access layer",
+        "path": "docs/axiom-fork-contract.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-remote-files-and-auth",
+      "id": "desktop-remote-chat-file-fallback",
+      "order": 250,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "pull_request",
+          "number": 44538,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Route chat/media fallback links through the authenticated filesystem bridge instead of dead gateway-host file URLs and show a visible error state on fetch failure.",
+      "tests": [],
+      "title": "Remote-mode chat and media fallback links",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Retired fork surface",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-remote-files-and-auth",
+      "id": "desktop-hover-reveal-scrollbar",
+      "order": 260,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "7c3f8d2d065ef6ad67247a836e038c99fb77d6be"
+        },
+        {
+          "kind": "pull_request",
+          "number": 42603,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Prevent a collapsed side-panel hover activation zone from intercepting the scrollbar hit area.",
+      "tests": [],
+      "title": "Narrow Desktop hover-reveal trigger strip",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [],
+      "contract": {
+        "heading": "Retired fork surface",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "desktop-remote-files-and-auth",
+      "id": "desktop-file-browser-width",
+      "order": 270,
+      "ownership": "core",
+      "paths": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "992cfbdfd78f7cbe4b7357da005f3409db7a30e9"
+        },
+        {
+          "kind": "pull_request",
+          "number": 41189,
+          "repository": "NousResearch/hermes-agent"
+        }
+      ],
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
+      "summary": "Raise the Desktop file-browser maximum width from 20rem to 40rem without carrying unrelated upstream PR changes.",
+      "tests": [],
+      "title": "Wider Desktop file browser",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/plugins/test_plugin_dashboard_auth_contract.py",
+            "tests/hermes_cli/test_dashboard_basic_auth_plugin_enable.py"
+          ],
+          "covers": [
+            "tests/plugins/test_plugin_dashboard_auth_contract.py",
+            "tests/hermes_cli/test_dashboard_basic_auth_plugin_enable.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "dashboard-plugin-admin-auth-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Retired fork surface",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "retired-retained-seams",
+      "id": "dashboard-plugin-admin-auth",
+      "order": 280,
+      "ownership": "core",
+      "paths": [
+        "hermes_cli/web_server.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "629e1ec706659dd4a5a30bcc86c42eead5816a0b"
+        }
+      ],
+      "retirement": "Retire only after upstream enforces equivalent authentication on the native /api/plugins administration mount.",
+      "status": "active",
+      "summary": "Keep the native dashboard /api/plugins administration surface protected by bearer authentication as general security hardening independent of retired Relay patches.",
+      "tests": [
+        "tests/plugins/test_plugin_dashboard_auth_contract.py",
+        "tests/hermes_cli/test_dashboard_basic_auth_plugin_enable.py"
+      ],
+      "title": "Bearer authentication for dashboard plugin administration"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/run_agent/test_run_agent_multimodal_prologue.py",
+            "tests/run_agent/test_multimodal_tool_content_recovery.py",
+            "tests/run_agent/test_codex_multimodal_tool_result.py"
+          ],
+          "covers": [
+            "tests/run_agent/test_run_agent_multimodal_prologue.py",
+            "tests/run_agent/test_multimodal_tool_content_recovery.py",
+            "tests/run_agent/test_codex_multimodal_tool_result.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "core-multimodal-agent-path-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Retired fork surface",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "retired-retained-seams",
+      "id": "core-multimodal-agent-path",
+      "order": 290,
+      "ownership": "core",
+      "paths": [
+        "run_agent.py"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "73fa637423b90d59c584854f0acd2f9535672b0e"
+        }
+      ],
+      "retirement": "Retire only after current upstream behavior is confirmed equivalent across the surviving multimodal run-agent paths and no fork-only hunk remains.",
+      "status": "active",
+      "summary": "Retain the surviving non-Relay multimodal run-agent behavior from the kept 73fa63742 hunk.",
+      "tests": [
+        "tests/run_agent/test_run_agent_multimodal_prologue.py",
+        "tests/run_agent/test_multimodal_tool_content_recovery.py",
+        "tests/run_agent/test_codex_multimodal_tool_result.py"
+      ],
+      "title": "Core multimodal agent-path compatibility"
+    },
+    {
+      "checks": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/gateway/test_discord_allowed_mentions.py",
+            "tests/gateway/test_discord_send.py"
+          ],
+          "covers": [
+            "tests/gateway/test_discord_allowed_mentions.py",
+            "tests/gateway/test_discord_send.py"
+          ],
+          "cwd": ".",
+          "env": {},
+          "id": "discord-generic-bot-admission-pytests"
+        }
+      ],
+      "contract": {
+        "heading": "Retired fork surface",
+        "path": "FORK.md"
+      },
+      "depends_on": [],
+      "domain_id": "retired-retained-seams",
+      "id": "discord-generic-bot-admission",
+      "order": 300,
+      "ownership": "core",
+      "paths": [
+        "gateway/platforms/discord_lucid.py",
+        "website/docs/user-guide/messaging/discord.md"
+      ],
+      "provenance": [
+        {
+          "description": "Retained generic Discord admission controls separated from the retired multi-agent orchestration feature.",
+          "kind": "manual"
+        }
+      ],
+      "retirement": "Retire only when upstream provides equivalent generic bot-admission, thread mention, allowed-mention, and reply-ping safety behavior.",
+      "status": "active",
+      "summary": "Preserve generic Discord allow_bots, thread mention policy, safe allowed mentions, and reply-ping suppression after the orchestration feature was retired.",
+      "tests": [
+        "tests/gateway/test_discord_allowed_mentions.py",
+        "tests/gateway/test_discord_send.py"
+      ],
+      "title": "Generic Discord bot-admission safety controls"
+    }
+  ],
+  "schema_version": 1
+}

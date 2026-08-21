@@ -6270,6 +6270,24 @@ This compaction should PRIORITISE preserving all information related to the focu
         # group and the whole call/result pair is summarised together.
         return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
 
+    def preview_turns_to_summarize(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return the slice that would be summarized during compression."""
+        n_messages = len(messages)
+        _min_for_compress = self.protect_first_n + 3 + 1
+        if n_messages <= _min_for_compress:
+            return []
+
+        preview_messages, _ = self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=self.tail_token_budget,
+        )
+        compress_start = self._align_boundary_forward(preview_messages, self.protect_first_n)
+        compress_end = self._find_tail_cut_by_tokens(preview_messages, compress_start)
+        if compress_start >= compress_end:
+            return []
+        return preview_messages[compress_start:compress_end]
+
     # ------------------------------------------------------------------
     # ContextEngine: manual /compress preflight
     # ------------------------------------------------------------------
@@ -7978,24 +7996,8 @@ def reference_handoff_would_drive_next_model_call(
     for index, message in enumerate(messages):
         if not is_compaction_summary_message(message):
             continue
-        merged_completed_assistant = (
-            isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and ContextCompressor.classify_summary_content(
-                message.get("content")
-            )
-            == "merged"
-            and message.get("finish_reason") == "stop"
-            and not message.get("tool_calls")
-        )
-        if (
-            _handoff_carries_live_user_content(message)
-            and not merged_completed_assistant
-        ):
-            # Embedded live ask — this row is not a sole-handoff driver. A
-            # completed merged assistant carrier preserves the assistant's own
-            # prose, not a fresh user request. A carrier with pending tool_calls
-            # remains live regardless of an earlier completed assistant turn.
+        if _handoff_carries_live_user_content(message):
+            # Embedded live ask — this row is not a sole-handoff driver.
             continue
         last_driving_handoff = index
 

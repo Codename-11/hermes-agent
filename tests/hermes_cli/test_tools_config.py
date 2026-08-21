@@ -30,6 +30,7 @@ from hermes_cli.tools_config import (
     _visible_providers,
     provider_readiness_status,
     tools_command,
+    enabled_mcp_server_names,
 )
 
 
@@ -134,10 +135,319 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     assert "discord_admin" not in enabled
 
 
+def test_discord_explicit_workaround_still_works():
+    """Regression guard: the documented workaround of listing toolsets
+    explicitly must keep working after the fix."""
+    config = {
+        "platform_toolsets": {"discord": ["hermes-discord", "discord", "discord_admin"]}
+    }
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
 
 
+def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monkeypatch):
+    """x_search toolset auto-enables when XAI_API_KEY is set, even without
+    OAuth tokens — the API-key path is a supported credential source."""
+    monkeypatch.setenv("XAI_API_KEY", "fake-xai-key")
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "x_search" in cli_enabled
 
 
+def test_get_platform_tools_x_search_off_when_no_xai_credentials(monkeypatch):
+    """Without any xAI credentials, x_search stays off — preserves the
+    "don't ship the schema to users who can't use it" default."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: False
+    )
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "x_search" not in cli_enabled
+
+
+def test_get_platform_tools_x_search_respects_explicit_config(monkeypatch):
+    """Once the user has saved an explicit toolset list via `hermes tools`,
+    that list is authoritative — x_search auto-enable does NOT fire even
+    when xAI creds exist. The saved list represents deliberate choices."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    # User explicitly opted into spotify but not x_search via `hermes tools`.
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "x_search" not in enabled
+    assert "spotify" in enabled
+
+
+def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
+    """``[hermes-cli, spotify]`` (composite + configurable) must keep the full
+    ``hermes-cli`` toolset alongside the explicit Spotify opt-in. The
+    has_explicit_config branch used to drop ``hermes-cli`` on the floor,
+    leaving sessions with only ``{spotify, kanban}``."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    # Native tools must reappear.
+    for ts in ("terminal", "file", "web", "browser", "memory", "delegation",
+               "code_execution", "todo", "session_search", "skills"):
+        assert ts in enabled, f"{ts} should be enabled when hermes-cli is listed"
+    # User explicitly opted into Spotify — must survive _DEFAULT_OFF_TOOLSETS subtraction.
+    assert "spotify" in enabled
+
+
+def test_get_platform_tools_composite_only_unchanged():
+    """Composite-only config (no configurable in list) must still take the
+    else-branch path and produce the full toolset — guards against the new
+    code accidentally hijacking the composite-only case."""
+    composite_only = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    default = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+
+    assert composite_only == default
+
+
+def test_get_platform_tools_configurable_only_no_expansion():
+    """Configurable-only list (no composite) must not pull in unrelated
+    toolsets — guards against the expansion firing when ``composite_tools``
+    is empty."""
+    config = {"platform_toolsets": {"cli": ["terminal", "file"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" in enabled
+    assert "file" in enabled
+    # Web shouldn't sneak in via the new expansion path.
+    assert "web" not in enabled
+
+
+def test_get_platform_tools_mixed_does_not_resurrect_default_off():
+    """Expansion must subtract _DEFAULT_OFF_TOOLSETS from the implicit
+    pull-in. Without this, ``hermes-cli`` expansion would re-enable
+    ``moa`` / ``rl`` / ``homeassistant`` for users who never opted in."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "terminal"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" in enabled
+    assert "moa" not in enabled
+    assert "rl" not in enabled
+
+
+def test_get_platform_tools_preserves_explicit_empty_selection():
+    config = {"platform_toolsets": {"cli": []}}
+
+    enabled = _get_platform_tools(config, "cli")
+
+    # An explicit empty list disables every CONFIGURABLE toolset (web,
+    # terminal, memory, …). Non-configurable platform toolsets that ride
+    # along on the platform's default composite (e.g. `kanban`, whose tools
+    # live in _HERMES_CORE_TOOLS but aren't user-toggleable) are still
+    # auto-recovered by _get_platform_tools so saving via `hermes tools`
+    # doesn't silently drop them. The contract this test guards is the
+    # configurable side: nothing the user could have checked in the TUI
+    # checklist should reappear here.
+    configurable = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert enabled.isdisjoint(configurable)
+
+
+def test_apply_toolset_change_from_default_does_not_enable_default_off_toolsets():
+    """Disabling one default toolset on a fresh config must not persist
+    default-off toolsets as explicitly enabled.
+    """
+    config = {}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _apply_toolset_change(config, "cli", ["memory"], "disable")
+
+    saved = set(config["platform_toolsets"]["cli"])
+    assert "memory" not in saved
+    assert "terminal" in saved
+    assert saved.isdisjoint(_DEFAULT_OFF_TOOLSETS)
+
+
+def test_apply_toolset_change_can_enable_default_off_toolset_from_default():
+    config = {}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _apply_toolset_change(config, "cli", ["homeassistant"], "enable")
+
+    saved = set(config["platform_toolsets"]["cli"])
+    assert "homeassistant" in saved
+    assert "terminal" in saved
+
+
+def test_get_platform_tools_handles_null_platform_toolsets():
+    """YAML `platform_toolsets:` with no value parses as None — the old
+    ``config.get("platform_toolsets", {})`` pattern would then crash with
+    ``NoneType has no attribute 'get'`` on the next line. Guard against that.
+    """
+    config = {"platform_toolsets": None}
+
+    enabled = _get_platform_tools(config, "cli")
+
+    # Falls through to defaults instead of raising
+    assert enabled
+
+
+def test_platform_toolset_summary_uses_explicit_platform_list():
+    config = {}
+
+    summary = _platform_toolset_summary(config, platforms=["cli"])
+
+    assert set(summary.keys()) == {"cli"}
+    assert summary["cli"] == _get_platform_tools(config, "cli")
+
+
+def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
+    config = {
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+            "disabled-server": {"url": "https://example.com/mcp", "enabled": False},
+        }
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "exa" in enabled
+    assert "web-search-prime" in enabled
+    assert "disabled-server" not in enabled
+
+
+def test_enabled_mcp_servers_honor_platform_exposure_scope():
+    config = {
+        "mcp_servers": {
+            "forge": {
+                "url": "https://forge.example/mcp",
+                "expose_on": ["webhook"],
+            },
+            "shared": {"url": "https://shared.example/mcp"},
+        }
+    }
+
+    assert enabled_mcp_server_names(config, platform="discord") == {"shared"}
+    assert enabled_mcp_server_names(config, platform="webhook") == {"forge", "shared"}
+    # Platform-less callers retain the legacy connectivity view.
+    assert enabled_mcp_server_names(config) == {"forge", "shared"}
+
+
+def test_get_platform_tools_allows_explicit_direct_profile_without_default_catalog_alias():
+    config = {
+        "platform_toolsets": {"webhook": ["web", "forge-direct"]},
+        "mcp_servers": {
+            "forge": {"url": "https://forge.example/mcp", "exposure": "catalog"},
+            "other": {"url": "https://other.example/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "webhook")
+
+    assert "forge-direct" in enabled
+    # Direct profiles include the catalog bridge plus the deferred operations.
+    assert "forge" in enabled
+    assert "other" not in enabled
+
+    narrow_enabled = _get_platform_tools(
+        config, "webhook", include_default_mcp_servers=False
+    )
+    assert {"forge", "forge-direct"}.issubset(narrow_enabled)
+    assert "other" not in narrow_enabled
+
+
+def test_get_platform_tools_no_mcp_blocks_direct_profiles_too():
+    config = {
+        "platform_toolsets": {"discord": ["web", "forge-direct", "no_mcp"]},
+        "mcp_servers": {
+            "forge": {"url": "https://forge.example/mcp", "exposure": "catalog"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord")
+
+    assert "forge" not in enabled
+    assert "forge-direct" not in enabled
+
+
+def test_explicit_direct_profile_cannot_bypass_expose_on_scope():
+    config = {
+        "platform_toolsets": {"discord": ["web", "forge-direct"]},
+        "mcp_servers": {
+            "forge": {
+                "url": "https://forge.example/mcp",
+                "exposure": "catalog",
+                "expose_on": ["webhook"],
+            },
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord")
+
+    assert "forge" not in enabled
+    assert "forge-direct" not in enabled
+
+
+def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
+    config = {
+        "platform_toolsets": {"cli": ["web", "memory"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
+    assert "memory" in enabled
+    assert "exa" in enabled
+    assert "web-search-prime" in enabled
+
+
+def test_get_platform_tools_no_mcp_sentinel_excludes_all_mcp_servers():
+    """The 'no_mcp' sentinel in platform_toolsets excludes all MCP servers."""
+    config = {
+        "platform_toolsets": {"cli": ["web", "terminal", "no_mcp"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
+    assert "terminal" in enabled
+    assert "exa" not in enabled
+    assert "web-search-prime" not in enabled
+    assert "no_mcp" not in enabled
+
+
+def test_get_platform_tools_no_mcp_sentinel_does_not_affect_other_platforms():
+    """The 'no_mcp' sentinel only affects the platform it's configured on."""
+    config = {
+        "platform_toolsets": {
+            "api_server": ["web", "terminal", "no_mcp"],
+        },
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+        },
+    }
+
+    # api_server should exclude MCP
+    api_enabled = _get_platform_tools(config, "api_server")
+    assert "exa" not in api_enabled
+
+    # cli (not configured with no_mcp) should include MCP
+    cli_enabled = _get_platform_tools(config, "cli")
+    assert "exa" in cli_enabled
 
 
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):

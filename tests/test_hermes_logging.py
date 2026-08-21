@@ -356,6 +356,7 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode-bit assertion")
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         logger = logging.getLogger("_test_rotating_managed_open")
@@ -380,6 +381,35 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode-bit assertion")
+    def test_managed_mode_rollover_sets_group_writable(self, tmp_path):
+        log_path = tmp_path / "managed-rollover.log"
+        logger = logging.getLogger("_test_rotating_managed_rollover")
+        formatter = logging.Formatter("%(message)s")
+
+        old_umask = os.umask(0o022)
+        try:
+            with patch("hermes_cli.config.is_managed", return_value=True):
+                hermes_logging._add_rotating_handler(
+                    logger, log_path,
+                    level=logging.INFO, max_bytes=1, backup_count=1,
+                    formatter=formatter,
+                )
+                handler = next(
+                    h for h in hermes_logging.rotating_file_handlers() if isinstance(h, RotatingFileHandler)
+                )
+                logger.info("a" * 256)
+                hermes_logging.flush_log_queue()
+        finally:
+            os.umask(old_umask)
+
+        assert log_path.exists()
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
+
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
 
 
 class TestWindowsConcurrentLogLockTimeout:

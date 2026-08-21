@@ -54,6 +54,82 @@ class TestCheckRequirements:
 
 
 # ---------------------------------------------------------------------------
+# Route registration
+# ---------------------------------------------------------------------------
+
+
+def _connect_route_registrations():
+    import inspect
+    import re
+
+    source = inspect.getsource(APIServerAdapter.connect)
+    return [
+        (method.upper(), path)
+        for method, path in re.findall(
+            r'self\._app\.router\.add_(\w+)\("([^"]+)"',
+            source,
+        )
+    ]
+
+
+def test_connect_registers_each_route_once():
+    """Regression guard: native and Relay compatibility routes are unique.
+
+    Hermes-Relay's bootstrap detects native routes by method/path. Registering
+    duplicate aiohttp routes makes route ownership ambiguous and can leave the
+    live API surface depending on registration order instead of the canonical
+    handlers.
+    """
+    from collections import Counter
+
+    registrations = _connect_route_registrations()
+    duplicate_routes = {
+        route: count
+        for route, count in Counter(registrations).items()
+        if count > 1
+    }
+
+    assert duplicate_routes == {}
+
+    retired_routes = {
+        ("GET", "/api/sessions/search"),
+        ("GET", "/api/memory"),
+        ("POST", "/api/memory"),
+        ("PATCH", "/api/memory"),
+        ("DELETE", "/api/memory"),
+        ("GET", "/api/skills"),
+        ("GET", "/api/skills/{name}"),
+        ("GET", "/api/config"),
+        ("PATCH", "/api/config"),
+        ("GET", "/api/available-models"),
+        ("GET", "/api/audio/capabilities"),
+        ("POST", "/api/audio/transcriptions"),
+        ("POST", "/api/audio/speech"),
+        ("GET", "/voice/config"),
+        ("POST", "/voice/transcribe"),
+        ("POST", "/voice/synthesize"),
+    }
+    assert retired_routes.isdisjoint(set(registrations))
+
+
+def test_api_server_adapter_has_no_duplicate_handler_methods():
+    """Merge-conflict guard: later duplicate method defs silently override earlier ones."""
+    import ast
+    from collections import Counter
+    import inspect
+
+    source = inspect.getsource(APIServerAdapter)
+    cls = ast.parse(source).body[0]
+    method_names = [
+        node.name
+        for node in cls.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    duplicates = {name: count for name, count in Counter(method_names).items() if count > 1}
+    assert duplicates == {}
+
+
+# ---------------------------------------------------------------------------
 # _redact_api_error_text — guards every outward error site (envelopes, SSE
 # error events, cron-endpoint 500 bodies) that routes raw exception text to
 # authenticated HTTP clients. #37733
@@ -338,7 +414,6 @@ class _FakeGoogleChatAdapter:
     async def dispatch_http_event(self, payload):
         self.dispatched.append(payload)
         return {"ok": True}
-
 
 @pytest.fixture
 def adapter():
@@ -708,7 +783,10 @@ class TestHealthDetailedEndpoint:
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"):
+        }), patch(
+            "gateway.platforms.api_server.collect_runtime_readiness",
+            return_value={"status": "ok", "checks": {}},
+        ), patch("gateway.run._resolve_gateway_model", return_value="test/model"):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
@@ -876,6 +954,9 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+
+
 
 
 # ---------------------------------------------------------------------------

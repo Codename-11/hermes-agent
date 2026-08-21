@@ -451,6 +451,13 @@ class TestCompress:
 
 
 
+    def test_preview_turns_to_summarize_returns_middle_slice(self, compressor):
+        msgs = [{"role": "system", "content": "system"}] + self._make_messages(10)
+        turns = compressor.preview_turns_to_summarize(msgs)
+        assert turns
+        assert all(msg in msgs for msg in turns)
+        assert turns[0] == msgs[2]
+
     def test_compress_strips_db_persisted_from_assembled_messages(self, compressor):
         """Regression for #57491: shallow copies must not carry flush markers."""
         msgs = [

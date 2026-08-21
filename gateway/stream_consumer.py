@@ -224,7 +224,12 @@ class GatewayStreamConsumer:
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
-        self.metadata = metadata
+        self.metadata = dict(metadata) if metadata else {}
+        if initial_reply_to_id is not None:
+            # Draft transports do not have a dedicated reply_to parameter.
+            # Carry the triggering message identity in metadata so adapters
+            # such as Forge can bind a durable draft to the exact inbound turn.
+            self.metadata.setdefault("reply_to_message_id", str(initial_reply_to_id))
         # Fired whenever a fresh content bubble is created on the platform
         # (first-send of a new message, commentary, overflow chunk, or
         # fallback continuation). The gateway uses this to linearize the

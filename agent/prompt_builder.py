@@ -2521,7 +2521,7 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
 
 
 def build_context_files_prompt(
-    cwd: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
     skip_soul: bool = False,
     context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False,

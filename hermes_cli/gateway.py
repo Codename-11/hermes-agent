@@ -2885,7 +2885,10 @@ def prompt_linux_gateway_install_scope() -> str | None:
     return {0: "user", 1: "system", 2: None}[choice]
 
 
-def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: bool = True) -> tuple[str | None, bool]:
+def install_linux_gateway_from_setup(
+    force: bool = False,
+    enable_on_startup: bool = True,
+) -> tuple[str | None, bool]:
     scope = prompt_linux_gateway_install_scope()
     if scope is None:
         return None, False
@@ -2912,10 +2915,19 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
                     break
                 print_error("  Enter a username.")
 
-        systemd_install(force=force, system=True, run_as_user=run_as_user, enable_on_startup=enable_on_startup)
+        systemd_install(
+            force=force,
+            system=True,
+            run_as_user=run_as_user,
+            enable_on_startup=enable_on_startup,
+        )
         return scope, True
 
-    systemd_install(force=force, system=False, enable_on_startup=enable_on_startup)
+    systemd_install(
+        force=force,
+        system=False,
+        enable_on_startup=enable_on_startup,
+    )
     return scope, True
 
 
@@ -3979,8 +3991,8 @@ def systemd_install(
         _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
 
     print()
-    enable_label = "installed and enabled" if enable_on_startup else "installed"
-    print(f"✓ {_service_scope_label(system).capitalize()} service {enable_label}!")
+    enabled_suffix = " and enabled" if enable_on_startup else ""
+    print(f"✓ {_service_scope_label(system).capitalize()} service installed{enabled_suffix}!")
     print()
     print("Next steps:")
     print(
@@ -7354,38 +7366,32 @@ def gateway_setup():
                 else:
                     platform_name = "Scheduled Task"
                 wsl_note = " (note: services may not survive WSL restarts)" if is_wsl() else ""
-                start_now = prompt_yes_no("  Start the gateway now?", True)
-                start_on_login = prompt_yes_no(
-                    f"  Start the gateway automatically on login/boot as a {platform_name} service?{wsl_note}",
-                    True,
-                )
-                if start_now or start_on_login:
+                if prompt_yes_no(f"  Install the gateway as a {platform_name} service?{wsl_note} (runs in background, starts on boot)", True):
                     try:
                         installed_scope = None
                         did_install = False
+                        started_inline = False
                         if supports_systemd_services():
-                            installed_scope, did_install = install_linux_gateway_from_setup(
-                                force=False,
-                                enable_on_startup=start_on_login,
-                            )
+                            installed_scope, did_install = install_linux_gateway_from_setup(force=False)
                         elif is_macos():
                             launchd_install(force=False)
                             did_install = True
                         else:
+                            # gateway_windows.install() registers the Scheduled
+                            # Task AND starts it (schtasks /Run or direct-spawn
+                            # fallback), so no separate start prompt is needed.
                             from hermes_cli import gateway_windows
 
                             gateway_windows.install(force=False)
                             did_install = True
+                            started_inline = True
                         print()
-                        if did_install and start_now:
+                        if did_install and not started_inline and prompt_yes_no("  Start the service now?", True):
                             try:
                                 if supports_systemd_services():
                                     systemd_start(system=installed_scope == "system")
-                                elif is_macos():
+                                else:
                                     launchd_start()
-                                elif is_windows():
-                                    from hermes_cli import gateway_windows
-                                    gateway_windows.start()
                             except UserSystemdUnavailableError as e:
                                 print_error(
                                     "  Start failed — user systemd not reachable:"
@@ -7398,7 +7404,6 @@ def gateway_setup():
                         print_error(f"  Install failed: {e}")
                         print_info("  You can try manually: hermes gateway install")
                 else:
-                    print_info("  Skipped start and auto-start setup.")
                     print_info("  You can install later: hermes gateway install")
                     if supports_systemd_services():
                         print_info(
@@ -7430,6 +7435,141 @@ def gateway_setup():
         print_info("No platforms configured. Run 'hermes gateway setup' when ready.")
 
     print()
+
+
+# =============================================================================
+# Multi-profile restart helpers
+# =============================================================================
+
+_RESTART_RECURSE_ENV = "HERMES_GATEWAY_RESTART_NO_RECURSE"
+
+
+def _other_running_profiles():
+    """Return ``(active_profile_name, [ProfileInfo])`` for profiles with a
+    running gateway other than the active one.
+
+    Used by ``hermes gateway restart`` to offer to restart sibling profiles
+    (e.g. ``mizu``) after restarting the current profile's gateway.
+    """
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name
+    except Exception:
+        return "", []
+    try:
+        active = get_active_profile_name()
+    except Exception:
+        active = ""
+    try:
+        profiles = list_profiles()
+    except Exception:
+        profiles = []
+    others = [p for p in profiles if p.name != active and p.gateway_running]
+    return active, others
+
+
+_PROFILE_LEAKY_PREFIXES = (
+    # Hermes core — HERMES_HOME gets rewritten by the ``-p <name>`` wrapper
+    # anyway, but other HERMES_* vars (tokens, CWD hints) would leak.
+    "HERMES_", "GATEWAY_", "MESSAGING_",
+    # Platform-specific vars that gateway/config.py reads at startup —
+    # if any bleed through from the parent profile, the child platform
+    # config will mix with the inherited values (e.g. parent's
+    # API_SERVER_KEY triggering enable even when child's .env sets
+    # ENABLED=false).
+    "API_SERVER_", "DISCORD_", "TELEGRAM_", "SLACK_", "WHATSAPP_",
+    "MATTERMOST_", "WEBHOOK_", "QQBOT_", "WECOM_", "DINGTALK_",
+    "FEISHU_", "LINE_", "HOMEASSISTANT_", "SMS_",
+)
+
+
+def _profile_safe_env() -> dict:
+    """Return a copy of ``os.environ`` with Hermes/messaging vars stripped.
+
+    Used when spawning ``hermes -p <name> gateway restart`` for another
+    profile — the child must load its own profile's ``.env`` cleanly
+    rather than inheriting the parent profile's values.  See
+    _PROFILE_LEAKY_PREFIXES for the exact set.
+    """
+    return {
+        k: v for k, v in os.environ.items()
+        if not k.startswith(_PROFILE_LEAKY_PREFIXES)
+    }
+
+
+def _restart_other_profile(name: str) -> bool:
+    """Restart another profile's gateway by invoking ``hermes -p <name>
+    gateway restart`` as a child process with the recursion guard set.
+
+    Returns ``True`` on exit code 0.
+    """
+    hermes_bin = shutil.which("hermes") or shutil.which("hermes-bin")
+    if not hermes_bin:
+        # Fall back to the interpreter + module so we still work inside a venv
+        hermes_bin = sys.executable
+        cmd = [hermes_bin, "-m", "hermes_cli.main", "-p", name, "gateway", "restart"]
+    else:
+        cmd = [hermes_bin, "-p", name, "gateway", "restart"]
+    env = _profile_safe_env()
+    env[_RESTART_RECURSE_ENV] = "1"
+    try:
+        result = subprocess.run(cmd, env=env, timeout=60)
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(f"  ⚠ Restart of profile '{name}' timed out after 60s")
+        return False
+    except Exception as e:
+        print(f"  ⚠ Failed to restart profile '{name}': {e}")
+        return False
+
+
+def _maybe_restart_other_profiles(args) -> None:
+    """After restarting the active profile's gateway, optionally restart
+    other profiles' gateways.  Called at the end of the normal restart
+    path.  Skipped entirely when the recursion guard env var is set (so
+    child invocations don't recurse) or when ``--no-prompt-profiles``
+    was passed.
+    """
+    if os.environ.get(_RESTART_RECURSE_ENV) == "1":
+        return
+    if getattr(args, "no_prompt_profiles", False):
+        return
+
+    active, others = _other_running_profiles()
+    if not others:
+        return
+
+    all_profiles = getattr(args, "all_profiles", False)
+    names = ", ".join(p.name for p in others)
+
+    print()
+    if all_profiles:
+        print(f"→ Restarting {len(others)} other profile gateway(s): {names}")
+        approved = others
+    elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+        # Non-interactive: don't prompt.  Mention what we found so
+        # the operator knows they can rerun with --all-profiles.
+        print(
+            f"ℹ Other profile gateway(s) running: {names}. "
+            "Rerun with --all-profiles to restart them too."
+        )
+        return
+    else:
+        print(f"Other profile gateway(s) running: {names}")
+        approved: list = []
+        for p in others:
+            try:
+                ans = input(f"  Also restart '{p.name}'? [Y/n]: ").strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans in ("", "y", "yes"):
+                approved.append(p)
+
+    for p in approved:
+        print(f"→ Restarting profile '{p.name}'...")
+        if _restart_other_profile(p.name):
+            print(f"  ✓ Restarted '{p.name}'")
+        else:
+            print(f"  ✗ Failed to restart '{p.name}' — try: hermes -p {p.name} gateway restart")
 
 
 # =============================================================================
@@ -8036,6 +8176,16 @@ def _gateway_command_inner(args):
         if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
             return
 
+        # Pipeline status line — active phase shows a spinner; falls back
+        # to plain per-phase prints on non-TTY (same module as hermes update).
+        try:
+            from hermes_cli.update_ui import Pipeline
+            _pipe = Pipeline([
+                "restart gateway", "check other profiles",
+            ])
+        except Exception:
+            _pipe = None
+
         if restart_all:
             # --all: stop every gateway process across all profiles, then start fresh
             service_stopped = False
@@ -8092,6 +8242,9 @@ def _gateway_command_inner(args):
                 run_gateway(verbose=0)
             return
 
+        if _pipe is not None:
+            _pipe.start("restart gateway")
+
         if supports_systemd_services() and (
             get_systemd_unit_path(system=False).exists()
             or get_systemd_unit_path(system=True).exists()
@@ -8126,6 +8279,9 @@ def _gateway_command_inner(args):
             except (subprocess.CalledProcessError, RuntimeError, OSError):
                 pass
 
+        if service_available and _pipe is not None:
+            _pipe.advance("check other profiles")
+
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue
             if supports_systemd_services():
@@ -8149,6 +8305,8 @@ def _gateway_command_inner(args):
                     return
 
             if service_configured:
+                if _pipe is not None:
+                    _pipe.fail(note="service restart failed")
                 print()
                 print("✗ Gateway service restart failed.")
                 print(
@@ -8166,6 +8324,12 @@ def _gateway_command_inner(args):
             # Start fresh
             print("Starting gateway...")
             run_gateway(verbose=0)
+
+        # Check other profiles (e.g. mizu) and offer to restart them too.
+        if _pipe is not None:
+            _pipe.finish()
+        _maybe_restart_other_profiles(args)
+
 
     elif subcmd == "status":
         deep = getattr(args, "deep", False)

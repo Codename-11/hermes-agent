@@ -230,6 +230,75 @@ class TestInstall:
         assert m.name == "installed"
         assert m.source == str(staged)
 
+    def test_install_uses_manifest_name_when_no_override(self, profile_env):
+        mf = DistributionManifest(name="telem", version="1.0.0")
+        staged = _make_staging_dir(profile_env, "telem", manifest=mf)
+        plan = install_distribution(str(staged))
+        assert plan.manifest.name == "telem"
+        assert plan.target_dir.name == "telem"
+
+    def test_install_rejects_existing_without_force(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        install_distribution(str(staged), name="existing")
+        with pytest.raises(DistributionError, match="already exists"):
+            install_distribution(str(staged), name="existing")
+
+    def test_install_with_force_overwrites(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        install_distribution(str(staged), name="target")
+        # Install again with --force succeeds
+        plan = install_distribution(str(staged), name="target", force=True)
+        assert plan.target_dir.is_dir()
+
+    def test_install_allows_default_root_profile_and_preserves_config(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model:\n  model: user-local\n")
+
+        plan = install_distribution(str(staged), name="default", force=True)
+
+        assert plan.target_dir == default_home
+        assert (default_home / "SOUL.md").read_text() == "I am Source.\n"
+        assert "user-local" in (default_home / "config.yaml").read_text()
+        assert read_manifest(default_home).name == "default"
+
+    def test_install_copies_only_distribution_owned_root_paths(self, profile_env):
+        mf = DistributionManifest(
+            name="scoped",
+            version="1.0.0",
+            distribution_owned=["SOUL.md", "skills", "cron"],
+        )
+        staged = _make_staging_dir(profile_env, "scoped", manifest=mf)
+        (staged / "README.md").write_text("not owned\n")
+        (staged / ".git").mkdir()
+        (staged / ".git" / "config").write_text("[remote]\n")
+
+        plan = install_distribution(str(staged), name="scoped")
+
+        assert (plan.target_dir / "SOUL.md").exists()
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").exists()
+        assert (plan.target_dir / "cron" / "daily.json").exists()
+        assert not (plan.target_dir / "README.md").exists()
+        assert not (plan.target_dir / ".git").exists()
+        assert not (plan.target_dir / "mcp.json").exists()
+
+    def test_update_default_distribution_preserves_user_data(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model:\n  model: user-local\n")
+
+        plan = install_distribution(str(staged), name="default", force=True)
+        (default_home / "memories").mkdir(exist_ok=True)
+        (default_home / "memories" / "MEMORY.md").write_text("# USER MEMORY\n")
+        (staged / "SOUL.md").write_text("I am Source v2.\n")
+
+        update_distribution("default", force_config=False)
+
+        assert plan.target_dir == default_home
+        assert (default_home / "SOUL.md").read_text() == "I am Source v2.\n"
+        assert "user-local" in (default_home / "config.yaml").read_text()
+        assert (default_home / "memories" / "MEMORY.md").read_text() == "# USER MEMORY\n"
+
     def test_install_respects_distribution_owned_allowlist(self, profile_env):
         """Install must only copy paths listed in distribution_owned."""
         mf = DistributionManifest(

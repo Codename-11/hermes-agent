@@ -1119,6 +1119,37 @@ class TestLateEnvRepointScopesStore:
         # the import-time compatibility constants are untouched
         assert jobs.JOBS_FILE != store.jobs_file
 
+    def test_late_named_profile_repoint_uses_shared_root(self, tmp_path, monkeypatch):
+        """Axiom profiles share the installation root cron registry even when
+        HERMES_HOME changes after cron.jobs was imported."""
+        import cron.jobs as jobs
+
+        old_root = tmp_path / "old-root"
+        old_cron = old_root / "cron"
+        monkeypatch.setattr(jobs, "HERMES_DIR", old_root)
+        monkeypatch.setattr(jobs, "CRON_DIR", old_cron)
+        monkeypatch.setattr(jobs, "JOBS_FILE", old_cron / "jobs.json")
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", old_cron / "output")
+        monkeypatch.setattr(
+            jobs,
+            "_IMPORT_STORE",
+            jobs._CronStorePaths(jobs.CRON_DIR, jobs.JOBS_FILE, jobs.OUTPUT_DIR),
+        )
+
+        new_root = tmp_path / "new-root"
+        profile_home = new_root / "profiles" / "coder"
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        store = jobs._current_cron_store()
+        assert store.jobs_file == new_root.resolve() / "cron" / "jobs.json"
+        assert store.jobs_file != profile_home.resolve() / "cron" / "jobs.json"
+
+    def test_unchanged_home_returns_import_time_constants(self, monkeypatch):
+        import cron.jobs as jobs
+
+        monkeypatch.setenv("HERMES_HOME", str(jobs.HERMES_DIR))
+        store = jobs._current_cron_store()
+        assert store.jobs_file is jobs.JOBS_FILE
 
     def test_use_cron_store_override_still_wins(self, tmp_path, monkeypatch):
         import cron.jobs as jobs

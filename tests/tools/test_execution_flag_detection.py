@@ -23,6 +23,8 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     argv, stdin, expected_returncode, expected_output
 ):
     """Pin the CLI grammar that the approval detector models."""
+    if os.name == "nt":
+        pytest.skip("requires native GNU tool option semantics, not MSYS shims")
     if shutil.which(argv[0]) is None:
         pytest.skip(f"{argv[0]} is not installed")
 
@@ -47,6 +49,8 @@ def test_real_binaries_execute_leading_dash_program_payload(
     tmp_path, tool, args, stdin, needs_tty
 ):
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
+    if os.name == "nt":
+        pytest.skip("requires native GNU executable lookup semantics")
     if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
 

@@ -109,7 +109,51 @@ class TestXAIEndpoint:
 
 
 class TestXAIPayload:
+    def test_image_to_video_15_accepts_1080p(self, xai_provider):
+        provider, captured = xai_provider
+        result = provider.generate(
+            "animate this",
+            image_url="https://example.com/cat.png",
+            resolution="1080p",
+        )
 
+        assert result["success"] is True
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["resolution"] == "1080p"
+
+    @pytest.mark.parametrize("resolution", ["480p", "720p"])
+    @pytest.mark.parametrize(
+        "image_url", [None, "https://example.com/cat.png"], ids=["text", "image"]
+    )
+    def test_existing_resolutions_remain_supported(
+        self, xai_provider, resolution, image_url
+    ):
+        provider, captured = xai_provider
+        result = provider.generate(
+            "animate this",
+            image_url=image_url,
+            resolution=resolution,
+        )
+
+        assert result["success"] is True
+        assert _last_post(captured)["json"]["resolution"] == resolution
+
+    def test_text_payload_has_no_image_field(self, xai_provider):
+        provider, captured = xai_provider
+        provider.generate("a dog at sunset")
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video"
+        assert payload["prompt"] == "a dog at sunset"
+        assert "image" not in payload
+        assert "reference_images" not in payload
+
+    def test_image_payload_has_image_field(self, xai_provider):
+        provider, captured = xai_provider
+        provider.generate("animate this", image_url="https://example.com/cat.png")
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["image"] == {"url": "https://example.com/cat.png"}
 
     def test_local_image_path_is_sent_as_data_uri(self, xai_provider, tmp_path):
         provider, captured = xai_provider
@@ -150,6 +194,43 @@ class TestXAIPayload:
 
 
 class TestXAIValidation:
+    @pytest.mark.parametrize(
+        ("kwargs", "expected_model"),
+        [
+            ({}, "grok-imagine-video"),
+            (
+                {
+                    "image_url": "https://example.com/cat.png",
+                    "model": "grok-imagine-video",
+                    "_model_override_explicit": True,
+                },
+                "grok-imagine-video",
+            ),
+            (
+                {
+                    "image_url": "https://example.com/cat.png",
+                    "model": "grok-imagine-video-1.5-preview",
+                    "_model_override_explicit": True,
+                },
+                "grok-imagine-video-1.5-preview",
+            ),
+            (
+                {"reference_image_urls": ["https://example.com/ref.png"]},
+                "grok-imagine-video",
+            ),
+        ],
+    )
+    def test_1080p_fails_closed_outside_proven_i2v_15_mode(
+        self, xai_provider, kwargs, expected_model
+    ):
+        provider, captured = xai_provider
+        result = provider.generate("x", resolution="1080p", **kwargs)
+
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_resolution"
+        assert result["model"] == expected_model
+        assert "client" not in captured or not captured["client"].posts
+
     def test_missing_prompt_rejects(self, xai_provider):
         provider, captured = xai_provider
         result = provider.generate("")

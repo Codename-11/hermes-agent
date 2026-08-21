@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,42 @@ def test_methods_registered():
         "projects.for_cwd",
     ):
         assert m in server._methods
+
+
+def test_session_workspace_move_can_unassign_to_home_without_git_identity(monkeypatch, tmp_path):
+    updates = []
+
+    class FakeDB:
+        def get_session(self, session_key):
+            assert session_key == "session-1"
+            return {"id": session_key}
+
+        def update_session_cwd(self, *args, **kwargs):
+            updates.append((args, kwargs))
+
+    @contextmanager
+    def fake_profile_db(_params):
+        yield FakeDB()
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_profile_db", fake_profile_db)
+    monkeypatch.setattr(
+        server,
+        "_git_branch_for_cwd",
+        lambda _cwd: (_ for _ in ()).throw(AssertionError("unassignment must not probe branch")),
+    )
+    monkeypatch.setattr(
+        server,
+        "_git_common_repo_root_for_cwd",
+        lambda _cwd: (_ for _ in ()).throw(AssertionError("unassignment must not probe repo root")),
+    )
+
+    result = _call("session.workspace.move", {"session_key": "session-1", "unassigned": True})
+
+    assert result == {"cwd": str(tmp_path), "branch": None, "git_repo_root": None}
+    assert updates == [
+        (("session-1", str(tmp_path), None, None), {"replace_git_meta": True})
+    ]
 
 
 def test_for_cwd_is_a_long_handler():
@@ -202,7 +239,7 @@ def test_tree_build_warms_every_path_it_will_resolve(monkeypatch, tmp_path):
     monkeypatch.setattr(git_probe, "warm_roots", recording_warm)
 
     server._build_project_tree(
-        server._get_db(), preview_limit=3, hydrate=False, session_limit=5, include_discovered=True
+        server._get_db(), preview_limit=3, hydrate=False, include_discovered=True
     )
 
     assert str(repo) in warmed

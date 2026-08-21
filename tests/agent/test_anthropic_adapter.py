@@ -206,6 +206,21 @@ class TestResolveAnthropicToken:
     def _assert_not_called(*_args, **_kwargs):
         raise AssertionError("should not be called when API key is present")
 
+    def test_suppressed_claude_code_source_does_not_read_credentials(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "explicit-oauth-token")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._is_claude_code_source_suppressed",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            self._assert_not_called,
+        )
+
+        assert resolve_anthropic_token() == "explicit-oauth-token"
+
     def test_prefers_oauth_token_over_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
@@ -1076,16 +1091,207 @@ class TestBuildAnthropicKwargs:
         beta_header = (kwargs.get("extra_headers") or {}).get("anthropic-beta", "")
         assert "fast-mode-2026-02-01" not in beta_header
 
+    def test_fast_mode_still_applied_on_opus_46(self):
+        """Regression guard — fast mode must still work on Opus 4.6."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+        assert kwargs.get("extra_body", {}).get("speed") == "fast"
+        assert "fast-mode-2026-02-01" in kwargs["extra_headers"]["anthropic-beta"]
 
+    def test_reasoning_disabled(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "quick"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+        assert "thinking" not in kwargs
 
+    def test_default_max_tokens_uses_model_output_limit(self):
+        """When max_tokens is None, use the model's native output limit."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 64_000  # Sonnet 4 output limit
 
+    def test_default_max_tokens_opus_4_6(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 128_000
 
+    def test_default_max_tokens_sonnet_4_6(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 64_000
 
+    def test_default_max_tokens_date_stamped_model(self):
+        """Date-stamped model IDs should resolve via substring match."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-5-20250929",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 64_000
 
+    def test_default_max_tokens_older_model(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-3-5-sonnet-20241022",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 8_192
 
+    def test_default_max_tokens_unknown_model_uses_highest(self):
+        """Unknown future models should get the highest known limit."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-ultra-5-20260101",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 128_000
 
+    def test_explicit_max_tokens_overrides_default(self):
+        """User-specified max_tokens should be respected."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 4096
 
+    def test_context_length_clamp(self):
+        """max_tokens should be clamped to context_length if it's smaller."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",  # 128K output
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            context_length=50000,
+        )
+        assert kwargs["max_tokens"] == 49999  # context_length - 1
 
+    def test_context_length_no_clamp_when_larger(self):
+        """No clamping when context_length exceeds output limit."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",  # 64K output
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            context_length=200000,
+        )
+        assert kwargs["max_tokens"] == 64_000
+
+    # ------------------------------------------------------------------
+    # OAuth-only hardening: concrete tool_choice wire-name encoding
+    # ------------------------------------------------------------------
+
+    def test_oauth_concrete_tool_choice_gets_wire_name_encoding(self):
+        """When tool_choice names a specific tool on the OAuth path, the name
+        must go through the same ``_to_oauth_wire_name`` transform applied to
+        the tools list (PR #47723) — otherwise Anthropic 400s with
+        ``tool_choice not in tools``.
+        """
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="read_file",
+        )
+        # Bare name → mcp__read_file on the wire.
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+        # And matches the encoded name in tools (this is the invariant).
+        assert kwargs["tools"][0]["name"] == "mcp__read_file"
+
+    def test_oauth_concrete_tool_choice_promotes_single_mcp_underscore(self):
+        """A single-underscore native MCP tool name passed as ``tool_choice``
+        must be promoted to the double-underscore wire form, matching what
+        PR #47723 does for the tools list.
+        """
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "mcp_linear_get_issue", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="mcp_linear_get_issue",
+        )
+        assert kwargs["tool_choice"] == {
+            "type": "tool",
+            "name": "mcp__linear_get_issue",
+        }
+        assert kwargs["tools"][0]["name"] == "mcp__linear_get_issue"
+
+    def test_oauth_concrete_tool_choice_idempotent_when_already_encoded(self):
+        """Double-underscore-encoded names passed as ``tool_choice`` must not
+        be double-prefixed."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "mcp__read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="mcp__read_file",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+
+    def test_non_oauth_concrete_tool_choice_is_raw(self):
+        """Non-OAuth callers (API key, third-party Anthropic-compatible) must
+        get the raw ``tool_choice`` name — the wire encoding is OAuth-only."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+            tool_choice="read_file",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "read_file"}
+        assert kwargs["tools"][0]["name"] == "read_file"
 
 
 # ---------------------------------------------------------------------------
@@ -1295,7 +1501,65 @@ class TestThinkingBlockSignatureManagement:
             if block.get("type") in {"thinking", "redacted_thinking"}:
                 assert "cache_control" not in block
 
+    def test_thinking_stripped_from_merged_consecutive_assistants(self):
+        """When consecutive assistants are merged, ALL thinking is stripped.
 
+        Merging changes the message content structure, which invalidates
+        all thinking block signatures (computed against the original turn
+        content).  Both the first and second message's thinking blocks
+        must be stripped to avoid HTTP 400 from Anthropic.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "First response.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "First thought.", "signature": "sig_1"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Second response.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Second thought.", "signature": "sig_2"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+
+        # Should be merged into one assistant message
+        assistants = [m for m in result if m["role"] == "assistant"]
+        assert len(assistants) == 1
+
+        # ALL thinking blocks must be stripped — merging invalidates signatures.
+        blocks = assistants[0]["content"]
+        thinking = [b for b in blocks if b.get("type") == "thinking"]
+        assert len(thinking) == 0
+        # Text content from both messages should survive
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert any("First" in b["text"] for b in text_blocks)
+        assert any("Second" in b["text"] for b in text_blocks)
+
+    def test_empty_content_after_strip_gets_placeholder(self):
+        """If stripping thinking leaves an empty message, a placeholder is added."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Only thinking, no text."},
+                    # Unsigned — will be downgraded, but content was empty string
+                ],
+            },
+            {"role": "user", "content": "Next message."},
+            {"role": "assistant", "content": "Final."},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        # First assistant is non-last, so thinking is stripped completely.
+        # The original content was empty and thinking was unsigned → placeholder
+        first_assistant = next(m for m in result if m["role"] == "assistant")
+        assert first_assistant["role"] == "assistant"
+        assert len(first_assistant["content"]) >= 1
 
     def test_multi_turn_conversation_preserves_only_last(self):
         """Full multi-turn conversation: only last assistant keeps thinking."""

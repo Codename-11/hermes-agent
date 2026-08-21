@@ -222,6 +222,10 @@ class FsWriteText(BaseModel):
     content: str
 
 
+class FsEnsureDirectory(BaseModel):
+    path: str
+
+
 # --- from web_server.py (originally lines 2826-2856) ---
 
 class GitPathBody(BaseModel):
@@ -738,4 +742,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

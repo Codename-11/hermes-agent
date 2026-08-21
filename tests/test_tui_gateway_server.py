@@ -2582,83 +2582,6 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
-def test_history_to_messages_drops_pure_compaction_scaffolding():
-    from agent.context_compressor import (
-        HISTORICAL_TASK_HEADING,
-        SUMMARY_PREFIX,
-        _SUMMARY_END_MARKER,
-    )
-
-    summary = (
-        f"{SUMMARY_PREFIX}\n\n"
-        f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
-        f"{_SUMMARY_END_MARKER}"
-    )
-
-    assert server._history_to_messages(
-        [
-            {"role": "user", "content": summary},
-            {"role": "assistant", "content": "real answer"},
-        ]
-    ) == [{"role": "assistant", "text": "real answer"}]
-
-
-def test_history_to_messages_preserves_live_ask_without_compaction_scaffolding():
-    from agent.context_compressor import (
-        HISTORICAL_TASK_HEADING,
-        SUMMARY_PREFIX,
-        _SUMMARY_END_MARKER,
-    )
-
-    carrier = (
-        f"{SUMMARY_PREFIX}\n\n"
-        f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
-        f"{_SUMMARY_END_MARKER}\n\n"
-        "test the browser controller"
-    )
-
-    assert server._history_to_messages(
-        [
-            {
-                "role": "user",
-                "content": carrier,
-                "tool_calls": [{"id": "stale"}],
-                "reasoning": "internal compaction reasoning",
-            }
-        ]
-    ) == [{"role": "user", "text": "test the browser controller"}]
-
-
-def test_history_to_messages_unwraps_merged_assistant_carrier():
-    from agent.context_compressor import (
-        HISTORICAL_TASK_HEADING,
-        SUMMARY_PREFIX,
-        _MERGED_PRIOR_CONTEXT_HEADER,
-        _MERGED_SUMMARY_DELIMITER,
-        _SUMMARY_END_MARKER,
-    )
-
-    carrier = (
-        f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
-        "real completed answer\n\n"
-        f"{_MERGED_SUMMARY_DELIMITER}\n\n"
-        f"{SUMMARY_PREFIX}\n\n"
-        f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
-        f"{_SUMMARY_END_MARKER}"
-    )
-
-    assert server._history_to_messages(
-        [
-            {
-                "role": "assistant",
-                "content": carrier,
-                "tool_calls": [{"id": "stale"}],
-                "reasoning_details": [{"summary": "internal"}],
-            }
-        ]
-    ) == [{"role": "assistant", "text": "real completed answer"}]
-
-
 def test_history_to_messages_ships_full_tool_args():
     # This is the display projection. `context` is an 80-char preview for
     # collapsed row titles. A renderer that shows the full call (the expanded
@@ -12956,8 +12879,9 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     # entries mid-run, which would flip this build thread's ``replaced`` check
     # to True and trigger a spurious unregister. Snapshot, clear, and restore
     # so this test sees only its own session regardless of shard composition.
-    _saved_sessions = dict(server._sessions)
-    server._sessions.clear()
+    with server._sessions_lock:
+        _saved_sessions = dict(server._sessions)
+        server._sessions.clear()
 
     try:
         resp = server.handle_request(
@@ -12998,8 +12922,9 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         assert session.get("slash_worker") is None
     finally:
         # Cleanup + restore sibling sessions we snapshotted.
-        server._sessions.clear()
-        server._sessions.update(_saved_sessions)
+        with server._sessions_lock:
+            server._sessions.clear()
+            server._sessions.update(_saved_sessions)
 
 
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):

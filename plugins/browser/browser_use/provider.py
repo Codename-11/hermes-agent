@@ -279,7 +279,6 @@ class BrowserUseBrowserProvider(BrowserProvider):
         logger.info("Created Browser Use session %s", session_name)
 
         cdp_url = session_data.get("cdpUrl") or session_data.get("connectUrl") or ""
-
         return {
             "session_name": session_name,
             "bb_session_id": session_data["id"],

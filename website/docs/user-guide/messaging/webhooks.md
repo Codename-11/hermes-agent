@@ -112,6 +112,8 @@ platforms:
             Diff URL: {pull_request.diff_url}
             Action: {action}
           skills: ["github-code-review"]
+          # Optional: route-scoped tools. Omit for normal safe webhook defaults.
+          toolsets: ["web"]
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"
@@ -125,6 +127,22 @@ platforms:
               equals: "refs/heads/main"
           deliver: "telegram"
 ```
+
+### Route-level toolsets
+
+By default, webhook-originated agent runs use the webhook platform's configured tool surface. On current secure defaults, `hermes-webhook` is intentionally narrow because public webhook payloads can contain untrusted text such as PR titles, comments, commit messages, and CI logs.
+
+For a trusted internal automation route, you can grant a different tool surface on that route only:
+
+```bash
+hermes webhook subscribe orca-merge-remediation \
+  --prompt "{prompt}" \
+  --skills "github-pr-workflow,systematic-debugging,test-driven-development" \
+  --toolsets "web,terminal,file,code_execution,skills,session_search" \
+  --deliver discord
+```
+
+The `toolsets` value is resolved the same way as `platform_toolsets.<platform>`: configured MCP servers remain available unless the route includes the `no_mcp` sentinel. Leave `toolsets` unset for public or third-party routes; route-level elevation is intended for HMAC-signed automation where you control the caller and the workflow constrains side effects (for example, bot branch + PR rather than direct deploy pushes).
 
 ### Payload Filters
 

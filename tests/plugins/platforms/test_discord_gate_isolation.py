@@ -309,6 +309,7 @@ class TestYamlBridgeSeeding:
                 "allow_from": ["1001"],
                 "allowed_roles": [31],
                 "allow_all_users": False,
+                "allow_bots": "mentions",
             },
         )
         assert seeded["allowed_channels"] == "111,112"
@@ -316,8 +317,10 @@ class TestYamlBridgeSeeding:
         assert seeded["allow_from"] == "1001"
         assert seeded["allowed_roles"] == "31"
         assert seeded["allow_all_users"] == "false"
+        assert seeded["allow_bots"] == "mentions"
         # Legacy env bridge preserved for single-profile deployments.
         assert os.environ["DISCORD_ALLOWED_CHANNELS"] == "111,112"
+        assert os.environ["DISCORD_ALLOW_BOTS"] == "mentions"
 
     def test_profile_scoped_load_skips_env_bridge(self, monkeypatch):
         from agent import secret_scope
@@ -327,7 +330,12 @@ class TestYamlBridgeSeeding:
         token = secret_scope.set_secret_scope({"SOME": "scope"})
         try:
             seeded = _apply_yaml_config(
-                {}, {"allowed_channels": "222", "allow_from": "2001"},
+                {},
+                {
+                    "allowed_channels": "222",
+                    "allow_from": "2001",
+                    "allow_bots": "all",
+                },
             )
         finally:
             secret_scope.reset_secret_scope(token)
@@ -335,9 +343,15 @@ class TestYamlBridgeSeeding:
         # Gates still seeded per-adapter...
         assert seeded["allowed_channels"] == "222"
         assert seeded["allow_from"] == "2001"
+        assert seeded["allow_bots"] == "all"
         # ...but process-global env stays clean: no cross-profile leak.
         assert os.getenv("DISCORD_ALLOWED_CHANNELS") is None
         assert os.getenv("DISCORD_ALLOWED_USERS") is None
+        assert os.getenv("DISCORD_ALLOW_BOTS") is None
+
+        adapter = _adapter(seeded)
+        _snapshot(adapter, {})
+        assert adapter._get_allow_bots() == "all"
 
     def test_first_writer_env_does_not_mask_second_profile_extras(self, monkeypatch):
         """End-to-end shape of the original repro: profile A bridges env first;

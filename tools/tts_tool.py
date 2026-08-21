@@ -1776,7 +1776,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 
     # Determine output format based on file extension
     if output_path.endswith(".ogg"):
-        output_format = "opus_48000_64"
+        output_format = "opus_48000_128"
     else:
         output_format = "mp3_44100_128"
 

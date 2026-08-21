@@ -1776,6 +1776,11 @@ export interface UpdateCheckResponse {
   can_apply: boolean;
   update_command: string;
   message: string | null;
+  branch?: string;
+  deploy_branch?: string;
+  deploy_behind?: number;
+  upstream_branch?: string;
+  upstream_behind?: number;
 }
 
 export interface SystemStats {

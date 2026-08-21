@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -133,6 +134,7 @@ def get_available_skills() -> Dict[str, List[str]]:
 
 # Cache update check results for 6 hours to avoid repeated git fetches
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+_UPDATE_CHECK_CACHE_SCHEMA = 2
 
 # Sentinel returned when we know an update exists but can't count commits
 # (e.g. nix-built hermes — no local git history to count against).
@@ -140,6 +142,7 @@ UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 _OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+_DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
 def _canonical_github_remote(url: str | None) -> str:
@@ -191,6 +194,24 @@ def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str
     if result.returncode != 0:
         return None
     return (result.stdout or "").strip()
+
+
+def _current_git_branch(repo_dir: Path) -> Optional[str]:
+    return _git_stdout(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir)
+
+
+def _has_git_remote(repo_dir: Path, remote: str) -> bool:
+    return bool(_git_stdout(["remote", "get-url", remote], cwd=repo_dir))
+
+
+def _count_git_range(repo_dir: Path, base: str, target: str) -> Optional[int]:
+    out = _git_stdout(["rev-list", "--count", f"{base}..{target}"], cwd=repo_dir)
+    if out is None:
+        return None
+    try:
+        return int(out or "0")
+    except ValueError:
+        return None
 
 
 def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
@@ -276,7 +297,7 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind the relevant upstream ref in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
@@ -307,6 +328,9 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         counted = _github_compare_behind(head_rev, upstream_rev)
         return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
+    current_branch = _current_git_branch(repo_dir)
+    origin_branch = current_branch if current_branch in _DEPLOY_BRANCHES else "main"
+
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would
     # unshallow the repo (dragging in the whole history) and
@@ -332,11 +356,11 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # An unscoped ``git fetch origin`` transfers every remote head (~1,400
         # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
         # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
-        # for the same reason. Modern git updates the ``origin/main`` tracking
-        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
-        # unaffected; the shallow path compares against FETCH_HEAD, which a
-        # scoped fetch also updates.
-        fetch_args = ["git", "fetch", "origin", "main"]
+        # for the same reason. Deploy branches must fetch their own origin ref:
+        # fetching only ``main`` would leave ``origin/axiom`` or ``origin/tgi``
+        # stale immediately before the deploy-behind count. The shallow path
+        # compares against FETCH_HEAD, which a scoped fetch also updates.
+        fetch_args = ["git", "fetch", "origin", origin_branch]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
@@ -348,39 +372,123 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 
+    # For forks: also fetch upstream so deploy branches detect upstream-only changes.
+    has_upstream = _has_git_remote(repo_dir, "upstream")
+    if has_upstream:
+        try:
+            fetch_args = ["git", "fetch", "upstream"]
+            if is_shallow:
+                fetch_args += ["--depth", "1"]
+            fetch_args.append("--quiet")
+            subprocess.run(
+                fetch_args,
+                capture_output=True, timeout=10,
+                cwd=str(repo_dir),
+            )
+        except Exception:
+            pass
+
     if is_shallow:
-        # No history to count across the shallow boundary. `origin/main` may not
-        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
-        # updated by the fetch above) and fall back to origin/main.
+        # No history to count across the shallow boundary. Preserve deploy
+        # branch's two-hop check while using ancestry/API evidence to avoid
+        # flagging local-ahead checkouts as updates.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        target_rev = (
-            _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
-        )
-        if not head_rev or not target_rev:
+        if current_branch in _DEPLOY_BRANCHES:
+            remote_ref = f"origin/{current_branch}"
+            remote_rev = _git_stdout(["rev-parse", remote_ref], cwd=repo_dir)
+            target_pairs = [(head_rev, remote_rev)]
+            if has_upstream:
+                target_pairs.append((remote_rev, _git_stdout(["rev-parse", "upstream/main"], cwd=repo_dir)))
+        else:
+            target_rev = (
+                _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
+                or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+            )
+            target_pairs = [(head_rev, target_rev)]
+
+        compared = False
+        total = 0
+        unknown = False
+        for base_rev, target_rev in target_pairs:
+            if not base_rev or not target_rev:
+                continue
+            compared = True
+            if base_rev == target_rev:
+                continue
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", target_rev, base_rev],
+                capture_output=True, timeout=5, cwd=str(repo_dir),
+            )
+            if ancestor.returncode == 0:
+                continue
+            counted = _github_compare_behind(base_rev, target_rev)
+            if counted is None:
+                unknown = True
+            else:
+                total += counted
+        if not compared:
             return None
-        if head_rev == target_rev:
-            return 0
-        # Tips differ but the shallow boundary hides the history between them.
-        # Recover the exact count from the GitHub compare API when possible
-        # (ahead_by == 0 means local-ahead ⇒ up to date); otherwise report the
-        # honest "update available, count unknown" sentinel.
-        counted = _github_compare_behind(head_rev, target_rev)
-        return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
+        return UPDATE_AVAILABLE_NO_COUNT if unknown else total
 
-    try:
-        result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=5,
-            cwd=str(repo_dir),
-        )
-        if result.returncode == 0:
-            return int(result.stdout.strip())
-    except Exception:
-        pass
-    return None
+    current_branch = _current_git_branch(repo_dir)
 
+    behind = None
+    if current_branch in _DEPLOY_BRANCHES:
+        remote_ref = f"origin/{current_branch}"
+        pending_counts: list[int] = []
+        origin_ahead = _count_git_range(repo_dir, "HEAD", remote_ref)
+        if origin_ahead is not None:
+            pending_counts.append(max(origin_ahead, 0))
+        if has_upstream:
+            upstream_ahead = _count_git_range(repo_dir, remote_ref, "upstream/main")
+            if upstream_ahead is not None:
+                pending_counts.append(max(upstream_ahead, 0))
+        behind = sum(pending_counts) if pending_counts else None
+    else:
+        refs = ["origin/main"] + (["upstream/main"] if has_upstream else [])
+        for ref in refs:
+            count = _count_git_range(repo_dir, "HEAD", ref)
+            if count is not None and (behind is None or count > behind):
+                behind = count
+    return behind
+
+def get_update_preview_ranges(repo_dir: Optional[Path] = None) -> list[tuple[str, str, str]]:
+    """Return the git ranges that ``hermes version`` should preview.
+
+    Deploy branches can have two independently actionable gaps: local checkout
+    → remote deploy branch, and remote deploy branch → upstream/main.  Return
+    both so ``hermes version`` can explain the full behind count instead of
+    showing only the first hop.
+    """
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return []
+
+    current_branch = _current_git_branch(repo_dir)
+    if current_branch in _DEPLOY_BRANCHES:
+        ranges: list[tuple[str, str, str]] = []
+        remote_ref = f"origin/{current_branch}"
+        origin_ahead = _count_git_range(repo_dir, "HEAD", remote_ref)
+        if origin_ahead and origin_ahead > 0:
+            ranges.append(("HEAD", remote_ref, "Pending deploy branch changes"))
+
+        if _has_git_remote(repo_dir, "upstream"):
+            upstream_ahead = _count_git_range(repo_dir, remote_ref, "upstream/main")
+            if upstream_ahead and upstream_ahead > 0:
+                ranges.append((remote_ref, "upstream/main", "Pending upstream changes"))
+        return ranges
+
+    return [("HEAD", "origin/main", "Pending upstream changes")]
+
+
+def get_update_preview_range(repo_dir: Optional[Path] = None) -> Optional[tuple[str, str, str]]:
+    """Return the first git range that ``hermes version`` should preview.
+
+    Kept for callers that only know about the original single-range preview;
+    new code should use :func:`get_update_preview_ranges`.
+    """
+    ranges = get_update_preview_ranges(repo_dir)
+    return ranges[0] if ranges else None
 
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
@@ -420,6 +528,7 @@ def check_for_updates() -> Optional[int]:
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
+                and cached.get("schema") == _UPDATE_CHECK_CACHE_SCHEMA
                 and cached.get("ver") == VERSION
             ):
                 return cached.get("behind")
@@ -445,7 +554,13 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            json.dumps({
+                "schema": _UPDATE_CHECK_CACHE_SCHEMA,
+                "ts": now,
+                "behind": behind,
+                "rev": embedded_rev,
+                "ver": VERSION,
+            }),
             encoding="utf-8",
         )
     except Exception:
@@ -1248,6 +1363,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
     if release_info:
+        # Rich disables OSC-8 hyperlinks when ``legacy_windows`` is true, even
+        # for modern Windows terminals and forced test consoles. The banner
+        # already emits ANSI colour on Windows; opt this single render path into
+        # Rich's modern terminal mode so the release title link survives.
+        if sys.platform == "win32" and getattr(console, "legacy_windows", False):
+            try:
+                console.legacy_windows = False
+            except Exception:
+                pass
         _tag, _url = release_info
         title_markup = f"[bold {title_color}][link={_url}]{version_label}[/link][/]"
     else:

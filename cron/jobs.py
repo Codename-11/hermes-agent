@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Optional, Dict, List, Any, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -65,22 +65,10 @@ def _ensure_croniter() -> bool:
 # Configuration
 # =============================================================================
 
-# Cron is per-profile by design (issue #4707). Each profile owns its own cron
-# store under its own HERMES_HOME, and a profile-scoped gateway runs that
-# profile's jobs under that same HERMES_HOME — so a job authored in profile
-# `coder` lives in `~/.hermes/profiles/coder/cron/jobs.json` and executes with
-# `coder`'s `.env`, `config.yaml`, and skills. We deliberately anchor on
-# `get_hermes_home()` (the active profile home), NOT `get_default_hermes_root()`
-# (the shared root). Anchoring at the root would funnel every profile's jobs
-# into one shared `jobs.json` and run them under whatever HERMES_HOME the
-# ticker process happens to have — leaking config/credentials/skills across
-# profiles (the security boundary #4707 was filed for). Do NOT change this to
-# the default root: that re-breaks per-profile isolation. See also the dynamic
-# `_get_hermes_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
-HERMES_DIR = get_hermes_home().resolve()
-# These constants remain the default-profile fallback and a compatibility
-# surface for existing callers/tests. Cross-profile callers must scope paths
-# with use_cron_store() instead of mutating them process-wide.
+# Axiom stores cron rows in one root registry for cross-profile visibility and
+# management, while preserving profile isolation with owner_profile/scope fields
+# and profile-scoped execution in cron/scheduler.py.
+HERMES_DIR = get_default_hermes_root().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
@@ -139,7 +127,7 @@ _IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
 
 
 def _current_cron_store() -> _CronStorePaths:
-    """Return paths pinned to this execution context's profile.
+    """Return paths pinned to Axiom's shared-root cron registry.
 
     Precedence, most explicit first:
 
@@ -147,13 +135,11 @@ def _current_cron_store() -> _CronStorePaths:
     2. deliberately re-pointed module constants — if CRON_DIR/JOBS_FILE/
        OUTPUT_DIR no longer match their import-time values, someone chose
        the documented process-wide compatibility surface; honor it;
-    3. the ACTIVE profile home, resolved fresh via get_hermes_home()
-       (context-local override, then the HERMES_HOME env var) — so a test
-       or embedder that re-points HERMES_HOME after this module was
-       imported reads/writes ITS OWN store, not whatever jobs.json the
-       import happened to freeze (the filed incident: fixtures that patched
-       the env too late silently rewrote the user's real jobs file);
-    4. the import-time constants (home unchanged since import — the common
+    3. the active installation root, resolved fresh via
+       get_default_hermes_root() — so a test or embedder that re-points
+       HERMES_HOME after this module was imported reads/writes its own shared
+       root store, while a named profile still maps to <root>/cron/jobs.json;
+    4. the import-time constants (root unchanged since import — the common
        path, returned unchanged).
     """
     override = _cron_store_override.get()
@@ -162,10 +148,10 @@ def _current_cron_store() -> _CronStorePaths:
     live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
     if live_constants != _IMPORT_STORE:
         return live_constants
-    home = get_hermes_home().resolve()
-    if home == HERMES_DIR:
+    root = get_default_hermes_root().resolve()
+    if root == HERMES_DIR:
         return live_constants
-    cron_dir = home / "cron"
+    cron_dir = root / "cron"
     return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 
@@ -236,6 +222,153 @@ def _oneshot_run_claim_ttl_seconds() -> float:
         timeout * _ONESHOT_RUN_CLAIM_TTL_HEADROOM,
         float(ONESHOT_RUN_CLAIM_TTL_SECONDS),
     )
+
+
+_DEFAULT_OWNER_PROFILE = "default"
+_GLOBAL_SCOPE = "global"
+_PROFILE_SCOPE = "profile"
+_VALID_SCOPES = {_PROFILE_SCOPE, _GLOBAL_SCOPE}
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _normalize_owner_profile(value: Optional[Any]) -> str:
+    text = str(value or "").strip().lower()
+    if not text or text == "root":
+        return _DEFAULT_OWNER_PROFILE
+    return text if _PROFILE_ID_RE.match(text) else _DEFAULT_OWNER_PROFILE
+
+
+def _normalize_scope(value: Optional[Any]) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in _VALID_SCOPES else _PROFILE_SCOPE
+
+
+def get_active_cron_profile() -> str:
+    """Return the profile identity for the currently running Hermes process."""
+    try:
+        active = get_hermes_home().resolve()
+        root = HERMES_DIR.resolve()
+        if active == root:
+            return _DEFAULT_OWNER_PROFILE
+        profiles_root = (root / "profiles").resolve()
+        rel = active.relative_to(profiles_root)
+        if len(rel.parts) == 1 and _PROFILE_ID_RE.match(rel.parts[0]):
+            return rel.parts[0]
+    except Exception:
+        pass
+    return _DEFAULT_OWNER_PROFILE
+
+
+def _job_visible_to_active_profile(job: Dict[str, Any], *, active_profile: Optional[str] = None) -> bool:
+    """Whether this process should see/operate this job by default."""
+    if not isinstance(job, dict):
+        return False
+    if _normalize_scope(job.get("scope")) == _GLOBAL_SCOPE:
+        return True
+    active = _normalize_owner_profile(active_profile or get_active_cron_profile())
+    owner = _normalize_owner_profile(job.get("owner_profile") or job.get("profile"))
+    return owner == active
+
+
+def _filter_jobs_for_active_profile(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    active = get_active_cron_profile()
+    return [j for j in jobs if _job_visible_to_active_profile(j, active_profile=active)]
+
+
+def _ensure_job_ownership(job: Dict[str, Any], default_owner: str) -> bool:
+    """Normalize owner/scope fields in-place. Return True if changed."""
+    changed = False
+    owner = _normalize_owner_profile(job.get("owner_profile") or job.get("profile") or default_owner)
+    scope = _normalize_scope(job.get("scope"))
+    if job.get("owner_profile") != owner:
+        job["owner_profile"] = owner
+        changed = True
+    if job.get("profile") != owner:
+        job["profile"] = owner
+        changed = True
+    if job.get("scope") != scope:
+        job["scope"] = scope
+        changed = True
+    return changed
+
+
+def resolve_profile_home(profile: Optional[Any]) -> Optional[Path]:
+    """Resolve a cron owner profile to its Hermes home.
+
+    The root/default profile lives at the platform Hermes root. Named profiles
+    live under ``<root>/profiles/<name>``. Return ``None`` for a named profile
+    whose home no longer exists so callers can fall back safely.
+    """
+    owner = _normalize_owner_profile(profile)
+    root = get_default_hermes_root().resolve()
+    if owner == _DEFAULT_OWNER_PROFILE:
+        return root
+    candidate = root / "profiles" / owner
+    return candidate.resolve() if candidate.exists() else None
+
+
+def _legacy_profile_job_files() -> List[tuple[str, Path]]:
+    profiles_root = HERMES_DIR / "profiles"
+    try:
+        children = sorted(p for p in profiles_root.iterdir() if p.is_dir())
+    except OSError:
+        return []
+    result: List[tuple[str, Path]] = []
+    for profile_dir in children:
+        name = profile_dir.name.lower()
+        if not _PROFILE_ID_RE.match(name):
+            continue
+        path = profile_dir / "cron" / "jobs.json"
+        if path.exists() and path.resolve() != JOBS_FILE.resolve():
+            result.append((name, path))
+    return result
+
+
+def _read_jobs_payload(path: Path) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"), strict=False)
+    except Exception as exc:
+        logger.warning("Failed to read legacy cron store %s: %s", path, exc)
+        return [], {}
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+        return (jobs if isinstance(jobs, list) else []), data
+    if isinstance(data, list):
+        return data, {}
+    return [], {}
+
+
+def _mark_legacy_profile_store_migrated(path: Path, profile: str) -> None:
+    try:
+        backup = path.with_name(
+            f"jobs.pre-shared-store-migration.{_hermes_now().strftime('%Y%m%d%H%M%S')}.json"
+        )
+        if path.exists() and not backup.exists():
+            shutil.copy2(path, backup)
+            _secure_file(backup)
+        payload = {
+            "jobs": [],
+            "updated_at": _hermes_now().isoformat(),
+            "migrated_to_shared_store": True,
+            "migrated_profile": profile,
+            "migrated_store": str(JOBS_FILE),
+        }
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix='.tmp', prefix='.jobs_migrated_')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, path)
+            _secure_file(path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        logger.warning("Failed to mark legacy cron store migrated: %s", path, exc_info=True)
 
 
 def _job_running_in_this_process(job_id: str) -> bool:
@@ -558,6 +691,8 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     # "paused" while the fleet is still live. See effective_job_state().
     normalized["state"] = effective_job_state(normalized)
 
+    _ensure_job_ownership(normalized, _DEFAULT_OWNER_PROFILE)
+
     return normalized
 
 
@@ -673,7 +808,7 @@ def ensure_dirs():
 def parse_duration(s: str) -> int:
     """
     Parse duration string into minutes.
-    
+
     Examples:
         "30m" → 30
         "2h" → 120
@@ -683,10 +818,10 @@ def parse_duration(s: str) -> int:
     match = re.match(r'^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$', s)
     if not match:
         raise ValueError(f"Invalid duration: '{s}'. Use format like '30m', '2h', or '1d'")
-    
+
     value = int(match.group(1))
     unit = match.group(2)[0]  # First char: m, h, or d
-    
+
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
 
@@ -694,13 +829,13 @@ def parse_duration(s: str) -> int:
 def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     Parse schedule string into structured format.
-    
+
     Returns dict with:
         - kind: "once" | "interval" | "cron"
         - For "once": "run_at" (ISO timestamp)
         - For "interval": "minutes" (int)
         - For "cron": "expr" (cron expression)
-    
+
     Examples:
         "30m"              → once in 30 minutes
         "2h"               → once in 2 hours
@@ -712,7 +847,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
+
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
@@ -722,7 +857,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "minutes": minutes,
             "display": f"every {minutes}m"
         }
-    
+
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]
     parts = schedule.split()
@@ -741,7 +876,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "expr": schedule,
             "display": schedule
         }
-    
+
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
@@ -769,7 +904,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             }
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
-    
+
     # Duration like "30m", "2h", "1d" → one-shot from now
     try:
         minutes = parse_duration(schedule)
@@ -781,7 +916,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         }
     except ValueError:
         pass
-    
+
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
         f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
@@ -1313,10 +1448,35 @@ def load_jobs() -> List[Dict[str, Any]]:
     # down the whole cron subsystem.
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
-        if _strict_retry and jobs:
-            # Hit control-character corruption — rewrite with proper escaping.
+        jobs = jobs if isinstance(jobs, list) else []
+        changed = bool(_strict_retry and jobs)
+        for job in jobs:
+            if isinstance(job, dict):
+                changed = _ensure_job_ownership(job, _DEFAULT_OWNER_PROFILE) or changed
+        existing_ids = {str(j.get("id")) for j in jobs if isinstance(j, dict) and j.get("id")}
+        for profile, legacy_path in _legacy_profile_job_files():
+            legacy_jobs, legacy_payload = _read_jobs_payload(legacy_path)
+            if legacy_payload.get("migrated_to_shared_store"):
+                continue
+            imported = False
+            for legacy_job in legacy_jobs:
+                if not isinstance(legacy_job, dict):
+                    continue
+                _ensure_job_ownership(legacy_job, profile)
+                job_id = str(legacy_job.get("id") or "")
+                if job_id and job_id in existing_ids:
+                    continue
+                jobs.append(legacy_job)
+                if job_id:
+                    existing_ids.add(job_id)
+                imported = True
+            if imported:
+                changed = True
+                _mark_legacy_profile_store_migrated(legacy_path, profile)
+        if changed:
             save_jobs(jobs)
-            logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+            if _strict_retry:
+                logger.warning("Auto-repaired jobs.json (had invalid control characters)")
         _record_load_stamp(pre_read_stamp)
         return jobs
     if isinstance(data, list):
@@ -1830,6 +1990,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    profile: Optional[str] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
@@ -1932,6 +2093,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    owner_profile = _normalize_owner_profile(profile) if profile is not None else get_active_cron_profile()
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_monitor_script = str(monitor_script).strip() if isinstance(monitor_script, str) else None
     normalized_monitor_script = normalized_monitor_script or None
@@ -2036,6 +2198,9 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "owner_profile": owner_profile,
+        "profile": owner_profile,
+        "scope": _PROFILE_SCOPE,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -2055,9 +2220,11 @@ def create_job(
     return job
 
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+def get_job(job_id: str, *, include_all_profiles: bool = False) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
     jobs = load_jobs()
+    if not include_all_profiles:
+        jobs = _filter_jobs_for_active_profile(jobs)
     for job in jobs:
         if job["id"] == job_id:
             return _normalize_job_record(job)
@@ -2087,7 +2254,7 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     """
     if not ref:
         return None
-    jobs = load_jobs()
+    jobs = _filter_jobs_for_active_profile(load_jobs())
     for job in jobs:
         if job["id"] == ref:
             return _normalize_job_record(job)
@@ -2104,7 +2271,7 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_normalize_job_record(j) for j in load_jobs()]
+    jobs = [_normalize_job_record(j) for j in _filter_jobs_for_active_profile(load_jobs())]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     try:
@@ -2466,7 +2633,7 @@ def _mark_job_run_locked(
 ) -> bool:
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
@@ -2527,7 +2694,7 @@ def _mark_job_run_locked(
                 # is claimable again. No-op if the job never carried a claim.
                 if job.get("run_claim") is not None:
                     job["run_claim"] = None
-                
+
                 # Increment completed count.  Finite one-shot jobs are
                 # pre-claimed by claim_dispatch() BEFORE the side effect runs
                 # (issue #38758), which already incremented completed — do not
@@ -2565,7 +2732,7 @@ def _mark_job_run_locked(
                         job["next_run_at"] = None
                         save_jobs(jobs)
                         return True
-                
+
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
 
@@ -3116,7 +3283,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             rj["id"] = rj.pop("job_id", None) or uuid.uuid4().hex[:12]
             needs_save = True
 
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(_filter_jobs_for_active_profile(raw_jobs))]
     due = []
 
     # Normalize malformed "schedule" records (direct jobs.json edit, old writers,

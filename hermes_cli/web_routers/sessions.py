@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, Request  # noqa: F401
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from hermes_cli import profiles as profiles_mod
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     BulkDeleteSessions,
@@ -48,6 +49,62 @@ _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
 _strip_session_list_rows = late("_strip_session_list_rows")
+
+
+def _open_session_read_for_owner(
+    session_id: str,
+    profile: Optional[str],
+):
+    """Open the read DB that uniquely owns ``session_id``.
+
+    Modern multi-profile clients always send ``?profile=``.  Older Desktop
+    builds did not preserve that scope when a row came from the cross-profile
+    messaging list, so the primary/default DB returned 404 for Discord history
+    owned by a named profile.  Recover only unscoped reads and only when one
+    named profile matches; explicit scope and ambiguous ids remain authoritative
+    misses rather than silently crossing profile boundaries.
+    """
+    db = _open_session_db_for_profile(profile, read_only=True)
+    sid = db.resolve_session_id(session_id)
+    if sid or profile:
+        return db, sid, profile
+    db.close()
+
+    owners: List[tuple[str, str]] = []
+    try:
+        profile_infos = profiles_mod.list_profiles()
+    except Exception:
+        _log.exception("Failed to enumerate profiles for unscoped session read")
+        return _open_session_db_for_profile(None, read_only=True), None, None
+
+    for info in profile_infos:
+        candidate = None
+        try:
+            candidate = _open_session_db_for_profile(info.name, read_only=True)
+            candidate_sid = candidate.resolve_session_id(session_id)
+            if candidate_sid:
+                owners.append((info.name, candidate_sid))
+        except Exception:
+            _log.warning(
+                "Failed profile lookup during unscoped session read: %s",
+                info.name,
+                exc_info=True,
+            )
+        finally:
+            if candidate is not None:
+                candidate.close()
+
+    if len(owners) != 1:
+        if len(owners) > 1:
+            _log.warning(
+                "Ambiguous unscoped session read for %s across profiles: %s",
+                session_id,
+                [owner for owner, _ in owners],
+            )
+        return _open_session_db_for_profile(None, read_only=True), None, None
+
+    owner, sid = owners[0]
+    return _open_session_db_for_profile(owner, read_only=True), sid, owner
 
 
 @list_router.get("/api/sessions")
@@ -554,9 +611,8 @@ async def get_session_stats(profile: Optional[str] = None):
 
 @manage_router.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
-    db = _open_session_db_for_profile(profile, read_only=True)
+    db, sid, owner = _open_session_read_for_owner(session_id, profile)
     try:
-        sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -566,9 +622,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # default/primary profile systematically unowned, so multi-profile
         # clients resolved them to whichever gateway happened to be active
         # (cross-profile open asymmetry, #67603 family).
-        session["profile"] = (
-            _cron_profile_home(profile)[0] if profile else _cron_default_profile()
-        )
+        session["profile"] = owner or _cron_default_profile()
         session["is_default_profile"] = session["profile"] == "default"
         return session
     finally:
@@ -581,9 +635,9 @@ async def get_session_latest_descendant(
     profile: Optional[str] = None,
 ):
     def _lookup():
-        db = _open_session_db_for_profile(profile, read_only=True)
+        db, sid, _owner = _open_session_read_for_owner(session_id, profile)
         try:
-            return _session_latest_descendant(session_id, db)
+            return _session_latest_descendant(sid or session_id, db)
         finally:
             db.close()
 
@@ -614,9 +668,8 @@ async def get_session_messages(
         )
 
     def _read():
-        db = _open_session_db_for_profile(profile, read_only=True)
+        db, sid, _owner = _open_session_read_for_owner(session_id, profile)
         try:
-            sid = db.resolve_session_id(session_id)
             if not sid:
                 return None
             sid = db.resolve_resume_session_id(sid)

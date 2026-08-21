@@ -91,6 +91,7 @@ def _init_code_repo(path):
     (path / "main.py").write_text("print('hi')\n")
 
 
+
 class TestCodingContextBlock:
     def test_injected_when_active(self, monkeypatch, tmp_path):
         _init_code_repo(tmp_path)

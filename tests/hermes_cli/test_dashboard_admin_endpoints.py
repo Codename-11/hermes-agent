@@ -799,8 +799,10 @@ class TestUpdateCheckEndpoint:
     """
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
+    def _setup(self, _isolate_hermes_home, monkeypatch):
         self.client, _ = _client()
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_backend_deploy_update_breakdown", lambda *a, **k: {})
 
     def test_git_install_reports_behind_count(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -850,7 +852,90 @@ class TestUpdateCheckEndpoint:
         assert body["behind"] is None
         assert "managed outside this dashboard" in body["message"]
 
+    def test_check_failure_is_soft(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
 
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+
+        def _boom():
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(banner, "check_for_updates", _boom)
+        # A failed check must not 500 — it returns behind=null with guidance.
+        r = self.client.get("/api/hermes/update/check")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["behind"] is None
+        assert body["update_available"] is False
+        assert body["message"]
+
+    def test_git_behind_includes_commits(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 3)
+        monkeypatch.setattr(
+            ws,
+            "_recent_upstream_commits",
+            lambda n=20: [
+                {"sha": "abc1234", "summary": "feat: x", "author": "a", "at": 1},
+            ],
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        # The desktop overlay renders this as the "what's changed" list.
+        assert isinstance(body["commits"], list)
+        assert body["commits"][0]["sha"] == "abc1234"
+        assert body["commits"][0]["summary"] == "feat: x"
+
+    def test_deploy_branch_breakdown_overrides_generic_count(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 7)
+        monkeypatch.setattr(
+            ws,
+            "_backend_deploy_update_breakdown",
+            lambda *a, **k: {
+                "branch": "axiom",
+                "deploy_branch": "origin/axiom",
+                "deploy_behind": 1,
+                "upstream_branch": "upstream/main",
+                "upstream_behind": 6,
+                "behind": 7,
+                "update_available": True,
+                "message": "Pending backend update: 1 deploy branch commit, 6 upstream commits.",
+                "commits": [{"sha": "def5678", "summary": "fix: y", "author": "b", "at": 2}],
+                "deploy_commits": [{"sha": "def5678", "summary": "fix: y", "author": "b", "at": 2}],
+                "upstream_commits": [{"sha": "up12345", "summary": "feat: upstream", "author": "Nous", "at": 3}],
+            },
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["behind"] == 7
+        assert body["deploy_branch"] == "origin/axiom"
+        assert body["deploy_behind"] == 1
+        assert body["upstream_branch"] == "upstream/main"
+        assert body["upstream_behind"] == 6
+        assert body["update_available"] is True
+        assert "upstream commits" in body["message"]
+        assert body["commits"][0]["summary"] == "fix: y"
+        assert body["deploy_commits"][0]["summary"] == "fix: y"
+        assert body["upstream_commits"][0]["summary"] == "feat: upstream"
+
+    def test_up_to_date_omits_commits(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
+
+        body = self.client.get("/api/hermes/update/check").json()
+        # No commits list when there's nothing to show (additive, non-breaking).
+        assert body.get("commits", []) == []
 
 
 class TestDebugShareEndpoint:
