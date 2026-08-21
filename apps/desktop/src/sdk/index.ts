@@ -45,7 +45,6 @@ import {
   activeGatewayConnectionId,
   ensureGatewayForAgent,
   openGatewayForAgent,
-  openGatewayForProfile,
   requestGatewayForAgent,
   requestGatewayForProfile,
   retireLocalProfileGateways
@@ -670,12 +669,10 @@ export const host = {
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change (openGatewayForProfile; it
-   *  already no-ops for shared-remote routes and the primary). Roster UIs
-   *  call this after mount so the FIRST click on an agent doesn't pay the
-   *  whole backend spawn + socket dial latency. Fire-and-forget: failures
-   *  are swallowed — the click path re-runs its own ensure and surfaces
-   *  errors properly. */
+   *  activation, no navigation, no scope change. Registered sources are
+   *  resolved through the agent roster so a cold remote bot never falls through
+   *  to a same-named local profile handle. Fire-and-forget: failures are
+   *  swallowed — the click path re-runs its own ensure and surfaces errors. */
   warmProfile: (profile: string): void => {
     const name = (profile ?? '').trim()
 
@@ -683,7 +680,15 @@ export const host = {
       return
     }
 
-    void openGatewayForProfile(name).catch(() => undefined)
+    void (async () => {
+      const route = await resolvePluginSessionProfileRoute(name)
+
+      if (route) {
+        await openGatewayForAgent(route.connectionId, route.profile)
+      } else {
+        await openActiveProfileRoute(name)
+      }
+    })().catch(() => undefined)
   },
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the

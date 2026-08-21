@@ -152,6 +152,23 @@ afterEach(() => {
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('prewarms a uniquely routed remote bot through its registered source', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [{ connectionId: 'homelab', connectionKind: 'remote', profile: 'victor' }],
+        sources: [
+          { connectionId: 'local', kind: 'local', label: 'This device' },
+          { connectionId: 'homelab', kind: 'remote', label: 'Homelab' }
+        ]
+      }))
+    }
+
+    host.warmProfile('victor')
+    await vi.waitFor(() => expect(openGatewayForAgent).toHaveBeenCalledWith('homelab', 'victor'))
+
+    expect(openActiveProfileRoute).not.toHaveBeenCalled()
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 
