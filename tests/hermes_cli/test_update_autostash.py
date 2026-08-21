@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
@@ -1135,6 +1136,9 @@ def test_tgi_resolver_bootstrap_avoids_conflicted_worktree_main(tmp_path):
     assert "SyntaxError" not in result.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Symlinks require elevated privileges on Windows"
+)
 def test_tgi_update_focused_check_env_keeps_virtualenv_symlink(
     monkeypatch, tmp_path
 ):
@@ -1162,6 +1166,9 @@ def test_tgi_update_focused_check_env_keeps_virtualenv_symlink(
     ]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Symlinks require elevated privileges on Windows"
+)
 def test_tgi_focused_node_checks_reuse_live_dependencies(monkeypatch, tmp_path):
     from hermes_cli import fork_update as hermes_fork_update
 

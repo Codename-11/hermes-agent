@@ -22,11 +22,10 @@ This is not a feature branch and not a place for unrelated experiments. The defa
 - `main` should track `upstream/main` cleanly.
 - `tgi` is the deploy branch used by the live Atlas/default runtime.
 - `origin/tgi` is the source of truth for the deploy artifact.
-- `hermes update` is consume-only on deploy branches: explicitly refresh `origin/tgi`, then fast-forward the tested deploy artifact without integrating upstream.
-- `hermes update --resolve` is the explicit merge-authority path that reconciles `upstream/main` into `origin/tgi` in a temporary worktree before fast-forwarding the live checkout.
+- Bare `hermes update` is deploy-branch-aware on `tgi`: it resumes a retained handoff when present, otherwise reconciles `upstream/main` into `origin/tgi` in a temporary worktree before fast-forwarding the live checkout. Reconciliation failures leave the live checkout unchanged.
 - `hermes update`, `hermes update --check`, and `hermes --version` are intentionally deploy-branch-aware on `tgi`; operators should not need a special Desktop-only update command.
 - Desktop's **client** update UI should use `HEAD..origin/tgi` for installable update availability and `upstream/main...HEAD` only for fork-disparity visibility.
-- Desktop's **backend** update UI should treat `HEAD..origin/tgi` as installable update availability. `origin/tgi..upstream/main` is merge-authority disparity only: show it separately and direct an authorized host to `hermes update --resolve`; do not imply that a normal Desktop/server runtime update will integrate it.
+- Desktop's **backend** update UI should treat `HEAD..origin/tgi` as installable update availability. `origin/tgi..upstream/main` is merge-authority disparity only: show it separately and direct an authorized host to the bare deploy-aware `hermes update` flow; do not imply that a normal Desktop/server runtime update will integrate it.
 - If upstream has new commits but `origin/tgi` has not moved, Desktop's **client** update UI may show upstream disparity, but it should not present that as an installable Desktop-client update.
 - Manual conflict resolution should happen in the retained update worktree, not in the live checkout, unless doing an intentional recovery.
 - Never force-pull over `tgi`, flatten `tgi` into `main`, or leave required runtime behavior as uncommitted live checkout changes.
