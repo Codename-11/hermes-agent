@@ -69,7 +69,8 @@ import {
   $sessions,
   rememberedSessionProfile,
   requestSessionResume,
-  setResumeExhaustedSessionId
+  setResumeExhaustedSessionId,
+  workspaceCwdForNewSession
 } from '@/store/session'
 import {
   $focusedRuntimeId,
@@ -82,6 +83,12 @@ import { $updateStatus, applyUpdates, checkUpdates } from '@/store/updates'
 import type { UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import {
+  createPluginWorktrees,
+  moveSessionWorkspace,
+  resolveDefaultWorkspace,
+  type MoveSessionWorkspaceInput
+} from './project-facades'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -214,6 +221,16 @@ async function requestPluginProfile<T>(
   )
 }
 
+async function requestActiveGateway<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  const gateway = $gateway.get()
+
+  if (!gateway) {
+    throw new Error('Hermes gateway unavailable')
+  }
+
+  return gateway.request<T>(method, params)
+}
+
 if (typeof window !== 'undefined') {
   const refresh = () => $viewport.set(readViewport())
   window.addEventListener('resize', refresh)
@@ -255,6 +272,12 @@ interface PluginOpenSessionOptions {
    *  overlay ($resumeExhaustedSessionId) — a caller-side retry can't do this
    *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
   retryHydrationTimeoutOnce?: boolean
+}
+
+export interface PluginNewChatOptions {
+  /** Explicit workspace for the draft; null detaches it. */
+  cwd?: null | string
+  profile?: null | string
 }
 
 function waitForFocusedSessionHydration({
@@ -455,6 +478,17 @@ export const host = {
     refresh: async () => checkUpdates(),
     apply: async () => applyUpdates()
   } satisfies PluginUpdateManagement,
+
+  /** Curated worktree/branch verbs over the same local/remote Git facade core
+   * Desktop uses. No raw bridge or project store is exposed. */
+  worktrees: createPluginWorktrees(),
+
+  /** Resolve the first contributed default workspace, falling back to the
+   * configured Desktop default and finally a detached draft. */
+  resolveDefaultWorkspace: (): null | string => resolveDefaultWorkspace(workspaceCwdForNewSession),
+
+  /** Re-home a durable session through the backend's authoritative RPC. */
+  moveSessionWorkspace: async (input: MoveSessionWorkspaceInput) => moveSessionWorkspace(requestActiveGateway, input),
 
   /** Toast into the app's notification stack. */
   notify,
@@ -826,7 +860,6 @@ export const host = {
   newChat: (profileOrOptions?: null | string | PluginNewChatOptions): void => {
     const options =
       profileOrOptions && typeof profileOrOptions === 'object' ? profileOrOptions : { profile: profileOrOptions }
-
     const profile = (options.profile ?? '').trim() || $activeGatewayProfile.get()
 
     if (options.cwd !== undefined) {
@@ -901,15 +934,8 @@ export const host = {
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. */
-  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
-    const gateway = $gateway.get()
-
-    if (!gateway) {
-      throw new Error('Hermes gateway unavailable')
-    }
-
-    return gateway.request<T>(method, params)
-  },
+  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
+    requestActiveGateway<T>(method, params),
 
   /** The LIVE gateway instance for the active profile (null before the first
    *  socket opens). Most plugins want `host.request`; this exists for SDK
@@ -1051,6 +1077,14 @@ export type { ProfileVisibilityContribution, ProfileVisibilityIdentity } from '@
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
+export {
+  DEFAULT_WORKSPACE_RESOLVER_AREA,
+  type DefaultWorkspaceResolverContribution,
+  type MovedSessionWorkspace,
+  type MoveSessionWorkspaceInput,
+  type PluginWorktreeAddOptions,
+  type PluginWorktrees
+} from './project-facades'
 export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `McpTab`
  *  takes; obtain the instance from `host.getGateway()`. */

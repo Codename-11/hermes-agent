@@ -120,8 +120,13 @@ const { revealTreePane } = await import('@/components/pane-shell/tree/store')
 const { deleteProfile } = await import('@/hermes')
 const { applyUpdates, checkUpdates, $updateStatus } = await import('@/store/updates')
 
-const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
-  await import('@/store/gateway')
+const {
+  $gateway,
+  openGatewayForProfile,
+  requestGatewayForAgent,
+  requestGatewayForProfile,
+  retireLocalProfileGateways
+} = await import('@/store/gateway')
 
 const {
   $activeGatewayProfile,
@@ -160,6 +165,7 @@ afterEach(() => {
   setMockAtom($activeSessionId, null)
   setMockAtom($selectedStoredSessionId, null)
   setMockAtom($messages, [])
+  setMockAtom($gateway, null)
   $profiles.set([profile('cached-only')])
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -194,6 +200,20 @@ describe('connection-aware plugin host APIs', () => {
     await expect(host.updates.apply()).resolves.toMatchObject({ ok: true })
     expect(checkUpdates).toHaveBeenCalledOnce()
     expect(applyUpdates).toHaveBeenCalledOnce()
+  })
+
+  it('moves a stored session workspace through the active gateway', async () => {
+    const request = vi.fn(async () => ({ branch: 'main', cwd: '/repo', git_repo_root: '/repo' }))
+    setMockAtom($gateway, { request })
+
+    await expect(
+      host.moveSessionWorkspace({ cwd: '/repo', profile: 'worker', sessionId: 'stored-1' })
+    ).resolves.toMatchObject({ cwd: '/repo' })
+    expect(request).toHaveBeenCalledWith('session.workspace.move', {
+      cwd: '/repo',
+      profile: 'worker',
+      session_key: 'stored-1'
+    })
   })
 
   it('retires a profile gateway before deleting it', async () => {
