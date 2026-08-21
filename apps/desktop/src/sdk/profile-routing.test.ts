@@ -64,10 +64,13 @@ vi.mock('@/store/profile', async () => {
     $activeGatewayProfile: atom('remote-worker'),
     $gatewaySwapTarget: atom(null),
     $profiles: profiles,
+    $showAllProfiles: atom(false),
+    ensureActiveProfileRoute: vi.fn(),
     ensureGatewayAgent: vi.fn(),
     ensureGatewayProfile: vi.fn(),
     newSessionInProfile: vi.fn(),
     normalizeProfileKey: (value: null | string | undefined) => (value ?? '').trim() || 'default',
+    openActiveProfileRoute: vi.fn(),
     refreshProfiles: vi.fn(async () => profiles.get()),
     selectProfile: vi.fn(),
     setActiveProfile: vi.fn(),
@@ -103,14 +106,15 @@ const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
 
-const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
-  await import('@/store/gateway')
+const { requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } = await import('@/store/gateway')
 
 const {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $profiles,
+  ensureActiveProfileRoute,
   ensureGatewayProfile,
+  openActiveProfileRoute,
   refreshProfiles,
   setShowAllProfiles
 } = await import('@/store/profile')
@@ -298,7 +302,7 @@ describe('connection-aware plugin host APIs', () => {
 
 describe('profile-aware plugin session opens', () => {
   it('waits until the target Bot Chat runtime and history are on main before resolving', async () => {
-    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+    vi.mocked(openActiveProfileRoute).mockImplementationOnce(async () => undefined)
 
     let resolved = false
 
@@ -349,7 +353,7 @@ describe('profile-aware plugin session opens', () => {
   })
 
   it('requests an explicit resume on a cold open where selection has not settled (#89206)', async () => {
-    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+    vi.mocked(openActiveProfileRoute).mockImplementationOnce(async () => undefined)
 
     // Cold-start shape from the field: the persisted route already points at
     // the bot's stored session, but no selection, no runtime, no transcript.
@@ -402,7 +406,7 @@ describe('profile-aware plugin session opens', () => {
   })
 
   it('resolves a history-bearing wake on transcript paint without waiting for the runtime (paint-first)', async () => {
-    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+    vi.mocked(openActiveProfileRoute).mockImplementationOnce(async () => undefined)
 
     setMockAtom($selectedStoredSessionId, null)
     setMockAtom($activeSessionId, null)
@@ -527,7 +531,7 @@ describe('profile-aware plugin session opens', () => {
   })
 
   it('lets the latest rapid bot selection win and cancels the older hydration wait', async () => {
-    vi.mocked(ensureGatewayProfile).mockImplementation(async (target: null | string | undefined) => {
+    vi.mocked(ensureActiveProfileRoute).mockImplementation(async (target: null | string | undefined) => {
       $activeGatewayProfile.set(target || 'default')
     })
 
@@ -571,8 +575,8 @@ describe('profile-aware plugin session opens', () => {
       keepAllProfilesScope: true
     })
 
-    expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(ensureActiveProfileRoute).not.toHaveBeenCalled()
+    expect(openActiveProfileRoute).toHaveBeenCalledWith('worker')
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })
@@ -582,23 +586,23 @@ describe('profile-aware plugin session opens', () => {
 
     await host.openSession('bot-chat', { profile: 'worker' })
 
-    expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(ensureActiveProfileRoute).not.toHaveBeenCalled()
+    expect(openActiveProfileRoute).toHaveBeenCalledWith('worker')
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })
 
   it('still switches workspace when keepAllProfilesScope is false', async () => {
     $activeGatewayProfile.set('default')
-    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+    vi.mocked(openActiveProfileRoute).mockImplementationOnce(async () => undefined)
 
     await host.openSession('stored-worker', {
       profile: 'worker',
       keepAllProfilesScope: false
     })
 
-    expect(ensureGatewayProfile).toHaveBeenCalledWith('worker')
-    expect(openGatewayForProfile).not.toHaveBeenCalled()
+    expect(ensureActiveProfileRoute).toHaveBeenCalledWith('worker')
+    expect(openActiveProfileRoute).not.toHaveBeenCalled()
     expect(setShowAllProfiles).toHaveBeenCalledWith(false)
     expect($activeGatewayProfile.get()).toBe('worker')
   })
@@ -625,7 +629,7 @@ describe('profile-aware plugin session opens', () => {
     // bounded, openSession's await sat here for the life of the window and the
     // hydration timer, which is armed downstream, never got a chance to fire:
     // the pane wedged with no error and no Retry rather than timing out.
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+    vi.mocked(ensureActiveProfileRoute).mockImplementationOnce(() => new Promise<void>(() => undefined))
 
     setMockAtom($selectedStoredSessionId, 'wedged-chat')
     setMockAtom($activeSessionId, 'runtime-wedged')
@@ -651,7 +655,7 @@ describe('profile-aware plugin session opens', () => {
   it('names the phase in the wake log so a stuck dial is not read as a slow transcript', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+    vi.mocked(ensureActiveProfileRoute).mockImplementationOnce(() => new Promise<void>(() => undefined))
 
     await expect(
       host.openSession('wedged-chat', {
@@ -685,7 +689,7 @@ describe('profile-aware plugin session opens', () => {
     // its socket up; if hydration then inherited what was left, this wake would
     // fail even though the transcript painted well inside the documented
     // 20s-equivalent window.
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(
+    vi.mocked(ensureActiveProfileRoute).mockImplementationOnce(
       async (target: null | string | undefined) =>
         new Promise<void>(resolve => {
           setTimeout(() => {
@@ -736,7 +740,7 @@ describe('profile-aware plugin session opens', () => {
 
     process.on('unhandledRejection', onUnhandled)
 
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(
+    vi.mocked(ensureActiveProfileRoute).mockImplementationOnce(
       () =>
         new Promise<void>((_resolve, reject) => {
           setTimeout(() => reject(new Error('dial failed after the caller gave up')), 120)
@@ -769,7 +773,7 @@ describe('profile-aware plugin session opens', () => {
     // the same contract as the hydration one. A caller that never passed
     // awaitHydration gets exactly the behaviour it had before, since a
     // rejection here would surface to code with nowhere to render it.
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+    vi.mocked(ensureActiveProfileRoute).mockImplementationOnce(() => new Promise<void>(() => undefined))
 
     let settled = 'pending'
 

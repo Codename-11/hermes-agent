@@ -306,13 +306,13 @@ function activeProfileConnectionId(): null | string {
   return descriptorSource || null
 }
 
-function openActiveProfileRoute(profile: string): Promise<void> {
+export function openActiveProfileRoute(profile: string): Promise<void> {
   const connectionId = activeProfileConnectionId()
 
   return connectionId ? openGatewayForAgent(connectionId, profile) : openGatewayForProfile(profile)
 }
 
-function ensureActiveProfileRoute(profile: string): Promise<void> {
+export function ensureActiveProfileRoute(profile: string): Promise<void> {
   const connectionId = activeProfileConnectionId()
 
   return connectionId ? ensureGatewayAgent(connectionId, profile) : ensureGatewayProfile(profile)

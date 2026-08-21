@@ -55,10 +55,12 @@ import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $profiles,
+  ensureActiveProfileRoute,
   ensureGatewayAgent,
   ensureGatewayProfile,
   newSessionInProfile,
   normalizeProfileKey,
+  openActiveProfileRoute,
   refreshProfiles,
   selectProfile,
   setActiveProfile,
@@ -794,9 +796,9 @@ export const host = {
       // a plain navigation only opens the bot's gateway so session.resume can
       // hydrate, leaving chrome on the launch backend.
       const dial = plan.switchWorkspace
-        ? () => ensureGatewayProfile(plan.switchWorkspace as string)
+        ? () => ensureActiveProfileRoute(plan.switchWorkspace as string)
         : plan.dialWithoutSwitching
-          ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
+          ? () => openActiveProfileRoute(plan.dialWithoutSwitching as string)
           : null
 
       if (dial) {
