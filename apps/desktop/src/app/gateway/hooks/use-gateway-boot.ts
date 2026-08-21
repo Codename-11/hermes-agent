@@ -6,6 +6,7 @@ import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { initializeWorkspaceScope } from '@/lib/workspace-scope'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -339,11 +340,14 @@ export function useGatewayBoot({
       try {
         const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
         const key = normalizeProfileKey(profileKey)
+        initializeWorkspaceScope(key)
         $activeGatewayProfile.set(key)
         setPrimaryGateway(gateway, key)
         void ensureGatewayForProfile(key)
       } catch {
-        $activeGatewayProfile.set(normalizeProfileKey(override))
+        const key = normalizeProfileKey(override)
+        initializeWorkspaceScope(key)
+        $activeGatewayProfile.set(key)
       }
     }
 

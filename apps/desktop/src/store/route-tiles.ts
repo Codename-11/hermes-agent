@@ -1,6 +1,4 @@
-import { atom } from 'nanostores'
-
-import { readJson, writeJson } from '@/lib/storage'
+import { workspaceScopedAtom } from '@/lib/workspace-scope'
 
 import type { SplitDir } from './session-states'
 
@@ -18,21 +16,21 @@ export interface RouteTile {
 
 const TILES_KEY = 'hermes.desktop.routeTiles.v1'
 
-function loadTiles(): RouteTile[] {
-  const parsed = readJson<unknown>(TILES_KEY)
+export const $routeTiles = workspaceScopedAtom<RouteTile[]>(TILES_KEY, [], {
+  decode: raw => {
+    const parsed = JSON.parse(raw) as unknown
 
-  return Array.isArray(parsed)
-    ? parsed
-        .filter((t): t is RouteTile => Boolean(t && typeof (t as RouteTile).path === 'string'))
-        .map(t => ({ dir: t.dir, path: t.path }))
-    : []
-}
-
-export const $routeTiles = atom<RouteTile[]>(loadTiles())
+    return Array.isArray(parsed)
+      ? parsed
+          .filter((t): t is RouteTile => Boolean(t && typeof (t as RouteTile).path === 'string'))
+          .map(t => ({ dir: t.dir, path: t.path }))
+      : []
+  },
+  encode: tiles => (tiles.length === 0 ? null : JSON.stringify(tiles))
+})
 
 function saveTiles(tiles: RouteTile[]) {
   $routeTiles.set(tiles)
-  writeJson(TILES_KEY, tiles.length === 0 ? null : tiles)
 }
 
 /** Open (or front) a page tile for a route, docked on `dir` (default right).

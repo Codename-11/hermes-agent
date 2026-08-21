@@ -1,4 +1,6 @@
-import { atom, computed, type ReadableAtom } from 'nanostores'
+import { computed, type ReadableAtom } from 'nanostores'
+
+import { workspaceScopedAtom } from '@/lib/workspace-scope'
 
 export interface PaneStateSnapshot {
   open: boolean
@@ -34,52 +36,27 @@ function isSnapshot(value: unknown): value is PaneStateSnapshot {
   return widthOk && heightOk
 }
 
-function load(): Record<string, PaneStateSnapshot> {
-  if (typeof window === 'undefined') {
-    return {}
-  }
+// Persists both open state and resize geometry in this window's immutable
+// startup workspace. Gateway profile activation never re-homes these panes.
+export const $paneStates = workspaceScopedAtom<Record<string, PaneStateSnapshot>>(STORAGE_KEY, {}, {
+  decode: raw => {
+    const parsed = JSON.parse(raw) as unknown
+    const out: Record<string, PaneStateSnapshot> = {}
 
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return out
+    }
 
-    if (raw) {
-      const parsed = JSON.parse(raw) as unknown
-
-      if (parsed && typeof parsed === 'object') {
-        const out: Record<string, PaneStateSnapshot> = {}
-
-        for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
-          if (isSnapshot(value)) {
-            out[id] = { open: value.open, widthOverride: value.widthOverride, heightOverride: value.heightOverride }
-          }
-        }
-
-        return out
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (isSnapshot(value)) {
+        out[id] = { open: value.open, widthOverride: value.widthOverride, heightOverride: value.heightOverride }
       }
     }
-  } catch {
-    // Treat unparseable persisted state as missing.
-  }
 
-  return {}
-}
-
-// Persists both open state and resize width; load() validates each snapshot.
-function persist(states: Record<string, PaneStateSnapshot>) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(states))
-  } catch {
-    // Storage failures are nonfatal.
-  }
-}
-
-export const $paneStates = atom<Record<string, PaneStateSnapshot>>(load())
-
-$paneStates.subscribe(persist)
+    return out
+  },
+  encode: states => JSON.stringify(states)
+})
 
 // Cached per-pane derived atoms keep useStore subscriptions referentially stable.
 function memoized<T>(

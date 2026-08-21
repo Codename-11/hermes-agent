@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
-import { persistentAtom } from '@/lib/persisted'
 import { normalize } from '@/lib/text'
+import { workspaceScopedAtom } from '@/lib/workspace-scope'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 
@@ -134,7 +134,7 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
     .map(tab => (tab.target.kind === 'url' ? { ...tab, id: previewTabId(tab.target) } : tab))
 }
 
-export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
+export const $previewTabs = workspaceScopedAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
   decode: decodePreviewTabs,
   // Inline bytes are not restorable. Strip them from images, and skip remote
   // HTML and artifact tabs that cannot render without their in-memory payload.

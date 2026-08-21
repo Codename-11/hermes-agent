@@ -10,7 +10,9 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { setPluginEnabled } from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
-import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
+import { Codecs } from '@/lib/persisted'
+import { readJson, writeJson, writeKey } from '@/lib/storage'
+import { workspaceScopedAtom } from '@/lib/workspace-scope'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
 import { isSecondaryWindow } from '@/store/windows'
@@ -50,14 +52,6 @@ writeKey('hermes.desktop.layoutTree.v1', null)
 
 let defaultTree: LayoutNode | null = null
 
-function loadPersisted(): LayoutNode | null {
-  const parsed = readJson<unknown>(STORAGE_KEY)
-
-  // Canonicalize on load: strips stale attributes older code persisted
-  // (e.g. explicit headerHidden on lone-pane zones) and re-flattens.
-  return isLayoutNode(parsed) ? normalize(parsed) : null
-}
-
 function persist(tree: LayoutNode | null) {
   // A secondary window (single-chat pop-out) shares the origin's localStorage;
   // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
@@ -65,23 +59,43 @@ function persist(tree: LayoutNode | null) {
     return
   }
 
-  writeJson(STORAGE_KEY, tree)
+  $persistedLayoutTree.set(tree)
+  $persistedLayoutTree.persistCurrent()
 }
 
 /** The live tree (null until a default is declared). A secondary window ignores
  *  the persisted (primary) layout and boots to the default — nothing but its
  *  own routed session. */
-export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() ? null : loadPersisted())
+const $persistedLayoutTree = workspaceScopedAtom<LayoutNode | null>(
+  STORAGE_KEY,
+  null,
+  {
+    // Canonicalize on load: strips stale attributes older code persisted
+    // (e.g. explicit headerHidden on lone-pane zones) and re-flattens.
+    decode: raw => {
+      const parsed = JSON.parse(raw) as unknown
+
+      return isLayoutNode(parsed) ? normalize(parsed) : null
+    },
+    encode: tree => (tree === null ? null : JSON.stringify(tree))
+  },
+  { autoPersist: false }
+)
+
+export const $layoutTree = isSecondaryWindow() ? atom<LayoutNode | null>(null) : $persistedLayoutTree
 
 /**
  * Which layout preset the current tree came from; `'custom'` after the user
  * rearranges anything. Drives the picker's active highlight.
  */
-export const $activePresetId = atom<string>(readKey('hermes.desktop.layoutPreset.active') ?? 'default')
+export const $activePresetId = workspaceScopedAtom(
+  'hermes.desktop.layoutPreset.active',
+  'default',
+  Codecs.text
+)
 
 export function markActivePreset(id: string) {
   $activePresetId.set(id)
-  writeKey('hermes.desktop.layoutPreset.active', id)
 }
 
 /** Pane id being dragged (tree drag session), null when idle. Also set to the

@@ -9,6 +9,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { workspaceScopedAtom } from '@/lib/workspace-scope'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { stampSessionPrBranch } from './pull-requests'
@@ -36,7 +37,7 @@ const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-export const $reviewOpen = persistentAtom(OPEN_KEY, false, Codecs.bool)
+export const $reviewOpen = workspaceScopedAtom(OPEN_KEY, false, Codecs.bool)
 
 // The split-button's remembered default action ('commit' | 'commitPush').
 export type CommitAction = 'commit' | 'commitPush'
@@ -73,7 +74,7 @@ export const $reviewMaxChurn = computed($reviewFiles, files =>
 )
 // Persisted so a relaunch restores the file you were diffing (its diff is
 // re-fetched in refreshReview once the file is confirmed still changed).
-export const $reviewSelectedPath = persistentAtom<null | string>(SELECTED_KEY, null, Codecs.nullableText)
+export const $reviewSelectedPath = workspaceScopedAtom<null | string>(SELECTED_KEY, null, Codecs.nullableText)
 export const $reviewDiff = atom<null | string>(null)
 export const $reviewDiffLoading = atom(false)
 
