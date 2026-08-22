@@ -175,12 +175,14 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
             "refs/heads/main",
         ]:
             return MagicMock(returncode=0, stdout="upstream-sha\trefs/heads/main\n")
+        if cmd == ["git", "merge-base", "--is-ancestor", "upstream-sha", "HEAD"]:
+            return MagicMock(returncode=1, stdout="")
         raise AssertionError(f"unexpected git command: {cmd!r}")
 
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         result = banner._check_via_local_git(repo_dir)
 
-    assert result == 1
+    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
     assert ["git", "fetch", "origin", "--quiet"] not in calls
 
 
@@ -213,6 +215,8 @@ def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
             return MagicMock(returncode=0, stdout="local-sha\n")
         if cmd == ["git", "rev-parse", "FETCH_HEAD"]:
             return MagicMock(returncode=0, stdout="upstream-sha\n")
+        if cmd == ["git", "merge-base", "--is-ancestor", "upstream-sha", "local-sha"]:
+            return MagicMock(returncode=1, stdout="")
         if cmd[:3] == ["git", "rev-list", "--count"]:
             raise AssertionError("shallow path must not count across the boundary")
         raise AssertionError(f"unexpected git command: {cmd!r}")
