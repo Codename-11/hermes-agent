@@ -312,6 +312,31 @@ describe('SidebarSessionsSection hybrid project overview', () => {
     expect(screen.queryByRole('button', { name: 'Show Home sessions' })).toBeNull()
   })
 
+  it('keeps sessions under Recent Sessions when the project tree is empty', () => {
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>No projects</div>}
+        grouping="date"
+        label="Projects"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open
+        pinned={false}
+        projectOverview={[]}
+        projectOverviewRecentsLabel="Recent Sessions"
+        sessions={[makeSession('recent-empty-tree')]}
+      />
+    )
+
+    expect(screen.getByText('Recent Sessions')).toBeTruthy()
+    expect(screen.getByTestId('session-row-recent-empty-tree')).toBeTruthy()
+  })
+
   it('collapses only the project overview while keeping Recent Sessions visible', () => {
     const onToggleProjectOverview = vi.fn()
 

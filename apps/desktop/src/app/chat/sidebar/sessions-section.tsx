@@ -467,8 +467,10 @@ export function SidebarSessionsSection({
     )
   } else if (showEmptyState) {
     inner = emptyState
-  } else if (projectOverview?.length) {
-    // The model is already ordered (Home leads; then the default sort groups
+  } else if (projectOverview) {
+    // An empty project array still means the caller selected project overview
+    // mode. Keep flat rows in the separate Recent Sessions lane instead of
+    // letting them fall through directly beneath the PROJECTS heading.
     // explicit-before-auto, with a manual drag-order winning when present).
     // Render in that order and make rows drag-to-reorder when a handler is
     // wired — Home stays outside the sortable list, it's a fixture.
