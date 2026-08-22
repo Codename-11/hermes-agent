@@ -424,6 +424,11 @@ are never background-fanned into another gateway's project tree.
   effect may have fired before the wipe, so it is not accepted as the recovery
   mechanism; successful switches repopulate deterministically, while failed
   switches leave the current gateway untouched.
+- Project RPCs follow the sidebar's source-qualified browse route
+  `(connectionId, $profileScope)`, not the socket serving the focused chat.
+  Focusing a Lucy chat while browsing Victor must not redirect or discard
+  Victor's project tree; the background Victor socket is read without changing
+  foreground chat routing.
 - Project grouping remains a presentation mode even when the selected gateway's
   tree is empty or loading. Flat session rows stay under **Recent Sessions** and
   never fall through directly beneath the **Projects** heading.
@@ -433,7 +438,7 @@ session-actions-menu,session-row}.tsx`, `apps/desktop/src/app/chat/sidebar/proje
 {overview-row,workspace-header}.tsx`,
 `apps/desktop/src/{lib/desktop-fs.ts,lib/session-source.ts,store/projects.ts,
 store/gateway-switch.ts}`,
-`apps/desktop/src/store/connections.ts`,
+`apps/desktop/src/store/{connections,gateway}.ts`,
 `apps/desktop/src/app/{session/hooks/use-session-list-actions,shell/hooks/use-statusbar-items}.tsx`, the matching
 Desktop tests/locales/bridge declarations, `hermes_cli/{session_source_policy,
 web_models,web_server}.py`, `tui_gateway/{server,methods_config,methods_session,
