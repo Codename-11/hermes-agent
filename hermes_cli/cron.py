@@ -157,6 +157,10 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
+        owner = job.get("owner_profile")
+        scope = job.get("scope")
+        if owner or scope:
+            print(f"    Owner:     {owner or 'default'} ({scope or 'profile'})")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")

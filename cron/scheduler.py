@@ -44,7 +44,12 @@ from typing import Any, List, Optional, Protocol
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     _expand_env_vars,
@@ -1463,9 +1468,14 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored."""
-    hermes_home = _get_hermes_home()
-    lock_dir = hermes_home / "cron"
+    """Resolve the single lock guarding the shared cron registry."""
+    active = _get_hermes_home().resolve()
+    root = (
+        active.parent.parent.resolve()
+        if active.parent.name.lower() == "profiles"
+        else get_default_hermes_root().resolve()
+    )
+    lock_dir = root / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -3929,6 +3939,7 @@ def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    hermes_home: Optional[Path] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -3966,7 +3977,8 @@ def _run_job_script(
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
+    owner_home = (hermes_home or _get_hermes_home()).resolve()
+    scripts_dir = owner_home / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -4059,6 +4071,7 @@ def _run_job_script(
             }
         env = build_subprocess_env()
         env.update(env_overlay)
+        env["HERMES_HOME"] = str(owner_home)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into
@@ -5034,6 +5047,44 @@ class _BoundedCronSessionDB:
 
 
 def run_job(
+    job: dict,
+    *,
+    defer_agent_teardown: Optional[list] = None,
+    extra_prompt: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a job under its persisted owner profile's Hermes home."""
+    from cron.jobs import resolve_profile_home
+
+    owner = str(job.get("owner_profile") or job.get("profile") or "default")
+    owner_home = resolve_profile_home(owner)
+    if owner_home is None:
+        return _run_job_impl(
+            job,
+            defer_agent_teardown=defer_agent_teardown,
+            extra_prompt=extra_prompt,
+            cancel_event=cancel_event,
+        )
+
+    previous_home = os.environ.get("HERMES_HOME")
+    token = set_hermes_home_override(str(owner_home))
+    os.environ["HERMES_HOME"] = str(owner_home)
+    try:
+        return _run_job_impl(
+            job,
+            defer_agent_teardown=defer_agent_teardown,
+            extra_prompt=extra_prompt,
+            cancel_event=cancel_event,
+        )
+    finally:
+        reset_hermes_home_override(token)
+        if previous_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous_home
+
+
+def _run_job_impl(
     job: dict,
     *,
     defer_agent_teardown: Optional[list] = None,
