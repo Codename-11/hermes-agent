@@ -419,6 +419,11 @@ are never background-fanned into another gateway's project tree.
   `$projectTree`, active/scope/capability state, project tombstones, and request
   generations before the new gateway refreshes; a late response from the old
   gateway cannot repaint its projects after the switch.
+- After the new gateway's profile settles, the connection switch explicitly
+  reloads both `projects.list` and `projects.tree`. The sidebar's connection
+  effect may have fired before the wipe, so it is not accepted as the recovery
+  mechanism; successful switches repopulate deterministically, while failed
+  switches leave the current gateway untouched.
 - Project grouping remains a presentation mode even when the selected gateway's
   tree is empty or loading. Flat session rows stay under **Recent Sessions** and
   never fall through directly beneath the **Projects** heading.
@@ -428,6 +433,7 @@ session-actions-menu,session-row}.tsx`, `apps/desktop/src/app/chat/sidebar/proje
 {overview-row,workspace-header}.tsx`,
 `apps/desktop/src/{lib/desktop-fs.ts,lib/session-source.ts,store/projects.ts,
 store/gateway-switch.ts}`,
+`apps/desktop/src/store/connections.ts`,
 `apps/desktop/src/app/{session/hooks/use-session-list-actions,shell/hooks/use-statusbar-items}.tsx`, the matching
 Desktop tests/locales/bridge declarations, `hermes_cli/{session_source_policy,
 web_models,web_server}.py`, `tui_gateway/{server,methods_config,methods_session,
@@ -447,7 +453,8 @@ NODE_ENV=test ../../node_modules/.bin/vitest run --project ui \
   src/app/shell/hooks/use-statusbar-items.test.tsx \
   src/app/session/hooks/use-session-list-actions.test.tsx \
   src/lib/desktop-fs.test.ts src/lib/session-source.test.ts \
-  src/store/projects.test.ts src/store/gateway-switch.test.ts
+  src/store/projects.test.ts src/store/gateway-switch.test.ts \
+  src/store/connections.test.ts
 npm run typecheck
 
 cd ../..

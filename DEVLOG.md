@@ -16,6 +16,9 @@ fans in projects from a previously selected or merely registered remote.
 - Added project state to the established soft gateway-switch wipe, including
   request-generation invalidation so late responses from the previous gateway
   cannot repaint its tree.
+- Added an explicit project list/tree reload after the new profile settles. The
+  connection atom can trigger the sidebar refresh before the wipe; relying on
+  that effect left the newly selected remote empty after stale state was removed.
 - Preserved project overview presentation for empty/loading trees, keeping flat
   sessions under a separate Recent Sessions heading.
 - Kept Hybrid Projects removed from Axiom Enhancements; this is a narrow core
@@ -24,10 +27,12 @@ fans in projects from a previously selected or merely registered remote.
 ### Verification
 
 - Gateway-switch wipe regressions: 2 passing.
+- Connection selection/reload regressions: 12 passing.
 - Selected-gateway project regressions: 2 passing.
 - Projects/Recent Sessions presentation regressions: 5 passing.
-- Packaged and hash-verified Desktop `7a0949c03b`; live remote → This device
-  switch cleared remote project rows and they did not return after refresh.
+- Packaged and hash-verified Desktop `5c77ad67d7`; live remote → This device
+  switching clears remote project rows. The post-wipe remote repopulation path is
+  covered by the connection-selection suite and awaits operator UI confirmation.
 
 ## 2026-08-19 — Move detailed fork disparity into Axiom Enhancements
 

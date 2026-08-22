@@ -305,12 +305,14 @@
             "ui",
             "src/store/gateway-switch.test.ts",
             "src/store/projects.test.ts",
-            "src/app/chat/sidebar/sessions-section.test.tsx"
+            "src/app/chat/sidebar/sessions-section.test.tsx",
+            "src/store/connections.test.ts"
           ],
           "covers": [
             "apps/desktop/src/store/gateway-switch.test.ts",
             "apps/desktop/src/store/projects.test.ts",
-            "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx"
+            "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
+            "apps/desktop/src/store/connections.test.ts"
           ],
           "cwd": "apps/desktop",
           "env": {
@@ -332,7 +334,8 @@
         "apps/desktop/src/app/chat/sidebar/index.tsx",
         "apps/desktop/src/app/chat/sidebar/sessions-section.tsx",
         "apps/desktop/src/store/gateway-switch.ts",
-        "apps/desktop/src/store/projects.ts"
+        "apps/desktop/src/store/projects.ts",
+        "apps/desktop/src/store/connections.ts"
       ],
       "provenance": [
         {
@@ -354,18 +357,24 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "7a0949c03bce43fa689b8c6bfc5dc4689d3a1f66"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "5c77ad67d7c59a96bc0767cf405092bc9859cb89"
         }
       ],
       "status": "active",
-      "summary": "Keep Projects separate from Recent Sessions and scope all project state strictly to the selected gateway, including explicit project-cache invalidation on soft gateway switches.",
+      "summary": "Keep Projects separate from Recent Sessions and scope all project state strictly to the selected gateway, including explicit cache invalidation and deterministic project reload after soft gateway switches.",
       "tests": [
         "apps/desktop/src/store/gateway-switch.test.ts",
         "apps/desktop/src/store/projects.test.ts",
-        "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx"
+        "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
+        "apps/desktop/src/store/connections.test.ts"
       ],
       "title": "Axiom Desktop gateway-scoped Projects overview",
       "notes": [
-        "Reactivated 2026-08-22 as a narrow core carry after live remote \u2192 This device testing exposed stale cross-gateway project state. The retired profile-pinned remote fan-out policy must not be restored."
+        "Reactivated 2026-08-22 as a narrow core carry after live remote \u2194 This device testing exposed both stale cross-gateway project state and a post-wipe reload race. The retired profile-pinned remote fan-out policy must not be restored."
       ],
       "retirement": "Retire when upstream clears and generation-invalidates every gateway-owned project projection on soft source switches and preserves a separate Recent Sessions lane whenever project grouping is selected, including empty/loading trees."
     },
