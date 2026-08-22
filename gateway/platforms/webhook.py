@@ -174,6 +174,27 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _normalize_route_toolsets(raw: Any) -> Optional[list[str]]:
+    """Return a cleaned per-route toolset override, or None for fallback.
+
+    Dynamic subscriptions are JSON/YAML authored by humans and agents, so be
+    forgiving about comma-separated strings while rejecting non-string entries.
+    An empty list is a deliberate deny-all override; missing/invalid values mean
+    the gateway should use the platform-level webhook toolset.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, list):
+        return [
+            item.strip()
+            for item in raw
+            if isinstance(item, str) and item.strip()
+        ]
+    return None
+
+
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
@@ -941,6 +962,7 @@ class WebhookAdapter(BasePlatformAdapter):
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            enabled_toolsets=_normalize_route_toolsets(route_config.get("toolsets")),
         )
 
         logger.info(
