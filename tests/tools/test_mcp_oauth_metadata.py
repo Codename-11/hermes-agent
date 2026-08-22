@@ -89,12 +89,16 @@ def _manager_provider_with_context(storage: HermesTokenStorage, **context_attrs)
         pytest.skip("MCP SDK auth not available")
     provider = _HERMES_PROVIDER_CLS.__new__(_HERMES_PROVIDER_CLS)
     provider._hermes_server_name = context_attrs.get("server_name", "srv")
+    provider._hermes_refresh_lock = asyncio.Lock()
+    provider._initialized = True
     context = MagicMock()
     context.storage = storage
     context.oauth_metadata = context_attrs.get("oauth_metadata")
     context.current_tokens = context_attrs.get("current_tokens")
     context.server_url = context_attrs.get("server_url", "https://example.com")
     context.update_token_expiry = MagicMock()
+    context.is_token_valid.return_value = False
+    context.can_refresh_token.return_value = False
     provider.context = context
     return provider
 
