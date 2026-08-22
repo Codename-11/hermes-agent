@@ -12,6 +12,7 @@ import {
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
+import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import { $connection } from '@/store/session'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
@@ -211,6 +212,11 @@ export async function selectConnection(connectionId: string): Promise<void> {
       $newChatProfile.set(targetProfile)
       requestFreshSession()
       await refreshActiveProfile()
+      // The connection atom changes while ensureGatewayAgent resolves, so the
+      // sidebar may begin a project request before the authoritative wipe above.
+      // That request is intentionally stranded. Reload projects explicitly
+      // after profile settlement, just as sessions are reloaded here.
+      await Promise.all([refreshProjects(), refreshProjectTree()])
     }
   } catch (error) {
     if (revision === switchRevision) {

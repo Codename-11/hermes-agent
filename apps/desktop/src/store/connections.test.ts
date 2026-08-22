@@ -18,9 +18,12 @@ const ensureGatewayAgent = vi.fn(async (_connectionId: null | string, _profile: 
 const refreshActiveProfile = vi.fn(async () => undefined)
 const requestFreshSession = vi.fn()
 const wipeSessionListsForGatewaySwitch = vi.fn()
+const refreshProjects = vi.fn(async () => undefined)
+const refreshProjectTree = vi.fn(async () => undefined)
 
 vi.mock('@/store/session', () => ({ $connection }))
 vi.mock('@/store/gateway-switch', () => ({ wipeSessionListsForGatewaySwitch }))
+vi.mock('@/store/projects', () => ({ refreshProjects, refreshProjectTree }))
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile,
   $newChatProfile,
@@ -76,6 +79,8 @@ beforeEach(() => {
   refreshActiveProfile.mockClear()
   requestFreshSession.mockClear()
   wipeSessionListsForGatewaySwitch.mockClear()
+  refreshProjects.mockClear()
+  refreshProjectTree.mockClear()
   list.mockClear()
   setLastUsed.mockClear()
   vi.stubGlobal('window', { hermesDesktop: { connections: { list, setLastUsed } }, localStorage })
@@ -138,6 +143,8 @@ describe('selectConnection', () => {
     expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
     expect($newChatProfile.get()).toBe('default')
     expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
+    expect(refreshProjects).toHaveBeenCalledTimes(1)
+    expect(refreshProjectTree).toHaveBeenCalledTimes(1)
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
@@ -192,6 +199,8 @@ describe('selectConnection', () => {
     // Only the latest intent repaints the profile list.
     expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
     expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
+    expect(refreshProjects).toHaveBeenCalledTimes(1)
+    expect(refreshProjectTree).toHaveBeenCalledTimes(1)
   })
 
   it('restores the last profile used on each source', async () => {
@@ -238,6 +247,8 @@ describe('selectConnection', () => {
 
     expect(requestFreshSession).not.toHaveBeenCalled()
     expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
+    expect(refreshProjects).not.toHaveBeenCalled()
+    expect(refreshProjectTree).not.toHaveBeenCalled()
     expect($newChatProfile.get()).toBeNull()
     expect($pendingConnectionId.get()).toBeNull()
     expect(setLastUsed).not.toHaveBeenCalled()
