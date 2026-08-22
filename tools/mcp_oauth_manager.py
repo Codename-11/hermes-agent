@@ -140,6 +140,13 @@ def _make_hermes_provider_class() -> Optional[type]:
             super().__init__(*args, **kwargs)
             self._hermes_server_name = server_name
             self._hermes_home = ""
+            # Serialize refresh-token exchanges without holding the SDK's
+            # task-owned AnyIO lock across an application response stream.
+            # Streamable HTTP responses may remain open after delivering one
+            # SSE message; holding context.lock across that yield deadlocks
+            # the next concurrent MCP request (for example tools/list after
+            # initialize).
+            self._hermes_refresh_lock = asyncio.Lock()
             # When the client_id comes from config.yaml (pre-registered), an
             # invalid_client rejection means the *config* is wrong — deleting
             # client.json would just be re-seeded from config and re-running
@@ -515,6 +522,44 @@ def _make_hermes_provider_class() -> Optional[type]:
                     "MCP OAuth '%s': pre-flow disk-watch failed (non-fatal): %s",
                     self._hermes_server_name, exc,
                 )
+
+            # Fast path for cached credentials. The SDK implementation holds
+            # context.lock across ``response = yield request``. That is safe
+            # for ordinary buffered HTTP responses but not for MCP
+            # Streamable-HTTP: an SSE response can stay open after its first
+            # message, so the lock never returns and the next RPC blocks.
+            #
+            # Keep initialization and refresh state serialized, then release
+            # both locks before yielding the actual MCP request. If the
+            # server rejects the token, fall through to the SDK's complete
+            # discovery/authorization flow below.
+            direct_request_ready = False
+            async with self._hermes_refresh_lock:
+                refresh_request = None
+                async with self.context.lock:
+                    if not self._initialized:
+                        await self._initialize()
+                    if self.context.is_token_valid():
+                        self._add_auth_header(request)
+                        direct_request_ready = True
+                    elif self.context.can_refresh_token():
+                        refresh_request = await self._refresh_token()
+
+                if refresh_request is not None:
+                    refresh_response = yield refresh_request
+                    async with self.context.lock:
+                        if await self._handle_refresh_response(refresh_response):
+                            self._add_auth_header(request)
+                            direct_request_ready = True
+                        else:
+                            self._initialized = False
+
+            if direct_request_ready:
+                response = yield request
+                await self._maybe_flag_poisoned_client(response)
+                if response.status_code != 401:
+                    self._persist_oauth_metadata_if_changed()
+                    return
 
             # Manually bridge the bidirectional generator protocol. httpx's
             # auth_flow driver (httpx._client._send_handling_auth) calls
