@@ -33,6 +33,7 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
+    _normalize_route_toolsets,
     check_webhook_requirements,
 )
 
@@ -339,6 +340,21 @@ class TestRenderDeliveryExtra:
         assert result["static"] == 42  # non-string left as-is
 
 
+class TestRouteToolsets:
+    def test_normalize_route_toolsets_missing_falls_back(self):
+        assert _normalize_route_toolsets(None) is None
+
+    def test_normalize_route_toolsets_accepts_comma_string(self):
+        assert _normalize_route_toolsets("web, terminal, file") == [
+            "web",
+            "terminal",
+            "file",
+        ]
+
+    def test_normalize_route_toolsets_filters_non_string_entries(self):
+        assert _normalize_route_toolsets(["web", 42, "", "file"]) == ["web", "file"]
+
+
 # ===================================================================
 # Event filtering
 # ===================================================================
@@ -485,6 +501,29 @@ class TestPayloadFilters:
 
 
 class TestHTTPHandling:
+    @pytest.mark.asyncio
+    async def test_route_toolsets_attached_to_message_event(self):
+        """A trusted route can override webhook platform toolsets for its run."""
+        routes = {
+            "trusted": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "hi",
+                "toolsets": ["web", "terminal", "file"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/trusted", json={"data": "value"})
+            assert resp.status == 202
+
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.enabled_toolsets == ["web", "terminal", "file"]
+
 
     @pytest.mark.asyncio
     async def test_unknown_route_returns_404(self):
