@@ -576,12 +576,15 @@ from hermes_cli.dashboard_auth.public_paths import (
 
 
 def _has_valid_session_token(request: Request) -> bool:
-    """True if the request carries a valid dashboard session token.
+    """True if the request carries a recognized dashboard bearer.
 
     The dedicated session header avoids collisions with reverse proxies that
-    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
-    accept the legacy Bearer path for backward compatibility with older
-    dashboard bundles.
+    already use ``Authorization`` (for example Caddy ``basic_auth``). Bearer
+    auth accepts either the ephemeral dashboard session token for compatibility
+    with older bundles or the stable, operator-set ``HERMES_GATEWAY_TOKEN`` for
+    external plugin administrators. An empty gateway token is never accepted.
+
+    Comparisons use ``hmac.compare_digest`` to avoid timing side-channels.
     """
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
@@ -591,8 +594,16 @@ def _has_valid_session_token(request: Request) -> bool:
         return True
 
     auth = request.headers.get("authorization", "")
-    expected = f"Bearer {_SESSION_TOKEN}"
-    return hmac.compare_digest(auth.encode(), expected.encode())
+    if not auth.startswith("Bearer "):
+        return False
+    presented = auth.encode()
+    if hmac.compare_digest(presented, f"Bearer {_SESSION_TOKEN}".encode()):
+        return True
+    gateway_token = os.environ.get("HERMES_GATEWAY_TOKEN", "")
+    return bool(gateway_token) and hmac.compare_digest(
+        presented,
+        f"Bearer {gateway_token}".encode(),
+    )
 
 
 # Routes that may also authenticate via a ``?token=`` query param, for download
@@ -616,7 +627,8 @@ def _require_token(request: Request) -> None:
     * **Loopback / ``--insecure`` mode** (``auth_required`` False): the
       ephemeral ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed
       back via ``X-Hermes-Session-Token`` (or the legacy ``Bearer`` header).
-      Validate it here.
+      Stable service callers may instead present ``HERMES_GATEWAY_TOKEN`` as a
+      bearer. Validate those credentials here.
     * **Gated / OAuth mode** (``auth_required`` True): ``_SESSION_TOKEN`` is
       NOT injected (the SPA authenticates with a session cookie), so there is
       no token to check. The ``gated_auth_middleware`` has already verified the
@@ -829,7 +841,12 @@ async def _dashboard_auth_gate(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
+    """Require dashboard auth on every non-public HTTP API route.
+
+    This includes plugin backends under ``/api/plugins/``: they may expose
+    administrative mutations, so loopback callers must present the dashboard
+    session credential or the stable ``HERMES_GATEWAY_TOKEN`` bearer.
+    """
     # A request already authenticated by the token-auth seam (a service caller
     # presenting a bearer token on a registered token route) carries
     # ``token_authenticated`` — never bounce it through the cookie/session gate.

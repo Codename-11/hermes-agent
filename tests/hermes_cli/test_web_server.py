@@ -4030,6 +4030,28 @@ class TestPluginAPIAuth:
         resp = self.auth_client.get("/api/plugins/example/hello")
         assert resp.status_code == 200
 
+    def test_plugin_route_allows_gateway_bearer(self, monkeypatch):
+        """External plugin administrators may use the stable gateway bearer."""
+        monkeypatch.setenv("HERMES_GATEWAY_TOKEN", "plugin-admin-token")
+
+        resp = self.client.get(
+            "/api/plugins/example/hello",
+            headers={"Authorization": "Bearer plugin-admin-token"},
+        )
+
+        assert resp.status_code == 200
+
+    def test_plugin_route_rejects_invalid_gateway_bearer(self, monkeypatch):
+        """A configured gateway token must not weaken plugin route auth."""
+        monkeypatch.setenv("HERMES_GATEWAY_TOKEN", "plugin-admin-token")
+
+        resp = self.client.get(
+            "/api/plugins/example/hello",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+
+        assert resp.status_code == 401
+
 
     def test_plugin_patch_requires_auth(self):
         """Plugin PATCH routes should return 401 without a valid session token.
