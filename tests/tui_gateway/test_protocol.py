@@ -989,6 +989,57 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_rejects_gateway_only_plugin_commands(server):
+    """Gateway-only plugin commands must fall through to command.dispatch."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    entry = {
+        "handler": lambda *_args, **_kwargs: {"title": "Card"},
+        "gateway_only": True,
+        "returns_card": True,
+    }
+
+    with patch("hermes_cli.plugins.get_plugin_command_entry", return_value=entry):
+        resp = server.handle_request({
+            "id": "plugin-redirect",
+            "method": "slash.exec",
+            "params": {"command": "route status", "session_id": sid},
+        })
+
+    assert resp["error"]["code"] == 4018
+    assert "gateway-only plugin command" in resp["error"]["message"]
+
+
+def test_command_dispatch_renders_plugin_cards_and_passes_session_id(server):
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    seen = {}
+
+    def handler(raw_args, session_id=None):
+        seen.update(raw_args=raw_args, session_id=session_id)
+        return {
+            "title": "🔀 Model Routing Status",
+            "fields": [
+                {"name": "Router", "value": "Enabled ✓", "inline": True}
+            ],
+            "footer": "/route status",
+        }
+
+    entry = {"handler": handler, "returns_card": True}
+    with patch("hermes_cli.plugins.get_plugin_command_entry", return_value=entry):
+        resp = server.handle_request({
+            "id": "plugin-card",
+            "method": "command.dispatch",
+            "params": {"name": "route", "arg": "status", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"]["type"] == "plugin"
+    assert resp["result"]["output"].startswith("**🔀 Model Routing Status**")
+    assert "**Router:** Enabled ✓" in resp["result"]["output"]
+    assert seen == {"raw_args": "status", "session_id": sid}
+
+
 def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     """slash.exec must resolve get_skill_commands() against the session's own
     profile_home rather than the gateway process's ambient HERMES_HOME
