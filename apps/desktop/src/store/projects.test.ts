@@ -169,18 +169,16 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
-    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', {
-      active_session_id: null,
-      preview_limit: 5,
-      profile: 'coder'
-    })
-    expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
+    expect(hermesApi).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/api/profiles/projects/tree?preview_limit=5'
+    }))
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.project_sessions', {
       profile: 'coder',
       project_id: 'p_123'
     })
   })
 
-  it('reads projects from the browsed profile without following the focused chat profile', async () => {
+  it('reads the project overview from the selected gateway aggregate without following the focused chat profile', async () => {
     const lucyRequest = vi.fn()
     const victorRequest = vi.fn(async () => ({
       active_id: 'p_victor',
@@ -192,19 +190,19 @@ describe('projects RPC profile forwarding', () => {
 
     $connection.set({ connectionId: 'remote', mode: 'remote', profile: 'lucy' })
     activeGateway.mockReturnValue(lucyGateway as never)
-    gatewayForAgent.mockImplementationOnce((_connectionId, profile) =>
-      profile === 'victor' ? (victorGateway as never) : (lucyGateway as never)
-    )
+    hermesApi.mockResolvedValueOnce({
+      active_id: null,
+      projects: [{ id: 'p_victor', label: 'Victor project', path: '/victor', repos: [], sessionCount: 1 }],
+      scoped_session_ids: ['victor-session']
+    })
     $browsedProfile.set('victor')
 
     await refreshProjectTree()
 
-    expect(gatewayForAgent).toHaveBeenCalledWith('remote', 'victor')
-    expect(victorRequest).toHaveBeenCalledWith('projects.tree', {
-      active_session_id: null,
-      preview_limit: 5,
-      profile: 'victor'
-    })
+    expect(hermesApi).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/api/profiles/projects/tree?preview_limit=5'
+    }))
+    expect(victorRequest).not.toHaveBeenCalled()
     expect(lucyRequest).not.toHaveBeenCalled()
     expect($projectTree.get().map(project => project.label)).toEqual(['Victor project'])
     expect($projectTreeLoading.get()).toBe(false)
@@ -835,40 +833,26 @@ describe('project tree profile isolation', () => {
   })
 
   it('does not publish a late response from the previous gateway', async () => {
-    let resolveA: ((value: unknown) => void) | undefined
-
-    const responseA = new Promise(resolve => {
-      resolveA = resolve
+    const { promise: responseA, resolve: resolveA } = deferred<unknown>()
+    hermesApi.mockImplementationOnce(() => responseA)
+    hermesApi.mockResolvedValueOnce({
+      active_id: null,
+      projects: [{ id: 'gateway-b', label: 'Gateway B', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
     })
-
-    const gatewayA = { connectionState: 'open', request: vi.fn(() => responseA) }
-
-    const gatewayB = {
-      connectionState: 'open',
-      request: vi.fn().mockResolvedValue({
-        active_id: null,
-        projects: [{ id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }],
-        scoped_session_ids: []
-      })
-    }
-
-    let current = gatewayA
-    activeGateway.mockImplementation(() => current as never)
-    gatewayAtom.set(gatewayA as never)
+    $connection.set({ connectionId: 'gateway-a' } as never)
 
     const pendingA = refreshProjectTree()
-    current = gatewayB
-    $browsedProfile.set('profile-b')
-    gatewayAtom.set(gatewayB as never)
+    $connection.set({ connectionId: 'gateway-b' } as never)
     await refreshProjectTree()
-    resolveA?.({
+    resolveA({
       active_id: null,
-      projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
+      projects: [{ id: 'gateway-a', label: 'Gateway A', path: null, repos: [], sessionCount: 0 }],
       scoped_session_ids: []
     })
     await pendingA
 
-    expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    expect($projectTree.get().map(project => project.id)).toEqual(['gateway-b'])
   })
 
   it('does not publish a late projects.list response from the previous profile', async () => {
@@ -899,34 +883,26 @@ describe('project tree profile isolation', () => {
     expect($projects.get().map(project => project.id)).toEqual(['profile-b'])
   })
 
-  it('does not publish a late projects.tree response from the previous profile', async () => {
+  it('keeps the newest gateway aggregate when profile browsing changes mid-refresh', async () => {
     const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
-
-    const request = vi.fn((_method: string, params: Record<string, unknown>) =>
-      params.profile === 'default'
-        ? defaultResponse
-        : Promise.resolve({
-            active_id: null,
-            projects: [{ id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }],
-            scoped_session_ids: []
-          })
-    )
-
-    const gateway = { connectionState: 'open', request }
-    activeGateway.mockReturnValue(gateway as never)
-    gatewayAtom.set(gateway as never)
+    hermesApi.mockImplementationOnce(() => defaultResponse)
+    hermesApi.mockResolvedValueOnce({
+      active_id: null,
+      projects: [{ id: 'newest', label: 'Newest', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
+    })
 
     const pendingDefault = refreshProjectTree()
     $browsedProfile.set('profile-b')
     await refreshProjectTree()
     resolveDefault({
       active_id: null,
-      projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
+      projects: [{ id: 'stale', label: 'Stale', path: null, repos: [], sessionCount: 0 }],
       scoped_session_ids: []
     })
     await pendingDefault
 
-    expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    expect($projectTree.get().map(project => project.id)).toEqual(['newest'])
   })
 
   it('drops a late hydrated-project response from the previous profile', async () => {
@@ -958,15 +934,7 @@ describe('project tree profile isolation', () => {
 
 describe('tombstone pruning', () => {
   const openGatewayReturning = (scopedIds: string[]) => {
-    const gateway = {
-      connectionState: 'open',
-      request: vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: scopedIds })
-    }
-
-    activeGateway.mockImplementation(() => gateway as never)
-    gatewayAtom.set(gateway as never)
-
-    return gateway
+    hermesApi.mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: scopedIds })
   }
 
   beforeEach(() => {
