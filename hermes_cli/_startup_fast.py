@@ -249,6 +249,16 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     except Exception:
         pass
 
+    # Fork-owned deploy branches have two distinct pending ranges: the
+    # published deploy ref and upstream/main. Keep the fast path canonical by
+    # delegating the optional digest rather than duplicating git logic here.
+    try:
+        from hermes_cli.axiom_update import print_version_preview
+
+        print_version_preview()
+    except Exception:
+        pass
+
 
 def try_fast_version(argv: list[str] | None = None) -> bool:
     """Handle ``hermes --version`` before the heavy import wall.
