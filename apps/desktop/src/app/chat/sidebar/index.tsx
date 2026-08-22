@@ -1142,8 +1142,10 @@ export function ChatSidebar({
     }
   }, [projectScope, projectsActive, enteredProject])
 
-  // The project overview (drill-in list) vs. the entered project's content.
-  const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
+  // Project grouping is a presentation choice, not a statement that the latest
+  // backend tree is non-empty. Preserve overview mode through loading/empty/error
+  // states so flat sessions stay under the separate Recent Sessions heading.
+  const projectOverview = worktreeGroupingActive && !inProject ? (agentProjectTree ?? []) : undefined
 
   const onEnterProject = useCallback(
     (id: string) => {
