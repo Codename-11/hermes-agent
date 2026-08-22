@@ -8,6 +8,7 @@ import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
+import { resetProjectsForGatewaySwitch } from '@/store/projects'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -58,6 +59,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // has never seen them, so drop the "already pushed" bookkeeping and let the
   // next reconcile re-assert the whole set against the new backend.
   resetSessionPinMirror()
+  resetProjectsForGatewaySwitch()
   setSessions([])
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})

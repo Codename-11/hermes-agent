@@ -16,6 +16,14 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
+import {
+  $activeProjectId,
+  $projects,
+  $projectsRpcAvailable,
+  $projectScope,
+  $projectTree,
+  ALL_PROJECTS
+} from '@/store/projects'
 
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
 
@@ -45,6 +53,11 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessionsLoading(false)
     setFreshDraftReady(false)
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
+    $projects.set([{ id: 'remote-project', name: 'Remote project' } as never])
+    $projectTree.set([{ id: 'remote-project', label: 'Remote project', repos: [], sessionCount: 1 } as never])
+    $activeProjectId.set('remote-project')
+    $projectsRpcAvailable.set(true)
+    $projectScope.set('remote-project')
   })
 
   afterEach(() => {
@@ -68,6 +81,11 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+    expect($projects.get()).toEqual([])
+    expect($projectTree.get()).toEqual([])
+    expect($activeProjectId.get()).toBeNull()
+    expect($projectsRpcAvailable.get()).toBeNull()
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
   it('strands in-flight profile-list fetches so the old backend cannot repaint the rail (#85731)', () => {

@@ -619,6 +619,25 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 // membership match exactly.
 let projectSessionsRefreshGeneration = 0
 
+/** Clear every gateway-owned project projection during a soft source switch. */
+export function resetProjectsForGatewaySwitch(): void {
+  // Strand responses already in flight from the previous gateway before
+  // clearing its paint state. A late remote tree must never repaint This device.
+  projectsRefreshGeneration += 1
+  projectTreeRefreshGeneration += 1
+  projectSessionsRefreshGeneration += 1
+
+  $projects.set([])
+  $projectTree.set([])
+  $activeProjectId.set(null)
+  $projectsRpcAvailable.set(null)
+  $projectTreeLoading.set(false)
+  $reposScanning.set(false)
+  $removedSessionIds.set(new Set())
+  $sessionMutationsInFlight.set(new Set())
+  $projectScope.set(ALL_PROJECTS)
+}
+
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
   const generation = ++projectSessionsRefreshGeneration
 
