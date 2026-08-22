@@ -744,6 +744,25 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+def _disabled_toolset_block_message(
+    function_name: str,
+    disabled_toolsets: Optional[List[str]],
+) -> Optional[str]:
+    """Return a policy block message when this run disabled the toolset."""
+    if not disabled_toolsets:
+        return None
+    disabled = {str(ts).strip() for ts in disabled_toolsets if str(ts).strip()}
+    if not disabled:
+        return None
+    toolset = registry.get_toolset_for_tool(function_name)
+    if "*" in disabled or (toolset and toolset in disabled):
+        return (
+            f"{function_name} is not available in this run because the "
+            f"{toolset or 'unknown'} toolset is disabled by the runtime policy."
+        )
+    return None
+
+
 # =========================================================================
 # Tool error sanitization
 # =========================================================================
@@ -1235,6 +1254,10 @@ def handle_function_call(
     if not isinstance(function_args, dict):
         function_args = {}
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
+
+    policy_block = _disabled_toolset_block_message(function_name, disabled_toolsets)
+    if policy_block is not None:
+        return json.dumps({"error": policy_block}, ensure_ascii=False)
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
