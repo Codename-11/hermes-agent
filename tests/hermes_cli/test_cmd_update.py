@@ -50,9 +50,10 @@ def mock_args():
 # ``shutil.which`` so the existing test setup keeps working without
 # per-test changes.
 @pytest.fixture(autouse=True)
-def _patch_managed_uv(request):
-    """Make managed_uv helpers follow shutil.which mocking in tests."""
+def _patch_managed_uv(request, monkeypatch):
+    """Isolate update tests from managed runtimes and live Windows services."""
     import shutil
+    from hermes_cli import main as hm
 
     # resolve_uv delegates to shutil.which("uv") so that test patches
     # on shutil.which flow through naturally.
@@ -67,8 +68,29 @@ def _patch_managed_uv(request):
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
-        yield
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch.object(hm, "_pause_windows_gateways_for_update", return_value=None), \
+         patch.object(hm, "_resume_windows_gateways_after_update"), \
+         patch.object(hm, "_detect_concurrent_hermes_instances", return_value=[]), \
+         patch.object(hm, "_detect_venv_python_processes", return_value=[]), \
+         patch.object(hm, "_quarantine_running_hermes_exe", return_value=[]), \
+         patch.object(hm, "_refresh_windows_gateway_launchers"), \
+         patch.object(hm, "_cold_start_windows_gateway_after_update"), \
+         patch.object(hm, "_write_update_incomplete_marker"), \
+         patch.object(hm, "_clear_update_incomplete_marker"), \
+         patch.object(hm, "_write_lazy_refresh_incomplete_marker"), \
+         patch.object(hm, "_clear_lazy_refresh_incomplete_marker"):
+        if getattr(request.node, "cls", None) is TestUpdateNodeDependencies:
+            yield
+        else:
+            monkeypatch.setattr(
+                hm,
+                "_run_npm_install_deterministic",
+                lambda *args, **kwargs: subprocess.CompletedProcess(
+                    [], 0, stdout="", stderr=""
+                ),
+            )
+            yield
 
 
 @pytest.fixture(autouse=True)
@@ -391,7 +413,10 @@ class TestCmdUpdateBranchFallback:
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": ["new.option"]},
-        ) as migrate_config, patch("hermes_cli.main.sys") as mock_sys:
+        ) as migrate_config, patch(
+            "hermes_cli.main._run_npm_install_deterministic",
+            return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        ), patch("hermes_cli.main.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = False
             mock_sys.stdout.isatty.return_value = False
             mock_run.side_effect = _make_run_side_effect(
@@ -434,7 +459,10 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": [], "warnings": []},
-        ) as mock_migrate:
+        ) as mock_migrate, patch(
+            "hermes_cli.main._run_npm_install_deterministic",
+            return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        ):
             mock_run.side_effect = _make_run_side_effect(
                 branch="main", verify_ok=True, commit_count="1"
             )
@@ -515,6 +543,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": [], "warnings": []},
+        ), patch(
+            "hermes_cli.main._run_npm_install_deterministic",
+            return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
         ), patch("hermes_cli.main.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True

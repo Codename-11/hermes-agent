@@ -1,0 +1,634 @@
+"""UX helpers for `hermes update` — pipeline status line + upstream brief.
+
+Two things live here so `main.cmd_update` can stay focused on git/pip logic:
+
+* ``Pipeline``      — a single-line status display that shows phases separated
+                      by ``|``, with a spinner on the active phase and a check
+                      on completed phases.  Falls back to plain prints when
+                      stdout isn't a TTY (e.g. gateway mode, log piping).
+* ``write_update_brief`` — after a successful update, walks
+                      ``git log OLD..NEW`` and emits a markdown brief the
+                      agent can read.  Saved to
+                      ``~/.hermes/logs/update-briefs/<timestamp>.md`` and
+                      mirrored to ``last-update-brief.md``.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import json as _json
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Iterable, Optional
+
+
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_FRAME_INTERVAL = 0.08  # seconds
+_UPDATE_HISTORY_LIMIT = 50
+
+
+def _write_json_atomic(path: Path, payload) -> bool:
+    """Write Hermes-owned update metadata without exposing partial JSON."""
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            _json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+        return True
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _append_update_history(path: Path, entry: dict) -> bool:
+    """Prepend one result to the bounded Desktop/CLI update history."""
+    existing = []
+    try:
+        loaded = _json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, list):
+            existing = [item for item in loaded if isinstance(item, dict)]
+    except (OSError, ValueError, TypeError):
+        pass
+
+    entry_id = str(entry.get("id") or "")
+    history = [entry]
+    history.extend(item for item in existing if str(item.get("id") or "") != entry_id)
+    return _write_json_atomic(path, history[:_UPDATE_HISTORY_LIMIT])
+
+
+def _stdout_is_tty() -> bool:
+    """Return True when the real terminal underneath stdout is a TTY.
+
+    ``_UpdateOutputStream`` wraps stdout during ``hermes update`` to mirror
+    writes to a log; ask the wrapped original instead of the wrapper.
+    """
+    stream = getattr(sys.stdout, "_original", sys.stdout)
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+class StatusLine:
+    """Scrollback-safe loader for slow update substeps.
+
+    A real in-place spinner looks nice until the terminal, SSH client, tmux, or
+    log wrapper decides to treat carriage-return redraws as scrollback content
+    or keeps yanking the viewport back to the bottom.  For ``hermes update`` the
+    safe UX is a persistent Unicode phase line: visible while work is happening,
+    preserved after the command exits, and never able to break shell scrolling.
+    """
+
+    def __init__(self, *, interval: float = _FRAME_INTERVAL):
+        self._tty = self._stream_is_tty(sys.stdout)
+        self._started = False
+        self._last_text = ""
+
+    @property
+    def is_interactive(self) -> bool:
+        return self._tty
+
+    def start(self, text: str) -> None:
+        self._started = True
+        self._last_text = str(text)
+        print(f"⏳ {self._last_text}", flush=True)
+
+    def update(self, text: str) -> None:
+        self._last_text = str(text)
+        print(f"⏳ {self._last_text}", flush=True)
+
+    def success(self, *, note: str = "") -> None:
+        if note:
+            print(f"✓ {note}", flush=True)
+
+    def fail(self, *, note: str = "") -> None:
+        if note:
+            print(f"✗ {note}", flush=True)
+
+    def clear(self) -> None:
+        return None
+
+    @staticmethod
+    def _stream_is_tty(stream) -> bool:
+        try:
+            return bool(stream.isatty())
+        except Exception:
+            return False
+
+
+class Pipeline:
+    """Single-line pipeline status — ``⠋ fetch | ✓ sync | · merge``.
+
+    Lifecycle:
+        pipe = Pipeline(["fetch", "sync", "merge"])
+        pipe.start("fetch")
+        ... do work ...
+        pipe.advance("sync")
+        ... do work ...
+        pipe.finish()       # mark remaining phases done
+        # or
+        pipe.fail("sync")   # mark current phase failed; subsequent calls no-op
+
+    On a non-TTY the class degrades to plain line prints so logs stay
+    readable.  Animation uses a daemon thread; ``finish()`` / ``fail()`` /
+    context-manager exit stops it cleanly.
+    """
+
+    PENDING = "·"
+    ACTIVE = "spin"   # rendered as current spinner frame
+    DONE = "✓"
+    FAIL = "✗"
+
+    def __init__(self, phases: Iterable[str], *, label: str = ""):
+        self._phases = [str(p) for p in phases]
+        self._label = label
+        self._status: dict[str, str] = {p: self.PENDING for p in self._phases}
+        self._active: Optional[str] = None
+        self._frame = 0
+        self._tty = _stdout_is_tty()
+        self._stopped = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._last_line_len = 0
+
+    # --- public API --------------------------------------------------------
+
+    def start(self, phase: str) -> None:
+        """Begin showing the pipeline, with *phase* as the active one."""
+        if phase not in self._status:
+            return
+        self._active = phase
+        self._status[phase] = self.ACTIVE
+        if self._tty:
+            self._thread = threading.Thread(target=self._animate, daemon=True)
+            self._thread.start()
+        else:
+            self._print_plain(f"→ {phase}")
+
+    def advance(self, next_phase: str) -> None:
+        """Mark the active phase done and activate *next_phase*."""
+        with self._lock:
+            if self._active and self._status.get(self._active) == self.ACTIVE:
+                self._status[self._active] = self.DONE
+            if next_phase in self._status:
+                self._status[next_phase] = self.ACTIVE
+                self._active = next_phase
+        if not self._tty:
+            self._print_plain(f"  ✓ {self._prev_phase_name()}")
+            self._print_plain(f"→ {next_phase}")
+
+    def fail(self, phase: Optional[str] = None, *, note: str = "") -> None:
+        """Mark *phase* (defaults to active) failed and stop animation."""
+        target = phase or self._active
+        with self._lock:
+            if target and target in self._status:
+                self._status[target] = self.FAIL
+        self._stop(final_glyph=self.FAIL, final_note=note)
+
+    def finish(self, *, note: str = "") -> None:
+        """Mark all remaining phases done, stop animation, leave a final line."""
+        with self._lock:
+            if self._active and self._status.get(self._active) == self.ACTIVE:
+                self._status[self._active] = self.DONE
+            for p in self._phases:
+                if self._status[p] == self.PENDING:
+                    self._status[p] = self.DONE
+        self._stop(final_glyph=self.DONE, final_note=note)
+
+    def __enter__(self) -> "Pipeline":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if exc_type is not None:
+            self.fail(note=str(exc) if exc else "")
+        else:
+            if self._active and self._status.get(self._active) == self.ACTIVE:
+                self.finish()
+            else:
+                self._stop(final_glyph=self.DONE)
+
+    # --- internals ---------------------------------------------------------
+
+    def _prev_phase_name(self) -> str:
+        last = ""
+        for p in self._phases:
+            if self._status[p] == self.DONE:
+                last = p
+        return last
+
+    def _render(self) -> str:
+        parts = []
+        for p in self._phases:
+            s = self._status[p]
+            if s == self.ACTIVE:
+                glyph = _SPINNER_FRAMES[self._frame % len(_SPINNER_FRAMES)]
+            elif s == self.DONE:
+                glyph = self.DONE
+            elif s == self.FAIL:
+                glyph = self.FAIL
+            else:
+                glyph = self.PENDING
+            parts.append(f"{glyph} {p}")
+        line = " | ".join(parts)
+        return f"{self._label} {line}" if self._label else line
+
+    def _animate(self) -> None:
+        while not self._stopped.is_set():
+            with self._lock:
+                line = self._render()
+            self._write_line(line)
+            self._frame += 1
+            if self._stopped.wait(_FRAME_INTERVAL):
+                break
+
+    def _write_line(self, line: str) -> None:
+        pad = max(0, self._last_line_len - len(line))
+        sys.stdout.write("\r" + line + (" " * pad))
+        sys.stdout.flush()
+        self._last_line_len = len(line)
+
+    def _stop(self, *, final_glyph: str = "", final_note: str = "") -> None:
+        if self._stopped.is_set():
+            return
+        self._stopped.set()
+        if self._thread is not None:
+            self._thread.join(timeout=_FRAME_INTERVAL * 4)
+        if self._tty:
+            with self._lock:
+                line = self._render()
+            self._write_line(line)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self._last_line_len = 0
+        else:
+            # Emit a plain final line so the log captures completion.
+            summary = " | ".join(
+                f"{self._status[p]} {p}".replace(self.ACTIVE, "·")
+                for p in self._phases
+            )
+            self._print_plain(f"  {summary}")
+        if final_note:
+            self._print_plain(f"  {final_note}")
+
+    @staticmethod
+    def _print_plain(text: str) -> None:
+        print(text, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Upstream-brief generator
+# ---------------------------------------------------------------------------
+
+_CATEGORY_ORDER = [
+    ("feat",     "Features"),
+    ("fix",      "Fixes"),
+    ("perf",     "Performance"),
+    ("refactor", "Refactors"),
+    ("docs",     "Docs"),
+    ("test",     "Tests"),
+    ("chore",    "Chores"),
+    ("build",    "Build"),
+    ("ci",       "CI"),
+    ("style",    "Style"),
+]
+_PREFIX_MAP = {k: v for k, v in _CATEGORY_ORDER}
+
+
+def _categorize(subject: str) -> str:
+    """Return a category key for a conventional-commit-style subject."""
+    head = subject.split(":", 1)[0].strip().lower()
+    # Strip scope like "feat(skills)" → "feat"
+    head = head.split("(", 1)[0].strip()
+    return head if head in _PREFIX_MAP else "other"
+
+
+def _briefs_dir() -> Path:
+    from hermes_cli.config import get_hermes_home  # type: ignore
+
+    d = get_hermes_home() / "logs" / "update-briefs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+class UpdateBrief:
+    """Bundle of brief artifacts returned by :func:`write_update_brief`.
+
+    Attributes:
+        path:    Archived markdown file (``~/.hermes/logs/update-briefs/<ts>.md``).
+        latest:  Mirror path (``~/.hermes/logs/last-update-brief.md``).
+        body:    Full markdown body (string).
+        digest:  Short human-readable block for inline printing.
+        meta:    ``{"commits": N, "stat": "...", "summary": "...",
+                    "branch": "axiom", "repo": "/..."}`` — used to write
+                 the gateway prompt-inject file.
+    """
+
+    __slots__ = ("path", "latest", "body", "digest", "meta")
+
+    def __init__(self, path, latest, body, digest, meta):
+        self.path = path
+        self.latest = latest
+        self.body = body
+        self.digest = digest
+        self.meta = meta
+
+
+def _collect_commits(
+    repo: Path, old_sha: str, new_sha: str, git_cmd: Optional[list[str]] = None,
+):
+    """Run ``git log`` / ``git diff`` between *old_sha* and *new_sha* and
+    return ``(commits, stat, files_changed)``.
+
+    ``commits`` is a list of ``(sha, subject, author, category)`` tuples.
+    ``stat`` is the ``--shortstat`` string (may be empty).
+    ``files_changed`` is the list of file paths from ``--name-only``.
+    Returns ``(None, "", [])`` if there's nothing new between the refs.
+    """
+    if not old_sha or not new_sha or old_sha == new_sha:
+        return None, "", []
+
+    git = list(git_cmd) if git_cmd else ["git"]
+
+    def _run(args: list[str]) -> str:
+        try:
+            r = subprocess.run(
+                git + args, cwd=repo, capture_output=True, text=True, check=True,
+            )
+            return r.stdout
+        except Exception:
+            return ""
+
+    log = _run([
+        "log", "--no-merges", "--pretty=format:%H\t%s\t%an",
+        f"{old_sha}..{new_sha}",
+    ])
+    if not log.strip():
+        return None, "", []
+
+    commits = []
+    for line in log.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 2:
+            continue
+        sha, subject = parts[0], parts[1]
+        author = parts[2] if len(parts) > 2 else ""
+        commits.append((sha, subject, author, _categorize(subject)))
+
+    stat = _run(["diff", "--shortstat", f"{old_sha}..{new_sha}"]).strip()
+    files_changed = _run([
+        "diff", "--name-only", f"{old_sha}..{new_sha}",
+    ]).splitlines()
+    return commits, stat, files_changed
+
+
+def _bucket_commits(commits):
+    """Group commits by category, preserving per-category log order."""
+    buckets: dict[str, list[tuple[str, str, str]]] = {}
+    for sha, subject, author, cat in commits:
+        buckets.setdefault(cat, []).append((sha, subject, author))
+    return buckets
+
+
+def _summary_parts(buckets):
+    parts = []
+    for key, heading in _CATEGORY_ORDER:
+        if key in buckets:
+            parts.append(f"{len(buckets[key])} {heading.lower()}")
+    if "other" in buckets:
+        parts.append(f"{len(buckets['other'])} other")
+    return parts
+
+
+def _render_digest(
+    commits, buckets, stat: str, *, title: str, cap: int = 10,
+) -> str:
+    """Shared digest renderer — summary line + top *cap* commits per category.
+
+    Used by both ``write_update_brief`` (for completed updates) and
+    ``compute_pending_digest`` (for ``hermes version`` previews), so the
+    two views look identical and are maintained in one place.
+    """
+    summary_text = ", ".join(_summary_parts(buckets)) or "no categorized commits"
+    lines: list[str] = []
+    lines.append("")
+    lines.append(f"━━ {title} ━━")
+    lines.append(f"  {len(commits)} commits" + (f" · {stat}" if stat else ""))
+    lines.append(f"  {summary_text}")
+    lines.append("")
+    for key, heading in _CATEGORY_ORDER + [("other", "Other")]:
+        items = buckets.get(key)
+        if not items:
+            continue
+        lines.append(f"  {heading} ({len(items)}):")
+        for sha, subject, _author in items[:cap]:
+            lines.append(f"    • {subject}")
+        if len(items) > cap:
+            lines.append(f"    …and {len(items) - cap} more")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def compute_pending_digest(
+    repo: Path,
+    base: str,
+    target: str,
+    *,
+    git_cmd: Optional[list[str]] = None,
+    title: str = "Pending upstream changes",
+    cap: int = 10,
+) -> Optional[str]:
+    """Return a digest of commits in ``base..target`` without writing any
+    files.  Used by ``hermes version`` to preview what an update would
+    pull in so the operator can decide whether to run it.
+
+    Returns ``None`` when the range is empty or git calls fail.
+    """
+    commits, stat, _ = _collect_commits(repo, base, target, git_cmd=git_cmd)
+    if not commits:
+        return None
+    buckets = _bucket_commits(commits)
+    return _render_digest(commits, buckets, stat, title=title, cap=cap)
+
+
+def write_update_brief(
+    repo: Path,
+    old_sha: str,
+    new_sha: str,
+    *,
+    git_cmd: Optional[list[str]] = None,
+    branch: str = "",
+) -> Optional["UpdateBrief"]:
+    """Write a markdown brief of commits between *old_sha* and *new_sha*.
+
+    Returns an :class:`UpdateBrief` bundle (path + body + digest + meta) or
+    ``None`` if there's nothing new.  The archived file lives at
+    ``~/.hermes/logs/update-briefs/<ts>.md``; the latest is always
+    mirrored to ``~/.hermes/logs/last-update-brief.md`` so the agent can
+    find it without guessing a timestamp.
+    """
+    commits, stat, files_changed = _collect_commits(
+        repo, old_sha, new_sha, git_cmd=git_cmd,
+    )
+    if not commits:
+        return None
+    buckets = _bucket_commits(commits)
+
+    now = _dt.datetime.now()
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+
+    summary_parts = _summary_parts(buckets)
+
+    lines: list[str] = []
+    lines.append(f"# hermes update brief — {now.isoformat(timespec='seconds')}")
+    lines.append("")
+    lines.append(f"- **Repo:** `{repo}`")
+    if branch:
+        lines.append(f"- **Branch:** `{branch}`")
+    lines.append(f"- **Range:** `{old_sha[:10]}..{new_sha[:10]}`")
+    lines.append(f"- **Commits:** {len(commits)}")
+    if stat:
+        lines.append(f"- **Diff:** {stat}")
+    lines.append("")
+    lines.append("## Summary")
+    lines.append(", ".join(summary_parts) if summary_parts else "no categorized commits")
+    lines.append("")
+
+    for key, heading in _CATEGORY_ORDER + [("other", "Other")]:
+        items = buckets.get(key)
+        if not items:
+            continue
+        lines.append(f"## {heading} ({len(items)})")
+        lines.append("")
+        for sha, subject, author in items:
+            lines.append(f"- `{sha[:10]}` {subject}")
+        lines.append("")
+
+    if files_changed:
+        lines.append(f"## Files changed ({len(files_changed)})")
+        lines.append("")
+        for f in files_changed[:200]:
+            lines.append(f"- `{f}`")
+        if len(files_changed) > 200:
+            lines.append(f"- …and {len(files_changed) - 200} more")
+        lines.append("")
+
+    body = "\n".join(lines) + "\n"
+
+    # Compact digest for inline printing — shared with the version-preview path.
+    digest = _render_digest(
+        commits, buckets, stat,
+        title="Upstream changes since last update", cap=10,
+    )
+    summary_text = ", ".join(summary_parts) if summary_parts else "no categorized commits"
+
+    briefs = _briefs_dir()
+    path = briefs / f"brief-{stamp}.md"
+    try:
+        path.write_text(body, encoding="utf-8")
+    except OSError:
+        return None
+
+    latest = briefs.parent / "last-update-brief.md"
+    try:
+        latest.write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+
+    meta = {
+        "commits": len(commits),
+        "stat": stat,
+        "summary": summary_text,
+        "branch": branch,
+        "repo": str(repo),
+        "range": f"{old_sha[:10]}..{new_sha[:10]}",
+    }
+
+    category_names = {
+        "feat": "features",
+        "fix": "fixes",
+        "perf": "performance",
+        "refactor": "refactors",
+        "docs": "docs",
+    }
+    history_entry = {
+        "id": f"{stamp}-{new_sha[:10]}",
+        "at": int(now.timestamp() * 1000),
+        "phase": "apply",
+        "result": "completed",
+        "branch": branch,
+        "baseSha": old_sha,
+        "targetSha": new_sha,
+        "message": summary_text,
+        "shortstat": stat,
+        "filesChanged": len(files_changed),
+        "changedFiles": files_changed,
+        "briefPath": str(path),
+        "commits": [
+            {
+                "sha": sha,
+                "subject": subject,
+                "author": author,
+                "category": category_names.get(category, "other"),
+            }
+            for sha, subject, author, category in commits
+        ],
+    }
+    history_entry_path = path.with_suffix(".json")
+    if _write_json_atomic(history_entry_path, history_entry):
+        meta["history_entry_path"] = str(history_entry_path)
+        history_path = briefs.parent / "update-history.json"
+        if _append_update_history(history_path, history_entry):
+            meta["history_path"] = str(history_path)
+
+    return UpdateBrief(path=path, latest=latest, body=body, digest=digest, meta=meta)
+
+
+def write_brief_prompt_inject(brief: "UpdateBrief") -> Optional[Path]:
+    """Write ``.update_brief_prompt.json`` so the gateway watcher can inject
+    a summarize-this-update prompt into the originating session after
+    ``hermes update --gateway`` completes.
+
+    The gateway's update watcher reads ``.update_pending.json`` to know
+    which platform/chat triggered the update.  It can pair that with the
+    prompt written here to post a natural-language summary back in the
+    same channel without extra wiring — the adapter already owns the
+    LLM connection for that session.
+
+    Returns the path written, or ``None`` on failure.
+    """
+    from hermes_cli.config import get_hermes_home  # type: ignore
+    import json as _json
+
+    home = get_hermes_home()
+    path = home / ".update_brief_prompt.json"
+    prompt_text = (
+        "I just finished `hermes update`. "
+        f"{brief.meta.get('commits', 0)} new commits on "
+        f"`{brief.meta.get('branch', 'main')}` "
+        f"({brief.meta.get('stat', '')}). "
+        "The full brief is at "
+        f"`{brief.latest}` (archived: `{brief.path}`). "
+        "Read it and give me a short natural-language summary of the "
+        "notable features, fixes, and anything that might affect my "
+        "current workflows. Highlight breaking changes if any."
+    )
+    payload = {
+        "prompt": prompt_text,
+        "brief_path": str(brief.path),
+        "latest_path": str(brief.latest),
+        "meta": brief.meta,
+    }
+    try:
+        path.write_text(_json.dumps(payload), encoding="utf-8")
+        return path
+    except OSError:
+        return None
