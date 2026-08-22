@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,8 @@ import pytest
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.openai_codex import OpenAICodexAdapter
+from hermes_cli.proxy.adapters.routed import RoutedOAuthAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 
@@ -21,6 +24,12 @@ from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 # Adapter registry
 # ---------------------------------------------------------------------------
 
+
+def test_registry_lists_routed_oauth_adapters():
+    assert isinstance(get_adapter("auto"), RoutedOAuthAdapter)
+    assert isinstance(get_adapter("routed"), RoutedOAuthAdapter)
+    assert isinstance(get_adapter("openai-codex"), OpenAICodexAdapter)
+    assert "xai-oauth" in ADAPTERS
 
 
 
@@ -279,6 +288,94 @@ class FakeAdapter(UpstreamAdapter):
         )
 
 
+class FakeCodexAdapter(OpenAICodexAdapter):
+    def __init__(self, base_url: str, bearer: str = "codex-bearer"):
+        self._base_url = base_url
+        self._bearer = bearer
+
+    def is_authenticated(self):
+        return True
+
+    def get_credential(self):
+        return UpstreamCredential(bearer=self._bearer, base_url=self._base_url)
+
+
+def _make_routed_adapter() -> RoutedOAuthAdapter:
+    adapter = RoutedOAuthAdapter()
+    adapter.xai = FakeAdapter(
+        "https://xai.example/v1", bearer="xai-token", retry_bearer="xai-rotated"
+    )
+    adapter.codex = FakeAdapter("https://codex.example/v1", bearer="codex-token")
+    adapter.nous = FakeAdapter(
+        "https://nous.example/v1", bearer="nous-token", retry_bearer="nous-refreshed"
+    )
+    adapter.adapters = [adapter.xai, adapter.codex, adapter.nous]
+    return adapter
+
+
+def test_routed_adapter_routes_by_model_and_delegates_retry():
+    adapter = _make_routed_adapter()
+    grok_body = json.dumps({"model": "grok-4.3"}).encode()
+    grok = adapter.get_credential_for_request("/chat/completions", grok_body)
+    _, _, _, context = adapter.prepare_proxy_request(
+        "/chat/completions", grok_body, {"Content-Type": "application/json"}
+    )
+    rotated = adapter.get_retry_credential_for_request(
+        context=context, failed_credential=grok, status_code=401
+    )
+
+    assert grok.bearer == "xai-token"
+    assert rotated is not None and rotated.bearer == "xai-rotated"
+    assert adapter.get_credential_for_request(
+        "/chat/completions", json.dumps({"model": "gpt-5.5"}).encode()
+    ).bearer == "codex-token"
+    assert adapter.get_credential_for_request(
+        "/chat/completions", json.dumps({"model": "anthropic/claude-sonnet-4.6"}).encode()
+    ).bearer == "nous-token"
+
+
+def test_routed_adapter_inventory_is_auth_gated_and_tier_aware(monkeypatch):
+    monkeypatch.delenv("HERMES_PROXY_MODEL_ADVERTISE_MODE", raising=False)
+    adapter = _make_routed_adapter()
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.routed.provider_model_ids",
+        lambda provider: {
+            "xai-oauth": ["grok-4.3", "grok-2", "grok-imagine-video"],
+            "openai-codex": ["gpt-5.5", "gpt-5.4", "gpt-image-2"],
+            "nous": ["anthropic/claude-sonnet-4.6"],
+        }[provider],
+    )
+
+    rows = adapter.available_models
+    assert {row["id"] for row in rows} == {
+        "grok-4.3", "gpt-5.5", "gpt-5.4", "anthropic/claude-sonnet-4.6"
+    }
+    assert all(row["hermes_capabilities"] == ["chat"] for row in rows)
+
+
+def test_routed_adapter_routable_inventory_honors_fresh_health_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_PROXY_MODEL_ADVERTISE_MODE", "routable")
+    monkeypatch.setenv("HERMES_PROXY_MODEL_HEALTH_CACHE", str(tmp_path / "health.json"))
+    monkeypatch.setenv("HERMES_PROXY_MODEL_HEALTH_TTL_SECONDS", "3600")
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.routed.provider_model_ids",
+        lambda provider: {
+            "xai-oauth": ["grok-4.3"],
+            "openai-codex": ["gpt-5.5", "gpt-5.4"],
+            "nous": [],
+        }[provider],
+    )
+    (tmp_path / "health.json").write_text(json.dumps({"models": {
+        "grok-4.3": {"status": "up", "checked_at": time.time()},
+        "gpt-5.5": {"status": "up", "checked_at": 1},
+        "gpt-5.4": {"status": "healthy", "checked_at": time.time()},
+    }}))
+
+    rows = _make_routed_adapter().available_models
+    assert {row["id"] for row in rows} == {"grok-4.3", "gpt-5.4"}
+    assert all(row["hermes_health"] == "up" for row in rows)
+
+
 async def _start_runner(app: "web.Application"):
     """Spin up an aiohttp app on an ephemeral localhost port. Returns (runner, base_url)."""
     runner = web.AppRunner(app, access_log=None)
@@ -335,6 +432,102 @@ def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application"
     app = web.Application()
     app.router.add_route("*", "/v1/chat/completions", maybe_unauthorized)
     return app
+
+
+def _build_fake_codex_upstream(captured: Dict[str, Any]) -> "web.Application":
+    async def responses(request):
+        captured["requests"].append({
+            "path": request.path,
+            "auth": request.headers.get("Authorization"),
+            "body": json.loads((await request.read()).decode()),
+        })
+        response = web.StreamResponse(status=200)
+        await response.prepare(request)
+        await response.write(
+            b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+        )
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", responses)
+    return app
+
+
+def test_codex_adapter_translates_chat_completions_to_responses():
+    rel_path, body, headers, context = OpenAICodexAdapter().prepare_proxy_request(
+        "/chat/completions",
+        json.dumps({
+            "model": "gpt-5.5",
+            "messages": [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "Reply exactly: ok"},
+            ],
+            "stream": False,
+        }).encode(),
+        {"Content-Type": "application/json"},
+    )
+    payload = json.loads(body)
+    assert rel_path == "/responses"
+    assert headers["Content-Type"] == "application/json"
+    assert context["codex_chat_completion"] is True
+    assert payload["instructions"] == "Be terse."
+    assert payload["stream"] is True and payload["store"] is False
+
+
+def test_server_translates_codex_nonstream_response_and_synthesizes_models():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_codex_upstream(captured))
+        adapter = FakeCodexAdapter(f"{upstream_base}/v1", bearer="real-codex-token")
+        adapter.available_models = [{"id": "gpt-5.5", "object": "model"}]
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{proxy_base}/v1/models") as resp:
+                    assert [row["id"] for row in (await resp.json())["data"]] == ["gpt-5.5"]
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"model": "gpt-5.5", "messages": [{"role": "user", "content": "ok"}]},
+                ) as resp:
+                    result = await resp.json()
+                    assert result["choices"][0]["message"]["content"] == "ok"
+            assert captured["requests"][0]["path"] == "/v1/responses"
+            assert captured["requests"][0]["auth"] == "Bearer real-codex-token"
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_routed_retry_preserves_selected_provider():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_retrying_fake_upstream(captured))
+        adapter = RoutedOAuthAdapter()
+        adapter.xai = FakeAdapter(
+            f"{upstream_base}/v1", bearer="jwt-bearer", retry_bearer="legacy-bearer"
+        )
+        adapter.codex = FakeAdapter("https://unused.example/v1")
+        adapter.nous = FakeAdapter("https://unused.example/v1")
+        adapter.adapters = [adapter.xai, adapter.codex, adapter.nous]
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions", json={"model": "grok-4.3"}
+                ) as resp:
+                    assert resp.status == 200
+            assert [row["auth"] for row in captured["requests"]] == [
+                "Bearer jwt-bearer", "Bearer legacy-bearer"
+            ]
+            assert adapter.xai.retry_calls == 1
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
 
 
 
