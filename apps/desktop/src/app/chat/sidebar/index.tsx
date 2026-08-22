@@ -1107,8 +1107,9 @@ export function ChatSidebar({
     }
   }, [projectScope, projectsActive, enteredProject])
 
-  // The project overview (drill-in list) vs. the entered project's content.
-  const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
+  // Grouping choice owns presentation even while the tree is empty/loading;
+  // never fall through to flat sessions directly beneath the Projects heading.
+  const projectOverview = worktreeGroupingActive && !inProject ? (agentProjectTree ?? []) : undefined
 
   // Preview rows come from the backend tree (each project carries its
   // most-recent sessions), overlaid with live $sessions so a just-created
@@ -1811,6 +1812,7 @@ export function ChatSidebar({
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
+                projectOverviewRecentsLabel={projectOverview ? 'Recent Sessions' : undefined}
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}

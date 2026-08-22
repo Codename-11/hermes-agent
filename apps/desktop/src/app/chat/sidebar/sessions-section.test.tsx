@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -180,5 +180,31 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 
     const thirdRowsRef = mockVirtualListPropsHistory[2].rows
     expect(thirdRowsRef).not.toBe(secondRowsRef)
+  })
+})
+
+describe('SidebarSessionsSection hybrid project overview', () => {
+  it('keeps flat sessions under a separate Recent Sessions lane when the project tree is empty', () => {
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>No projects</div>}
+        label="Projects"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open
+        pinned={false}
+        projectOverview={[]}
+        projectOverviewRecentsLabel="Recent Sessions"
+        sessions={[makeSession('recent-1')]}
+      />
+    )
+
+    expect(screen.getByText('Recent Sessions')).toBeTruthy()
+    expect(screen.getByTestId('session-row-recent-1')).toBeTruthy()
   })
 })
