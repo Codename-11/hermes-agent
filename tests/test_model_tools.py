@@ -97,6 +97,20 @@ class TestHandleFunctionCall:
         assert "post_tool_call" not in fired
         assert "transform_tool_result" not in fired
 
+    def test_disabled_toolset_blocks_before_dispatch(self):
+        with patch("model_tools.registry.dispatch") as mock_dispatch:
+            result = json.loads(
+                handle_function_call(
+                    "terminal",
+                    {"command": "git status"},
+                    task_id="t1",
+                    disabled_toolsets=["terminal"],
+                )
+            )
+
+        assert "runtime policy" in result["error"]
+        mock_dispatch.assert_not_called()
+
     def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
         seen = {}
 
