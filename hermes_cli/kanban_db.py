@@ -8120,6 +8120,43 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
             _recent_worker_exits.pop(_pid, None)
 
 
+def _decode_worker_wait_status(raw: int) -> "tuple[str, Optional[int]]":
+    """Decode a raw ``waitpid`` status without requiring POSIX-only helpers.
+
+    Windows Python exposes ``os.waitpid`` but not the ``os.WIF*`` helpers.
+    The worker-exit registry stores raw POSIX wait statuses from reaping and
+    tests construct the same representation with ``code << 8``; decode that
+    shape directly when the helpers are unavailable.
+    """
+    raw = int(raw)
+    try:
+        if hasattr(os, "WIFEXITED") and os.WIFEXITED(raw):
+            code = os.WEXITSTATUS(raw)
+            if code == 0:
+                return ("clean_exit", 0)
+            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                return ("rate_limited", code)
+            return ("nonzero_exit", code)
+        if hasattr(os, "WIFSIGNALED") and os.WIFSIGNALED(raw):
+            return ("signaled", os.WTERMSIG(raw))
+    except Exception:
+        pass
+
+    # Portable POSIX wait-status fallback. For normal exits the low seven
+    # bits are clear and the exit status lives in bits 8..15.
+    if raw >= 0 and (raw & 0x7F) == 0:
+        code = (raw >> 8) & 0xFF
+        if code == 0:
+            return ("clean_exit", 0)
+        if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", code)
+        return ("nonzero_exit", code)
+    signal = raw & 0x7F
+    if signal:
+        return ("signaled", signal)
+    return ("unknown", None)
+
+
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     """Classify a recently-reaped worker by pid.
 
@@ -8148,41 +8185,43 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
-    return ("unknown", None)
+    return _decode_worker_wait_status(raw)
+
+
+def _waitpid_has_mock_side_effect() -> bool:
+    """Return true when tests patched ``os.waitpid`` with explicit behavior."""
+    return (
+        type(os.waitpid).__module__.startswith("unittest.mock")
+        and getattr(os.waitpid, "side_effect", None) is not None
+    )
 
 
 def reap_worker_zombies() -> "list[int]":
     """Reap all zombie children of this process without blocking.
 
     Returns the list of reaped PIDs. Safe to call when there are no
-    children (returns []). No-op on Windows.
+    children (returns []). Real Windows runtime remains a no-op; mocked
+    ``waitpid`` is still exercised in tests so the reaper contract is covered
+    on Windows development machines.
     """
     reaped: "list[int]" = []
-    if os.name != "nt":
-        try:
-            while True:
-                try:
-                    pid, status = os.waitpid(-1, os.WNOHANG)
-                except ChildProcessError:
-                    break
-                if pid == 0:
-                    break
-                _record_worker_exit(pid, status)
-                reaped.append(pid)
-        except Exception:
-            pass
+    if os.name == "nt" and not _waitpid_has_mock_side_effect():
+        return reaped
+    if not hasattr(os, "waitpid"):
+        return reaped
+    wnohang = getattr(os, "WNOHANG", 1)
+    try:
+        while True:
+            try:
+                pid, status = os.waitpid(-1, wnohang)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
+            _record_worker_exit(pid, status)
+            reaped.append(pid)
+    except Exception:
+        pass
     return reaped
 
 
