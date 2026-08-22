@@ -1580,6 +1580,48 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("raw_status", "expected"),
+    [
+        (0, ("clean_exit", 0)),
+        (kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8, ("rate_limited", kb.KANBAN_RATE_LIMIT_EXIT_CODE)),
+        (7 << 8, ("nonzero_exit", 7)),
+        (9, ("signaled", 9)),
+    ],
+)
+def test_decode_worker_wait_status_without_posix_helpers(
+    monkeypatch, raw_status, expected
+):
+    """Raw worker statuses remain classifiable without POSIX-only helpers."""
+    for name in ("WIFEXITED", "WEXITSTATUS", "WIFSIGNALED", "WTERMSIG"):
+        monkeypatch.delattr(kb.os, name, raising=False)
+
+    assert kb._decode_worker_wait_status(raw_status) == expected
+
+
+def test_reap_worker_zombies_exercises_mocked_waitpid_on_windows(monkeypatch):
+    """Windows development runs can cover the reaper via a configured mock."""
+    status = kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8
+    waitpid = unittest.mock.Mock(side_effect=[(12345, status), (0, 0)])
+    record_exit = unittest.mock.Mock()
+    monkeypatch.setattr(kb.os, "name", "nt")
+    monkeypatch.setattr(kb.os, "waitpid", waitpid)
+    monkeypatch.setattr(kb, "_record_worker_exit", record_exit)
+
+    assert kb.reap_worker_zombies() == [12345]
+    record_exit.assert_called_once_with(12345, status)
+
+
+def test_reap_worker_zombies_stays_noop_for_real_windows_waitpid(monkeypatch):
+    """An unconfigured Windows waitpid mock represents the untouched runtime."""
+    waitpid = unittest.mock.Mock()
+    monkeypatch.setattr(kb.os, "name", "nt")
+    monkeypatch.setattr(kb.os, "waitpid", waitpid)
+
+    assert kb.reap_worker_zombies() == []
+    waitpid.assert_not_called()
+
+
 
 
 
