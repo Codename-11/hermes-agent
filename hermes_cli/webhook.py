@@ -181,6 +181,11 @@ def _cmd_subscribe(args):
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
+    if getattr(args, "toolsets", ""):
+        route["toolsets"] = [
+            ts.strip() for ts in args.toolsets.split(",") if ts.strip()
+        ]
+
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
             print(
@@ -219,6 +224,8 @@ def _cmd_subscribe(args):
         print(f"  {label}: {prompt_preview}")
     if route.get("script"):
         print(f"  Script: {route['script']}")
+    if route.get("toolsets"):
+        print(f"  Toolsets: {', '.join(route['toolsets'])}")
     print("\n  Configure your service to POST to the URL above.")
     print("  Use the secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
@@ -247,6 +254,8 @@ def _cmd_list(args):
         print(f"    Deliver: {deliver}")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
+        if route.get("toolsets"):
+            print(f"    Toolsets: {', '.join(route['toolsets'])}")
         print()
 
 
