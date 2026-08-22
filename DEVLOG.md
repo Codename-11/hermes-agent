@@ -35,9 +35,10 @@ fans in projects from a previously selected or merely registered remote.
 - Combined project/connection/gateway-switch/hybrid-renderer regressions: 67 passing.
 - Selected-gateway project regressions: 2 passing.
 - Projects/Recent Sessions presentation regressions: 5 passing.
-- Packaged and hash-verified Desktop `90bca5c035`; live remote → This device
-  switching clears remote project rows. The post-wipe remote repopulation path is
-  covered by the connection-selection suite and awaits operator UI confirmation.
+- Packaged and hash-verified Desktop `aedebecbdb`; operator-confirmed live behavior:
+  This Device excludes remote projects, Docker-Server loads its gateway-wide
+  project aggregate, the loader settles, and normal sessions remain under
+  Recent Sessions.
 
 ## 2026-08-19 — Move detailed fork disparity into Axiom Enhancements
 
