@@ -412,10 +412,11 @@ are never background-fanned into another gateway's project tree.
   remote mode routes through the active profile's authenticated
   `POST /api/fs/ensure-directory`. Typing and directory browsing never mutate
   disk, and failures remain in the dialog with a visible error.
-- In **All Profiles**, `/api/profiles/projects/tree` aggregates only profiles
-  whose databases live on the selected gateway. `This device` therefore never
-  paints projects from registered remotes, and a selected remote never paints
-  local projects. Switching gateways explicitly clears `$projects`,
+- The project overview always uses `/api/profiles/projects/tree` to aggregate
+  every profile database hosted by the selected gateway, independent of the
+  selected/focused chat profile. `This device` therefore never paints projects
+  from registered remotes, while Docker-Server shows its Victor/Lucy/etc.
+  projects without requiring All Profiles. Switching gateways explicitly clears `$projects`,
   `$projectTree`, active/scope/capability state, project tombstones, and request
   generations before the new gateway refreshes; a late response from the old
   gateway cannot repaint its projects after the switch.
@@ -424,14 +425,9 @@ are never background-fanned into another gateway's project tree.
   effect may have fired before the wipe, so it is not accepted as the recovery
   mechanism; successful switches repopulate deterministically, while failed
   switches leave the current gateway untouched.
-- Project RPCs follow the sidebar's source-qualified browse route
-  `(connectionId, $profileScope)`, not the socket serving the focused chat.
-  Focusing a Lucy chat while browsing Victor must not redirect or discard
-  Victor's project tree; the background Victor socket is read without changing
-  foreground chat routing.
-- Project loading state uses that same browsed-route guard for both start and
-  completion. A successful background profile request must clear its skeleton
-  even when its socket is not the focused-chat socket.
+- Project overview loading/publication is guarded by selected connection ID and
+  request generation, not focused profile. A profile change on one gateway keeps
+  the same aggregate valid; a gateway change strands the old machine's response.
 - Project grouping remains a presentation mode even when the selected gateway's
   tree is empty or loading. Flat session rows stay under **Recent Sessions** and
   never fall through directly beneath the **Projects** heading.

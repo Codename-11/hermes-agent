@@ -373,10 +373,15 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "3f02bd658a324beef721ddc505a60bf00f9f8a42"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "90bca5c035eafe0641290a42d6199feed9167f86"
         }
       ],
       "status": "active",
-      "summary": "Keep Projects separate from Recent Sessions and route project data/loading by selected gateway plus sidebar browse profile, including switch invalidation/reload without following the focused chat socket.",
+      "summary": "Keep actual Projects separate from Recent Sessions and load project overview from one aggregate scoped to the selected gateway, independent of focused/selected profile.",
       "tests": [
         "apps/desktop/src/store/gateway-switch.test.ts",
         "apps/desktop/src/store/projects.test.ts",
@@ -385,7 +390,7 @@
       ],
       "title": "Axiom Desktop gateway-scoped Projects overview",
       "notes": [
-        "Reactivated 2026-08-22 as a narrow core carry after live remote \u2194 This device testing exposed stale cross-gateway state, a post-wipe reload race, and focused-chat/browsed-profile route divergence. The retired profile-pinned cross-gateway fan-out policy must not be restored."
+        "Active 2026-08-22 narrow core carry. Project overview authority is the selected gateway aggregate; never fan out across registered gateways and never fall back to normal session rows beneath Projects."
       ],
       "retirement": "Retire when upstream clears and generation-invalidates every gateway-owned project projection on soft source switches and preserves a separate Recent Sessions lane whenever project grouping is selected, including empty/loading trees."
     },

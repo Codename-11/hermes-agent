@@ -19,12 +19,10 @@ fans in projects from a previously selected or merely registered remote.
 - Added an explicit project list/tree reload after the new profile settles. The
   connection atom can trigger the sidebar refresh before the wipe; relying on
   that effect left the newly selected remote empty after stale state was removed.
-- Routed project RPCs by the sidebar browse identity rather than the focused
-  chat socket. This fixes Victor projects disappearing while a Lucy chat is
-  focused without stealing foreground chat routing.
-- Replaced the remaining focused-socket loader guard with the browsed project
-  context, preventing a completed Victor tree request from leaving the Projects
-  section skeletonized.
+- Made project overview authority gateway-wide: one selected-gateway REST
+  aggregate includes every profile hosted there, regardless of selected/focused
+  chat profile. This avoids both focused-socket rejection and per-profile empty
+  trees while preserving strict local-vs-remote isolation.
 - Preserved project overview presentation for empty/loading trees, keeping flat
   sessions under a separate Recent Sessions heading.
 - Kept Hybrid Projects removed from Axiom Enhancements; this is a narrow core
@@ -34,10 +32,10 @@ fans in projects from a previously selected or merely registered remote.
 
 - Gateway-switch wipe regressions: 2 passing.
 - Connection selection/reload regressions: 12 passing.
-- Combined project/connection/gateway-switch routing regressions: 62 passing.
+- Combined project/connection/gateway-switch/hybrid-renderer regressions: 67 passing.
 - Selected-gateway project regressions: 2 passing.
 - Projects/Recent Sessions presentation regressions: 5 passing.
-- Packaged and hash-verified Desktop `3f02bd658a`; live remote → This device
+- Packaged and hash-verified Desktop `90bca5c035`; live remote → This device
   switching clears remote project rows. The post-wipe remote repopulation path is
   covered by the connection-selection suite and awaits operator UI confirmation.
 
