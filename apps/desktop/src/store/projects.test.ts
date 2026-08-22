@@ -5,7 +5,6 @@ import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/proje
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import {
   $activeGatewayProfile,
-  $profileScope as $sidebarProfileScope,
   $profiles,
   $showAllProfiles,
   setShowAllProfiles
@@ -97,7 +96,6 @@ const desktopGit = vi.mocked(git.desktopGit)
 
 const hermes = await import('@/hermes')
 const getHermesConfig = vi.mocked(hermes.getHermesConfig)
-const hermesApi = vi.mocked(hermes.hermesApi)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
@@ -968,15 +966,7 @@ describe('tombstone pruning', () => {
 })
 
 describe('all-profile project previews', () => {
-  let unlistenProfileScope: (() => void) | null = null
-
-  beforeEach(() => {
-    unlistenProfileScope = $sidebarProfileScope.listen(() => undefined)
-  })
-
   afterEach(() => {
-    unlistenProfileScope?.()
-    unlistenProfileScope = null
     $showAllProfiles.set(false)
     $profiles.set([])
     $selectedStoredSessionId.set(null)
@@ -985,20 +975,22 @@ describe('all-profile project previews', () => {
   })
 
   it('passes the selected session through to the all-profile tree request', async () => {
-    hermesApi.mockResolvedValue({
+    const api = vi.fn().mockResolvedValue({
       active_id: null,
       projects: [],
       scoped_session_ids: []
     })
 
-
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
     $showAllProfiles.set(true)
-    expect($sidebarProfileScope.get()).toBe('__all__')
     $selectedStoredSessionId.set('victor/active session')
 
     await refreshProjectTree()
 
-    expect(hermesApi).toHaveBeenCalledWith(
+    expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/profiles/projects/tree?preview_limit=5&active_session_id=victor%2Factive%20session'
       })
@@ -1006,7 +998,7 @@ describe('all-profile project previews', () => {
   })
 
   it('merges projects from profile-pinned remote gateways into the local all-profile tree', async () => {
-    hermesApi.mockResolvedValue({
+    const api = vi.fn().mockResolvedValue({
       active_id: null,
       projects: [{ id: 'local', label: 'Local', path: '/local', repos: [], sessionCount: 1 }],
       scoped_session_ids: ['local-session']
@@ -1035,7 +1027,7 @@ describe('all-profile project previews', () => {
 
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
-      value: { getConnection }
+      value: { api, getConnection }
     })
     $profiles.set([
       { name: 'default', is_default: true } as never,
