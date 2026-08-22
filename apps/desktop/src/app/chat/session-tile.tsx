@@ -28,7 +28,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
-import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupHeaderHidden } from '@/components/pane-shell/tree/store'
+import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -583,7 +583,7 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
     const group = tree ? findGroupOfPane(tree, 'workspace') : null
 
     if (group) {
-      setTreeGroupHeaderHidden(group.id, true)
+      setTreeGroupTabStrip(group.id, 'never')
     }
   }
 

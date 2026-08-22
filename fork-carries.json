@@ -86,66 +86,7 @@
       "title": "Axiom deploy-branch update and reconciliation"
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--environment",
-            "jsdom",
-            "electron/update-handoff-status.test.ts",
-            "electron/update-operation-coordinator.test.ts",
-            "electron/updater-process.test.ts",
-            "electron/upstream-sync.test.ts",
-            "src/contrib/plugin.test.ts",
-            "src/store/preview.test.ts",
-            "src/store/session-states.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/electron/update-handoff-status.test.ts",
-            "apps/desktop/electron/update-operation-coordinator.test.ts",
-            "apps/desktop/electron/updater-process.test.ts",
-            "apps/desktop/electron/upstream-sync.test.ts",
-            "apps/desktop/src/contrib/plugin.test.ts",
-            "apps/desktop/src/store/preview.test.ts",
-            "apps/desktop/src/store/session-states.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-update-service-plugin-seam-desktop"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-update-service-plugin-seam-typecheck"
-        },
-        {
-          "argv": [
-            "python",
-            "-m",
-            "pytest",
-            "-q",
-            "-o",
-            "addopts=",
-            "tests/hermes_cli/test_update_autostash.py"
-          ],
-          "covers": [
-            "tests/hermes_cli/test_update_autostash.py"
-          ],
-          "cwd": ".",
-          "env": {},
-          "id": "desktop-update-service-plugin-seam-cli"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Axiom Desktop update-service plugin seam",
         "path": "FORK.md"
@@ -156,104 +97,26 @@
       "domain_id": "deploy-updater-and-update-control",
       "id": "desktop-update-service-plugin-seam",
       "notes": [
-        "External plugin paths under axiom-agent-library/plugins/desktop/axiom-enhancements are intentionally omitted from paths because the Phase 1 manifest is repository-internal only."
+        "External plugin paths under axiom-agent-library/plugins/desktop/axiom-enhancements are intentionally omitted from paths because the Phase 1 manifest is repository-internal only.",
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
       ],
       "order": 20,
       "ownership": "mixed",
-      "paths": [
-        "apps/desktop/electron/update-handoff-status.ts",
-        "apps/desktop/electron/update-operation-coordinator.ts",
-        "apps/desktop/electron/updater-process.ts",
-        "apps/desktop/electron/upstream-sync.ts",
-        "apps/desktop/src/contrib/plugin.ts",
-        "apps/desktop/src/store/updates.ts",
-        "hermes_cli/axiom_update.py"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom-maintained Desktop Update Control plugin seam and typed updater facade; private renderer lives outside this repository.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire the core seam only after upstream provides equivalent typed updater capabilities and singleton Update Control lifecycle semantics; private Agent Library renderer can then retire separately.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Expose a typed Desktop updater facade and staged update lifecycle without bundling Axiom-specific presentation in core.",
-      "tests": [
-        "apps/desktop/electron/update-handoff-status.test.ts",
-        "apps/desktop/electron/update-operation-coordinator.test.ts",
-        "apps/desktop/electron/updater-process.test.ts",
-        "apps/desktop/electron/upstream-sync.test.ts",
-        "apps/desktop/src/contrib/plugin.test.ts",
-        "apps/desktop/src/store/preview.test.ts",
-        "apps/desktop/src/store/session-states.test.ts",
-        "tests/hermes_cli/test_update_autostash.py"
-      ],
+      "tests": [],
       "title": "Axiom Desktop Update Control plugin seam and staged update lifecycle"
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:ui",
-            "--",
-            "src/app/contrib/hooks/live-status-reap.test.ts",
-            "src/app/gateway/hooks/use-gateway-boot.test.tsx",
-            "src/app/gateway/hooks/use-gateway-request.test.ts",
-            "src/app/session/hooks/use-message-stream/interim-sealing.test.tsx",
-            "src/app/session/hooks/use-message-stream/session-reclaimed.test.tsx",
-            "src/app/session/hooks/use-session-actions.test.tsx",
-            "src/app/session/hooks/use-session-state-cache.test.tsx",
-            "src/store/live-sync.test.ts",
-            "src/store/session-dot-state.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/app/contrib/hooks/live-status-reap.test.ts",
-            "apps/desktop/src/app/gateway/hooks/use-gateway-boot.test.tsx",
-            "apps/desktop/src/app/gateway/hooks/use-gateway-request.test.ts",
-            "apps/desktop/src/app/session/hooks/use-message-stream/interim-sealing.test.tsx",
-            "apps/desktop/src/app/session/hooks/use-message-stream/session-reclaimed.test.tsx",
-            "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx",
-            "apps/desktop/src/app/session/hooks/use-session-state-cache.test.tsx",
-            "apps/desktop/src/store/live-sync.test.ts",
-            "apps/desktop/src/store/session-dot-state.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-session-convergence-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:desktop:platforms",
-            "--",
-            "electron/connection-apply.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/electron/connection-apply.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-session-convergence-electron"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-session-convergence-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Axiom Desktop session convergence and profile-safe live status",
         "path": "FORK.md"
@@ -263,18 +126,7 @@
       "id": "desktop-session-convergence",
       "order": 30,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/app/contrib/wiring.tsx",
-        "apps/desktop/src/app/contrib/hooks/use-background-sync.ts",
-        "apps/desktop/src/app/gateway/hooks/use-gateway-boot.ts",
-        "apps/desktop/src/app/gateway/hooks/use-gateway-request.ts",
-        "apps/desktop/src/app/session/hooks/use-session-state-cache.ts",
-        "apps/desktop/src/store/live-session-status.ts",
-        "apps/desktop/src/store/live-sync.ts",
-        "apps/desktop/src/store/session-states.ts",
-        "apps/desktop/src/store/session-dot-state.ts",
-        "apps/desktop/electron/connection-apply.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "commit",
@@ -302,22 +154,14 @@
           "repository": "NousResearch/hermes-agent"
         }
       ],
-      "retirement": "Retire only after upstream provides equivalent cache ownership, profile-qualified routing, stale asynchronous fencing, secondary-profile reconciliation, reclaim eviction, and causal steer ordering with the declared focused checks still passing.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Preserve profile-qualified runtime ownership, reconnect reconciliation, stale-async fencing, reclaim eviction, and causal steer ordering across concurrent Desktop sessions.",
-      "tests": [
-        "apps/desktop/src/app/contrib/hooks/live-status-reap.test.ts",
-        "apps/desktop/src/app/gateway/hooks/use-gateway-boot.test.tsx",
-        "apps/desktop/src/app/gateway/hooks/use-gateway-request.test.ts",
-        "apps/desktop/src/app/session/hooks/use-message-stream/interim-sealing.test.tsx",
-        "apps/desktop/src/app/session/hooks/use-message-stream/session-reclaimed.test.tsx",
-        "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx",
-        "apps/desktop/src/app/session/hooks/use-session-state-cache.test.tsx",
-        "apps/desktop/src/store/live-sync.test.ts",
-        "apps/desktop/src/store/session-dot-state.test.ts",
-        "apps/desktop/electron/connection-apply.test.ts"
-      ],
-      "title": "Axiom Desktop session convergence and profile-safe live status"
+      "tests": [],
+      "title": "Axiom Desktop session convergence and profile-safe live status",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
       "checks": [],
@@ -361,57 +205,7 @@
       "title": "Axiom Desktop profile gateway activation"
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-remote-profile-handles-typecheck"
-        },
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "electron",
-            "electron/connection-config.test.ts",
-            "electron/remote-profile-auth.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/electron/connection-config.test.ts",
-            "apps/desktop/electron/remote-profile-auth.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-remote-profile-handles-electron"
-        },
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--environment",
-            "jsdom",
-            "src/app/settings/gateway-settings.remote-profiles.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/app/settings/gateway-settings.remote-profiles.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-remote-profile-handles-ui"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Desktop remote profile handles \u2014 local carry pending upstream equivalent",
         "path": "FORK.md"
@@ -423,11 +217,7 @@
       "id": "desktop-remote-profile-handles",
       "order": 40,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/electron/remote-profile-auth.ts",
-        "apps/desktop/src/app/settings/gateway-settings.tsx",
-        "docs/refs/2026-06-desktop-remote-profile-handles.md"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "pull_request",
@@ -435,65 +225,17 @@
           "repository": "NousResearch/hermes-agent"
         }
       ],
-      "retirement": "Retire when upstream provides an equivalent Desktop workflow for discovering remote profiles, switching them safely, and surfacing dead remotes without local stub profiles or token copying.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Discover profiles exposed by a selected remote gateway and pin them as local profile handles with stable routing metadata.",
-      "tests": [
-        "apps/desktop/electron/connection-config.test.ts",
-        "apps/desktop/electron/remote-profile-auth.test.ts",
-        "apps/desktop/src/app/settings/gateway-settings.remote-profiles.test.ts"
-      ],
-      "title": "Desktop remote profile handles"
+      "tests": [],
+      "title": "Desktop remote profile handles",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-profile-workspaces-typecheck"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:ui",
-            "--",
-            "src/lib/profile-persisted.test.ts",
-            "src/store/profile.test.ts",
-            "src/store/profile-scope-routing.test.ts",
-            "src/store/profile-workspace-persistence.test.ts",
-            "src/store/profile-share.test.ts",
-            "src/themes/profile-theme.test.ts",
-            "src/store/composer-popout.test.ts",
-            "src/store/preview.test.ts",
-            "src/store/panes.test.ts",
-            "src/store/session-states.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/lib/profile-persisted.test.ts",
-            "apps/desktop/src/store/profile.test.ts",
-            "apps/desktop/src/store/profile-scope-routing.test.ts",
-            "apps/desktop/src/store/profile-workspace-persistence.test.ts",
-            "apps/desktop/src/store/profile-share.test.ts",
-            "apps/desktop/src/themes/profile-theme.test.ts",
-            "apps/desktop/src/store/composer-popout.test.ts",
-            "apps/desktop/src/store/preview.test.ts",
-            "apps/desktop/src/store/panes.test.ts",
-            "apps/desktop/src/store/session-states.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-profile-workspaces-ui"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Desktop profile visibility, profile-scoped tabs, and workspace appearance \u2014 local carry pending upstream equivalent",
         "path": "FORK.md"
@@ -506,77 +248,24 @@
       "id": "desktop-profile-workspaces",
       "order": 50,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/store/profile.ts",
-        "apps/desktop/src/lib/profile-persisted.ts",
-        "apps/desktop/src/store/panes.ts",
-        "apps/desktop/src/store/preview.ts",
-        "apps/desktop/src/store/windows.ts",
-        "apps/desktop/src/app/settings/profile-visibility-settings.tsx"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom Desktop-local profile visibility and workspace-scoping carry pending upstream equivalent.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire when upstream provides equivalent persisted profile visibility, clicked-profile current-window and peer-window actions, and per-profile workspace persistence with safe migration and recovery.",
-      "status": "active",
+      "retirement": "Retired after exact upstream control proved this carry caused remote profile/session regressions; current upstream Desktop is authoritative.",
+      "status": "retired",
       "summary": "Keep Desktop-local profile hiding, clicked-profile new chat/window actions, and complete per-profile workspace persistence without cancelling background work.",
-      "tests": [
-        "apps/desktop/src/lib/profile-persisted.test.ts",
-        "apps/desktop/src/store/profile.test.ts",
-        "apps/desktop/src/store/profile-scope-routing.test.ts",
-        "apps/desktop/src/store/profile-workspace-persistence.test.ts",
-        "apps/desktop/src/store/profile-share.test.ts",
-        "apps/desktop/src/themes/profile-theme.test.ts",
-        "apps/desktop/src/store/composer-popout.test.ts",
-        "apps/desktop/src/store/preview.test.ts",
-        "apps/desktop/src/store/panes.test.ts",
-        "apps/desktop/src/store/session-states.test.ts"
-      ],
-      "title": "Desktop profile visibility, profile-scoped tabs, and workspace appearance"
+      "tests": [],
+      "title": "Desktop profile visibility, profile-scoped tabs, and workspace appearance",
+      "notes": [
+        "Retired 2026-08-21 after exact upstream Desktop control passed remote all-profiles sessions and Bot Mode while the carry stack collapsed profile/session state."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-multi-profile-session-identity-typecheck"
-        },
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--environment",
-            "jsdom",
-            "src/lib/session-branch-tree.test.ts",
-            "src/app/chat/sidebar/sessions-section.test.tsx",
-            "src/app/session/hooks/use-session-actions/resolve-stored-session.test.ts",
-            "src/app/session/hooks/use-route-resume.test.tsx",
-            "src/store/profile.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/lib/session-branch-tree.test.ts",
-            "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
-            "apps/desktop/src/app/session/hooks/use-session-actions/resolve-stored-session.test.ts",
-            "apps/desktop/src/app/session/hooks/use-route-resume.test.tsx",
-            "apps/desktop/src/store/profile.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-multi-profile-session-identity-ui"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Desktop unified multi-profile session identity",
         "path": "FORK.md"
@@ -589,101 +278,24 @@
       "id": "desktop-multi-profile-session-identity",
       "order": 60,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/lib/session-branch-tree.ts",
-        "apps/desktop/src/app/chat/sidebar/sessions-section.tsx",
-        "apps/desktop/src/app/session/hooks/use-session-actions/index.ts",
-        "apps/desktop/src/app/session/hooks/use-route-resume.ts",
-        "apps/desktop/src/store/profile.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom All Profiles identity tuple carry pending upstream equivalent.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire only when upstream preserves profile-qualified identity across row, branch, selection, route-intent, resume, cache, and upsert invariants for same-id sessions.",
-      "status": "active",
+      "retirement": "Retired after exact upstream control proved this carry caused remote profile/session regressions; current upstream Desktop is authoritative.",
+      "status": "retired",
       "summary": "Treat All Profiles session identity as the tuple of profile and session id throughout selection, navigation, cache bypass, resume, and upsert behavior.",
-      "tests": [
-        "apps/desktop/src/lib/session-branch-tree.test.ts",
-        "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
-        "apps/desktop/src/app/session/hooks/use-session-actions/resolve-stored-session.test.ts",
-        "apps/desktop/src/app/session/hooks/use-route-resume.test.tsx",
-        "apps/desktop/src/store/profile.test.ts"
-      ],
-      "title": "Desktop unified multi-profile session identity"
+      "tests": [],
+      "title": "Desktop unified multi-profile session identity",
+      "notes": [
+        "Retired 2026-08-21 after exact upstream Desktop control passed remote all-profiles sessions and Bot Mode while the carry stack collapsed profile/session state."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "ui",
-            "src/app/chat/sidebar/project-dialog.test.tsx",
-            "src/app/chat/sidebar/sessions-section.test.tsx",
-            "src/app/chat/sidebar/session-actions-menu.test.tsx",
-            "src/app/chat/sidebar/projects/overview-row.test.tsx",
-            "src/app/chat/sidebar/projects/workspace-header.test.tsx",
-            "src/app/shell/hooks/use-statusbar-items.test.tsx",
-            "src/app/session/hooks/use-session-list-actions.test.tsx",
-            "src/lib/desktop-fs.test.ts",
-            "src/lib/session-source.test.ts",
-            "src/store/projects.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/app/chat/sidebar/project-dialog.test.tsx",
-            "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
-            "apps/desktop/src/app/chat/sidebar/session-actions-menu.test.tsx",
-            "apps/desktop/src/app/chat/sidebar/projects/overview-row.test.tsx",
-            "apps/desktop/src/app/chat/sidebar/projects/workspace-header.test.tsx",
-            "apps/desktop/src/app/shell/hooks/use-statusbar-items.test.tsx",
-            "apps/desktop/src/app/session/hooks/use-session-list-actions.test.tsx",
-            "apps/desktop/src/lib/desktop-fs.test.ts",
-            "apps/desktop/src/lib/session-source.test.ts",
-            "apps/desktop/src/store/projects.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-hybrid-projects-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-hybrid-projects-typecheck"
-        },
-        {
-          "argv": [
-            "bash",
-            "scripts/run_tests.sh",
-            "tests/hermes_cli/test_web_server_fs.py",
-            "tests/tui_gateway/test_project_tree.py",
-            "tests/tui_gateway/test_project_tree_source_policy.py",
-            "tests/tui_gateway/test_projects_rpc.py",
-            "-q"
-          ],
-          "covers": [
-            "tests/hermes_cli/test_web_server_fs.py",
-            "tests/tui_gateway/test_project_tree.py",
-            "tests/tui_gateway/test_project_tree_source_policy.py",
-            "tests/tui_gateway/test_projects_rpc.py"
-          ],
-          "cwd": ".",
-          "env": {},
-          "id": "desktop-hybrid-projects-backend"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Axiom Desktop hybrid Projects overview and typed project paths",
         "path": "FORK.md"
@@ -695,17 +307,7 @@
       "id": "desktop-hybrid-projects",
       "order": 70,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/app/chat/sidebar/project-dialog.tsx",
-        "apps/desktop/src/app/chat/sidebar/sessions-section.tsx",
-        "apps/desktop/src/app/chat/sidebar/projects/overview-row.tsx",
-        "apps/desktop/src/app/chat/sidebar/projects/workspace-header.tsx",
-        "apps/desktop/src/lib/desktop-fs.ts",
-        "apps/desktop/src/lib/session-source.ts",
-        "apps/desktop/src/store/projects.ts",
-        "hermes_cli/session_source_policy.py",
-        "tui_gateway/project_tree.py"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "commit",
@@ -713,59 +315,17 @@
           "revision": "001f984b5c49652e461b7779ddd651d5fc251a64"
         }
       ],
-      "retirement": "Retire only when upstream covers the complete hybrid overview, typed-path creation across local and authenticated remote Desktop, source-filter parity, and remote-pinned profile project discovery without handle collapse.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Keep Projects primary beside separate Recent Sessions, typed local/remote project paths, source filtering, and pinned remote-profile project discovery.",
-      "tests": [
-        "apps/desktop/src/app/chat/sidebar/project-dialog.test.tsx",
-        "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
-        "apps/desktop/src/app/chat/sidebar/session-actions-menu.test.tsx",
-        "apps/desktop/src/app/chat/sidebar/projects/overview-row.test.tsx",
-        "apps/desktop/src/app/chat/sidebar/projects/workspace-header.test.tsx",
-        "apps/desktop/src/app/shell/hooks/use-statusbar-items.test.tsx",
-        "apps/desktop/src/app/session/hooks/use-session-list-actions.test.tsx",
-        "apps/desktop/src/lib/desktop-fs.test.ts",
-        "apps/desktop/src/lib/session-source.test.ts",
-        "apps/desktop/src/store/projects.test.ts",
-        "tests/hermes_cli/test_web_server_fs.py",
-        "tests/tui_gateway/test_project_tree.py",
-        "tests/tui_gateway/test_project_tree_source_policy.py",
-        "tests/tui_gateway/test_projects_rpc.py"
-      ],
-      "title": "Axiom Desktop hybrid Projects overview and typed project paths"
+      "tests": [],
+      "title": "Axiom Desktop hybrid Projects overview and typed project paths",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "ui",
-            "src/app/chat/sidebar/projects/project-worktree-actions.test.tsx"
-          ],
-          "covers": [
-            "apps/desktop/src/app/chat/sidebar/projects/project-worktree-actions.test.tsx"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-project-worktree-lifecycle-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-project-worktree-lifecycle-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Axiom Desktop Project/worktree session lifecycle",
         "path": "FORK.md"
@@ -777,63 +337,24 @@
       "id": "desktop-project-worktree-lifecycle",
       "order": 80,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/app/chat/sidebar/projects/project-worktree-actions.tsx",
-        "apps/desktop/src/app/chat/sidebar/projects/worktree-dialog.tsx",
-        "apps/desktop/src/store/projects.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom Desktop project/worktree lifecycle carry pending upstream equivalent.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire when upstream provides equivalent separate worktree flows, project-checkout return, existing-worktree entry, and visible failures through existing Git/worktree primitives.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Provide separate main-checkout, new isolated worktree, current-session retarget, existing-worktree entry, and return-to-project flows.",
-      "tests": [
-        "apps/desktop/src/app/chat/sidebar/projects/project-worktree-actions.test.tsx"
-      ],
-      "title": "Axiom Desktop Project/worktree session lifecycle"
+      "tests": [],
+      "title": "Axiom Desktop Project/worktree session lifecycle",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "ui",
-            "src/app/settings/default-project-setting.test.tsx",
-            "src/app/chat/live-session-status.test.tsx",
-            "src/store/projects.test.ts",
-            "src/store/session-dot-state.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/app/settings/default-project-setting.test.tsx",
-            "apps/desktop/src/app/chat/live-session-status.test.tsx",
-            "apps/desktop/src/store/projects.test.ts",
-            "apps/desktop/src/store/session-dot-state.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-project-default-live-status-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-project-default-live-status-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Desktop project overview, default project, and in-chat live status \u2014 local carry pending upstream equivalent",
         "path": "FORK.md"
@@ -846,73 +367,24 @@
       "id": "desktop-project-default-live-status",
       "order": 90,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/store/projects.ts",
-        "apps/desktop/src/store/session.ts",
-        "apps/desktop/src/store/session-states.ts",
-        "apps/desktop/src/store/session-dot-state.ts",
-        "apps/desktop/src/app/chat/live-session-status.tsx",
-        "apps/desktop/src/app/settings/default-project-setting.tsx"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom default-project selection and in-chat live-status carry pending upstream equivalent.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire when upstream provides equivalent project-only disclosure, connection/profile-safe saved-project defaults for new-session cwd, and persistent session-scoped live indicators while metadata converges.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Keep project disclosure independent from Recent Sessions, persist a profile-qualified default project for new sessions, and show session-scoped Working/Waiting-for-input status in composer surfaces.",
-      "tests": [
-        "apps/desktop/src/app/settings/default-project-setting.test.tsx",
-        "apps/desktop/src/app/chat/live-session-status.test.tsx",
-        "apps/desktop/src/store/projects.test.ts",
-        "apps/desktop/src/store/session-dot-state.test.ts"
-      ],
-      "title": "Desktop project overview, default project, and in-chat live status"
+      "tests": [],
+      "title": "Desktop project overview, default project, and in-chat live status",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "ui",
-            "src/lib/keybinds/voice-actions.test.ts",
-            "src/store/keybinds-dictation.test.ts",
-            "src/app/hooks/use-keybinds.test.ts",
-            "src/app/chat/composer/focus.test.ts",
-            "src/app/chat/composer/controls.test.tsx",
-            "src/store/voice-prefs.test.ts",
-            "src/store/wake-word.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/lib/keybinds/voice-actions.test.ts",
-            "apps/desktop/src/store/keybinds-dictation.test.ts",
-            "apps/desktop/src/app/hooks/use-keybinds.test.ts",
-            "apps/desktop/src/app/chat/composer/focus.test.ts",
-            "apps/desktop/src/app/chat/composer/controls.test.tsx",
-            "apps/desktop/src/store/voice-prefs.test.ts",
-            "apps/desktop/src/store/wake-word.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-voice-keybinds-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-voice-keybinds-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Axiom Desktop voice keybinds",
         "path": "FORK.md"
@@ -922,13 +394,7 @@
       "id": "desktop-voice-keybinds",
       "order": 100,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/lib/keybinds/actions.ts",
-        "apps/desktop/src/app/hooks/use-keybinds.ts",
-        "apps/desktop/src/app/chat/composer/focus.ts",
-        "apps/desktop/src/store/voice-prefs.ts",
-        "apps/desktop/src/store/wake-word.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "commit",
@@ -936,74 +402,17 @@
           "revision": "633be559740307e122edad21a622531d26b20ce8"
         }
       ],
-      "retirement": "Retire when upstream provides equivalent distinct rebindable voice actions with active-composer routing, durable read-aloud ownership, gateway-authoritative wake behavior, and accessible shortcut discovery.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Keep dictation, read-aloud, wake word, and voice-conversation controls distinct, rebindable, and scoped to the active composer and owning profile.",
-      "tests": [
-        "apps/desktop/src/lib/keybinds/voice-actions.test.ts",
-        "apps/desktop/src/store/keybinds-dictation.test.ts",
-        "apps/desktop/src/app/hooks/use-keybinds.test.ts",
-        "apps/desktop/src/app/chat/composer/focus.test.ts",
-        "apps/desktop/src/app/chat/composer/controls.test.tsx",
-        "apps/desktop/src/store/voice-prefs.test.ts",
-        "apps/desktop/src/store/wake-word.test.ts"
-      ],
-      "title": "Axiom Desktop voice keybinds"
+      "tests": [],
+      "title": "Axiom Desktop voice keybinds",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:desktop:platforms",
-            "--",
-            "electron/terminal-output-relay.test.ts",
-            "electron/connection-apply.test.ts",
-            "electron/windows-remote-lifecycle.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/electron/terminal-output-relay.test.ts",
-            "apps/desktop/electron/connection-apply.test.ts",
-            "apps/desktop/electron/windows-remote-lifecycle.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-terminal-startup-electron"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:ui",
-            "--",
-            "src/components/pane-shell/tree/tool-pane-toggle.test.ts",
-            "src/app/right-sidebar/terminal/persistent.test.tsx",
-            "src/app/right-sidebar/terminal/terminals.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/components/pane-shell/tree/tool-pane-toggle.test.ts",
-            "apps/desktop/src/app/right-sidebar/terminal/persistent.test.tsx",
-            "apps/desktop/src/app/right-sidebar/terminal/terminals.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-terminal-startup-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-terminal-startup-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Axiom Desktop Terminal shortcut and startup delivery",
         "path": "FORK.md"
@@ -1013,88 +422,24 @@
       "id": "desktop-terminal-startup",
       "order": 110,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/electron/terminal-output-relay.ts",
-        "apps/desktop/src/app/right-sidebar/terminal/use-terminal-session.ts",
-        "apps/desktop/src/app/chat/sidebar/index.tsx"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom Desktop terminal rail and PTY startup buffering carry pending upstream equivalent.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire when upstream provides both an equivalent Terminal shortcut and lossless ordered PTY startup delivery after session-scoped listeners attach, including prompt output and early exits over remote startup.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Expose an idempotent Terminal rail entry and prevent prompt output or immediate exits from being lost before renderer listeners attach.",
-      "tests": [
-        "apps/desktop/electron/terminal-output-relay.test.ts",
-        "apps/desktop/electron/connection-apply.test.ts",
-        "apps/desktop/electron/windows-remote-lifecycle.test.ts",
-        "apps/desktop/src/components/pane-shell/tree/tool-pane-toggle.test.ts",
-        "apps/desktop/src/app/right-sidebar/terminal/persistent.test.tsx",
-        "apps/desktop/src/app/right-sidebar/terminal/terminals.test.ts"
-      ],
-      "title": "Axiom Desktop Terminal shortcut and lossless startup delivery"
+      "tests": [],
+      "title": "Axiom Desktop Terminal shortcut and lossless startup delivery",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:desktop:platforms",
-            "--",
-            "--run",
-            "electron/hud-cursor.test.ts",
-            "electron/hud-window-geometry.test.ts",
-            "electron/hud-window-lifecycle.test.ts",
-            "electron/hud-url.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/electron/hud-cursor.test.ts",
-            "apps/desktop/electron/hud-window-geometry.test.ts",
-            "apps/desktop/electron/hud-window-lifecycle.test.ts",
-            "apps/desktop/electron/hud-url.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "windows-hud-stability-electron"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "test:ui",
-            "--",
-            "--run",
-            "src/app/hud/click-through.test.ts",
-            "src/store/hud.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/app/hud/click-through.test.ts",
-            "apps/desktop/src/store/hud.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "windows-hud-stability-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "windows-hud-stability-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Windows HUD stability \u2014 local carry pending upstream equivalent",
         "path": "FORK.md"
@@ -1104,11 +449,7 @@
       "id": "windows-hud-stability",
       "order": 120,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/electron/hud-window-geometry.ts",
-        "apps/desktop/electron/hud-cursor.ts",
-        "apps/desktop/electron/hud-window-lifecycle.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "pull_request",
@@ -1116,51 +457,17 @@
           "repository": "NousResearch/hermes-agent"
         }
       ],
-      "retirement": "Retire only after upstream provides equivalent or better packaged Windows behavior for both HUD geometry stability and click-through recovery, with physical Windows smoke tests passing.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Preserve packaged Windows HUD geometry stability, click-through recovery, bounded persisted geometry, and close-time cursor cleanup.",
-      "tests": [
-        "apps/desktop/electron/hud-cursor.test.ts",
-        "apps/desktop/electron/hud-window-geometry.test.ts",
-        "apps/desktop/electron/hud-window-lifecycle.test.ts",
-        "apps/desktop/electron/hud-url.test.ts",
-        "apps/desktop/src/app/hud/click-through.test.ts",
-        "apps/desktop/src/store/hud.test.ts"
-      ],
-      "title": "Windows HUD stability"
+      "tests": [],
+      "title": "Windows HUD stability",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "electron",
-            "electron/oauth-login-coordinator.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/electron/oauth-login-coordinator.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-native-oauth-single-flight-electron"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-native-oauth-single-flight-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Desktop native OAuth orchestration \u2014 local carry pending upstream equivalent",
         "path": "FORK.md"
@@ -1170,62 +477,24 @@
       "id": "desktop-native-oauth-single-flight",
       "order": 130,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/electron/oauth-login-coordinator.ts",
-        "apps/desktop/electron/main.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom native OAuth single-flight and capability-gated fallback carry pending upstream equivalent.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire when upstream owns native login as a process-wide single-flight operation and keeps fallback capability-gated rather than error-triggered.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Keep RFC 8252 native sign-in single-flight per gateway and prevent silent fallback to embedded cookie auth after native-PKCE failures.",
-      "tests": [
-        "apps/desktop/electron/oauth-login-coordinator.test.ts"
-      ],
-      "title": "Desktop native OAuth orchestration"
+      "tests": [],
+      "title": "Desktop native OAuth orchestration",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-oauth-remote-artifacts-typecheck"
-        },
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--environment",
-            "jsdom",
-            "src/lib/media.remote.test.ts",
-            "src/lib/media.test.ts",
-            "src/lib/desktop-fs.test.ts",
-            "src/app/artifacts/index.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/lib/media.remote.test.ts",
-            "apps/desktop/src/lib/media.test.ts",
-            "apps/desktop/src/lib/desktop-fs.test.ts",
-            "apps/desktop/src/app/artifacts/index.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-oauth-remote-artifacts-ui"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Desktop OAuth remote artifact opening \u2014 local carry pending upstream equivalent",
         "path": "FORK.md"
@@ -1238,28 +507,21 @@
       "id": "desktop-oauth-remote-artifacts",
       "order": 140,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/app/artifacts/index.tsx",
-        "apps/desktop/src/lib/desktop-fs.ts",
-        "apps/desktop/src/lib/media.ts",
-        "apps/desktop/electron/main.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "description": "Axiom Desktop OAuth remote artifact preview/open/download carry pending upstream equivalent.",
           "kind": "manual"
         }
       ],
-      "retirement": "Retire only when upstream covers OAuth/dashboard-session remote artifact previews, transcript MEDIA previews, file open/download, profile routing, token compatibility, and ordinary HTTP/data passthrough.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Preview, download, open, and reveal gateway-local artifacts and MEDIA links through the owning remote profile\u2019s authenticated OAuth session.",
-      "tests": [
-        "apps/desktop/src/lib/media.remote.test.ts",
-        "apps/desktop/src/lib/media.test.ts",
-        "apps/desktop/src/lib/desktop-fs.test.ts",
-        "apps/desktop/src/app/artifacts/index.test.ts"
-      ],
-      "title": "Desktop OAuth remote artifact opening"
+      "tests": [],
+      "title": "Desktop OAuth remote artifact opening",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
       "checks": [
@@ -1929,39 +1191,7 @@
       "title": "Eager loading for explicitly enabled bundled platform plugins with tools"
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--environment",
-            "jsdom",
-            "src/lib/media.test.ts",
-            "src/components/assistant-ui/markdown-text.media.test.tsx"
-          ],
-          "covers": [
-            "apps/desktop/src/lib/media.test.ts",
-            "apps/desktop/src/components/assistant-ui/markdown-text.media.test.tsx"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-remote-chat-file-fallback-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-remote-chat-file-fallback-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Current Desktop remote-file/access layer",
         "path": "docs/axiom-fork-contract.md"
@@ -1971,10 +1201,7 @@
       "id": "desktop-remote-chat-file-fallback",
       "order": 250,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/components/assistant-ui/markdown-text.tsx",
-        "apps/desktop/src/lib/media.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "pull_request",
@@ -1982,47 +1209,17 @@
           "repository": "NousResearch/hermes-agent"
         }
       ],
-      "retirement": "Retire once upstream merges PR #44538 or equivalent chat/media fallback download handling and visible error UX exists on main.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Route chat/media fallback links through the authenticated filesystem bridge instead of dead gateway-host file URLs and show a visible error state on fetch failure.",
-      "tests": [
-        "apps/desktop/src/lib/media.test.ts",
-        "apps/desktop/src/components/assistant-ui/markdown-text.media.test.tsx"
-      ],
-      "title": "Remote-mode chat and media fallback links"
+      "tests": [],
+      "title": "Remote-mode chat and media fallback links",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "ui",
-            "src/components/pane-shell/tree/tool-pane-toggle.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/components/pane-shell/tree/tool-pane-toggle.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-hover-reveal-scrollbar-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-hover-reveal-scrollbar-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Retired fork surface",
         "path": "FORK.md"
@@ -2032,9 +1229,7 @@
       "id": "desktop-hover-reveal-scrollbar",
       "order": 260,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/components/pane-shell/pane-visibility.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "commit",
@@ -2047,46 +1242,17 @@
           "repository": "NousResearch/hermes-agent"
         }
       ],
-      "retirement": "Retire once equivalent scrollbar-safe hover-reveal behavior is verified on upstream main.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Prevent a collapsed side-panel hover activation zone from intercepting the scrollbar hit area.",
-      "tests": [
-        "apps/desktop/src/components/pane-shell/tree/tool-pane-toggle.test.ts"
-      ],
-      "title": "Narrow Desktop hover-reveal trigger strip"
+      "tests": [],
+      "title": "Narrow Desktop hover-reveal trigger strip",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
-      "checks": [
-        {
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "ui",
-            "src/store/layout-sidebar-view.test.ts"
-          ],
-          "covers": [
-            "apps/desktop/src/store/layout-sidebar-view.test.ts"
-          ],
-          "cwd": "apps/desktop",
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "id": "desktop-file-browser-width-ui"
-        },
-        {
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "covers": [],
-          "cwd": "apps/desktop",
-          "env": {},
-          "id": "desktop-file-browser-width-typecheck"
-        }
-      ],
+      "checks": [],
       "contract": {
         "heading": "Retired fork surface",
         "path": "FORK.md"
@@ -2096,9 +1262,7 @@
       "id": "desktop-file-browser-width",
       "order": 270,
       "ownership": "core",
-      "paths": [
-        "apps/desktop/src/store/layout.ts"
-      ],
+      "paths": [],
       "provenance": [
         {
           "kind": "commit",
@@ -2111,13 +1275,14 @@
           "repository": "NousResearch/hermes-agent"
         }
       ],
-      "retirement": "Retire once an equivalent file-browser width is verified on upstream main.",
-      "status": "active",
+      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
+      "status": "retired",
       "summary": "Raise the Desktop file-browser maximum width from 20rem to 40rem without carrying unrelated upstream PR changes.",
-      "tests": [
-        "apps/desktop/src/store/layout-sidebar-view.test.ts"
-      ],
-      "title": "Wider Desktop file browser"
+      "tests": [],
+      "title": "Wider Desktop file browser",
+      "notes": [
+        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
+      ]
     },
     {
       "checks": [
