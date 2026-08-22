@@ -32,6 +32,7 @@ def _make_args(**kwargs):
         "events": "",
         "description": "",
         "skills": "",
+        "toolsets": "",
         "deliver": "log",
         "deliver_chat_id": "",
         "secret": "",
@@ -52,6 +53,18 @@ def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
 
 
 class TestSubscribe:
+
+    def test_route_toolsets_are_persisted(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="trusted",
+            toolsets="web,terminal,file",
+        ))
+        assert _load_subscriptions()["trusted"]["toolsets"] == [
+            "web",
+            "terminal",
+            "file",
+        ]
 
 
     def test_custom_secret(self):
