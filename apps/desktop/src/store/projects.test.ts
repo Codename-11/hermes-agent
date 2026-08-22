@@ -5,7 +5,6 @@ import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/proje
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import {
   $activeGatewayProfile,
-  $profiles,
   $showAllProfiles,
   setShowAllProfiles
 } from '@/store/profile'
@@ -61,9 +60,7 @@ vi.mock('@/lib/desktop-fs', () => ({
 vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
-  ensureActiveGatewayOpen: vi.fn(),
-  gatewayForProfile: vi.fn(),
-  openGatewayForProfile: vi.fn()
+  ensureActiveGatewayOpen: vi.fn()
 }))
 
 vi.mock('@/lib/desktop-git', async importOriginal => ({
@@ -88,14 +85,14 @@ const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 const gw = await import('@/store/gateway')
 const activeGateway = vi.mocked(gw.activeGateway)
 const gatewayAtom = gw.$gateway
-const gatewayForProfile = vi.mocked(gw.gatewayForProfile)
-const openGatewayForProfile = vi.mocked(gw.openGatewayForProfile)
+
 
 const git = await import('@/lib/desktop-git')
 const desktopGit = vi.mocked(git.desktopGit)
 
 const hermes = await import('@/hermes')
 const getHermesConfig = vi.mocked(hermes.getHermesConfig)
+const hermesApi = vi.mocked(hermes.hermesApi)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
@@ -966,87 +963,52 @@ describe('tombstone pruning', () => {
 })
 
 describe('all-profile project previews', () => {
+  beforeEach(() => {
+    hermesApi.mockReset()
+  })
+
   afterEach(() => {
     $showAllProfiles.set(false)
-    $profiles.set([])
     $selectedStoredSessionId.set(null)
     Reflect.deleteProperty(window, 'hermesDesktop')
     vi.restoreAllMocks()
   })
 
-  it('passes the selected session through to the all-profile tree request', async () => {
-    const api = vi.fn().mockResolvedValue({
+  it('passes the selected session through to the selected-gateway aggregate', async () => {
+    hermesApi.mockResolvedValue({
       active_id: null,
       projects: [],
       scoped_session_ids: []
-    })
-
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { api }
     })
     $showAllProfiles.set(true)
     $selectedStoredSessionId.set('victor/active session')
 
     await refreshProjectTree()
 
-    expect(api).toHaveBeenCalledWith(
+    expect(hermesApi).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/profiles/projects/tree?preview_limit=5&active_session_id=victor%2Factive%20session'
       })
     )
   })
 
-  it('merges projects from profile-pinned remote gateways into the local all-profile tree', async () => {
-    const api = vi.fn().mockResolvedValue({
+  it('does not query registered remote gateways while This device is selected', async () => {
+    hermesApi.mockResolvedValue({
       active_id: null,
       projects: [{ id: 'local', label: 'Local', path: '/local', repos: [], sessionCount: 1 }],
       scoped_session_ids: ['local-session']
     })
-
-    const getConnection = vi.fn(async (profile: string) => ({
-      mode: profile === 'server-atlas' ? 'remote' : 'local',
-      source: profile === 'server-atlas' ? 'profile' : 'local'
-    }))
-
-    const remoteRequest = vi.fn().mockResolvedValue({
-      active_id: null,
-      projects: [
-        {
-          id: 'remote',
-          label: 'Remote',
-          lastActive: 2,
-          path: '/remote',
-          previewSessions: [{ id: 'remote-session', last_active: 2 }],
-          repos: [],
-          sessionCount: 1
-        }
-      ],
-      scoped_session_ids: ['remote-session']
-    })
-
+    const getConnection = vi.fn()
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
-      value: { api, getConnection }
+      value: { getConnection }
     })
-    $profiles.set([
-      { name: 'default', is_default: true } as never,
-      { name: 'server-atlas', is_default: false } as never
-    ])
-    gatewayForProfile.mockReturnValue({ connectionState: 'open', request: remoteRequest } as never)
     $showAllProfiles.set(true)
 
     await refreshProjectTree()
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('server-atlas')
-    expect(remoteRequest).toHaveBeenCalledWith('projects.tree', {
-      active_session_id: null,
-      preview_limit: 5
-    })
-    expect($projectTree.get().map(project => project.label)).toEqual(['Remote', 'Local'])
-    expect($projectTree.get()[0]?.previewSessions?.[0]).toMatchObject({
-      id: 'remote-session',
-      profile: 'server-atlas'
-    })
+    expect(getConnection).not.toHaveBeenCalled()
+    expect(hermesApi).toHaveBeenCalledOnce()
+    expect($projectTree.get().map(project => project.label)).toEqual(['Local'])
   })
 })

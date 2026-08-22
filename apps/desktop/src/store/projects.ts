@@ -22,15 +22,12 @@ import { persistentAtom } from '@/lib/persisted'
 import {
   $gateway,
   activeGateway,
-  ensureActiveGatewayOpen,
-  gatewayForProfile,
-  openGatewayForProfile
+  ensureActiveGatewayOpen
 } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
-  $profiles,
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
@@ -43,7 +40,7 @@ import {
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
-import type { ProjectInfo, ProjectsPayload, SessionInfo } from '@/types/hermes'
+import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
 // served by the live gateway's `projects.*` JSON-RPC methods, which wrap the
@@ -500,84 +497,6 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-function tagProjectTreeProfile(projects: SidebarProjectTree[], profile: string): SidebarProjectTree[] {
-  const tag = (session: SessionInfo): SessionInfo => ({
-    ...session,
-    is_default_profile: profile === 'default',
-    profile
-  })
-
-  return projects.map(project => ({
-    ...project,
-    previewSessions: project.previewSessions?.map(tag),
-    repos: project.repos.map(repo => ({
-      ...repo,
-      groups: repo.groups.map(group => ({ ...group, sessions: group.sessions.map(tag) }))
-    }))
-  }))
-}
-
-function mergeProjectTrees(projectSets: SidebarProjectTree[][]): SidebarProjectTree[] {
-  const merged = new Map<string, SidebarProjectTree>()
-
-  for (const project of projectSets.flat()) {
-    const key = project.path || project.id
-    const current = merged.get(key)
-
-    if (!current) {
-      merged.set(key, project)
-
-      continue
-    }
-
-    const preferred = current.isAuto && !project.isAuto ? project : current
-    const other = preferred === current ? project : current
-    const repos = new Map(preferred.repos.map(repo => [repo.id, repo]))
-
-    for (const repo of other.repos) {
-      const existingRepo = repos.get(repo.id)
-
-      if (!existingRepo) {
-        repos.set(repo.id, repo)
-
-        continue
-      }
-
-      const groups = new Map(existingRepo.groups.map(group => [group.id, group]))
-
-      for (const group of repo.groups) {
-        const existingGroup = groups.get(group.id)
-
-        groups.set(
-          group.id,
-          existingGroup ? { ...existingGroup, sessions: [...existingGroup.sessions, ...group.sessions] } : group
-        )
-      }
-
-      repos.set(repo.id, {
-        ...existingRepo,
-        groups: [...groups.values()],
-        sessionCount: (existingRepo.sessionCount || 0) + (repo.sessionCount || 0)
-      })
-    }
-
-    const previews = [...(preferred.previewSessions ?? []), ...(other.previewSessions ?? [])]
-      .sort((a, b) => (b.last_active || b.started_at || 0) - (a.last_active || a.started_at || 0))
-      .slice(0, PROJECT_QUICK_PREVIEW_LIMIT)
-
-    merged.set(key, {
-      ...preferred,
-      lastActive: Math.max(preferred.lastActive || 0, other.lastActive || 0),
-      previewSessions: previews,
-      repos: [...repos.values()],
-      sessionCount: (preferred.sessionCount || 0) + (other.sessionCount || 0),
-      totalCostUsd: (preferred.totalCostUsd || 0) + (other.totalCostUsd || 0),
-      totalTokens: (preferred.totalTokens || 0) + (other.totalTokens || 0)
-    })
-  }
-
-  return [...merged.values()].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))
-}
 
 export const PROJECT_QUICK_PREVIEW_LIMIT = 5
 // The all-profiles fan-out reads one database per profile, so it is allowed the
