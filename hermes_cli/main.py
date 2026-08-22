@@ -433,6 +433,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -12646,6 +12647,22 @@ def _advertise_agent_env() -> None:
     """
     os.environ.setdefault("AI_AGENT", "hermes-agent")
     os.environ.setdefault("HERMES_AGENT", "true")
+
+
+# Axiom deploy-update seam. The implementation stays in the fork-owned module;
+# these re-exports preserve historical test/plugin patch points after upstream
+# moved the generic update pipeline into update_cmd.py.
+from hermes_cli.axiom_update import (  # noqa: F401
+    _clean_managed_worktree,
+    _completed_deploy_handoff_requires_post_update,
+    _desktop_shortcut_exists,
+    _detect_windows_gateway_launcher_instances,
+    _deploy_handoff_exists_for,
+    _preserve_deploy_branch_stash,
+    _resolve_deploy_handoff,
+    _run_deploy_branch_update,
+    _sync_deploy_main_to_upstream,
+)
 
 
 def main():
