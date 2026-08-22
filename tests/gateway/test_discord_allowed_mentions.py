@@ -81,6 +81,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from gateway.config import PlatformConfig  # noqa: E402
 from plugins.platforms.discord.adapter import _build_allowed_mentions  # noqa: E402
 
 
@@ -116,5 +117,36 @@ def test_env_var_opts_back_into_everyone(monkeypatch):
     assert am.roles is False
     assert am.users is True
     assert am.replied_user is True
+
+
+def test_per_adapter_config_controls_mentions_without_global_env():
+    config = PlatformConfig(
+        enabled=True,
+        extra={
+            "allow_mentions": {
+                "everyone": True,
+                "roles": True,
+                "users": False,
+                "replied_user": False,
+            }
+        },
+    )
+
+    am = _build_allowed_mentions(config)
+
+    assert am.everyone is True
+    assert am.roles is True
+    assert am.users is False
+    assert am.replied_user is False
+
+
+def test_env_overrides_per_adapter_mention_config(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "false")
+    config = PlatformConfig(
+        enabled=True,
+        extra={"allow_mentions": {"everyone": True}},
+    )
+
+    assert _build_allowed_mentions(config).everyone is False
 
 
