@@ -11,7 +11,8 @@ import {
   cycleTreeTabInFocusedZone,
   isPaneVisible,
   layoutHasRootSide,
-  togglePaneVisible
+  togglePaneVisible,
+  toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { useI18n } from '@/i18n'
@@ -288,6 +289,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       layoutHasRootSide('right') ? toggleFileBrowserOpen() : togglePaneVisible('terminal'),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
+    'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
     'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),

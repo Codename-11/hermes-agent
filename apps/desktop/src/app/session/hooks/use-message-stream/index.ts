@@ -17,6 +17,7 @@ import {
   sealOpenToolParts,
   upsertToolPart
 } from '@/lib/chat-messages'
+import type { ErrorSurface } from '@/lib/error-surface'
 import {
   dedupeGeneratedImageEchoesInParts,
   generatedImageEchoSources,
@@ -565,7 +566,7 @@ export function useMessageStream({
       sessionId: string,
       text: string,
       responsePreviewed?: boolean,
-      failure?: { error: string; partial: boolean },
+      failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       sourceProfile?: string,
       occurredAt = Date.now() / 1000
     ) => {
@@ -621,7 +622,8 @@ export function useMessageStream({
             parts: completeOpenTimelineParts(message.parts, occurredAt),
             pending: false,
             interim: false,
-            ...(durationS !== undefined ? { durationS } : {})
+            ...(durationS !== undefined ? { durationS } : {}),
+            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
           }
 
           if (completionError && !keepFailedPartialText) {
@@ -646,7 +648,8 @@ export function useMessageStream({
           completedAt: occurredAt,
           branchGroupId: state.pendingBranchGroup ?? undefined,
           ...(durationS !== undefined ? { durationS } : {}),
-          ...(completionError && { error: completionError })
+          ...(completionError && { error: completionError }),
+          ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
         })
 
         const prev = state.messages
