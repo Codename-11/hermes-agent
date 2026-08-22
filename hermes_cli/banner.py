@@ -318,6 +318,37 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
     is_shallow = shallow == "true"
 
+    # Fork deploy branches are published independently from upstream/main.
+    # Compare both actionable hops instead of the unrelated local ``main`` ref.
+    current_branch = _git_stdout(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir)
+    if current_branch in {"axiom", "tgi"} and not is_shallow:
+        try:
+            subprocess.run(
+                ["git", "fetch", "origin", current_branch, "--quiet"],
+                capture_output=True, timeout=10, cwd=str(repo_dir),
+            )
+            upstream_url = _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
+            if upstream_url:
+                subprocess.run(
+                    ["git", "fetch", "upstream", "--quiet"],
+                    capture_output=True, timeout=10, cwd=str(repo_dir),
+                )
+            remote_ref = f"origin/{current_branch}"
+            counts = [
+                _git_stdout(["rev-list", "--count", f"HEAD..{remote_ref}"], cwd=repo_dir)
+            ]
+            if upstream_url:
+                counts.append(
+                    _git_stdout(
+                        ["rev-list", "--count", f"{remote_ref}..upstream/main"],
+                        cwd=repo_dir,
+                    )
+                )
+            parsed = [int(value) for value in counts if value is not None]
+            return sum(parsed) if parsed else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return None
+
     try:
         # Self-heal abandoned git lock files before fetching. A stale
         # .git/shallow.lock from a crashed fetch makes the fetch fail, the

@@ -6,6 +6,7 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -83,6 +84,11 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "switch to the requested branch first (auto-stashing any "
             "uncommitted changes)."
         ),
+    )
+    update_parser.add_argument(
+        "--target-sha",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     update_parser.add_argument(
         "--switch-branch",
