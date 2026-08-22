@@ -148,7 +148,11 @@
         "commits": [
           "bdc36447610a96f8d2d18adbf2f307c348d48699"
         ]
-      }
+      },
+      "references": [
+        "DEVLOG.md",
+        "docs/refs/2026-08-22-axiom-regeneration-audit.md"
+      ]
     },
     {
       "id": "forge-integration",
