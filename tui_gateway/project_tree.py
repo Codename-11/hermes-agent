@@ -564,6 +564,7 @@ def build_tree(
     *,
     preview_limit: int = 3,
     hydrate: bool = False,
+    active_session_id: Optional[str] = None,
     is_junk_root: Optional[Callable[[str], bool]] = None,
     is_junk_cwd: Optional[Callable[[str], bool]] = None,
     exists: Optional[Exists] = None,
@@ -609,7 +610,13 @@ def build_tree(
         if preview_limit <= 0:
             return []
         ordered = sorted(project_sessions, key=_session_time, reverse=True)
-        return ordered[:preview_limit]
+        preview = ordered[:preview_limit]
+        active = next((session for session in ordered if session.get("id") == active_session_id), None)
+        if active is not None and all(session.get("id") != active_session_id for session in preview):
+            # Keep the preview bounded while guaranteeing that the conversation
+            # the user is currently in never disappears behind recency.
+            preview = [*preview[: max(0, preview_limit - 1)], active]
+        return preview
 
     def _last_active(project_sessions: list[dict]) -> float:
         return max((_session_time(s) for s in project_sessions), default=0.0)
