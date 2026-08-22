@@ -301,7 +301,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. Unknown values fail closed to `"none"`. |
+| `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `false` | When enabled, bot-authored messages must contain a literal `<@HermesBotID>` mention. Discord reply chips do not count, preventing two auto-replying bots from waking each other indefinitely. Human messages are unaffected. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -319,10 +320,10 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
 
-:::warning Bot-to-bot conversation is not supported
-`DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to let two Hermes profiles talk to each other. The default, `"none"`, ignores all other bots and is the safe setting.
+:::warning Bot-to-bot admission is opt-in
+`DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to create an unrestricted conversation mesh. The default, `"none"`, ignores all other bots and is the safe setting.
 
-Wiring multiple Hermes profiles to reply to one another in a shared channel — by setting `"mentions"` or `"all"` across several profiles — is an unsupported topology. Discord auto-`@mentions` the replied-to author on every reply, so under `"mentions"` two bots will satisfy each other's mention gate indefinitely and ack-loop. There is no circuit breaker for this because the supported configuration is simply to leave `DISCORD_ALLOW_BOTS` at `"none"`. If you must accept a particular bot, scope the acceptance narrowly and never to another auto-replying agent.
+Discord can add the replied-to bot to `message.mentions` even when the author did not type an inline mention. If multiple bots may reply in one room, set `discord.bots_require_inline_mention: true` (or `DISCORD_BOTS_REQUIRE_INLINE_MENTION=true`). Then only a literal `<@bot-id>` in a bot-authored message can trigger Hermes; a reply chip alone cannot continue a loop. This is a narrow admission guard, not a rate limiter: keep `allow_bots` at `none` unless bot input is required, prefer `mentions` over `all`, and only admit trusted bots.
 :::
 
 ### Config File (`config.yaml`)
@@ -336,6 +337,8 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  allow_bots: none                # none | mentions | all (invalid values fail closed)
+  bots_require_inline_mention: false  # Set true in multi-bot rooms to reject reply-chip-only triggers
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
