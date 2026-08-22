@@ -105,6 +105,24 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_script_relative_path_can_use_owner_profile_home(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        profile_home = cron_env / "profiles" / "sentinel"
+        script = profile_home / "scripts" / "sentinel_probe.py"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            "import os\n"
+            "print(os.environ.get('HERMES_HOME'))\n",
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script(
+            "sentinel_probe.py", hermes_home=profile_home
+        )
+        assert success is True
+        assert output == str(profile_home)
+
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
