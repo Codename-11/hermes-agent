@@ -295,34 +295,79 @@
       ]
     },
     {
-      "checks": [],
+      "checks": [
+        {
+          "argv": [
+            "npx",
+            "vitest",
+            "run",
+            "--project",
+            "ui",
+            "src/store/gateway-switch.test.ts",
+            "src/store/projects.test.ts",
+            "src/app/chat/sidebar/sessions-section.test.tsx"
+          ],
+          "covers": [
+            "apps/desktop/src/store/gateway-switch.test.ts",
+            "apps/desktop/src/store/projects.test.ts",
+            "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx"
+          ],
+          "cwd": "apps/desktop",
+          "env": {
+            "NODE_ENV": "test"
+          },
+          "id": "desktop-gateway-scoped-projects-tests"
+        }
+      ],
       "contract": {
-        "heading": "Axiom Desktop hybrid Projects overview and typed project paths",
+        "heading": "Axiom Desktop gateway-scoped Projects overview",
         "path": "FORK.md"
       },
-      "depends_on": [
-        "desktop-remote-profile-handles"
-      ],
+      "depends_on": [],
       "domain_id": "desktop-projects-and-worktrees",
       "id": "desktop-hybrid-projects",
       "order": 70,
       "ownership": "core",
-      "paths": [],
+      "paths": [
+        "apps/desktop/src/app/chat/sidebar/index.tsx",
+        "apps/desktop/src/app/chat/sidebar/sessions-section.tsx",
+        "apps/desktop/src/store/gateway-switch.ts",
+        "apps/desktop/src/store/projects.ts"
+      ],
       "provenance": [
         {
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
-          "revision": "001f984b5c49652e461b7779ddd651d5fc251a64"
+          "revision": "ed92f8e30a763556a5ca52551b9b0b8742ddd219"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "e3d1edfddbaa059c0316128a48e2f36941e8d779"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1cdb462010720d26010fbf6fab2f4412cd86b4e5"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "7a0949c03bce43fa689b8c6bfc5dc4689d3a1f66"
         }
       ],
-      "retirement": "Retired; current upstream Desktop is authoritative. Reintroduce only as a new isolated carry with live remote E2E proof.",
-      "status": "retired",
-      "summary": "Keep Projects primary beside separate Recent Sessions, typed local/remote project paths, source filtering, and pinned remote-profile project discovery.",
-      "tests": [],
-      "title": "Axiom Desktop hybrid Projects overview and typed project paths",
+      "status": "active",
+      "summary": "Keep Projects separate from Recent Sessions and scope all project state strictly to the selected gateway, including explicit project-cache invalidation on soft gateway switches.",
+      "tests": [
+        "apps/desktop/src/store/gateway-switch.test.ts",
+        "apps/desktop/src/store/projects.test.ts",
+        "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx"
+      ],
+      "title": "Axiom Desktop gateway-scoped Projects overview",
       "notes": [
-        "Retired 2026-08-21: exact upstream Desktop is the deploy authority after live control passed and the fork Desktop carry stack regressed remote profiles/sessions."
-      ]
+        "Reactivated 2026-08-22 as a narrow core carry after live remote \u2192 This device testing exposed stale cross-gateway project state. The retired profile-pinned remote fan-out policy must not be restored."
+      ],
+      "retirement": "Retire when upstream clears and generation-invalidates every gateway-owned project projection on soft source switches and preserves a separate Recent Sessions lane whenever project grouping is selected, including empty/loading trees."
     },
     {
       "checks": [],

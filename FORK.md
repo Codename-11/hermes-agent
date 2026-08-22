@@ -368,11 +368,12 @@ npm run typecheck
 
 Drop condition: upstream scopes dashboard PTY keep-alive identity by profile, or the backend binds and validates every attachment token against immutable profile metadata.
 
-## Axiom Desktop hybrid Projects overview and typed project paths
+## Axiom Desktop gateway-scoped Projects overview
 
-Axiom carries a focused Desktop information-architecture and session-ownership
-layer while upstream's Projects UX remains in flux. Source carry for pinned
-remote-profile discovery: `001f984b5c`.
+Axiom carries a focused Desktop information-architecture and gateway-scoped
+project ownership layer while upstream's Projects UX remains in flux. Projects
+are authoritative only for the currently selected gateway; registered gateways
+are never background-fanned into another gateway's project tree.
 
 - Projects stay the primary lane in grouped mode, followed by a separate flat
   **Recent Sessions** lane in the same overview. The recent lane reuses the
@@ -411,17 +412,22 @@ remote-profile discovery: `001f984b5c`.
   remote mode routes through the active profile's authenticated
   `POST /api/fs/ensure-directory`. Typing and directory browsing never mutate
   disk, and failures remain in the dialog with a visible error.
-- In **All Profiles**, the local `/api/profiles/projects/tree` aggregate is only
-  authoritative for profiles whose databases live on that gateway. Local
-  handles pinned to remote gateways are queried through their own background
-  profile sockets and merged into the same tree without changing the foreground
-  profile; their session rows remain tagged with the local handle used by the
-  profile rail.
+- In **All Profiles**, `/api/profiles/projects/tree` aggregates only profiles
+  whose databases live on the selected gateway. `This device` therefore never
+  paints projects from registered remotes, and a selected remote never paints
+  local projects. Switching gateways explicitly clears `$projects`,
+  `$projectTree`, active/scope/capability state, project tombstones, and request
+  generations before the new gateway refreshes; a late response from the old
+  gateway cannot repaint its projects after the switch.
+- Project grouping remains a presentation mode even when the selected gateway's
+  tree is empty or loading. Flat session rows stay under **Recent Sessions** and
+  never fall through directly beneath the **Projects** heading.
 
 Protected files: `apps/desktop/src/app/chat/sidebar/{index,sessions-section,project-dialog,
 session-actions-menu,session-row}.tsx`, `apps/desktop/src/app/chat/sidebar/projects/
 {overview-row,workspace-header}.tsx`,
-`apps/desktop/src/{lib/desktop-fs.ts,lib/session-source.ts,store/projects.ts}`,
+`apps/desktop/src/{lib/desktop-fs.ts,lib/session-source.ts,store/projects.ts,
+store/gateway-switch.ts}`,
 `apps/desktop/src/app/{session/hooks/use-session-list-actions,shell/hooks/use-statusbar-items}.tsx`, the matching
 Desktop tests/locales/bridge declarations, `hermes_cli/{session_source_policy,
 web_models,web_server}.py`, `tui_gateway/{server,methods_config,methods_session,
@@ -441,7 +447,7 @@ NODE_ENV=test ../../node_modules/.bin/vitest run --project ui \
   src/app/shell/hooks/use-statusbar-items.test.tsx \
   src/app/session/hooks/use-session-list-actions.test.tsx \
   src/lib/desktop-fs.test.ts src/lib/session-source.test.ts \
-  src/store/projects.test.ts
+  src/store/projects.test.ts src/store/gateway-switch.test.ts
 npm run typecheck
 
 cd ../..

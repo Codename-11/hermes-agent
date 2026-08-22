@@ -1,5 +1,34 @@
 # Hermes Agent — Dev Log
 
+## 2026-08-22 — Scope Desktop projects to the selected gateway
+
+### Summary
+
+Kept the grouped Projects/Recent Sessions overview while making gateway
+selection the hard project-data boundary. `This device` no longer retains or
+fans in projects from a previously selected or merely registered remote.
+
+### Details
+
+- Removed the old profile-pinned remote project fan-out policy. All Profiles
+  means every profile hosted by the selected gateway, not every registered
+  gateway.
+- Added project state to the established soft gateway-switch wipe, including
+  request-generation invalidation so late responses from the previous gateway
+  cannot repaint its tree.
+- Preserved project overview presentation for empty/loading trees, keeping flat
+  sessions under a separate Recent Sessions heading.
+- Kept Hybrid Projects removed from Axiom Enhancements; this is a narrow core
+  sidebar/state carry because the full project feature set is core-owned.
+
+### Verification
+
+- Gateway-switch wipe regressions: 2 passing.
+- Selected-gateway project regressions: 2 passing.
+- Projects/Recent Sessions presentation regressions: 5 passing.
+- Packaged and hash-verified Desktop `7a0949c03b`; live remote → This device
+  switch cleared remote project rows and they did not return after refresh.
+
 ## 2026-08-19 — Move detailed fork disparity into Axiom Enhancements
 
 ### Summary
