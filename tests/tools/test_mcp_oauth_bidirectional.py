@@ -120,6 +120,71 @@ async def test_hermes_provider_forwards_asend_values(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cached_token_does_not_lock_concurrent_streaming_requests(tmp_path, monkeypatch):
+    """A valid cached token must not hold the OAuth lock across an MCP stream.
+
+    Streamable HTTP responses may remain open after their first SSE message. If
+    the SDK provider holds ``context.lock`` across ``yield request``, a second
+    MCP POST (for example ``tools/list`` after ``initialize``) deadlocks while
+    waiting for that lock.
+    """
+    import asyncio
+    import httpx
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="cached_access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="cached_refresh",
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    flow1 = provider.async_auth_flow(httpx.Request("POST", "https://example.com/mcp"))
+    outbound1 = await flow1.__anext__()
+
+    flow2 = provider.async_auth_flow(httpx.Request("POST", "https://example.com/mcp"))
+    outbound2 = await asyncio.wait_for(flow2.__anext__(), timeout=0.25)
+
+    assert outbound1.headers["Authorization"] == "Bearer cached_access"
+    assert outbound2.headers["Authorization"] == "Bearer cached_access"
+
+    for flow, outbound in ((flow1, outbound1), (flow2, outbound2)):
+        with pytest.raises(StopAsyncIteration):
+            await flow.asend(httpx.Response(200, request=outbound))
+
+
+@pytest.mark.asyncio
 async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypatch):
     """A 401 response MUST flow into the inner generator and trigger the
     SDK's 401 recovery branch.
