@@ -16,6 +16,7 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $projectTreeLoading,
   $removedSessionIds,
   $sessionMutationsInFlight,
   $worktreeRefreshToken,
@@ -181,7 +182,11 @@ describe('projects RPC profile forwarding', () => {
 
   it('reads projects from the browsed profile without following the focused chat profile', async () => {
     const lucyRequest = vi.fn()
-    const victorRequest = vi.fn(async () => ({ active_id: null, projects: [], scoped_session_ids: [] }))
+    const victorRequest = vi.fn(async () => ({
+      active_id: 'p_victor',
+      projects: [{ id: 'p_victor', label: 'Victor project', path: '/victor', repos: [], sessionCount: 1 }],
+      scoped_session_ids: ['victor-session']
+    }))
     const lucyGateway = { connectionState: 'open', request: lucyRequest }
     const victorGateway = { connectionState: 'open', request: victorRequest }
 
@@ -201,6 +206,8 @@ describe('projects RPC profile forwarding', () => {
       profile: 'victor'
     })
     expect(lucyRequest).not.toHaveBeenCalled()
+    expect($projectTree.get().map(project => project.label)).toEqual(['Victor project'])
+    expect($projectTreeLoading.get()).toBe(false)
   })
 
   it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {

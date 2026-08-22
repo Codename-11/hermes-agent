@@ -22,6 +22,7 @@ import { persistentAtom } from '@/lib/persisted'
 import {
   $gateway,
   activeGateway,
+  ensureActiveGatewayOpen,
   gatewayForAgent,
   openGatewayForAgent
 } from '@/store/gateway'
@@ -530,7 +531,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
   const generation = ++projectTreeRefreshGeneration
   const { gateway, profile } = context
 
-  if (activeGateway() === gateway) {
+  if (stillOnProjectsContext(context)) {
     $projectTreeLoading.set(true)
   }
 
@@ -558,7 +559,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       markProjectsRpcFailure(err)
     }
   } finally {
-    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+    if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
       $projectTreeLoading.set(false)
     }
   }
