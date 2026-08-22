@@ -13782,11 +13782,33 @@ def _discover_repos_payload(
     return out
 
 
-# Sources excluded from the project tree: cron runs, and kanban dispatcher
-# workers, are not user conversations. Subagent/compression children are
-# already dropped by list_sessions_rich(include_children=False); cron has its
-# own section, and kanban runs are read on the board.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban"]
+def _list_project_tree_sessions(db) -> list[dict]:
+    """Return only human/local conversations eligible for Projects and Home.
+
+    This is an allowlist on purpose. Messaging adapters and automation runners
+    grow over time; an unknown future source must not silently become a Home
+    conversation. Search and source-specific history surfaces still query the
+    underlying database independently.
+    """
+    from hermes_cli.session_source_policy import PROJECT_CONVERSATION_SOURCES
+
+    rows = db.list_sessions_rich(
+        sources=list(PROJECT_CONVERSATION_SOURCES),
+        # Membership is computed over one complete compact result set. A
+        # presentation window must never decide whether an older conversation
+        # is claimed by a Project (or falls through to Home/Recent).
+        limit=-1,
+        offset=0,
+        order_by_last_active=True,
+        min_message_count=1,
+        include_children=False,
+        include_archived=False,
+        # `_project_tree_row` keeps ~18 fields and drops the rest, so selecting
+        # the system-prompt blob only to discard it costs tens of MB of B-tree
+        # reads per build on a long-lived database.
+        compact_rows=True,
+    )
+    return [_project_tree_row(r) for r in rows]
 
 
 def _project_tree_row(r: dict) -> dict:
@@ -13827,9 +13849,7 @@ def _project_tree_row(r: dict) -> dict:
     }
 
 
-def _project_tree_inputs(
-    db, session_limit: int, *, include_discovered: bool
-) -> tuple[list[dict], list[dict], list[dict], str | None]:
+def _project_tree_inputs(db, *, include_discovered: bool) -> tuple[list[dict], list[dict], list[dict], str | None]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
 
     ``include_discovered`` is the zero-session-repo overview tier; the entered
@@ -13837,20 +13857,7 @@ def _project_tree_inputs(
     which already has sessions — avoiding the distinct-cwd scan + git probes on
     that per-turn path. One projects.db connection serves both reads.
     """
-    rows = db.list_sessions_rich(
-        limit=session_limit,
-        offset=0,
-        order_by_last_active=True,
-        min_message_count=1,
-        include_children=False,
-        exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
-        include_archived=False,
-        # `_project_tree_row` keeps ~18 fields and drops the rest, so selecting
-        # the system-prompt blob only to discard it costs tens of MB of B-tree
-        # reads per build on a long-lived database.
-        compact_rows=True,
-    )
-    sessions = [_project_tree_row(r) for r in rows]
+    sessions = _list_project_tree_sessions(db)
     # Parallel-warm the git cache so build_tree's resolver reads it instead of
     # cold-probing each cwd in sequence (matters on the drill-in path, which
     # skips the discovery warm-up below).
@@ -13906,15 +13913,18 @@ def _dir_exists_cached(path: str) -> bool:
 
 
 def _build_project_tree(
-    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
+    db,
+    *,
+    preview_limit: int,
+    hydrate: bool,
+    include_discovered: bool,
+    active_session_id: str | None = None,
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
 
     _DIR_EXISTS_CACHE.clear()
-    sessions, projects, discovered, active_id = _project_tree_inputs(
-        db, session_limit, include_discovered=include_discovered
-    )
+    sessions, projects, discovered, active_id = _project_tree_inputs(db, include_discovered=include_discovered)
     # build_tree resolves every declared project folder and every discovered
     # repo root too, and those paths are not session cwds — without this they
     # are the one part of the build still probing git one directory at a time.
@@ -13929,6 +13939,7 @@ def _build_project_tree(
         _resolve_cwd_git,
         preview_limit=preview_limit,
         hydrate=hydrate,
+        active_session_id=active_session_id,
         is_junk_root=_is_repo_junk,
         is_junk_cwd=_is_session_cwd_junk,
         exists=_dir_exists_cached,

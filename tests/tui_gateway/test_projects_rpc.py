@@ -202,7 +202,7 @@ def test_tree_build_warms_every_path_it_will_resolve(monkeypatch, tmp_path):
     monkeypatch.setattr(git_probe, "warm_roots", recording_warm)
 
     server._build_project_tree(
-        server._get_db(), preview_limit=3, hydrate=False, session_limit=5, include_discovered=True
+        server._get_db(), preview_limit=3, hydrate=False, include_discovered=True
     )
 
     assert str(repo) in warmed

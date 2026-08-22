@@ -410,6 +410,31 @@ def test_overview_drops_session_rows_but_keeps_counts_and_previews():
     assert project["repos"][0]["sessionCount"] == 4
 
 
+def test_overview_preview_stays_bounded_and_always_includes_the_active_session():
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    sessions = []
+    for i in range(8):
+        session = _session("/repo", branch="main")
+        session["id"] = f"session-{i}"
+        session["last_active"] = 100 - i
+        sessions.append(session)
+
+    tree = pt.build_tree(
+        [],
+        sessions,
+        [],
+        resolve,
+        preview_limit=5,
+        hydrate=False,
+        active_session_id="session-7",
+    )
+    preview_ids = [session["id"] for session in tree["projects"][0]["previewSessions"]]
+
+    assert len(preview_ids) == 5
+    assert preview_ids[:4] == ["session-0", "session-1", "session-2", "session-3"]
+    assert preview_ids[-1] == "session-7"
+
+
 def test_discovered_repo_with_no_sessions_becomes_zero_session_project():
     discovered = [{"root": "/www/fresh", "label": "fresh", "sessions": 0, "last_active": 5}]
 
