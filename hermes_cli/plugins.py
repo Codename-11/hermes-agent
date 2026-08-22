@@ -2124,10 +2124,18 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        *,
+        subcommands: tuple[str, ...] | None = None,
+        category: str = "Plugin",
+        gateway_only: bool = False,
+        cli_only: bool = False,
+        aliases: tuple[str, ...] = (),
+        returns_card: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
-        The handler signature is ``fn(raw_args: str) -> str | None``.
+        The handler signature is ``fn(raw_args: str) -> str | None`` or may
+        return an InfoCard dict when ``returns_card=True``.
         It may also be an async callable — the gateway dispatch handles both.
 
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
@@ -2140,6 +2148,10 @@ class PluginContext:
         command picker. Plugin commands without ``args_hint`` register as
         parameterless in Discord and still accept trailing text when invoked
         as free-form chat.
+
+        The remaining metadata describes completion/help visibility and lets
+        TUI dispatch keep gateway-only commands and structured card results on
+        the plugin path rather than sending them through the CLI slash worker.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -2171,6 +2183,16 @@ class PluginContext:
             "plugin": self.manifest.name,
             "plugin_key": self.manifest.key or self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "subcommands": tuple(subcommands) if subcommands else (),
+            "category": category,
+            "gateway_only": bool(gateway_only),
+            "cli_only": bool(cli_only),
+            "aliases": tuple(
+                alias.lower().strip().lstrip("/").replace(" ", "-")
+                for alias in aliases
+                if alias and alias.strip()
+            ),
+            "returns_card": bool(returns_card),
         }
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(
@@ -6581,6 +6603,11 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_command_entry(name: str) -> Optional[Dict[str, Any]]:
+    """Return the full registry entry for a plugin-registered slash command."""
+    return _ensure_plugins_discovered()._plugin_commands.get(name)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

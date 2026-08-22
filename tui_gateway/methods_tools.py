@@ -481,13 +481,26 @@ def _(rid, params: dict) -> dict:
 
     try:
         from hermes_cli.plugins import (
-            get_plugin_command_handler,
+            get_plugin_command_entry,
             resolve_plugin_command_result,
         )
 
-        handler = get_plugin_command_handler(name)
-        if handler:
-            result = resolve_plugin_command_result(handler(arg))
+        entry = get_plugin_command_entry(name)
+        if entry:
+            handler = entry["handler"]
+            try:
+                raw_result = handler(
+                    arg,
+                    session_id=session.get("session_key", "") if session else "",
+                )
+            except TypeError:
+                raw_result = handler(arg)
+            result = resolve_plugin_command_result(raw_result)
+            if entry.get("returns_card") or isinstance(result, dict):
+                from gateway.cards import is_card, render_card_as_text
+
+                if is_card(result):
+                    result = render_card_as_text(result)
             return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
         pass
@@ -1212,23 +1225,42 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
 
-    plugin_handler = None
+    plugin_entry = None
     resolve_plugin_command_result = None
     if _cmd_base:
         try:
             from hermes_cli.plugins import (
-                get_plugin_command_handler,
+                get_plugin_command_entry,
                 resolve_plugin_command_result,
             )
 
-            plugin_handler = get_plugin_command_handler(_cmd_base)
+            plugin_entry = get_plugin_command_entry(_cmd_base)
         except Exception:
-            plugin_handler = None
+            plugin_entry = None
             resolve_plugin_command_result = None
 
-    if plugin_handler and resolve_plugin_command_result:
+    if plugin_entry and resolve_plugin_command_result:
+        if plugin_entry.get("gateway_only"):
+            return _err(
+                rid,
+                4018,
+                f"gateway-only plugin command: use command.dispatch for /{_cmd_base}",
+            )
         try:
-            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            handler = plugin_entry["handler"]
+            try:
+                raw_result = handler(
+                    _cmd_arg,
+                    session_id=session.get("session_key", ""),
+                )
+            except TypeError:
+                raw_result = handler(_cmd_arg)
+            result = resolve_plugin_command_result(raw_result)
+            if plugin_entry.get("returns_card") or isinstance(result, dict):
+                from gateway.cards import is_card, render_card_as_text
+
+                if is_card(result):
+                    result = render_card_as_text(result)
             return _ok(rid, {"output": str(result or "(no output)")})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
