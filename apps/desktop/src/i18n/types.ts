@@ -1800,6 +1800,7 @@ export interface Translations {
     results: string
     pinned: string
     sessions: string
+    recentSessions: string
     cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
