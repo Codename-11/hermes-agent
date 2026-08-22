@@ -1641,6 +1641,7 @@ export const ar = defineLocale({
     results: 'النتائج',
     pinned: 'المثبتة',
     sessions: 'الجلسات',
+    recentSessions: 'الجلسات الأخيرة',
     cronJobs: 'المهام المجدولة',
     groupAriaGrouped: 'الجلسات مجمعة حسب مساحة العمل',
     groupAriaUngrouped: 'الجلسات غير مجمعة',

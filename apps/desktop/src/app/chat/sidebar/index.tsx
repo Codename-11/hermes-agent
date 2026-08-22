@@ -1812,7 +1812,7 @@ export function ChatSidebar({
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
-                projectOverviewRecentsLabel={projectOverview ? 'Recent Sessions' : undefined}
+                projectOverviewRecentsLabel={projectOverview ? s.recentSessions : undefined}
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
