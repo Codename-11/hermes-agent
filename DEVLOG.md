@@ -22,6 +22,9 @@ fans in projects from a previously selected or merely registered remote.
 - Routed project RPCs by the sidebar browse identity rather than the focused
   chat socket. This fixes Victor projects disappearing while a Lucy chat is
   focused without stealing foreground chat routing.
+- Replaced the remaining focused-socket loader guard with the browsed project
+  context, preventing a completed Victor tree request from leaving the Projects
+  section skeletonized.
 - Preserved project overview presentation for empty/loading trees, keeping flat
   sessions under a separate Recent Sessions heading.
 - Kept Hybrid Projects removed from Axiom Enhancements; this is a narrow core
@@ -31,10 +34,10 @@ fans in projects from a previously selected or merely registered remote.
 
 - Gateway-switch wipe regressions: 2 passing.
 - Connection selection/reload regressions: 12 passing.
-- Combined project/connection/gateway-switch routing regressions: 58 passing.
+- Combined project/connection/gateway-switch routing regressions: 62 passing.
 - Selected-gateway project regressions: 2 passing.
 - Projects/Recent Sessions presentation regressions: 5 passing.
-- Packaged and hash-verified Desktop `5c77ad67d7`; live remote → This device
+- Packaged and hash-verified Desktop `3f02bd658a`; live remote → This device
   switching clears remote project rows. The post-wipe remote repopulation path is
   covered by the connection-selection suite and awaits operator UI confirmation.
 

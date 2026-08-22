@@ -429,6 +429,9 @@ are never background-fanned into another gateway's project tree.
   Focusing a Lucy chat while browsing Victor must not redirect or discard
   Victor's project tree; the background Victor socket is read without changing
   foreground chat routing.
+- Project loading state uses that same browsed-route guard for both start and
+  completion. A successful background profile request must clear its skeleton
+  even when its socket is not the focused-chat socket.
 - Project grouping remains a presentation mode even when the selected gateway's
   tree is empty or loading. Flat session rows stay under **Recent Sessions** and
   never fall through directly beneath the **Projects** heading.
