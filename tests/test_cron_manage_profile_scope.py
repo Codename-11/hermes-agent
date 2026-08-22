@@ -1,10 +1,10 @@
-"""cron.manage optional ``profile`` param — per-profile store scoping.
+"""cron.manage optional ``profile`` param — shared-store owner scoping.
 
 Mirrors ``skills.manage`` / ``mcp.catalog``: when a ``profile`` is passed the
 handler resolves ``get_profile_dir(profile)`` and wraps the action dispatch in
 ``set_hermes_home_override`` / ``reset_hermes_home_override``. Because
-``cronjob()`` -> ``list_jobs()`` keys off ``get_hermes_home()``, the list action
-must then read THAT profile's ``cron/jobs.json``, not the launch profile's.
+``cronjob()`` -> ``list_jobs()`` keys visibility off ``get_hermes_home()``, the
+list action must then select THAT owner's rows from the shared root registry.
 """
 
 import json
@@ -13,9 +13,10 @@ from tui_gateway import server
 
 
 def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
-    # A temp profile home with one job in its cron store.
+    # A temp profile home with one owned row in the shared root cron store.
     profile_home = tmp_path / "profiles" / "botA"
-    cron_dir = profile_home / "cron"
+    profile_home.mkdir(parents=True)
+    cron_dir = tmp_path / "cron"
     cron_dir.mkdir(parents=True)
     (cron_dir / "jobs.json").write_text(
         json.dumps(
@@ -26,6 +27,9 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
                         "name": "botA-only-job",
                         "prompt": "scoped hello",
                         "enabled": True,
+                        "owner_profile": "bota",
+                        "profile": "bota",
+                        "scope": "profile",
                     }
                 ]
             }
