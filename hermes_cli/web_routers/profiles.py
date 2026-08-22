@@ -618,7 +618,11 @@ def _merge_profile_tree(
 
 
 @sessions_router.get("/api/profiles/projects/tree")
-def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000):
+def get_profiles_projects_tree(
+    preview_limit: int = 5,
+    session_limit: int = 2000,
+    active_session_id: Optional[str] = None,
+):
     """Project tree for every profile at once, for the all-profiles sidebar.
 
     ``projects.tree`` over JSON-RPC answers for the backend's own profile, so
@@ -673,8 +677,8 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
                 db,
                 preview_limit=preview_limit,
                 hydrate=False,
-                session_limit=session_limit,
                 include_discovered=False,
+                active_session_id=active_session_id,
             )
             _merge_profile_tree(merged, tree["projects"], name, preview_limit)
             scoped_session_ids.extend(tree["scoped_session_ids"])
