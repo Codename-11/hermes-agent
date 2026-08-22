@@ -673,10 +673,59 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
     const activeSessionId = $selectedStoredSessionId.get()
     const activeQuery = activeSessionId ? `&active_session_id=${encodeURIComponent(activeSessionId)}` : ''
 
-    const res = await hermesApi<ProjectTreePayload>({
+    const local = await hermesApi<ProjectTreePayload>({
       path: `/api/profiles/projects/tree?preview_limit=${PROJECT_QUICK_PREVIEW_LIMIT}${activeQuery}`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
+
+    // The active aggregate can inspect only profile databases hosted by that
+    // gateway. A profile-pinned remote is a local handle whose projects.db
+    // lives elsewhere, so query those handles directly without activating them.
+    const pinnedRemoteProfiles = (
+      await Promise.all(
+        $profiles.get().map(async profile => {
+          const connection = await window.hermesDesktop.getConnection(profile.name).catch(() => null)
+
+          return connection?.mode === 'remote' && connection.source === 'profile' ? profile.name : null
+        })
+      )
+    ).filter((profile): profile is string => Boolean(profile))
+
+    const remotePayloads = await Promise.all(
+      pinnedRemoteProfiles.map(async profile => {
+        try {
+          await openGatewayForProfile(profile)
+          const gateway = gatewayForProfile(profile)
+
+          if (!gateway || gateway.connectionState !== 'open') {
+            return null
+          }
+
+          const payload = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
+            preview_limit: PROJECT_QUICK_PREVIEW_LIMIT,
+            active_session_id: activeSessionId
+          })
+
+          return { payload, profile }
+        } catch {
+          return null
+        }
+      })
+    )
+
+    const remotes = remotePayloads.filter((item): item is NonNullable<typeof item> => Boolean(item))
+
+    const res: ProjectTreePayload = {
+      active_id: local.active_id,
+      projects: mergeProjectTrees([
+        local.projects ?? [],
+        ...remotes.map(({ payload, profile }) => tagProjectTreeProfile(payload.projects ?? [], profile))
+      ]),
+      scoped_session_ids: [
+        ...(local.scoped_session_ids ?? []),
+        ...remotes.flatMap(({ payload }) => payload.scoped_session_ids ?? [])
+      ]
+    }
 
     // A profile switch mid-flight leaves this payload describing the wrong
     // scope; the newer refresh owns the tree.
