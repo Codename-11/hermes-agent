@@ -75,7 +75,7 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
         assert captured == {
             "job_id": "worker-job",
             "runtime_home": worker_home,
-            "jobs_file": worker_home / "cron" / "jobs.json",
+            "jobs_file": default_home / "cron" / "jobs.json",
         }
         assert scheduler._get_hermes_home() == default_home
     finally:
@@ -123,7 +123,7 @@ def test_create_registers_scheduler_inside_target_profile(
 
     assert captured["job"]["id"] == job["id"]
     assert captured["runtime_home"] == worker_home
-    assert captured["jobs_file"] == worker_home / "cron" / "jobs.json"
+    assert captured["jobs_file"] == isolated_profiles["default"] / "cron" / "jobs.json"
     assert job["profile"] == "worker_alpha"
 
 
@@ -206,7 +206,7 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
         web_server._notify_cron_provider_for_profile("worker_alpha")
         assert captured == {
             "runtime_home": worker_home,
-            "jobs_file": worker_home / "cron" / "jobs.json",
+            "jobs_file": default_home / "cron" / "jobs.json",
         }
         assert scheduler._get_hermes_home() == default_home
     finally:
@@ -566,7 +566,7 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
     assert fired == [
         {
             "job_id": selected["id"],
-            "jobs_file": isolated_profiles["worker_alpha"] / "cron" / "jobs.json",
+            "jobs_file": isolated_profiles["default"] / "cron" / "jobs.json",
             "force": False,
         }
     ]
@@ -1162,8 +1162,10 @@ async def test_create_cron_job_without_profile_uses_backend_own_profile(
     )
 
     assert job["profile"] == "worker_alpha"
-    assert (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
-    assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    assert not (
+        isolated_profiles["worker_alpha"] / "cron" / "jobs.json"
+    ).exists()
 
 
 @pytest.mark.asyncio
