@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import {
-  $activeGatewayProfile,
+  $browsedProfile,
   $showAllProfiles,
   setShowAllProfiles
 } from '@/store/profile'
-import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import { $connection, $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
   $activeProjectId,
@@ -60,7 +60,9 @@ vi.mock('@/lib/desktop-fs', () => ({
 vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
-  ensureActiveGatewayOpen: vi.fn()
+  ensureActiveGatewayOpen: vi.fn(),
+  gatewayForAgent: vi.fn(),
+  openGatewayForAgent: vi.fn(async () => undefined)
 }))
 
 vi.mock('@/lib/desktop-git', async importOriginal => ({
@@ -84,6 +86,8 @@ const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 
 const gw = await import('@/store/gateway')
 const activeGateway = vi.mocked(gw.activeGateway)
+const gatewayForAgent = vi.mocked(gw.gatewayForAgent)
+gatewayForAgent.mockImplementation(() => activeGateway())
 const gatewayAtom = gw.$gateway
 
 
@@ -145,9 +149,10 @@ describe('project scope', () => {
 describe('projects RPC profile forwarding', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    $activeGatewayProfile.set('default')
+    $browsedProfile.set('default')
     $activeProjectId.set(null)
     $projectTree.set([])
+    $connection.set(null)
     setShowAllProfiles(false)
   })
 
@@ -156,18 +161,46 @@ describe('projects RPC profile forwarding', () => {
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)
-    $activeGatewayProfile.set('  coder  ')
+    $browsedProfile.set('  coder  ')
 
     await refreshProjects()
     await refreshProjectTree()
     await fetchProjectSessions('p_123')
 
     expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
-    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', {
+      active_session_id: null,
+      preview_limit: 5,
+      profile: 'coder'
+    })
     expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
       profile: 'coder',
       project_id: 'p_123'
     })
+  })
+
+  it('reads projects from the browsed profile without following the focused chat profile', async () => {
+    const lucyRequest = vi.fn()
+    const victorRequest = vi.fn(async () => ({ active_id: null, projects: [], scoped_session_ids: [] }))
+    const lucyGateway = { connectionState: 'open', request: lucyRequest }
+    const victorGateway = { connectionState: 'open', request: victorRequest }
+
+    $connection.set({ connectionId: 'remote', mode: 'remote', profile: 'lucy' })
+    activeGateway.mockReturnValue(lucyGateway as never)
+    gatewayForAgent.mockImplementationOnce((_connectionId, profile) =>
+      profile === 'victor' ? (victorGateway as never) : (lucyGateway as never)
+    )
+    $browsedProfile.set('victor')
+
+    await refreshProjectTree()
+
+    expect(gatewayForAgent).toHaveBeenCalledWith('remote', 'victor')
+    expect(victorRequest).toHaveBeenCalledWith('projects.tree', {
+      active_session_id: null,
+      preview_limit: 5,
+      profile: 'victor'
+    })
+    expect(lucyRequest).not.toHaveBeenCalled()
   })
 
   it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {
@@ -565,7 +598,7 @@ describe('projects RPC capability', () => {
 describe('repository discovery policy', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    $activeGatewayProfile.set('default')
+    $browsedProfile.set('default')
     isDesktopFsRemoteMode.mockReturnValue(false)
   })
 
@@ -767,12 +800,12 @@ describe('repository discovery policy', () => {
         repo_scan_roots: ['/work']
       }
     })
-    $activeGatewayProfile.set('launch')
+    $browsedProfile.set('launch')
     $projectTree.set([])
 
     const pending = scanAndRecordRepos()
     await scanStarted
-    $activeGatewayProfile.set('coder')
+    $browsedProfile.set('coder')
     resolveScan([{ label: 'repo', root: '/work/repo' }])
     await pending
 
@@ -789,7 +822,7 @@ describe('repository discovery policy', () => {
 describe('project tree profile isolation', () => {
   beforeEach(() => {
     setShowAllProfiles(false)
-    $activeGatewayProfile.set('default')
+    $browsedProfile.set('default')
     $projects.set([])
     $projectTree.set([])
   })
@@ -818,7 +851,7 @@ describe('project tree profile isolation', () => {
 
     const pendingA = refreshProjectTree()
     current = gatewayB
-    $activeGatewayProfile.set('profile-b')
+    $browsedProfile.set('profile-b')
     gatewayAtom.set(gatewayB as never)
     await refreshProjectTree()
     resolveA?.({
@@ -848,7 +881,7 @@ describe('project tree profile isolation', () => {
     gatewayAtom.set(gateway as never)
 
     const pendingDefault = refreshProjects()
-    $activeGatewayProfile.set('profile-b')
+    $browsedProfile.set('profile-b')
     await refreshProjects()
     resolveDefault({
       active_id: null,
@@ -877,7 +910,7 @@ describe('project tree profile isolation', () => {
     gatewayAtom.set(gateway as never)
 
     const pendingDefault = refreshProjectTree()
-    $activeGatewayProfile.set('profile-b')
+    $browsedProfile.set('profile-b')
     await refreshProjectTree()
     resolveDefault({
       active_id: null,
@@ -905,7 +938,7 @@ describe('project tree profile isolation', () => {
     gatewayAtom.set(gateway as never)
 
     const pendingDefault = fetchProjectSessions('p_123')
-    $activeGatewayProfile.set('profile-b')
+    $browsedProfile.set('profile-b')
     const profileB = await fetchProjectSessions('p_123')
     resolveDefault({
       project: { id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }

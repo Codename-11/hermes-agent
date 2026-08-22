@@ -22,18 +22,19 @@ import { persistentAtom } from '@/lib/persisted'
 import {
   $gateway,
   activeGateway,
-  ensureActiveGatewayOpen
+  gatewayForAgent,
+  openGatewayForAgent
 } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
-  $activeGatewayProfile,
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
   requestFreshSession
 } from '@/store/profile'
 import {
+  $connection,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -402,9 +403,9 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
 }
 
 function projectProfile(): null | string {
-  const profile = normalizeProfileKey($activeGatewayProfile.get())
+  const profile = $profileScope.get()
 
-  return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
+  return profile === ALL_PROFILES ? null : normalizeProfileKey(profile)
 }
 
 function projectParams(
@@ -427,12 +428,13 @@ async function gatewayRequestOn<T>(
 }
 
 interface ActiveProjectsContext {
+  connectionId: null | string
   gateway: HermesGateway
   profile: string
 }
 
 function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
-  return activeGateway() === context.gateway && projectProfile() === context.profile
+  return ($connection.get()?.connectionId ?? null) === context.connectionId && projectProfile() === context.profile
 }
 
 async function activeProjectsContext(): Promise<ActiveProjectsContext> {
@@ -442,17 +444,16 @@ async function activeProjectsContext(): Promise<ActiveProjectsContext> {
     throw new Error('Projects are unavailable while viewing all profiles')
   }
 
-  let gateway = activeGateway()
+  const connectionId = $connection.get()?.connectionId ?? null
+  await openGatewayForAgent(connectionId, profile)
+  const gateway = gatewayForAgent(connectionId, profile)
+  const context = gateway ? { connectionId, gateway, profile } : null
 
-  if (!gateway || gateway.connectionState !== 'open') {
-    gateway = await ensureActiveGatewayOpen()
+  if (!context || gateway.connectionState !== 'open' || !stillOnProjectsContext(context)) {
+    throw new Error('Browsed Hermes project route changed while connecting')
   }
 
-  if (!gateway || gateway !== activeGateway() || profile !== projectProfile()) {
-    throw new Error('Active Hermes profile changed while connecting')
-  }
-
-  return { gateway, profile }
+  return context
 }
 
 function applyPayload(payload: ProjectsPayload): void {

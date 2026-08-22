@@ -717,6 +717,13 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   }
 }
 
+/** Read a source-qualified agent socket without changing the foreground route. */
+export function gatewayForAgent(connectionId: null | string, profile: string): HermesGateway | null {
+  const scope = registryBackendScopeKey(connectionId, profile)
+
+  return scope === normKey(profile) ? gatewayForProfile(profile) : (g.secondaries.get(scope)?.gateway ?? null)
+}
+
 export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
