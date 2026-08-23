@@ -944,6 +944,13 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     carry_sha = _git(repo, "rev-parse", "HEAD")
     _git(repo, "reset", "--hard", "-q", upstream_sha)
 
+    (repo / "new-upstream.txt").write_text("later upstream\n", encoding="utf-8")
+    _git(repo, "add", "new-upstream.txt")
+    _git(repo, "commit", "-q", "-m", "later upstream")
+    observed_upstream_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "push", "-q", "upstream", "HEAD:main")
+    _git(repo, "reset", "--hard", "-q", upstream_sha)
+
     manifest = {
         "carries": [
             {
@@ -1036,6 +1043,7 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     assert deploy_sha == upstream_sha
     assert report["state"] == "ready"
     assert report["published"] is True
+    assert report["observed_upstream_sha"] == observed_upstream_sha
     assert report["candidate_sha"] == candidate_sha
     assert report["input_digest"] == input_digest
     assert report["worker_sha256"] == evidence["worker_sha256"]

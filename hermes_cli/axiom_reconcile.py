@@ -642,8 +642,11 @@ def generate_candidate(
         refreshed = _run(repo, "fetch", "upstream", "main", "--quiet")
         if refreshed.returncode != 0:
             raise RuntimeError(refreshed.stderr.strip() or "final upstream refresh failed")
-        if _resolve(repo, "upstream/main") != upstream_sha:
-            raise RuntimeError("upstream/main moved during verification; queue a fresh candidate")
+        observed_upstream_sha = _resolve(repo, "upstream/main")
+        if not observed_upstream_sha:
+            raise RuntimeError("could not resolve upstream/main after final refresh")
+        report["observed_upstream_sha"] = observed_upstream_sha
+        report["upstream_pending"] = observed_upstream_sha != upstream_sha
 
         if publish:
             _publish_candidate_if_current(
