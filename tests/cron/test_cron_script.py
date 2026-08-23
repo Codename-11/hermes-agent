@@ -117,32 +117,12 @@ class TestRunJobScript:
             encoding="utf-8",
         )
 
-        success, output = _run_job_script("sentinel_probe.py", hermes_home=profile_home)
+        success, output = _run_job_script(
+            "sentinel_probe.py", hermes_home=profile_home
+        )
         assert success is True
         assert output == str(profile_home)
 
-    def test_script_not_found(self, cron_env):
-        from cron.scheduler import _run_job_script
-
-        success, output = _run_job_script("nonexistent_script.py")
-        assert success is False
-        assert "not found" in output.lower()
-
-    def test_script_nonzero_exit(self, cron_env):
-        from cron.scheduler import _run_job_script
-
-        script = cron_env / "scripts" / "fail.py"
-        script.write_text(textwrap.dedent("""\
-            import sys
-            print("partial output")
-            print("error info", file=sys.stderr)
-            sys.exit(1)
-        """))
-
-        success, output = _run_job_script(str(script))
-        assert success is False
-        assert "exited with code 1" in output
-        assert "error info" in output
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""

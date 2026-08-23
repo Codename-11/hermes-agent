@@ -565,20 +565,13 @@ from hermes_cli.dashboard_auth.public_paths import (
 
 
 def _has_valid_session_token(request: Request) -> bool:
-    """True if the request carries a recognized credential.
+    """True if the request carries a recognized dashboard bearer.
 
-    Three credentials are accepted:
-
-    * The dedicated session header (``X-Hermes-Session-Token``) carrying
-      ``_SESSION_TOKEN`` — preferred path that avoids collisions with reverse
-      proxies which already use ``Authorization`` (e.g. Caddy ``basic_auth``,
-      Authelia/Traefik forward-auth).
-    * ``Bearer <_SESSION_TOKEN>`` — legacy path for older dashboard bundles
-      and the SPA's ``window.__HERMES_SESSION_TOKEN__`` injection.
-    * ``Bearer <HERMES_GATEWAY_TOKEN>`` from the environment — a stable,
-      operator-set token that external callers (Mission Control, scripts) can
-      use without scraping the SPA's per-restart session token. An empty /
-      unset env var disables this path so we don't accept a blank header.
+    The dedicated session header avoids collisions with reverse proxies that
+    already use ``Authorization`` (for example Caddy ``basic_auth``). Bearer
+    auth accepts either the ephemeral dashboard session token for compatibility
+    with older bundles or the stable, operator-set ``HERMES_GATEWAY_TOKEN`` for
+    external plugin administrators. An empty gateway token is never accepted.
 
     Comparisons use ``hmac.compare_digest`` to avoid timing side-channels.
     """
@@ -595,10 +588,11 @@ def _has_valid_session_token(request: Request) -> bool:
     presented = auth.encode()
     if hmac.compare_digest(presented, f"Bearer {_SESSION_TOKEN}".encode()):
         return True
-    env_token = os.environ.get("HERMES_GATEWAY_TOKEN", "")
-    if env_token and hmac.compare_digest(presented, f"Bearer {env_token}".encode()):
-        return True
-    return False
+    gateway_token = os.environ.get("HERMES_GATEWAY_TOKEN", "")
+    return bool(gateway_token) and hmac.compare_digest(
+        presented,
+        f"Bearer {gateway_token}".encode(),
+    )
 
 
 # Routes that may also authenticate via a ``?token=`` query param, for download
@@ -622,12 +616,17 @@ def _require_token(request: Request) -> None:
     * **Loopback / ``--insecure`` mode** (``auth_required`` False): the
       ephemeral ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed
       back via ``X-Hermes-Session-Token`` (or the legacy ``Bearer`` header).
-      Validate it here.
-    * **Dashboard auth/OAuth mode** (``auth_required`` True): the auth gate
-      middleware owns credential validation before this route runs. Internal
-      calls from protected routes should not also require the ephemeral SPA
-      token, because OAuth-authenticated browser requests legitimately do not
-      carry it.
+      Stable service callers may instead present ``HERMES_GATEWAY_TOKEN`` as a
+      bearer. Validate those credentials here.
+    * **Gated / OAuth mode** (``auth_required`` True): ``_SESSION_TOKEN`` is
+      NOT injected (the SPA authenticates with a session cookie), so there is
+      no token to check. The ``gated_auth_middleware`` has already verified the
+      cookie before the request reached this handler — any non-public ``/api/``
+      route it lets through carries a verified ``request.state.session``. The
+      legacy ``auth_middleware`` likewise short-circuits in this mode. Requiring
+      the (absent) token here would 401 every cookie-authenticated request,
+      making plugin install/enable/disable and the other ``_require_token``
+      endpoints permanently unreachable behind the gate. Defer to the gate.
     """
     if getattr(request.app.state, "auth_required", False):
         # Gate is authoritative. It attaches ``request.state.session`` on
@@ -831,26 +830,20 @@ async def _dashboard_auth_gate(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require a credential on all /api/ routes except the public list.
+    """Require dashboard auth on every non-public HTTP API route.
 
-    Plugin API routes (mounted at /api/plugins/<name>/) are gated by the
-    same check in legacy/session-token mode — they used to be excluded,
-    which let any loopback caller hit plugin endpoints unauthenticated.
-    _has_valid_session_token accepts the dedicated session header (preferred,
-    avoids reverse-proxy Authorization collisions), the legacy Bearer
-    session token, or HERMES_GATEWAY_TOKEN so external consumers (Mission
-    Control, scripts) keep working without scraping the SPA's injected token.
-
-    A request already authenticated by the token-auth seam (a service caller
-    presenting a bearer token on a registered token route) carries
-    ``token_authenticated`` — never bounce it through the cookie/session gate.
-
-    When the OAuth gate is active, cookie-based auth (gated_auth_middleware
-    above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
-    and is skipped here so the gate's session attachment isn't overridden.
+    This includes plugin backends under ``/api/plugins/``: they may expose
+    administrative mutations, so loopback callers must present the dashboard
+    session credential or the stable ``HERMES_GATEWAY_TOKEN`` bearer.
     """
+    # A request already authenticated by the token-auth seam (a service caller
+    # presenting a bearer token on a registered token route) carries
+    # ``token_authenticated`` — never bounce it through the cookie/session gate.
     if getattr(request.state, "token_authenticated", False):
         return await call_next(request)
+    # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
+    # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
+    # and is skipped here so the gate's session attachment isn't overridden.
     if getattr(request.app.state, "auth_required", False):
         return await call_next(request)
     path = request.url.path
@@ -1542,7 +1535,6 @@ from hermes_cli.web_models import (  # noqa: F401
     MoaPresetPayload,
     MoaConfigPayload,
     FsWriteText,
-    FsEnsureDirectory,
     GitPathBody,
     GitFileBody,
     GitCommitBody,
@@ -2330,20 +2322,13 @@ def _default_hermes_root_is_opt_data() -> bool:
     raw = os.environ.get("HERMES_HOME", "").strip()
     if not raw:
         return False
-    if raw.replace("\\", "/").rstrip("/") == "/opt/data":
-        return True
     try:
-        root = Path(raw).expanduser().resolve(strict=False)
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root().expanduser().resolve(strict=False)
     except (OSError, RuntimeError):
         root = Path(raw).expanduser().resolve(strict=False)
     return root == _HOSTED_MANAGED_FILES_ROOT
-
-
-def _dashboard_home_path() -> Path:
-    raw_home = os.environ.get("HOME", "").strip()
-    if raw_home:
-        return _canonical_path(Path(raw_home))
-    return _canonical_path(Path.home())
 
 
 def _dashboard_local_update_managed_externally() -> bool:
@@ -2399,7 +2384,7 @@ def _managed_files_policy(request: Request, *, create_root: bool = True) -> Mana
         root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
         return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
 
-    home = _dashboard_home_path()
+    home = _canonical_path(Path.home())
     return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
 
 
@@ -2971,32 +2956,6 @@ async def fs_write_text(payload: FsWriteText):
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
 
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
-
-
-@app.post("/api/fs/ensure-directory")
-async def fs_ensure_directory(payload: FsEnsureDirectory):
-    """Create a directory tree after an authenticated Desktop submit.
-
-    This is deliberately a separate mutation from the directory browser: merely
-    listing or typing a path never creates it. ``_fs_path`` provides the same
-    absolute-path normalization used by the rest of the remote Desktop facade.
-    """
-    target = _fs_path(payload.path)
-
-    try:
-        await run_in_threadpool(target.mkdir, parents=True, exist_ok=True)
-        if not target.is_dir():
-            raise HTTPException(status_code=400, detail="Path is not a directory")
-    except HTTPException:
-        raise
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="Directory is not writable")
-    except FileExistsError:
-        raise HTTPException(status_code=400, detail="Path is not a directory")
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not create directory: {exc}")
-
-    return {"ok": True, "path": str(target)}
 
 
 @app.get("/api/fs/read-data-url")
@@ -4930,13 +4889,17 @@ async def update_hermes():
     }
 
 
-def _commit_log_range(base: str, target: str, n: int = 20) -> List[Dict[str, Any]]:
-    """Return commits in ``base..target``, newest first, best-effort.
+def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
+    """Commits the local checkout is behind ``origin/main`` by, newest first.
 
-    The dashboard and Desktop use this to show the same range that drives the
-    update count. Deploy branches can have two actionable ranges: local deploy
-    freshness (``HEAD..origin/<deploy>``) and upstream work not yet merged into
-    the deploy artifact (``origin/<deploy>..upstream/main``).
+    Logs the SAME range the behind-count uses (``HEAD..origin/main`` — see
+    ``banner._check_via_local_git``), NOT the branch's ``@{upstream}``. On a
+    feature-branch checkout ``@{upstream}`` is the branch's own tip (zero
+    commits), which would leave the changelog empty even though the count is
+    non-zero. Pinning to ``origin/main`` keeps count and changelog consistent.
+
+    Best-effort: returns [] if not a git checkout, origin/main is unreachable,
+    or git is unavailable. Never raises into the request path.
     """
     try:
         out = subprocess.run(
@@ -4946,7 +4909,7 @@ def _commit_log_range(base: str, target: str, n: int = 20) -> List[Dict[str, Any
                 str(PROJECT_ROOT),
                 "log",
                 "--format=%H%x1f%s%x1f%an%x1f%ct",
-                f"{base}..{target}",
+                "HEAD..origin/main",
                 f"-n{int(n)}",
             ],
             capture_output=True,
@@ -4980,116 +4943,6 @@ def _commit_log_range(base: str, target: str, n: int = 20) -> List[Dict[str, Any
         return []
 
 
-def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
-    """Commits the local checkout is behind by, newest first.
-
-    Mirrors the non-deploy fallback range from ``banner._check_via_local_git``.
-    Deploy branches are handled by ``_backend_deploy_update_breakdown`` so the
-    changelog can explain both deploy-branch and upstream-pending work.
-    """
-    return _commit_log_range("HEAD", "origin/main", n)
-
-
-def _backend_deploy_update_breakdown(limit: int = 20) -> Dict[str, Any]:
-    """Explain actionable backend update work for deploy branches.
-
-    On Axiom/TGI-style deploy branches, ``hermes update`` does two things that a
-    plain branch-behind check cannot explain well:
-
-    * applies pending deploy artifact commits from ``origin/<branch>``; and
-    * merges new ``upstream/main`` commits into that deploy branch through the
-      conflict-handoff workflow.
-
-    Return explicit counts so Desktop can prompt visually when upstream work is
-    pending even if the deploy branch itself has not moved yet.
-    """
-    def git_output(args: List[str], timeout: int = 5) -> Optional[str]:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(PROJECT_ROOT), *args],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except Exception:
-            return None
-        if result.returncode != 0:
-            return None
-        return (result.stdout or "").strip()
-
-    def count_range(base: str, target: str) -> Optional[int]:
-        value = git_output(["rev-list", "--count", f"{base}..{target}"])
-        if value is None:
-            return None
-        try:
-            return int(value or "0")
-        except ValueError:
-            return None
-
-    branch = git_output(["rev-parse", "--abbrev-ref", "HEAD"])
-    if not branch or branch == "HEAD":
-        return {}
-
-    # Treat any branch with both origin/<branch> and upstream as a deploy branch
-    # for this explanatory backend endpoint. Axiom/TGI carry named deploy
-    # branches; upstream/generic installs still fall back to the normal checker.
-    remote_ref = f"origin/{branch}"
-    if git_output(["rev-parse", "--verify", "--quiet", remote_ref]) is None:
-        return {}
-    if git_output(["remote", "get-url", "upstream"]) is None:
-        return {}
-
-    # Best-effort freshness for the cached remote refs. ``check_for_updates``
-    # already fetched where supported, but keep this endpoint self-explanatory
-    # when the caller is Desktop's forced backend check.
-    git_output(["fetch", "origin", "--quiet"], timeout=10)
-    git_output(["fetch", "upstream", "main", "--quiet"], timeout=10)
-
-    deploy_behind = count_range("HEAD", remote_ref)
-    deploy_behind = max(deploy_behind or 0, 0)
-
-    upstream_count = count_range(remote_ref, "upstream/main")
-    upstream_behind = max(upstream_count or 0, 0)
-
-    total = deploy_behind + upstream_behind
-    deploy_commits = (
-        _commit_log_range("HEAD", remote_ref, limit) if deploy_behind > 0 else []
-    )
-    upstream_commits = (
-        _commit_log_range(remote_ref, "upstream/main", limit)
-        if upstream_behind > 0
-        else []
-    )
-    commits = (deploy_commits + upstream_commits)[:limit]
-
-    if total <= 0:
-        message = "You're on the latest version."
-    else:
-        parts = []
-        if deploy_behind:
-            parts.append(f"{deploy_behind} deploy branch commit{'s' if deploy_behind != 1 else ''}")
-        if upstream_behind:
-            parts.append(f"{upstream_behind} upstream commit{'s' if upstream_behind != 1 else ''}")
-        message = (
-            f"Pending backend update: {', '.join(parts)}. "
-            f"hermes update will reconcile upstream/main into {branch} and refresh the running backend."
-        )
-
-    return {
-        "branch": branch,
-        "deploy_branch": remote_ref,
-        "deploy_behind": deploy_behind,
-        "upstream_branch": "upstream/main",
-        "upstream_behind": upstream_behind,
-        "behind": total,
-        "update_available": total > 0,
-        "message": message,
-        "commits": commits,
-        "deploy_commits": deploy_commits,
-        "upstream_commits": upstream_commits,
-    }
-
-
 @app.get("/api/hermes/update/check")
 async def check_hermes_update(force: bool = False):
     """Report whether a Hermes update is available, without applying it.
@@ -5110,13 +4963,11 @@ async def check_hermes_update(force: bool = False):
                    user must update out-of-band
         update_command: the recommended command for this install method
         message: human-readable guidance for non-applyable methods
-        branch/deploy_branch/deploy_behind/upstream_behind: for deploy-branch
-                 git installs, explicit count breakdown for Desktop wording
-        commits: for git/pip installs that are behind, a list of the commits
-                 the local checkout is behind by — each {sha, summary,
-                 author, at}. Absent/empty otherwise. The desktop's remote
-                 update overlay renders this as "what's changed". Additive:
-                 existing consumers ignore it.
+        commits: for git installs that are behind, a list of the commits
+                 the local checkout is behind upstream by — each
+                 {sha, summary, author, at}. Absent/empty otherwise. The
+                 desktop's remote update overlay renders this as "what's
+                 changed". Additive: existing consumers ignore it.
     """
     if _dashboard_local_update_managed_externally():
         return {
@@ -5170,14 +5021,6 @@ async def check_hermes_update(force: bool = False):
     except Exception:
         _log.exception("Update check failed")
         behind = None
-
-    deploy_breakdown: Dict[str, Any] = {}
-    if install_method in ("git", "pip"):
-        deploy_breakdown = await asyncio.to_thread(_backend_deploy_update_breakdown)
-
-    if deploy_breakdown:
-        payload.update(deploy_breakdown)
-        return payload
 
     payload["behind"] = behind
     if behind is None:
@@ -12263,7 +12106,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     """
     import sqlite3
 
-    from hermes_state import SessionDB, is_malformed_db_error
+    from hermes_state import SessionDB, is_malformed_schema_error
 
     if not read_only:
         return SessionDB(db_path=db_path, read_only=False)
@@ -12300,7 +12143,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     except sqlite3.DatabaseError as exc:
         message = str(exc).lower()
         stale_schema = "no such table" in message or "no such column" in message
-        if not stale_schema and not is_malformed_db_error(exc):
+        if not stale_schema and not is_malformed_schema_error(exc):
             raise
         SessionDB(db_path=db_path, read_only=False).close()
         try:
@@ -16135,6 +15978,26 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
+_GATEWAY_WS_PROTOCOL = "hermes-gateway-v1"
+_GATEWAY_WS_TICKET_PROTOCOL_PREFIX = "hermes-gateway-ticket."
+
+
+def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
+    """Return ``(ticket, reason)`` from an unambiguous gateway protocol set."""
+    raw = str(ws.headers.get("sec-websocket-protocol", "") or "")
+    protocols = [value.strip() for value in raw.split(",") if value.strip()]
+    ticket_protocols = [
+        value for value in protocols
+        if value.startswith(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX)
+    ]
+    if not ticket_protocols:
+        return "", "none"
+    if _GATEWAY_WS_PROTOCOL not in protocols or len(ticket_protocols) != 1:
+        return "", "invalid"
+    ticket = ticket_protocols[0][len(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX):]
+    return (ticket, "ok") if ticket else ("", "invalid")
+
+
 def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
@@ -16184,7 +16047,16 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
+                info = consume_internal_credential(internal)
+                # Stamp the server-minted identity onto the WS object so the
+                # connection (and any transport built from it) can never be
+                # impersonated by RPC params. Internal peers are marked
+                # ``server-internal`` and are excluded from privileged
+                # controller registration downstream.
+                ws._hermes_auth_identity = {
+                    "user_id": info.get("user_id"),
+                    "provider": info.get("provider"),
+                }
                 return None, "internal"
             except TicketInvalid as exc:
                 audit_log(
@@ -16195,12 +16067,32 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 )
                 return "internal_invalid", "internal"
 
-        ticket = ws.query_params.get("ticket", "")
+        protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
+        if protocol_reason == "invalid":
+            return "ticket_invalid", "ticket-subprotocol"
+        ticket = protocol_ticket or ws.query_params.get("ticket", "")
         if not ticket:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            info = consume_ticket(ticket)
+            # The ticket binds a server-minted {user_id, provider}; stamp it
+            # onto the WS object so ``gateway_ws`` can hand it to the gateway
+            # transport, where it is the sole identity authority for
+            # browser-controller registration. A client can never supply or
+            # spoof this value through RPC params. Only the two identity
+            # fields are carried — bookkeeping (e.g. ``minted_at``) is not
+            # part of the identity contract.
+            ws._hermes_auth_identity = {
+                "user_id": info.get("user_id"),
+                "provider": info.get("provider"),
+            }
+            if protocol_ticket:
+                # Select only the stable public protocol during accept. The
+                # ticket-bearing protocol is a credential and must never be
+                # reflected back to the browser or retained after admission.
+                ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+                return None, "ticket-subprotocol"
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -17321,7 +17213,15 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    # The authenticated identity (ticket / internal credential) was stamped
+    # onto the WS object by _ws_auth_reason; carry it into the gateway
+    # transport where it becomes the identity authority for privileged RPCs
+    # (browser.controller.register). None on the legacy token path.
+    await handle_ws(
+        ws,
+        auth_identity=getattr(ws, "_hermes_auth_identity", None),
+        subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -18035,12 +17935,6 @@ async def set_dashboard_font(body: FontSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
-# Local production policy: bundled demo/sample dashboard plugins should never
-# show up in the live sidebar. The example plugin is useful as developer
-# reference code, but it is not an operator-facing feature on Docker-Server.
-_SUPPRESSED_BUNDLED_DASHBOARD_PLUGINS: frozenset[str] = frozenset({"example"})
-
-
 def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
     """Validate the manifest's ``api`` field for the plugin loader.
 
@@ -18078,13 +17972,12 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
-def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> list:
+def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
-    Checks three plugin sources. Bundled dashboard plugins win name conflicts
-    so non-bundled plugins cannot shadow trusted backend-capable routes:
-    1. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
-    2. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    Checks three plugin sources (same as hermes_cli.plugins):
+    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
     3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
     """
     plugins = []
@@ -18097,20 +17990,26 @@ def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> 
     # vanish when a request is scoped to another profile via a context-local
     # HERMES_HOME override (e.g. embedded /chat under --open-profile).
     #
-    # When the process itself is profile-scoped (``--profile <name>``), the
-    # launch home is ``<root>/profiles/<name>`` while user plugins are installed
-    # in ``<root>/plugins``. Scan both roots, retaining profile-local plugins as
-    # the authoritative duplicate through the existing ``seen_names`` handling.
+    # #87197: when the process itself is profile-scoped (``--profile <name>``
+    # sets ``HERMES_HOME=<root>/profiles/<name>``), the launch home is the
+    # profile directory, which has no ``plugins/`` — user plugins are
+    # installed in the hermes root (``~/.hermes/plugins``). Scan the default
+    # root as well (``get_default_hermes_root()`` unwraps
+    # ``<root>/profiles/<name>`` → ``<root>`` and returns a custom
+    # ``HERMES_HOME`` unchanged when it *is* the root), mirroring how
+    # ``hermes_cli.plugins`` resolves plugin install locations. The
+    # ``seen_names`` dedupe below keeps profile-local plugins (if any)
+    # authoritative over same-named root plugins.
     from hermes_constants import get_default_hermes_root
 
     user_plugin_roots = [get_process_hermes_home() / "plugins"]
     root_plugins = get_default_hermes_root() / "plugins"
     if root_plugins.resolve(strict=False) != user_plugin_roots[0].resolve(strict=False):
         user_plugin_roots.append(root_plugins)
-    search_dirs = [
+    search_dirs = [(d, "user") for d in user_plugin_roots]
+    search_dirs += [
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
-        *((directory, "user") for directory in user_plugin_roots),
     ]
     # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
     # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,
@@ -18138,12 +18037,6 @@ def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> 
             try:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
-                if (
-                    source == "bundled"
-                    and name in _SUPPRESSED_BUNDLED_DASHBOARD_PLUGINS
-                    and not include_suppressed_bundled
-                ):
-                    continue
                 if name in seen_names:
                     continue
                 seen_names.add(name)
@@ -18180,7 +18073,7 @@ def _discover_dashboard_plugins(*, include_suppressed_bundled: bool = False) -> 
                 if raw_api and safe_api is None:
                     _log.warning(
                         "Plugin %s: refusing unsafe api path %r (must be a "
-                        "relative file inside a bundled plugin's dashboard/ "
+                        "relative file inside the plugin's dashboard/ "
                         "directory); backend routes from this plugin will "
                         "not be mounted",
                         name, raw_api,
@@ -18649,11 +18542,7 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     User plugins must be in plugins.enabled before their assets are
     served. (#46435, GHSA-mcfc-hp25-cjv7)
     """
-    # Static assets may be served for suppressed bundled plugins (for tests,
-    # docs, and developer reference files) even when the plugin is hidden from
-    # the operator-facing sidebar. Keep /api/dashboard/plugins suppressed, but
-    # do not make suppression look like "file missing" for browser assets.
-    plugins = _discover_dashboard_plugins(include_suppressed_bundled=True)
+    plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
     if not plugin:
         raise HTTPException(status_code=404, detail="Plugin not found")
@@ -18741,17 +18630,6 @@ def _mount_plugin_api_routes():
     execution vector that bypasses the user's intent. (#46435,
     GHSA-mcfc-hp25-cjv7)
     """
-    # API routes are not sidebar entries. Keep bundled demo plugins hidden
-    # from the production dashboard while still mounting their backend routes
-    # for tests and local SDK examples. Prefer an explicitly populated cache
-    # when present: security regression tests and future callers may inject
-    # synthetic entries to exercise the mount-time guard directly.
-    plugins = (
-        _dashboard_plugins_cache
-        if _dashboard_plugins_cache is not None
-        else _discover_dashboard_plugins(include_suppressed_bundled=True)
-    )
-
     # Load the enabled/disabled sets once for the loop.
     try:
         from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
@@ -18761,17 +18639,16 @@ def _mount_plugin_api_routes():
         enabled_set = set()
         disabled_set = set()
 
-    for plugin in plugins:
+    for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
         plugin_name = plugin.get("name", "")
-        source = plugin.get("source")
         # Gate: user plugins must be in plugins.enabled and not in
-        # plugins.disabled before we import their Python code. Bundled plugins
-        # are trusted (they ship with the release) but still respect explicit
-        # disable.
-        if source == "user":
+        # plugins.disabled before we import their Python code.
+        # Bundled plugins are trusted (they ship with the release) but
+        # still respect an explicit disable.
+        if plugin.get("source") == "user":
             if plugin_name in disabled_set:
                 _log.debug(
                     "Plugin %s: skipping API mount (explicitly disabled)",
@@ -18784,13 +18661,14 @@ def _mount_plugin_api_routes():
                     plugin_name,
                 )
                 continue
-        elif source == "bundled" and plugin_name in disabled_set:
-            _log.debug(
-                "Plugin %s: skipping API mount (explicitly disabled)",
-                plugin_name,
-            )
-            continue
-        if source == "project":
+        elif plugin.get("source") == "bundled":
+            if plugin_name in disabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (explicitly disabled)",
+                    plugin_name,
+                )
+                continue
+        if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "
                 "not auto-import Python code; move the plugin to "

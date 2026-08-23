@@ -2314,11 +2314,11 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     # Require the command operand to name a direct child of the canonical temp
     # directory.  On Windows under Git Bash/MSYS, tests and shell snippets can
     # reasonably spell the same temp dir as POSIX `/tmp/foo` while
-    # os.path.realpath('/tmp') resolves to `C:\tmp`.  Accept that exact raw
+    # os.path.realpath('/tmp') resolves to `C:\\tmp`.  Accept that exact raw
     # POSIX spelling too, but keep rejecting aliases, `./`, `//`, nested
     # traversal, globs, and symlinked temp-dir paths.
     expected_operands = {os.path.join(temp_dir, basename)}
-    if raw_temp_dir.startswith("/"):
+    if os.name == "nt" and raw_temp_dir.startswith("/"):
         expected_operands.add(raw_temp_dir.rstrip("/") + "/" + basename)
     if operand not in expected_operands:
         return False

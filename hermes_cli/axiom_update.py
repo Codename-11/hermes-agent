@@ -55,6 +55,74 @@ UPDATE_REVIEW_DIR = "update-reports"
 DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
+def _git_stdout(repo: Path, args: list[str]) -> str | None:
+    """Return one small git query as UTF-8 text, or ``None`` on failure."""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _current_git_branch(repo: Path) -> str | None:
+    return _git_stdout(repo, ["rev-parse", "--abbrev-ref", "HEAD"])
+
+
+def _has_git_remote(repo: Path, name: str) -> bool:
+    remotes = _git_stdout(repo, ["remote"])
+    return remotes is not None and name in remotes.splitlines()
+
+
+def _count_git_range(repo: Path, base: str, target: str) -> int | None:
+    value = _git_stdout(repo, ["rev-list", "--count", f"{base}..{target}"])
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def get_update_preview_ranges(repo: Path) -> list[tuple[str, str, str]]:
+    """Return actionable deploy and upstream gaps for version output."""
+    branch = _current_git_branch(repo)
+    if branch not in DEPLOY_BRANCHES:
+        return []
+
+    remote_ref = f"origin/{branch}"
+    ranges: list[tuple[str, str, str]] = []
+    if (_count_git_range(repo, "HEAD", remote_ref) or 0) > 0:
+        ranges.append(("HEAD", remote_ref, "Pending deploy branch changes"))
+    if _has_git_remote(repo, "upstream") and (
+        (_count_git_range(repo, remote_ref, "upstream/main") or 0) > 0
+    ):
+        ranges.append((remote_ref, "upstream/main", "Pending upstream changes"))
+    return ranges
+
+
+def print_version_preview(repo: Path | None = None) -> None:
+    """Print commit digests for both deploy-update hops, if either is pending."""
+    if os.environ.get("HERMES_VERSION_NO_PREVIEW"):
+        return
+    repo = repo or Path(__file__).resolve().parent.parent
+    if not (repo / ".git").exists():
+        return
+    from hermes_cli.update_ui import compute_pending_digest
+
+    for base, target, title in get_update_preview_ranges(repo):
+        digest = compute_pending_digest(repo, base, target, title=title)
+        if digest:
+            print(digest)
+
+
 class CheckSpec(TypedDict):
     id: str
     kind: str
@@ -84,7 +152,7 @@ FORK_WATCH_AREAS: Final[tuple[ForkWatchAreaSpec, ...]] = (
         "invariants": ("Child resolves structure only; parent checkpoints, validates, and publishes the exact commit.",),
         "prefer_upstream": "Keep upstream structure when it preserves deploy-branch safety and resumability.",
         "drop_when": "Drop when upstream provides equivalent deploy-branch reconciliation and durable validation handoffs.",
-        "references": ("FORK.md#staged-update-lifecycle", "docs/axiom-fork-contract.md"),
+        "references": (),
         "paths": (
             "hermes_cli/axiom_update.py",
             "hermes_cli/main.py",
@@ -94,151 +162,6 @@ FORK_WATCH_AREAS: Final[tuple[ForkWatchAreaSpec, ...]] = (
         "checks": (
             _check("deploy-updater-compile", "py_compile", "python -m py_compile hermes_cli/main.py hermes_cli/axiom_update.py", 120),
             _check("deploy-updater-tests", "pytest", "python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py"),
-        ),
-    },
-    {
-        "id": "desktop-remote-artifacts",
-        "name": "Desktop OAuth remote artifact opening",
-        "invariants": ("Remote OAuth artifacts open through authenticated Desktop routing.",),
-        "prefer_upstream": "Prefer upstream media and filesystem seams when authentication and routing remain equivalent.",
-        "drop_when": "Drop when upstream covers authenticated remote artifact opening end to end.",
-        "references": ("FORK.md", "docs/axiom-fork-contract.md"),
-        "paths": (
-            "apps/desktop/electron/main.ts",
-            "apps/desktop/electron/preload.ts",
-            "apps/desktop/src/global.d.ts",
-            "apps/desktop/src/app/artifacts/",
-            "apps/desktop/src/lib/media",
-        ),
-        "checks": (
-            _check("desktop-remote-artifacts-tests", "vitest", "cd apps/desktop && npx vitest run --environment jsdom src/lib/media.remote.test.ts src/lib/desktop-fs.test.ts src/app/artifacts/index.test.ts"),
-            _check("desktop-typecheck", "typecheck", "cd apps/desktop && NODE_ENV=test npm run typecheck"),
-        ),
-    },
-    {
-        "id": "desktop-remote-profiles",
-        "name": "Desktop remote profile handles / remote routing",
-        "invariants": ("Remote profile handles stay bound to the selected gateway.",),
-        "prefer_upstream": "Prefer upstream connection configuration when profile identity and routing remain explicit.",
-        "drop_when": "Drop when upstream supplies equivalent remote profile routing.",
-        "references": ("FORK.md", "docs/axiom-fork-contract.md"),
-        "paths": (
-            "apps/desktop/electron/connection-config.ts",
-            "apps/desktop/electron/main.ts",
-            "apps/desktop/src/store/profile.ts",
-            "apps/desktop/src/app/settings/gateway-settings.tsx",
-        ),
-        "checks": (
-            _check("desktop-remote-profiles-tests", "vitest", "cd apps/desktop && NODE_ENV=test npx vitest run --project electron electron/connection-config.test.ts"),
-            _check("desktop-typecheck", "typecheck", "cd apps/desktop && NODE_ENV=test npm run typecheck"),
-        ),
-    },
-    {
-        "id": "slack-channel-session",
-        "name": "Slack channel/session behavior",
-        "invariants": ("Slack mentions and channel-scoped sessions retain their established routing semantics.",),
-        "prefer_upstream": "Prefer upstream Slack adapter structure while preserving channel/session scope.",
-        "drop_when": "Drop when upstream tests prove equivalent Slack mention and session behavior.",
-        "references": ("FORK.md",),
-        "paths": (
-            "gateway/platforms/slack.py",
-            "gateway/platforms/base.py",
-            "gateway/run.py",
-            "gateway/session.py",
-            "gateway/config.py",
-            "tests/gateway/test_slack",
-        ),
-        "checks": (
-            _check("slack-channel-session-tests", "pytest", "python -m pytest -o addopts= -q tests/gateway/test_slack.py tests/gateway/test_slack_mention.py tests/gateway/test_slack_channel_session_scope.py"),
-        ),
-    },
-    {
-        "id": "anthropic-oauth-billing",
-        "name": "Anthropic Claude OAuth billing-lane fixes",
-        "invariants": ("Claude OAuth requests retain billing-lane and system relocation behavior.",),
-        "prefer_upstream": "Prefer upstream transport changes when OAuth behavior remains covered.",
-        "drop_when": "Drop when upstream has equivalent OAuth billing behavior and tests.",
-        "references": ("FORK.md",),
-        "paths": (
-            "agent/anthropic_adapter.py",
-            "agent/transports/anthropic.py",
-            "tests/agent/test_anthropic_adapter.py",
-            "tests/agent/test_anthropic_oauth_system_relocation.py",
-        ),
-        "checks": (
-            _check("anthropic-oauth-compile", "py_compile", "python -m py_compile agent/anthropic_adapter.py agent/transports/anthropic.py", 120),
-            _check("anthropic-oauth-tests", "pytest", "python -m pytest -o addopts= -q tests/agent/test_anthropic_adapter.py tests/agent/test_anthropic_oauth_system_relocation.py"),
-        ),
-    },
-    {
-        "id": "live-mcp-refresh",
-        "name": "Live MCP/tool-schema refresh",
-        "invariants": ("MCP tool schemas refresh without rebuilding conversation context.",),
-        "prefer_upstream": "Prefer upstream agent initialization seams that preserve live refresh.",
-        "drop_when": "Drop when upstream provides equivalent cache-safe refresh.",
-        "references": ("FORK.md",),
-        "paths": (
-            "agent/agent_init.py",
-            "agent/chat_completion_helpers.py",
-            "tools/mcp_tool.py",
-            "tests/tools/test_refresh_agent_mcp_tools.py",
-            "tests/tools/test_mcp_tool.py",
-        ),
-        "checks": (
-            _check("live-mcp-refresh-tests", "pytest", "python -m pytest -o addopts= -q tests/tools/test_refresh_agent_mcp_tools.py"),
-        ),
-    },
-    {
-        "id": "forge-runtime-policy",
-        "name": "Forge integration / runtime tool policy",
-        "invariants": ("Forge tools obey runtime tool policy and platform boundaries.",),
-        "prefer_upstream": "Prefer upstream policy seams while preserving Forge capability gating.",
-        "drop_when": "Drop when upstream supports equivalent Forge policy integration.",
-        "references": ("FORK.md",),
-        "paths": (
-            "plugins/platforms/forge/",
-            "agent/runtime_tool_policy.py",
-            "model_tools.py",
-            "tests/gateway/test_forge_plugin.py",
-            "tests/agent/test_runtime_tool_policy.py",
-        ),
-        "checks": (
-            _check("forge-runtime-policy-tests", "pytest", "python -m pytest -o addopts= -q tests/gateway/test_forge_plugin.py tests/agent/test_runtime_tool_policy.py tests/test_model_tools.py"),
-        ),
-    },
-    {
-        "id": "webhook-route-toolsets",
-        "name": "Webhook route-level toolsets",
-        "invariants": ("Webhook routes retain explicit per-route toolsets.",),
-        "prefer_upstream": "Prefer upstream webhook routing when route-level toolsets remain explicit.",
-        "drop_when": "Drop when upstream provides equivalent route-level toolset policy.",
-        "references": ("FORK.md",),
-        "paths": (
-            "gateway/platforms/webhook.py",
-            "gateway/run.py",
-            "hermes_cli/webhook.py",
-            "tests/gateway/test_webhook_adapter.py",
-            "tests/hermes_cli/test_webhook_cli.py",
-        ),
-        "checks": (
-            _check("webhook-route-toolsets-tests", "pytest", "python -m pytest -o addopts= -q tests/gateway/test_webhook_adapter.py tests/hermes_cli/test_webhook_cli.py"),
-        ),
-    },
-    {
-        "id": "a2a-communication",
-        "name": "A2A inter-agent communication",
-        "invariants": ("A2A protocol, adapter, and tools remain mutually compatible.",),
-        "prefer_upstream": "Prefer upstream tool configuration seams while preserving A2A protocol behavior.",
-        "drop_when": "Drop when upstream provides equivalent inter-agent communication.",
-        "references": ("FORK.md",),
-        "paths": (
-            "plugins/platforms/a2a/",
-            "tests/plugins/test_a2a_plugin.py",
-            "hermes_cli/tools_config.py",
-        ),
-        "checks": (
-            _check("a2a-compile", "py_compile", "python -m py_compile plugins/platforms/a2a/adapter.py plugins/platforms/a2a/tools.py plugins/platforms/a2a/protocol.py", 120),
-            _check("a2a-tests", "pytest", "python -m pytest -o addopts= -q tests/plugins/test_a2a_plugin.py"),
         ),
     },
 )
@@ -2361,16 +2284,24 @@ def _fast_forward_live_deploy_checkout(
     if fetch_deploy.returncode != 0:
         return None
 
-    discarded = _discard_generated_live_lockfile_churn(git_cmd, repo)
+    try:
+        discarded = _discard_generated_live_lockfile_churn(git_cmd, repo)
+    except Exception as exc:
+        logger.debug("Could not inspect generated lockfile churn: %s", exc)
+        discarded = []
     if discarded:
         print(
             "  ✓ Discarded generated npm lockfile churn before live sync: "
             + ", ".join(discarded)
         )
 
-    obsolete_collisions = _discard_obsolete_live_case_collisions(
-        git_cmd, repo, remote_ref
-    )
+    try:
+        obsolete_collisions = _discard_obsolete_live_case_collisions(
+            git_cmd, repo, remote_ref
+        )
+    except Exception as exc:
+        logger.debug("Could not inspect obsolete case collisions: %s", exc)
+        obsolete_collisions = []
     if obsolete_collisions:
         print(
             "  ✓ Removed obsolete case-colliding tracked aliases before live sync: "

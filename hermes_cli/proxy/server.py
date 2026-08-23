@@ -2,11 +2,12 @@
 
 Listens on ``http://<host>:<port>/v1/<path>`` and forwards each request to
 ``<upstream-base-url>/<path>`` with the client's ``Authorization`` header
-replaced by a freshly-resolved bearer from the configured adapter. The
-response is streamed back unmodified, preserving SSE.
+replaced by a freshly-resolved bearer from the configured adapter. Responses
+are streamed back by default, preserving SSE.
 
-The server is intentionally minimal: it does NOT mediate, log, transform,
-or rewrite request/response bodies. It's a credential-attaching forwarder.
+The server is intentionally minimal. Adapters may opt into request/response
+translation hooks, while ordinary providers remain credential-attaching
+forwarders with verbatim bodies.
 """
 
 from __future__ import annotations
@@ -108,16 +109,8 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         )
 
     async def handle_models_fallback(request: "web.Request") -> "web.Response":
-        # Most clients hit /v1/models on startup. Prefer a synthetic model list
-        # for routed/local OAuth setups so clients can discover usable slugs
-        # without leaking startup probes to upstream providers.
         models = getattr(adapter, "available_models", [])
-        return web.json_response(
-            {
-                "object": "list",
-                "data": models,
-            }
-        )
+        return web.json_response({"object": "list", "data": models})
 
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
         # Extract the path *after* /v1
@@ -136,8 +129,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         # Forward body verbatim. Read into memory once — request bodies for
         # chat/completions/embeddings are small (<1MB typically). If we ever
         # need to forward large multipart uploads we'll switch to streaming
-        # the request body too. Routed adapters also inspect this body to pick
-        # the OAuth upstream from the requested model.
+        # the request body too. Routed adapters inspect it to select an upstream.
         body = await request.read()
 
         try:
@@ -157,9 +149,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         if hasattr(adapter, "prepare_proxy_request"):
             try:
                 upstream_rel_path, upstream_body, header_overrides, proxy_context = adapter.prepare_proxy_request(  # type: ignore[attr-defined]
-                    rel_path,
-                    body,
-                    dict(request.headers),
+                    rel_path, body, dict(request.headers)
                 )
             except Exception as exc:
                 logger.warning("proxy: request translation failed: %s", exc)
@@ -230,10 +220,17 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
         if upstream_resp.status in {401, 429}:
             try:
-                retry_cred = adapter.get_retry_credential(
-                    failed_credential=cred,
-                    status_code=upstream_resp.status,
-                )
+                if hasattr(adapter, "get_retry_credential_for_request"):
+                    retry_cred = adapter.get_retry_credential_for_request(  # type: ignore[attr-defined]
+                        context=proxy_context,
+                        failed_credential=cred,
+                        status_code=upstream_resp.status,
+                    )
+                else:
+                    retry_cred = adapter.get_retry_credential(
+                        failed_credential=cred,
+                        status_code=upstream_resp.status,
+                    )
             except Exception as exc:
                 logger.warning("proxy: retry credential resolution failed: %s", exc)
                 retry_cred = None
@@ -248,10 +245,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
         if hasattr(adapter, "finalize_proxy_response"):
             transformed = await adapter.finalize_proxy_response(  # type: ignore[attr-defined]
-                request,
-                upstream_resp,
-                session,
-                proxy_context,
+                request, upstream_resp, session, proxy_context
             )
             if transformed is not None:
                 return transformed
@@ -278,8 +272,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
     # /health doesn't go through the upstream
     app.router.add_get("/health", handle_health)
-    # Model discovery is synthetic for proxy clients and must be registered
-    # before the /v1 catch-all route below.
+    # Synthetic discovery must precede the /v1 catch-all.
     app.router.add_get("/v1/models", handle_models_fallback)
     # Catch-all under /v1 — forwards if the path is allowed.
     app.router.add_route("*", "/v1/{tail:.*}", handle_proxy)

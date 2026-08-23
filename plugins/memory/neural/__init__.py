@@ -450,7 +450,7 @@ class NeuralMemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """No-op. Per-turn storage disabled — only session summaries stored at session end.
-        
+
         Old behaviour stored every turn as a separate memory, creating a feedback loop
         where recent conversation turns were recalled as 'context' and re-injected.
         The proper approach: on_session_end stores a single session summary.
@@ -479,7 +479,7 @@ class NeuralMemoryProvider(MemoryProvider):
             user_msgs = [m for m in messages if m.get("role") == "user"]
             if not user_msgs:
                 return
-            
+
             summary_parts = []
             for m in user_msgs:
                 content = m.get("content", "")
@@ -499,7 +499,7 @@ class NeuralMemoryProvider(MemoryProvider):
                 first_line = content.split("\n")[0][:150]
                 if first_line:
                     summary_parts.append(first_line)
-            
+
             if summary_parts:
                 summary = "Session: " + " | ".join(summary_parts[-8:])  # Last 8 meaningful lines
                 self._memory.remember(summary, label="session-summary")
@@ -592,5 +592,3 @@ def register(ctx) -> None:
     """Register the neural memory provider with the plugin system."""
     provider = NeuralMemoryProvider()
     ctx.register_memory_provider(provider)
-    
-    

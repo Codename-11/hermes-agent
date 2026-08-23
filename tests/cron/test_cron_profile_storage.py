@@ -257,6 +257,26 @@ def test_create_job_explicit_profile_override(tmp_path, monkeypatch):
         importlib.reload(jobs)
 
 
+def test_other_profile_cannot_claim_shared_job(tmp_path, monkeypatch):
+    root, donna_home = _profile_env(tmp_path, monkeypatch, active="default")
+    import cron.jobs as jobs
+    importlib.reload(jobs)
+    try:
+        created = jobs.create_job(
+            prompt="owned", schedule="every 1h", profile="donna"
+        )
+
+        assert jobs.claim_job_for_fire(created["id"], return_job=True) is False
+
+        monkeypatch.setenv("HERMES_HOME", str(donna_home))
+        claimed = jobs.claim_job_for_fire(created["id"], return_job=True)
+        assert isinstance(claimed, dict)
+        assert claimed["owner_profile"] == "donna"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(jobs)
+
+
 def test_resolve_profile_home_maps_names(tmp_path, monkeypatch):
     """resolve_profile_home maps default/named profiles to homes and returns
     None for a missing profile."""

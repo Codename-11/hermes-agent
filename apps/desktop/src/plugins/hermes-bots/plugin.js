@@ -3668,21 +3668,26 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
 
   // Migrated remote-primary windows can still expose a legacy remote
   // descriptor without connectionId. That produces a null live id even
-  // though profiles.list is answering from the registry primary. Infer the
-  // primary only when its inventory matches the rich rows and the local
-  // inventory does not. A genuinely local window has a matching local row,
-  // so it keeps the null-is-local behavior used after clicking This device.
+  // though profiles.list is answering from the registry primary. Compare how
+  // much of the rich inventory each candidate source owns: common profiles
+  // such as `default` can exist on both machines, so a boolean "any match"
+  // check misclassifies the remote primary as local whenever inventories
+  // overlap. A genuinely local window still wins when local coverage is equal
+  // or greater; the primary is inferred only when it explains more rich rows.
   if (!activeId && liveProvided) {
     const primaryId = String(union?.primaryConnectionId || '').trim()
     const richNames = new Set(localProfiles.map(profile => String(profile?.name || '').trim()).filter(Boolean))
-    const localMatches = agents.some(
-      agent => agent?.connectionKind === 'local' && richNames.has(String(agent?.profile || '').trim())
-    )
-    const primaryMatches = agents.some(
-      agent => String(agent?.connectionId || '').trim() === primaryId && richNames.has(String(agent?.profile || '').trim())
-    )
+    const matchedNames = connectionId =>
+      new Set(
+        agents
+          .filter(agent => String(agent?.connectionId || '').trim() === connectionId)
+          .map(agent => String(agent?.profile || '').trim())
+          .filter(name => name && richNames.has(name))
+      ).size
+    const localMatchCount = matchedNames('local')
+    const primaryMatchCount = primaryId ? matchedNames(primaryId) : 0
 
-    if (!localMatches && primaryId && primaryMatches) {
+    if (primaryId && primaryMatchCount > localMatchCount) {
       activeId = primaryId
     }
   }

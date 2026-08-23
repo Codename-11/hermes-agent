@@ -103,23 +103,18 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
     thread_id = getattr(source, "thread_id", None)
-    platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
-    if platform == "discord" and getattr(source, "is_bot", False):
-        # Bot-authored Discord replies must not reply-ping the bot that just
-        # spoke; with allow_bots=mentions that implicit ping becomes a new turn.
-        metadata["suppress_reply_mentions"] = True
     # Slack workspace identity is durable routing state, not ephemeral event
     # metadata. Carry it on every outbound path (including unthreaded sends)
     # so a multi-workspace Socket Mode gateway never falls back to its primary
     # WebClient after an async, stream, or recovery boundary.
-    if platform == "slack":
+    if _platform_name(getattr(source, "platform", None)) == "slack":
         scope_id = getattr(source, "scope_id", None)
         if scope_id:
             metadata["slack_team_id"] = str(scope_id)
     if not metadata:
         return None
-    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
@@ -2358,7 +2353,7 @@ class MessageEvent:
     # clarify resolvers) BEFORE normal dispatch; native adapters never set it
     # (their button callbacks resolve in-process).
     prompt_response: Optional[Dict[str, Any]] = None
-    
+
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
@@ -2367,7 +2362,7 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
-    # Optional per-event toolset override.  Webhook routes use this to grant a
+    # Optional per-event toolset override. Webhook routes use this to grant a
     # trusted route a narrower/wider tool surface than the platform default;
     # ordinary platform events leave it unset.
     enabled_toolsets: Optional[List[str]] = None
@@ -3820,7 +3815,7 @@ class BasePlatformAdapter(ABC):
             if isinstance(resolved, str) and resolved.strip():
                 return resolved
         return None
-    
+
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session.
 

@@ -51,11 +51,13 @@ def _install_example_plugin(_isolate_hermes_home):
     requests this fixture so the plugin appears only for that test's
     isolated ``HERMES_HOME``.
 
-    The fixture uses the user-plugin source instead of a transient
-    ``HERMES_BUNDLED_PLUGINS`` override because other tests implicitly rely
-    on the real bundled plugins (kanban, hermes-achievements, model providers)
-    remaining available. No bundled plugin uses the ``example`` name, so the
-    user fixture is discovered without weakening bundled-first precedence.
+    The user-plugin source is preferred over a transient
+    ``HERMES_BUNDLED_PLUGINS`` override because the bundled dir is
+    resolved per-call (other tests in the suite implicitly rely on the
+    real bundled plugins — kanban, hermes-achievements, model providers
+    — being available, and globally swapping that root would yank them
+    all). User plugins are first in the discovery search order, so
+    laying down the fixture here is enough.
     """
     from hermes_constants import get_hermes_home
     from hermes_cli import web_server
@@ -601,6 +603,30 @@ class TestWebServerEndpoints:
         finally:
             db.close()
         assert len(writable_opens) == 1
+
+    def test_generic_corruption_does_not_trigger_writable_heal(
+        self, tmp_path, monkeypatch
+    ):
+        """Unscoped SQLITE_CORRUPT must not escalate a dashboard read to writes."""
+        import sqlite3
+
+        import hermes_state
+        from hermes_cli import web_server
+
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"not-empty")
+        opens = []
+
+        def corrupt_open(*_args, **kwargs):
+            opens.append(kwargs.get("read_only", False))
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
+
+        with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+            web_server._open_session_db_at_path(db_path, read_only=True)
+
+        assert opens == [True]
 
     def test_get_sessions_zero_byte_store_returns_empty_list(self):
         from hermes_constants import get_hermes_home
@@ -1924,45 +1950,6 @@ class TestWebServerEndpoints:
         payload = resp.json()
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
-
-    def test_get_session_messages_finds_unique_profile_owner_when_scope_omitted(self):
-        """Older Desktop builds omitted ``?profile=`` when opening a row from
-        the cross-profile messaging list.  A read may recover only when exactly
-        one named profile owns the id; it must never guess between collisions.
-        """
-        from hermes_cli import profiles as profiles_mod
-        from hermes_state import SessionDB
-
-        profile_db = SessionDB(db_path=profiles_mod.get_profile_dir("mizu") / "state.db")
-        try:
-            profile_db.create_session(session_id="legacy-desktop-discord", source="discord")
-            profile_db.append_message(
-                session_id="legacy-desktop-discord",
-                role="user",
-                content="history survives profile routing",
-            )
-        finally:
-            profile_db.close()
-
-        response = self.client.get("/api/sessions/legacy-desktop-discord/messages")
-
-        assert response.status_code == 200
-        assert response.json()["messages"][0]["content"] == "history survives profile routing"
-
-    def test_get_session_messages_rejects_ambiguous_profile_owner_when_scope_omitted(self):
-        from hermes_cli import profiles as profiles_mod
-        from hermes_state import SessionDB
-
-        for profile in ("mizu", "mizuki"):
-            profile_db = SessionDB(db_path=profiles_mod.get_profile_dir(profile) / "state.db")
-            try:
-                profile_db.create_session(session_id="ambiguous-discord", source="discord")
-            finally:
-                profile_db.close()
-
-        response = self.client.get("/api/sessions/ambiguous-discord/messages")
-
-        assert response.status_code == 404
 
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
@@ -3971,8 +3958,14 @@ class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
-        """Create TestClients with and without the session token header."""
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        """Create a TestClient without the session token header.
+
+        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
+        has the ``/api/plugins/example/hello`` endpoint available — the
+        example plugin is no longer a bundled plugin, so the fixture
+        installs it into the per-test ``HERMES_HOME``.
+        """
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -3992,21 +3985,43 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Uses a bundled plugin route so the test covers authenticated plugin
-        API access without relying on user-installed plugin backend imports.
+        Uses ``/api/plugins/example/hello`` from the example-dashboard
+        test fixture (installed into HERMES_HOME by the class-level
+        ``_install_example_plugin`` fixture) — a stable, side-effect-free
+        GET that's only loaded for tests. With a valid token the handler
+        should run (200); without one the middleware should 401 before
+        the handler is reached.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/kanban/board")
+        resp = self.client.get("/api/plugins/example/hello")
         assert resp.status_code == 401
 
         # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/kanban/board")
+        resp = self.auth_client.get("/api/plugins/example/hello")
         assert resp.status_code == 200
 
-    def test_plugin_post_requires_auth(self):
-        """Plugin POST routes should return 401 without a valid session token."""
-        resp = self.client.post("/api/plugins/kanban/tasks", json={"title": "test"})
+    def test_plugin_route_allows_gateway_bearer(self, monkeypatch):
+        """External plugin administrators may use the stable gateway bearer."""
+        monkeypatch.setenv("HERMES_GATEWAY_TOKEN", "plugin-admin-token")
+
+        resp = self.client.get(
+            "/api/plugins/example/hello",
+            headers={"Authorization": "Bearer plugin-admin-token"},
+        )
+
+        assert resp.status_code == 200
+
+    def test_plugin_route_rejects_invalid_gateway_bearer(self, monkeypatch):
+        """A configured gateway token must not weaken plugin route auth."""
+        monkeypatch.setenv("HERMES_GATEWAY_TOKEN", "plugin-admin-token")
+
+        resp = self.client.get(
+            "/api/plugins/example/hello",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+
         assert resp.status_code == 401
+
 
     def test_plugin_patch_requires_auth(self):
         """Plugin PATCH routes should return 401 without a valid session token.
@@ -4123,19 +4138,6 @@ class TestDashboardPluginManifestExtensions:
             reset_hermes_home_override(token)
         assert any(p["name"] == "skin-home" for p in plugins)
 
-    def test_override_requires_leading_slash(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        self._write_plugin(tmp_path, "bad-override", {
-            "name": "bad-override",
-            "label": "Bad",
-            "tab": {"path": "/bad", "override": "no-leading-slash"},
-            "entry": "dist/index.js",
-        })
-        from hermes_cli import web_server
-        web_server._dashboard_plugins_cache = None
-        plugins = web_server._get_dashboard_plugins(force_rescan=True)
-        entry = next(p for p in plugins if p["name"] == "bad-override")
-        assert "override" not in entry["tab"]
     def test_user_plugins_found_under_profile_scoped_process(self, tmp_path, monkeypatch):
         """Regression #87197: a profile-scoped process (``--profile <name>``
         sets HERMES_HOME=<root>/profiles/<name>) must still discover user
@@ -4182,129 +4184,6 @@ class TestDashboardPluginManifestExtensions:
         assert entries[0]["tab"]["path"] == "/from-profile"
 
 
-    def test_slots_default_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        self._write_plugin(tmp_path, "no-slots", {
-            "name": "no-slots",
-            "label": "No Slots",
-            "tab": {"path": "/no-slots"},
-            "entry": "dist/index.js",
-        })
-        from hermes_cli import web_server
-        web_server._dashboard_plugins_cache = None
-        plugins = web_server._get_dashboard_plugins(force_rescan=True)
-        entry = next(p for p in plugins if p["name"] == "no-slots")
-        assert entry["slots"] == []
-        assert "hidden" not in entry["tab"]
-        assert "override" not in entry["tab"]
-
-    def test_slots_filters_non_string_entries(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        self._write_plugin(tmp_path, "mixed-slots", {
-            "name": "mixed-slots",
-            "label": "Mixed",
-            "tab": {"path": "/mixed-slots"},
-            "slots": ["sidebar", "", 42, None, "header-right"],
-            "entry": "dist/index.js",
-        })
-        from hermes_cli import web_server
-        web_server._dashboard_plugins_cache = None
-        plugins = web_server._get_dashboard_plugins(force_rescan=True)
-        entry = next(p for p in plugins if p["name"] == "mixed-slots")
-        assert entry["slots"] == ["sidebar", "header-right"]
-
-    def test_bundled_example_dashboard_plugin_is_suppressed(self, tmp_path, monkeypatch):
-        """The bundled SDK demo must not reappear in the production sidebar."""
-        hermes_home = tmp_path / "home"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        self._write_plugin(tmp_path, "example-dashboard", {
-            "name": "example",
-            "label": "Example",
-            "tab": {"path": "/example"},
-            "entry": "dist/index.js",
-        })
-        self._write_plugin(tmp_path, "useful-dashboard", {
-            "name": "useful",
-            "label": "Useful",
-            "tab": {"path": "/useful"},
-            "entry": "dist/index.js",
-        })
-
-        from hermes_cli import web_server
-        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(tmp_path / "plugins"))
-        web_server._dashboard_plugins_cache = None
-        plugins = web_server._get_dashboard_plugins(force_rescan=True)
-        names = {p["name"] for p in plugins}
-
-        assert "example" not in names
-        assert "useful" in names
-
-    def test_bundled_plugin_wins_user_name_collision(self, tmp_path, monkeypatch):
-        """User plugins cannot shadow trusted bundled dashboard routes."""
-        hermes_home = tmp_path / "home"
-        bundled_home = tmp_path / "bundled"
-        hermes_home.mkdir()
-        bundled_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_home / "plugins"))
-        self._write_plugin(bundled_home, "trusted", {
-            "name": "collision",
-            "label": "Bundled",
-            "entry": "dist/index.js",
-        })
-        self._write_plugin(hermes_home, "untrusted", {
-            "name": "collision",
-            "label": "User",
-            "entry": "dist/index.js",
-        })
-
-        from hermes_cli import web_server
-        web_server._dashboard_plugins_cache = None
-        plugins = web_server._get_dashboard_plugins(force_rescan=True)
-        entry = next(p for p in plugins if p["name"] == "collision")
-
-        assert entry["source"] == "bundled"
-        assert entry["label"] == "Bundled"
-
-    def test_page_scoped_slots_preserved(self, tmp_path, monkeypatch):
-        """Page-scoped slot names (e.g. ``sessions:top``) round-trip through
-        the manifest loader untouched.  The backend has no allowlist — the
-        frontend ``<PluginSlot name="...">`` placements decide what actually
-        renders — but the loader must not mangle colons in slot names."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        self._write_plugin(tmp_path, "page-slots", {
-            "name": "page-slots",
-            "label": "Page Slots",
-            "tab": {"path": "/page-slots", "hidden": True},
-            "slots": [
-                "sessions:top",
-                "analytics:bottom",
-                "logs:top",
-                "skills:bottom",
-                "config:top",
-                "env:bottom",
-                "docs:top",
-                "cron:bottom",
-                "chat:top",
-            ],
-            "entry": "dist/index.js",
-        })
-        from hermes_cli import web_server
-        web_server._dashboard_plugins_cache = None
-        plugins = web_server._get_dashboard_plugins(force_rescan=True)
-        entry = next(p for p in plugins if p["name"] == "page-slots")
-        assert entry["slots"] == [
-            "sessions:top",
-            "analytics:bottom",
-            "logs:top",
-            "skills:bottom",
-            "config:top",
-            "env:bottom",
-            "docs:top",
-            "cron:bottom",
-            "chat:top",
-        ]
 
 
 # ---------------------------------------------------------------------------

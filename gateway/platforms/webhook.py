@@ -11,7 +11,6 @@ Each route defines:
   - secret: HMAC secret for signature validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
-  - toolsets: optional list of Hermes toolsets for this route only
   - deliver: where to send the response (github_comment, telegram, etc.)
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
   - deliver_only: if true, skip the agent — the rendered prompt IS the
@@ -188,8 +187,11 @@ def _normalize_route_toolsets(raw: Any) -> Optional[list[str]]:
     if isinstance(raw, str):
         return [part.strip() for part in raw.split(",") if part.strip()]
     if isinstance(raw, list):
-        cleaned = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
-        return cleaned
+        return [
+            item.strip()
+            for item in raw
+            if isinstance(item, str) and item.strip()
+        ]
     return None
 
 
@@ -954,19 +956,12 @@ class WebhookAdapter(BasePlatformAdapter):
         )
         if profile and isinstance(profile, str):
             source.profile = profile
-        event_message_id = delivery_id
-        if route_config.get("deliver") == "forge" and isinstance(payload, dict):
-            forge_payload = payload.get("payload")
-            if isinstance(forge_payload, dict):
-                candidate = forge_payload.get("messageId")
-                if isinstance(candidate, str) and candidate.strip():
-                    event_message_id = candidate.strip()
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=payload,
-            message_id=event_message_id,
+            message_id=delivery_id,
             enabled_toolsets=_normalize_route_toolsets(route_config.get("toolsets")),
         )
 
@@ -1436,33 +1431,18 @@ class WebhookAdapter(BasePlatformAdapter):
         self, platform_name: str, content: str, delivery: dict
     ) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
-        target = self.resolve_cross_platform_delivery_target(platform_name, delivery)
-        if not target:
-            return SendResult(
-                success=False, error=f"Unable to resolve delivery target for {platform_name}"
-            )
-
-        adapter = target["adapter"]
-        chat_id = target["chat_id"]
-        metadata = target["metadata"]
-        return await adapter.send(chat_id, content, metadata=metadata)
-
-    def resolve_cross_platform_delivery_target(
-        self, platform_name: str, delivery: dict
-    ) -> Optional[Dict[str, Any]]:
-        """Resolve a webhook delivery route to the target platform adapter.
-
-        Text and post-stream media must both use the same destination.  Keep
-        the resolver shared so streaming ``MEDIA:`` attachments do not fall
-        back to the origin webhook adapter, which cannot upload native media.
-        """
         if not self.gateway_runner:
-            return None
+            return SendResult(
+                success=False,
+                error="No gateway runner for cross-platform delivery",
+            )
 
         try:
             target_platform = Platform(platform_name)
         except ValueError:
-            return None
+            return SendResult(
+                success=False, error=f"Unknown platform: {platform_name}"
+            )
 
         # Default adapters first; multiplex may park Slack/etc. only on a
         # secondary profile (self._profile_adapters). Fall back so webhook
@@ -1490,7 +1470,10 @@ class WebhookAdapter(BasePlatformAdapter):
             if home:
                 chat_id = home.chat_id
             else:
-                return None
+                return SendResult(
+                    success=False,
+                    error=f"No chat_id or home channel for {platform_name}",
+                )
 
         # Pass thread_id from deliver_extra so Telegram forum topics work
         metadata = None
@@ -1498,17 +1481,4 @@ class WebhookAdapter(BasePlatformAdapter):
         if thread_id:
             metadata = {"thread_id": thread_id}
 
-        return {
-            "adapter": adapter,
-            "chat_id": chat_id,
-            "metadata": metadata,
-            "platform": target_platform,
-        }
-
-    def resolve_media_delivery_target(self, chat_id: str) -> Optional[Dict[str, Any]]:
-        """Return the cross-platform target for media attached to a webhook reply."""
-        delivery = self._delivery_info.get(chat_id, {})
-        deliver_type = delivery.get("deliver", "log")
-        if deliver_type in {"log", "github_comment"}:
-            return None
-        return self.resolve_cross_platform_delivery_target(deliver_type, delivery)
+        return await adapter.send(chat_id, content, metadata=metadata)

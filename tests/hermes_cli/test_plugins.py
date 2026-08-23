@@ -1831,8 +1831,29 @@ class TestPluginCommands:
         assert len(mgr._plugin_commands) == 0
         assert "empty name" in caplog.text
 
+    def test_register_command_preserves_tui_card_metadata(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="router", source="user"), mgr)
 
+        ctx.register_command(
+            "route",
+            lambda arg: {"title": arg},
+            description="Control routing",
+            args_hint="[status]",
+            subcommands=("status",),
+            category="Configuration",
+            gateway_only=True,
+            aliases=("/ROUTER ",),
+            returns_card=True,
+        )
 
+        entry = mgr._plugin_commands["route"]
+        assert entry["subcommands"] == ("status",)
+        assert entry["category"] == "Configuration"
+        assert entry["gateway_only"] is True
+        assert entry["cli_only"] is False
+        assert entry["aliases"] == ("router",)
+        assert entry["returns_card"] is True
 
     def test_get_plugin_context_engine_discovers_plugins_lazily(self, tmp_path, monkeypatch):
         """Context engine lookup should work before any explicit discover_plugins() call."""

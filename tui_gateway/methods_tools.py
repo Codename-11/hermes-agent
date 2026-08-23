@@ -1244,18 +1244,12 @@ def _(rid, params: dict) -> dict:
             resolve_plugin_command_result = None
 
     if plugin_entry and resolve_plugin_command_result:
-        try:
-            from hermes_cli.commands import resolve_command
-
-            command_def = resolve_command(_cmd_base)
-            if command_def is not None and command_def.gateway_only:
-                return _err(
-                    rid,
-                    4018,
-                    f"gateway-only plugin command: /{_cmd_base}",
-                )
-        except Exception:
-            pass
+        if plugin_entry.get("gateway_only"):
+            return _err(
+                rid,
+                4018,
+                f"gateway-only plugin command: use command.dispatch for /{_cmd_base}",
+            )
         try:
             handler = plugin_entry["handler"]
             try:

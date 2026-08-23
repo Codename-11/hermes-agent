@@ -1468,8 +1468,14 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve lock paths for Axiom's shared root cron store."""
-    lock_dir = get_default_hermes_root().resolve() / "cron"
+    """Resolve the single lock guarding the shared cron registry."""
+    active = _get_hermes_home().resolve()
+    root = (
+        active.parent.parent.resolve()
+        if active.parent.name.lower() == "profiles"
+        else get_default_hermes_root().resolve()
+    )
+    lock_dir = root / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -3932,9 +3938,8 @@ def _windows_cron_bootstrap_argv(
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
-    *,
-    hermes_home: Optional[Path] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    hermes_home: Optional[Path] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -3958,10 +3963,9 @@ def _run_job_script(
     (SECURITY.md §2.3), matching terminal and MCP child processes.
 
     Args:
-        script_path: Path to the script. Relative paths are resolved against
-            the owning Hermes home's scripts directory.
-        hermes_home: Optional owner Hermes home. Defaults to the active
-            scheduler Hermes home for backward compatibility.
+        script_path: Path to the script.  Relative paths are resolved
+            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
+            are also validated to ensure they stay within the scripts dir.
         workdir: Optional absolute path to use as the script's cwd.
             When set, the subprocess runs in this directory instead of
             the scripts-dir parent.  The Python process cwd is NEVER
@@ -4130,8 +4134,6 @@ def _run_job_script_with_claim_heartbeat(
     job: dict,
     script_path: str,
     workdir: Optional[str] = None,
-    *,
-    hermes_home: Optional[Path] = None,
     cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
@@ -4146,14 +4148,6 @@ def _run_job_script_with_claim_heartbeat(
     storage.  ``heartbeat_run_claim`` compares that stable owner before every
     refresh, so a stale runner cannot extend a replacement owner's claim.
     """
-    def _run_script() -> tuple[bool, str]:
-        return _run_job_script(
-            script_path,
-            workdir=workdir,
-            hermes_home=hermes_home,
-            cancel_event=cancel_event,
-        )
-
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -4162,7 +4156,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_script()
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -4193,10 +4187,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_script()
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
 
     try:
-        return _run_script()
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -5059,6 +5053,44 @@ def run_job(
     extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a job under its persisted owner profile's Hermes home."""
+    from cron.jobs import resolve_profile_home
+
+    owner = str(job.get("owner_profile") or job.get("profile") or "default")
+    owner_home = resolve_profile_home(owner)
+    if owner_home is None:
+        return _run_job_impl(
+            job,
+            defer_agent_teardown=defer_agent_teardown,
+            extra_prompt=extra_prompt,
+            cancel_event=cancel_event,
+        )
+
+    previous_home = os.environ.get("HERMES_HOME")
+    token = set_hermes_home_override(str(owner_home))
+    os.environ["HERMES_HOME"] = str(owner_home)
+    try:
+        return _run_job_impl(
+            job,
+            defer_agent_teardown=defer_agent_teardown,
+            extra_prompt=extra_prompt,
+            cancel_event=cancel_event,
+        )
+    finally:
+        reset_hermes_home_override(token)
+        if previous_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous_home
+
+
+def _run_job_impl(
+    job: dict,
+    *,
+    defer_agent_teardown: Optional[list] = None,
+    extra_prompt: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
 
@@ -5081,16 +5113,6 @@ def run_job(
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
-    from cron.jobs import resolve_profile_home
-
-    _raw_job_profile = job.get("owner_profile") or job.get("profile")
-    _job_profile = str(_raw_job_profile or "default").strip() or "default"
-    _profile_home = (
-        resolve_profile_home(_job_profile)
-        if _raw_job_profile is not None and str(_raw_job_profile).strip()
-        else None
-    )
-    _script_profile_home = _profile_home if _job_profile != "default" else None
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -5146,16 +5168,8 @@ def run_job(
             _job_workdir = None
 
         try:
-            _script_kwargs: dict[str, Any] = {
-                "workdir": _job_workdir,
-                "cancel_event": cancel_event,
-            }
-            if _script_profile_home is not None:
-                _script_kwargs["hermes_home"] = _script_profile_home
             ok, output = _run_job_script_with_claim_heartbeat(
-                job,
-                script_path,
-                **_script_kwargs,
+                job, script_path, workdir=_job_workdir, cancel_event=cancel_event,
             )
         except Exception as exc:
             logger.exception(
@@ -5366,13 +5380,8 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        _script_kwargs = {"cancel_event": cancel_event}
-        if _script_profile_home is not None:
-            _script_kwargs["hermes_home"] = _script_profile_home
         prerun_script = _run_job_script_with_claim_heartbeat(
-            job,
-            script_path,
-            **_script_kwargs,
+            job, script_path, cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
@@ -5515,16 +5524,8 @@ def run_job(
     # override inside the try.  This read can't leak the lock (it precedes the
     # acquire) and is a no-op for workdir-less jobs (they never mutate the env).
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
-    _prior_hermes_home = os.environ.get("HERMES_HOME", "_UNSET_")
-    _hermes_home_token = None
-    _profile_override_needed = (
-        _profile_home is not None
-        and _profile_home.resolve() != _get_hermes_home().resolve()
-    )
 
-    # Both TERMINAL_CWD and HERMES_HOME are process-global. A profile-scoped
-    # job therefore takes the writer lane even without a workdir.
-    _holds_cwd_write = _job_workdir is not None or _profile_override_needed
+    _holds_cwd_write = _job_workdir is not None
     _cwd_lock_timeout = _cwd_lock_timeout_seconds()
     _cwd_lock_acquired = True
     if _holds_cwd_write:
@@ -5559,9 +5560,6 @@ def run_job(
                 f"holder, stagger its schedule or remove its workdir to "
                 f"unblock this job (#79768)."
             )
-        if _profile_override_needed:
-            _hermes_home_token = set_hermes_home_override(_profile_home)
-            os.environ["HERMES_HOME"] = str(_profile_home)
         # Scope cron approval policy to this job. Keep the token so the finally
         # restores the pre-job state instead of pinning an explicit empty value,
         # which would suppress the legacy os.environ fallback used by standalone
@@ -6408,12 +6406,6 @@ def run_job(
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
-        if _hermes_home_token is not None:
-            reset_hermes_home_override(_hermes_home_token)
-            if _prior_hermes_home == "_UNSET_":
-                os.environ.pop("HERMES_HOME", None)
-            else:
-                os.environ["HERMES_HOME"] = _prior_hermes_home
         # Release the cwd lock now that the env is restored, so a waiting
         # workdir job (or queued reader) can proceed without seeing the override.
         if _cwd_lock_acquired:
@@ -7483,20 +7475,14 @@ def tick(
                 verbose=verbose,
             )
 
-        # Partition jobs that mutate process-global execution context. Workdir
-        # jobs set TERMINAL_CWD; named-profile jobs set HERMES_HOME. Both must
-        # use the single-worker lane, while the reader/writer lock also keeps
-        # parallel default-profile jobs from observing either override.
-        def _mutates_process_env(job: dict) -> bool:
-            if (job.get("workdir") or "").strip():
-                return True
-            profile = str(
-                job.get("owner_profile") or job.get("profile") or "default"
-            ).strip() or "default"
-            return profile != "default"
-
-        sequential_jobs = [j for j in due_jobs if _mutates_process_env(j)]
-        parallel_jobs = [j for j in due_jobs if not _mutates_process_env(j)]
+        # Partition due jobs: those with a per-job workdir mutate
+        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
+        # they queue on the single-thread sequential pool to run one at a time.
+        # That alone only keeps workdir jobs from overlapping EACH OTHER;
+        # run_job's _terminal_cwd_lock is what additionally stops a concurrently
+        # firing workdir-less parallel-pool job from observing the override.
+        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
+        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
 
         _results: list = []
         _all_futures: list = []

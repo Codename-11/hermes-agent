@@ -1,9 +1,9 @@
 """Per-run host tool policy helpers.
 
 External control planes such as Forge can send a coarse host-tool allowlist
-with a structured run request. Hermes still owns the actual tool registry, so
-the gateway must translate that allowlist into Hermes toolsets and enforce it
-when building model schemas and when dispatching tool calls.
+with a structured run request. Hermes owns the actual tool registry, so this
+module translates that allowlist into toolsets that model-schema assembly and
+tool dispatch can enforce consistently.
 """
 
 from __future__ import annotations
@@ -11,19 +11,9 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 
-TERMINAL_EQUIVALENT_TOOLSETS = {
-    "terminal",
-    "code_execution",
-}
-
+TERMINAL_EQUIVALENT_TOOLSETS = {"terminal", "code_execution"}
 FILE_EQUIVALENT_TOOLSETS = {"file"}
-
-MIXED_LOCAL_TOOLSETS = {
-    # Hermes Relay desktop tools mix local file, process, and shell
-    # capabilities under one toolset. Disable the whole surface whenever a
-    # run is missing either local terminal or local filesystem permission.
-    "desktop",
-}
+MIXED_LOCAL_TOOLSETS = {"desktop"}
 
 HOST_TOOL_TO_TOOLSETS: Dict[str, Set[str]] = {
     "terminal": TERMINAL_EQUIVALENT_TOOLSETS,
@@ -35,9 +25,7 @@ HOST_TOOL_TO_TOOLSETS: Dict[str, Set[str]] = {
 }
 
 ENFORCED_HOST_TOOLSETS = (
-    TERMINAL_EQUIVALENT_TOOLSETS
-    | FILE_EQUIVALENT_TOOLSETS
-    | MIXED_LOCAL_TOOLSETS
+    TERMINAL_EQUIVALENT_TOOLSETS | FILE_EQUIVALENT_TOOLSETS | MIXED_LOCAL_TOOLSETS
 )
 
 
@@ -55,7 +43,7 @@ def extract_host_tool_allowlist(
     tool_allowlist: Any = None,
     runtime_policy: Any = None,
 ) -> Optional[List[str]]:
-    """Return normalized host-tool names, or None when no policy was supplied."""
+    """Return normalized host-tool names, or None if no policy was supplied."""
     raw = _as_list(tool_allowlist)
     if raw is None and isinstance(runtime_policy, dict):
         raw = _as_list(
@@ -86,7 +74,9 @@ def denied_toolsets_for_allowlist(allowlist: Optional[Iterable[str]]) -> List[st
     if allowlist is None:
         return []
 
-    allowed_names = {str(item).strip().lower() for item in allowlist if str(item).strip()}
+    allowed_names = {
+        str(item).strip().lower() for item in allowlist if str(item).strip()
+    }
     if "*" in allowed_names:
         return []
 

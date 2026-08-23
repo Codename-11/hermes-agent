@@ -32,7 +32,9 @@ def test_git_maps_to_shell_capable_toolsets():
 def test_desktop_requires_terminal_and_filesystem():
     assert "desktop" in denied_toolsets_for_allowlist(["terminal"])
     assert "desktop" in denied_toolsets_for_allowlist(["filesystem"])
-    assert "desktop" not in denied_toolsets_for_allowlist(["terminal", "filesystem"])
+    assert "desktop" not in denied_toolsets_for_allowlist(
+        ["terminal", "filesystem"]
+    )
 
 
 def test_build_policy_summary_is_serializable():

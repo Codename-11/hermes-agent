@@ -4,7 +4,7 @@ Uses Hermes' shared credential pool/auth-store machinery, not a separate API
 key. The selected pool entry usually points at the ChatGPT Codex backend
 (`https://chatgpt.com/backend-api/codex`) and carries a refreshed OAuth bearer.
 
-This is a local stub until upstream adds a proper adapter.
+Chat-completions clients are translated onto the Codex Responses transport.
 """
 
 from __future__ import annotations
@@ -20,23 +20,35 @@ from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 logger = logging.getLogger(__name__)
 
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-_ALLOWED_PATHS: FrozenSet[str] = frozenset(
-    {
-        "/chat/completions",
-        "/completions",
-        "/embeddings",
-        "/models",
-        "/responses",
-    }
-)
+_ALLOWED_PATHS: FrozenSet[str] = frozenset({
+    "/chat/completions",
+    "/completions",
+    "/embeddings",
+    "/models",
+    "/responses",
+})
 
 
 def _load_pool(provider: str):
-    # Import lazily so tests can monkeypatch HERMES_HOME before first use and
-    # proxy import stays lightweight.
+    # Kept for cheap auth checks; runtime credential resolution below owns
+    # refresh and singleton/pool reconciliation.
     from agent.credential_pool import load_pool
 
     return load_pool(provider)
+
+
+def _resolve_codex_credential(*, force_refresh: bool = False) -> UpstreamCredential:
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=force_refresh)
+    bearer = str(resolved.get("api_key") or "").strip()
+    if not bearer:
+        raise RuntimeError("Codex access token missing.")
+    return UpstreamCredential(
+        bearer=bearer,
+        base_url=str(resolved.get("base_url") or _CODEX_BASE_URL).rstrip("/"),
+        token_type="Bearer",
+    )
 
 
 class OpenAICodexAdapter(UpstreamAdapter):
@@ -56,6 +68,15 @@ class OpenAICodexAdapter(UpstreamAdapter):
 
     def is_authenticated(self) -> bool:
         try:
+            from hermes_cli.auth import get_provider_auth_state
+
+            state = get_provider_auth_state(self.name) or {}
+            if isinstance(state, dict):
+                tokens = state.get("tokens") or {}
+                if state.get("access_token") or (
+                    isinstance(tokens, dict) and tokens.get("access_token")
+                ):
+                    return True
             pool = _load_pool(self.name)
             return pool.has_credentials() and pool.has_available()
         except Exception as exc:
@@ -63,24 +84,27 @@ class OpenAICodexAdapter(UpstreamAdapter):
             return False
 
     def get_credential(self) -> UpstreamCredential:
-        pool = _load_pool(self.name)
-        entry = pool.select()
-        if entry is None:
+        try:
+            return _resolve_codex_credential()
+        except Exception as exc:
             raise RuntimeError(
-                "Not logged into OpenAI Codex via Hermes or all Codex credentials are exhausted. "
-                "Run `hermes login --provider openai-codex` or `hermes auth reset openai-codex`."
-            )
+                "OpenAI Codex credentials are unavailable. Run "
+                "`hermes auth add openai-codex --type oauth` or "
+                "`hermes auth reset openai-codex`."
+            ) from exc
 
-        bearer = entry.runtime_api_key or entry.access_token
-        if not bearer:
-            raise RuntimeError("Codex access token missing.")
-
-        return UpstreamCredential(
-            bearer=bearer,
-            base_url=(entry.runtime_base_url or _CODEX_BASE_URL).rstrip("/"),
-            token_type="Bearer",
-            expires_at=entry.expires_at,
-        )
+    def get_retry_credential(
+        self,
+        *,
+        failed_credential: UpstreamCredential,
+        status_code: int,
+    ) -> UpstreamCredential | None:
+        if status_code != 401:
+            return None
+        refreshed = _resolve_codex_credential(force_refresh=True)
+        if refreshed.bearer == failed_credential.bearer:
+            return None
+        return refreshed
 
     def prepare_proxy_request(
         self,
@@ -122,12 +146,10 @@ class OpenAICodexAdapter(UpstreamAdapter):
                 continue
             if role not in {"user", "assistant"}:
                 role = "user"
-            input_items.append(
-                {
-                    "role": role,
-                    "content": [{"type": "input_text", "text": text}],
-                }
-            )
+            input_items.append({
+                "role": role,
+                "content": [{"type": "input_text", "text": text}],
+            })
 
         translated: dict[str, Any] = {
             "model": payload.get("model") or "gpt-5.5",
@@ -138,7 +160,15 @@ class OpenAICodexAdapter(UpstreamAdapter):
             # clients are reconstructed after consuming the Codex SSE stream.
             "stream": True,
         }
-        for key in ("temperature", "top_p", "reasoning", "text", "tools", "tool_choice", "parallel_tool_calls"):
+        for key in (
+            "temperature",
+            "top_p",
+            "reasoning",
+            "text",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        ):
             if key in payload:
                 translated[key] = payload[key]
 
@@ -150,9 +180,16 @@ class OpenAICodexAdapter(UpstreamAdapter):
             "created": int(time.time()),
             "id": f"chatcmpl-{uuid.uuid4().hex}",
         }
-        return "/responses", json.dumps(translated).encode("utf-8"), out_headers, context
+        return (
+            "/responses",
+            json.dumps(translated).encode("utf-8"),
+            out_headers,
+            context,
+        )
 
-    async def finalize_proxy_response(self, request, upstream_resp, session, context: dict[str, Any]):
+    async def finalize_proxy_response(
+        self, request, upstream_resp, session, context: dict[str, Any]
+    ):
         """Convert Codex Responses SSE back to OpenAI chat-completions."""
         if not context.get("codex_chat_completion"):
             return None
@@ -162,7 +199,9 @@ class OpenAICodexAdapter(UpstreamAdapter):
             return None
         try:
             if context.get("client_stream"):
-                return await _stream_chat_completion_chunks(request, upstream_resp, context)
+                return await _stream_chat_completion_chunks(
+                    request, upstream_resp, context
+                )
             return await _collect_chat_completion(upstream_resp, context)
         finally:
             upstream_resp.release()
@@ -222,7 +261,9 @@ def _extract_delta(event: dict[str, Any]) -> str:
     return ""
 
 
-def _chat_chunk(context: dict[str, Any], delta: dict[str, Any], *, finish_reason: str | None = None) -> dict[str, Any]:
+def _chat_chunk(
+    context: dict[str, Any], delta: dict[str, Any], *, finish_reason: str | None = None
+) -> dict[str, Any]:
     return {
         "id": context["id"],
         "object": "chat.completion.chunk",
@@ -238,7 +279,9 @@ def _chat_chunk(context: dict[str, Any], delta: dict[str, Any], *, finish_reason
     }
 
 
-async def _stream_chat_completion_chunks(request, upstream_resp, context: dict[str, Any]):
+async def _stream_chat_completion_chunks(
+    request, upstream_resp, context: dict[str, Any]
+):
     from aiohttp import web
 
     response = web.StreamResponse(
@@ -247,7 +290,9 @@ async def _stream_chat_completion_chunks(request, upstream_resp, context: dict[s
     )
     await response.prepare(request)
     await response.write(
-        f"data: {json.dumps(_chat_chunk(context, {'role': 'assistant'}))}\n\n".encode("utf-8")
+        f"data: {json.dumps(_chat_chunk(context, {'role': 'assistant'}))}\n\n".encode(
+            "utf-8"
+        )
     )
     async for event in _iter_codex_sse_objects(upstream_resp):
         delta = _extract_delta(event)
@@ -256,7 +301,9 @@ async def _stream_chat_completion_chunks(request, upstream_resp, context: dict[s
         chunk = _chat_chunk(context, {"content": delta})
         await response.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
     await response.write(
-        f"data: {json.dumps(_chat_chunk(context, {}, finish_reason='stop'))}\n\n".encode("utf-8")
+        f"data: {json.dumps(_chat_chunk(context, {}, finish_reason='stop'))}\n\n".encode(
+            "utf-8"
+        )
     )
     await response.write(b"data: [DONE]\n\n")
     await response.write_eof()

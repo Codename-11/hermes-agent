@@ -37,6 +37,7 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import {
+  $connection,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -648,25 +649,14 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
 // cached tree intact so the sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
-  if ($profileScope.get() === ALL_PROFILES) {
-    await refreshProjectTreeAcrossProfiles()
-
-    return
-  }
-
-  try {
-    await refreshProjectTreeOn(await activeProjectsContext())
-  } catch {
-    // Backend may not be ready; keep the last known tree.
-  }
+  await refreshProjectTreeAcrossGatewayProfiles()
 }
 
-// The grouped sidebar in all-profiles mode. `projects.tree` answers for one
-// backend's own profile, so it can only ever describe a slice of this view;
-// the REST fan-out reads every profile's databases directly instead of asking
-// us to hold a backend open per profile just to draw lanes.
-async function refreshProjectTreeAcrossProfiles(): Promise<void> {
+// Overview ownership is the selected gateway: aggregate every profile database
+// hosted there, never background-fan into another registered gateway.
+async function refreshProjectTreeAcrossGatewayProfiles(): Promise<void> {
   const generation = ++projectTreeRefreshGeneration
+  const connectionId = $connection.get()?.connectionId ?? null
   $projectTreeLoading.set(true)
 
   try {
@@ -678,18 +668,18 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
 
-    // A profile switch mid-flight leaves this payload describing the wrong
-    // scope; the newer refresh owns the tree.
-    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
+    if (generation !== projectTreeRefreshGeneration || ($connection.get()?.connectionId ?? null) !== connectionId) {
       return
     }
 
     applyProjectTreePayload(res)
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
+    if (generation === projectTreeRefreshGeneration && ($connection.get()?.connectionId ?? null) === connectionId) {
+      markProjectsRpcFailure(err)
+    }
   } finally {
-    if (generation === projectTreeRefreshGeneration) {
+    if (generation === projectTreeRefreshGeneration && ($connection.get()?.connectionId ?? null) === connectionId) {
       $projectTreeLoading.set(false)
     }
   }

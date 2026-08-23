@@ -10,6 +10,9 @@ const ensureGatewayForProfile = vi.fn(async () => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+const requestGatewayForAgent = vi.fn(async () => ({ ok: true }))
+const requestGatewayForProfile = vi.fn(async () => ({ ok: true }))
+const getApiRequestConnection = vi.fn<() => null | string>(() => null)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
@@ -18,10 +21,12 @@ vi.mock('@/store/gateway', () => ({
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
-  openGatewayForProfile
+  openGatewayForProfile,
+  requestGatewayForAgent,
+  requestGatewayForProfile
 }))
 vi.mock('@/hermes', () => ({
-  getApiRequestConnection: vi.fn(() => null),
+  getApiRequestConnection,
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
 }))
@@ -30,15 +35,13 @@ vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
 const {
   $activeGatewayProfile,
-  $browsedProfile,
   $profiles,
-  $showAllProfiles,
-  cycleProfile,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  openActiveProfileRoute,
   prewarmProfileBackend,
-  refreshProfiles,
-  selectProfile
+  requestActiveProfileRoute,
+  refreshProfiles
 } = await import('./profile')
 
 const { $connection } = await import('./session')
@@ -69,10 +72,12 @@ beforeEach(() => {
   ensureGatewayForProfile.mockClear()
   openGatewayForAgent.mockClear()
   openGatewayForProfile.mockClear()
+  requestGatewayForAgent.mockClear()
+  requestGatewayForProfile.mockClear()
+  getApiRequestConnection.mockReset()
+  getApiRequestConnection.mockReturnValue(null)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
-  $browsedProfile.set('default')
-  $showAllProfiles.set(false)
   $connection.set(localConn())
   $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
@@ -91,8 +96,7 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     // "local". Activating the remote profile must flip it to "remote" — without
     // this, image attach uses path-based image.attach against the remote
     // gateway ("image not found: C:\\…") instead of image.attach_bytes.
-    const descriptor = remoteConn()
-    getConnection.mockResolvedValue(descriptor)
+    getConnection.mockResolvedValue(remoteConn())
 
     await ensureGatewayProfile('vps-remote')
 
@@ -134,22 +138,42 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
   })
 })
 
-describe('registered-source profile rail routing', () => {
-  it('keeps a remote primary source when the rail returns to default', async () => {
-    $activeGatewayProfile.set('mizu')
-    $browsedProfile.set('mizu')
+describe('registered-source active profile routing', () => {
+  it('keeps a remote-primary descriptor on all-profile open and request routes', async () => {
     $connection.set(
       remoteConn({
         connectionId: 'homelab',
-        profile: 'mizu',
+        profile: 'default',
         registryScoped: true
       })
     )
 
-    selectProfile('default')
-    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('homelab', 'default'))
+    await openActiveProfileRoute('victor')
+    await requestActiveProfileRoute('victor', 'session.resume', { session_id: 'stored-victor' })
 
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect(openGatewayForAgent).toHaveBeenCalledWith('homelab', 'victor')
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'homelab',
+      'victor',
+      'session.resume',
+      { session_id: 'stored-victor' }
+    )
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('keeps the legacy local fallback without a registered source', async () => {
+    await openActiveProfileRoute('victor')
+    await requestActiveProfileRoute('victor', 'session.resume', { session_id: 'stored-victor' })
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('victor')
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'victor',
+      'session.resume',
+      { session_id: 'stored-victor' }
+    )
+    expect(openGatewayForAgent).not.toHaveBeenCalled()
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 })
 
@@ -159,18 +183,6 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(invalidateProfileScopedQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('profile rail navigation', () => {
-  it('cycles from the browsed profile when a shared remote gateway remains on the primary profile', () => {
-    $profiles.set([profile('default', true), profile('mizu'), profile('victor')])
-    $activeGatewayProfile.set('victor')
-    $browsedProfile.set('mizu')
-
-    cycleProfile(1)
-
-    expect($browsedProfile.get()).toBe('victor')
   })
 })
 

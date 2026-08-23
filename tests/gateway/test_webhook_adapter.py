@@ -503,6 +503,29 @@ class TestPayloadFilters:
 
 
 class TestHTTPHandling:
+    @pytest.mark.asyncio
+    async def test_route_toolsets_attached_to_message_event(self):
+        """A trusted route can override webhook platform toolsets for its run."""
+        routes = {
+            "trusted": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "hi",
+                "toolsets": ["web", "terminal", "file"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/trusted", json={"data": "value"})
+            assert resp.status == 202
+
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.enabled_toolsets == ["web", "terminal", "file"]
+
 
     @pytest.mark.asyncio
     async def test_unknown_route_returns_404(self):

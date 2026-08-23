@@ -142,7 +142,6 @@ class TestCrossProfileProjectTree:
 
         def record_active_session(_db, **kwargs):
             active_ids.append(kwargs.get("active_session_id"))
-
             return {"projects": [], "scoped_session_ids": []}, None
 
         monkeypatch.setattr(gateway_server, "_build_project_tree", record_active_session)

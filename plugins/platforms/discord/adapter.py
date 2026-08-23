@@ -437,6 +437,7 @@ _GATE_ENV_KEYS = (
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
     "DISCORD_ALLOW_ALL_USERS",
     "DISCORD_ALLOW_BOTS",
+    "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
     "GATEWAY_ALLOW_ALL_USERS",
     "GATEWAY_ALLOWED_USERS",
 )
@@ -520,7 +521,7 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions(*, replied_user: Optional[bool] = None):
+def _build_allowed_mentions(config: Optional[PlatformConfig] = None):
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
     Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
@@ -541,21 +542,24 @@ def _build_allowed_mentions(*, replied_user: Optional[bool] = None):
     if not DISCORD_AVAILABLE:
         return None
 
-    def _b(name: str, default: bool) -> bool:
-        raw = os.getenv(name, "").strip().lower()
+    configured = {}
+    extra = getattr(config, "extra", None)
+    if isinstance(extra, dict) and isinstance(extra.get("allow_mentions"), dict):
+        configured = extra["allow_mentions"]
+
+    def _b(name: str, key: str, default: bool) -> bool:
+        raw = _scoped_gate_env(name).strip().lower()
+        if not raw and key in configured:
+            raw = str(configured[key]).strip().lower()
         if not raw:
             return default
         return raw in {"true", "1", "yes", "on"}
 
-    allow_replied_user = _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True)
-    if replied_user is not None:
-        allow_replied_user = bool(replied_user)
-
     return discord.AllowedMentions(
-        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
-        roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
-        users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=allow_replied_user,
+        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", "everyone", False),
+        roles=_b("DISCORD_ALLOW_MENTION_ROLES", "roles", False),
+        users=_b("DISCORD_ALLOW_MENTION_USERS", "users", True),
+        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", "replied_user", True),
     )
 
 
@@ -1385,7 +1389,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
-                allowed_mentions=_build_allowed_mentions(),
+                allowed_mentions=_build_allowed_mentions(self.config),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure
@@ -3520,13 +3524,6 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             message_ids = []
-            allowed_mentions = None
-            if metadata and metadata.get("suppress_reply_mentions"):
-                # Bot-authored replies must not ping the bot they answer;
-                # allow_bots=mentions would otherwise admit that reply as a
-                # fresh turn and recreate the roundtable consensus loop.
-                allowed_mentions = _build_allowed_mentions(replied_user=False)
-
             # Build the reference from ids — no fetch_message round trip.
             reference = self._reply_reference_for_send(reply_to, channel)
 
@@ -3536,13 +3533,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    send_kwargs: Dict[str, Any] = {
-                        "content": chunk,
-                        "reference": chunk_reference,
-                    }
-                    if allowed_mentions is not None:
-                        send_kwargs["allowed_mentions"] = allowed_mentions
-                    msg = await channel.send(**send_kwargs)
+                    msg = await channel.send(
+                        content=chunk,
+                        reference=chunk_reference,
+                    )
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -3561,8 +3555,10 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        send_kwargs["reference"] = None
-                        msg = await channel.send(**send_kwargs)
+                        msg = await channel.send(
+                            content=chunk,
+                            reference=None,
+                        )
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -6713,7 +6709,14 @@ class DiscordAdapter(BasePlatformAdapter):
     def _get_allow_bots(self) -> str:
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
         raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
-        return str(raw or "none").lower().strip() or "none"
+        value = str(raw or "none").lower().strip()
+        if value not in {"none", "mentions", "all"}:
+            logger.warning(
+                "[Discord] Unknown allow_bots=%r; treating as 'none'",
+                raw,
+            )
+            return "none"
+        return value
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs/names where no bot mention is required.
@@ -6788,12 +6791,13 @@ class DiscordAdapter(BasePlatformAdapter):
         Config: ``discord.bots_require_inline_mention`` (or env
         ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
         """
-        configured = self.config.extra.get("bots_require_inline_mention")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() in {"true", "1", "yes", "on"}
-            return bool(configured)
-        return os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false").lower() in {
+        configured = self._gate_raw(
+            "bots_require_inline_mention",
+            "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
+        )
+        if isinstance(configured, bool):
+            return configured
+        return str(configured or "false").lower().strip() in {
             "true",
             "1",
             "yes",
@@ -10376,8 +10380,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
     ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
-    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_ALLOW_BOTS``,
-    ``DISCORD_HISTORY_BACKFILL``,
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
     ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
@@ -10395,7 +10398,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
-    if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
+    if (
+        "bots_require_inline_mention" in discord_cfg
+        and not _profile_scoped_config_load()
+        and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION")
+    ):
         os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
@@ -10406,13 +10413,19 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
     seeded_extra = {}
+    _skip_env_bridge = _profile_scoped_config_load()
+    if "allow_bots" in discord_cfg:
+        seeded_extra["allow_bots"] = str(discord_cfg["allow_bots"])
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOW_BOTS"):
+            os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"])
+    if "bots_require_inline_mention" in discord_cfg:
+        seeded_extra["bots_require_inline_mention"] = discord_cfg["bots_require_inline_mention"]
     # Authorization gate keys are ALWAYS seeded into PlatformConfig.extra so
     # every adapter carries its own profile's allow/deny lists (issue #72348).
     # The os.environ writes below remain first-writer-wins for legacy env-only
     # consumers, but are skipped for profile-scoped loads under multiplex —
     # a secondary profile's gates must never land in process-global env where
     # they'd become another profile's policy.
-    _skip_env_bridge = _profile_scoped_config_load()
     allowed_users_cfg = (
         discord_cfg["allow_from"] if "allow_from" in discord_cfg
         else platform_extra_cfg.get("allow_from")
@@ -10485,16 +10498,6 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["no_thread_channels"] = str(ntc)
         if not _skip_env_bridge and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
             os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
-    # allow_bots: allow bot-authored messages through the message gate.
-    # none | mentions | all; scoped env wins over per-adapter config.
-    allow_bots_cfg = (
-        discord_cfg["allow_bots"] if "allow_bots" in discord_cfg
-        else platform_extra_cfg.get("allow_bots")
-    )
-    if allow_bots_cfg is not None:
-        seeded_extra["allow_bots"] = str(allow_bots_cfg).lower()
-        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOW_BOTS"):
-            os.environ["DISCORD_ALLOW_BOTS"] = str(allow_bots_cfg).lower()
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.
@@ -10509,13 +10512,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     # into unsafe modes (e.g. roles=true) if they actually want it.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):
+        seeded_extra["allow_mentions"] = dict(allow_mentions_cfg)
         for yaml_key, env_key in (
             ("everyone", "DISCORD_ALLOW_MENTION_EVERYONE"),
             ("roles", "DISCORD_ALLOW_MENTION_ROLES"),
             ("users", "DISCORD_ALLOW_MENTION_USERS"),
             ("replied_user", "DISCORD_ALLOW_MENTION_REPLIED_USER"),
         ):
-            if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
+            if (
+                yaml_key in allow_mentions_cfg
+                and not _skip_env_bridge
+                and not os.getenv(env_key)
+            ):
                 os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
     # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode.
     # YAML 1.1 parses bare 'off' as boolean False — coerce to string "off".

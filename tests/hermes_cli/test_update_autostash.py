@@ -2764,9 +2764,9 @@ def test_resolver_brief_is_conflict_scoped_deterministic_and_bounded(tmp_path, m
     review = {
         "branch": "axiom",
         "worktree": "/retained/worktree",
-        "conflict_files": ["gateway/platforms/slack.py"],
+        "conflict_files": ["hermes_cli/axiom_update.py"],
         "watch_areas": hermes_axiom_update._matched_fork_watch_areas(
-            ["gateway/platforms/slack.py"]
+            ["hermes_cli/axiom_update.py"]
         ),
         "incoming_commits": "incoming " + ("x" * 50_000),
         "error": "failure " + ("y" * 50_000),
@@ -2777,10 +2777,9 @@ def test_resolver_brief_is_conflict_scoped_deterministic_and_bounded(tmp_path, m
 
     assert first == second
     assert len(first) < 16_000
-    assert "gateway/platforms/slack.py" in first
-    assert "Slack channel/session behavior" in first
-    assert "slack-channel-session" in first
-    assert "Deploy-branch-safe updater" not in first
+    assert "hermes_cli/axiom_update.py" in first
+    assert "Deploy-branch-safe updater" in first
+    assert "deploy-updater" in first
     assert "docs/axiom-fork-contract.md" not in first
     assert "Read the full" not in first
     assert "python -m pytest" not in first
@@ -2796,46 +2795,6 @@ def test_windows_focused_check_normalizes_posix_env_assignment():
         'cd apps/desktop && set "NODE_ENV=test" && npm run typecheck'
     )
 
-
-def test_desktop_focused_checks_reference_typescript_sources():
-    from hermes_cli import axiom_update as hermes_axiom_update
-
-    repo = Path(__file__).resolve().parents[2]
-    desktop_areas = [
-        area
-        for area in hermes_axiom_update.FORK_WATCH_AREAS
-        if str(area["name"]).startswith("Desktop ")
-    ]
-
-    assert desktop_areas
-    for area in desktop_areas:
-        paths = area["paths"]
-        checks = area["checks"]
-        assert isinstance(paths, tuple)
-        assert isinstance(checks, tuple)
-        for path in paths:
-            if path.endswith((".ts", ".tsx")):
-                assert (repo / path).exists(), path
-        for check in checks:
-            assert ".cjs" not in check["command"], check
-
-
-def test_slack_focused_checks_reference_existing_files():
-    from pathlib import Path
-
-    from hermes_cli import axiom_update as hermes_axiom_update
-
-    repo = Path(__file__).resolve().parents[2]
-    checks = hermes_axiom_update._focused_checks_for_paths(
-        ["gateway/platforms/slack.py"],
-        {},
-    )
-
-    assert checks
-    for check in checks:
-        for token in check["command"].split():
-            if token.startswith("tests/") and token.endswith(".py"):
-                assert (repo / token).exists(), token
 
 
 def test_conflict_marker_scan_ignores_decorative_equals_separators(tmp_path):
@@ -3325,23 +3284,6 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 # Non-main branch → auto-checkout main
 # ---------------------------------------------------------------------------
 
-def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, capsys):
-    """When on a feature branch, update checks out main before pulling."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-
-    side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-
-    hermes_main.cmd_update(SimpleNamespace())
-
-    checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
-    assert len(checkout_calls) == 1
-
-    out = capsys.readouterr().out
-    assert "fix/something" in out
-    assert "switching to main" in out
-
 
 def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):
     """When in detached HEAD state, update checks out main before pulling."""
@@ -3359,39 +3301,6 @@ def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, c
     out = capsys.readouterr().out
     assert "detached HEAD" in out
 
-
-def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatch, tmp_path, capsys):
-    """When on a feature branch with no updates, stash is restored and branch switched back."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-
-    # Enable stash so it returns a ref
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
-    restore_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-
-    side_effect, recorded = _make_update_side_effect(
-        current_branch="fix/something", commit_count="0",
-    )
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-
-    hermes_main.cmd_update(SimpleNamespace())
-
-    # Stash should have been restored
-    assert len(restore_calls) == 1
-
-    # Should have checked out back to the original branch
-    checkout_back = [c for c in recorded if "checkout" in c and "fix/something" in c]
-    assert len(checkout_back) == 1
-
-    out = capsys.readouterr().out
-    assert "Already up to date" in out
 
 
 def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):

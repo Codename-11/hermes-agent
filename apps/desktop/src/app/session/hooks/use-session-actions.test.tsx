@@ -15,7 +15,14 @@ import {
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  openActiveProfileRoute,
+  requestActiveProfileRoute
+} from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -69,7 +76,9 @@ vi.mock('@/hermes', async importOriginal => ({
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined),
+  openActiveProfileRoute: vi.fn().mockResolvedValue(undefined),
+  requestActiveProfileRoute: vi.fn()
 }))
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
@@ -750,6 +759,40 @@ describe('resumeSession failure recovery', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
   }
+
+  it('keeps primary all-profile rows on the active registered source for open and resume', async () => {
+    $showAllProfiles.set(true)
+    setSessions([storedSession({ profile: 'victor' })])
+    vi.mocked(requestActiveProfileRoute).mockImplementation(async (_profile, method) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          message_count: 0,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+    const ambientRequest = vi.fn(async () => ({}) as never)
+
+    try {
+      await runResume(ambientRequest)
+    } finally {
+      $showAllProfiles.set(false)
+    }
+
+    expect(openActiveProfileRoute).toHaveBeenCalledWith('victor')
+    expect(requestActiveProfileRoute).toHaveBeenCalledWith(
+      'victor',
+      'session.resume',
+      expect.objectContaining({ session_id: 'stored-1' })
+    )
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
 
   it('arms $resumeFailedSessionId when resume RPC and REST fallback both fail', async () => {
     // session.resume rejects (e.g. timeout against a wedged backend)...

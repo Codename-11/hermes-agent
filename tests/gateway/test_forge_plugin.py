@@ -1,9 +1,9 @@
 """Regression tests for the Forge platform plugin.
 
 Forge chat dispatch enters Hermes through the generic webhook adapter, then
-uses a plugin platform adapter as the outbound delivery target.  These tests
-keep that adapter discoverable and verify the no-op semantics for [SILENT]
-echo events without touching the live Forge API.
+uses a plugin platform adapter as the outbound delivery target. These tests
+keep that adapter discoverable and verify outbound delivery, draft streaming,
+and inbound-message reply correlation without touching the live Forge API.
 """
 
 from __future__ import annotations
@@ -30,7 +30,12 @@ def _load_adapter_module():
 
 
 def _config() -> PlatformConfig:
-    return PlatformConfig(enabled=True, api_key="test-key", token="", extra={"base_url": "https://forge.example.test"})
+    return PlatformConfig(
+        enabled=True,
+        api_key="test-key",
+        token="",
+        extra={"base_url": "https://forge.example.test"},
+    )
 
 
 def test_register_calls_register_platform() -> None:
@@ -43,16 +48,66 @@ def test_register_calls_register_platform() -> None:
     kwargs = ctx.register_platform.call_args.kwargs
     assert kwargs["name"] == "forge"
     assert kwargs["label"] == "Forge"
-    assert kwargs["required_env"] == ["FORGE_API_KEY"]
+    assert kwargs["required_env"] == ["FORGE_API_KEY", "FORGE_BASE_URL"]
     assert callable(kwargs["adapter_factory"])
 
 
-def test_adapter_uses_configured_base_url_and_chat_info() -> None:
+def test_adapter_uses_configured_base_url() -> None:
     module = _load_adapter_module()
     adapter = module.ForgeAdapter(_config())
 
     assert adapter.base_url == "https://forge.example.test"
     assert adapter.rpc_url == "https://forge.example.test/api/mcp/rpc"
+    assert adapter.supports_draft_streaming(chat_id="thread-1") is True
+
+
+def test_adapter_requires_explicit_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_adapter_module()
+    config = _config()
+    config.extra = {}
+    monkeypatch.delenv("FORGE_BASE_URL", raising=False)
+
+    with pytest.raises(ValueError, match="FORGE_BASE_URL"):
+        module.ForgeAdapter(config)
+
+
+@pytest.mark.parametrize(
+    ("api_key", "base_url", "expected"),
+    [
+        ("test-key", "https://forge.example.test", True),
+        ("test-key", None, False),
+        (None, "https://forge.example.test", False),
+    ],
+)
+def test_requirements_need_api_key_and_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+    api_key: str | None,
+    base_url: str | None,
+    expected: bool,
+) -> None:
+    module = _load_adapter_module()
+    if api_key is None:
+        monkeypatch.delenv("FORGE_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("FORGE_API_KEY", api_key)
+    if base_url is None:
+        monkeypatch.delenv("FORGE_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("FORGE_BASE_URL", base_url)
+
+    assert module.check_requirements() is expected
+    assert bool(module._env_enablement()) is expected
+
+
+def test_validate_config_rejects_missing_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_adapter_module()
+    config = _config()
+    config.extra = {}
+    monkeypatch.delenv("FORGE_BASE_URL", raising=False)
+
+    assert module.validate_config(config) is False
 
 
 @pytest.mark.asyncio
@@ -96,12 +151,47 @@ async def test_send_appends_message_via_forge_mcp_tool() -> None:
 
 
 @pytest.mark.asyncio
-async def test_draft_binds_to_exact_inbound_message_from_metadata() -> None:
+async def test_draft_streams_deltas_then_finalizes() -> None:
     module = _load_adapter_module()
     adapter = module.ForgeAdapter(_config())
     adapter._call_tool = Mock(
-        side_effect=[{"draftId": "draft-1"}, {"ok": True}]
+        side_effect=[
+            {"draftId": "draft-1"},
+            {"ok": True},
+            {"ok": True},
+            {"id": "msg-1"},
+        ]
     )
+
+    first = await adapter.send_draft("thread-1", 7, "partial")
+    second = await adapter.send_draft("thread-1", 7, "partial response")
+    final = await adapter.send("thread-1", "partial response")
+
+    assert first.success is True
+    assert second.success is True
+    assert final.success is True
+    assert final.message_id == "msg-1"
+    assert adapter._call_tool.call_args_list[0].args == (
+        "chat.startDraft",
+        {"threadId": "thread-1"},
+    )
+    assert adapter._call_tool.call_args_list[1].args[1]["delta"] == "partial"
+    assert adapter._call_tool.call_args_list[2].args[1]["delta"] == " response"
+    assert adapter._call_tool.call_args_list[3].args == (
+        "chat.finalizeDraft",
+        {
+            "threadId": "thread-1",
+            "draftId": "draft-1",
+            "body": "partial response",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_draft_binds_to_exact_inbound_message_from_metadata() -> None:
+    module = _load_adapter_module()
+    adapter = module.ForgeAdapter(_config())
+    adapter._call_tool = Mock(side_effect=[{"draftId": "draft-1"}, {"ok": True}])
 
     result = await adapter.send_draft(
         "thread-1",

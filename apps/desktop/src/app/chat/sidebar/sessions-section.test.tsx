@@ -1,17 +1,13 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
-import { $activeGatewayProfile } from '@/store/profile'
 
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
-afterEach(() => {
-  cleanup()
-  $activeGatewayProfile.set('default')
-})
+afterEach(cleanup)
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -24,16 +20,6 @@ vi.mock('@/i18n', () => ({
           older: 'Older',
           today: 'Today',
           yesterday: 'Yesterday'
-        },
-        newSessionIn: (label: string) => `New session in ${label}`,
-        showProjects: 'Show projects',
-        projects: {
-          hideOverview: 'Hide projects',
-          sectionLabel: 'Projects',
-          enter: (label: string) => `Open ${label}`,
-          reorder: (label: string) => `Reorder ${label}`,
-          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
-          viewAllSessions: (count: number) => `View all ${count} sessions`
         }
       }
     }
@@ -51,24 +37,8 @@ vi.mock('./virtual-session-list', () => ({
 }))
 
 vi.mock('./session-row', () => ({
-  SidebarSessionRow: ({
-    isSelected,
-    onResume,
-    session
-  }: {
-    isSelected: boolean
-    onResume: () => void
-    session: SessionInfo
-  }) => (
-    <button
-      data-profile={session.profile}
-      data-selected={isSelected}
-      data-testid={`session-row-${session.id}`}
-      onClick={onResume}
-      type="button"
-    >
-      {session.id}
-    </button>
+  SidebarSessionRow: ({ session }: { session: SessionInfo }) => (
+    <div data-testid={`session-row-${session.id}`}>{session.id}</div>
   )
 }))
 
@@ -90,63 +60,6 @@ function generateSessions(count: number): SessionInfo[] {
 const noop = () => {}
 
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
-  it('preserves the owning profile when opening a session from the unified list', () => {
-    const onResumeSession = vi.fn()
-    const session = { ...makeSession('shared-id'), profile: 'meta' }
-
-    render(
-      <SidebarSessionsSection
-        activeSessionId={null}
-        emptyState={<div>Empty</div>}
-        label="Sessions"
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onResumeSession={onResumeSession}
-        onToggle={noop}
-        onTogglePin={noop}
-        onToggleUnread={noop}
-        open
-        pinned={false}
-        sessions={[session]}
-      />
-    )
-
-    fireEvent.click(screen.getByTestId('session-row-shared-id'))
-
-    expect(onResumeSession).toHaveBeenCalledWith('shared-id', 'meta')
-  })
-
-  it('selects only the active profile copy when two profiles share a session id', () => {
-    $activeGatewayProfile.set('meta')
-
-    render(
-      <SidebarSessionsSection
-        activeSessionId="shared-id"
-        emptyState={<div>Empty</div>}
-        label="Sessions"
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onResumeSession={noop}
-        onToggle={noop}
-        onTogglePin={noop}
-        onToggleUnread={noop}
-        open
-        pinned={false}
-        sessions={[
-          { ...makeSession('shared-id'), profile: 'default' },
-          { ...makeSession('shared-id'), profile: 'meta' }
-        ]}
-      />
-    )
-
-    const rows = screen.getAllByTestId('session-row-shared-id')
-    const defaultRow = rows.find(row => row.dataset.profile === 'default')
-    const metaRow = rows.find(row => row.dataset.profile === 'meta')
-
-    expect(defaultRow?.dataset.selected).toBe('false')
-    expect(metaRow?.dataset.selected).toBe('true')
-  })
-
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {
     mockVirtualListPropsHistory.length = 0
 
@@ -271,21 +184,11 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 })
 
 describe('SidebarSessionsSection hybrid project overview', () => {
-  const homeProject = {
-    id: '__no_project__',
-    isNoProject: true,
-    label: 'Home',
-    path: null,
-    repos: [],
-    sessionCount: 0
-  }
-
-  it('renders Projects first and a separate flat Recent Sessions lane beneath', () => {
-    const { container } = render(
+  it('keeps flat sessions under a separate Recent Sessions lane when the project tree is empty', () => {
+    render(
       <SidebarSessionsSection
         activeSessionId={null}
-        emptyState={<div>Empty</div>}
-        grouping="date"
+        emptyState={<div>No projects</div>}
         label="Projects"
         onArchiveSession={noop}
         onDeleteSession={noop}
@@ -295,136 +198,13 @@ describe('SidebarSessionsSection hybrid project overview', () => {
         onToggleUnread={noop}
         open
         pinned={false}
-        projectOverview={[homeProject] as never}
+        projectOverview={[]}
         projectOverviewRecentsLabel="Recent Sessions"
         sessions={[makeSession('recent-1')]}
       />
     )
 
-    const labels = screen.getAllByText(/Projects|Home|Recent Sessions|recent-1/).map(node => node.textContent)
-    expect(labels).toContain('Projects')
-    expect(labels).toContain('Home')
-    expect(labels).toContain('Recent Sessions')
-    expect(container.textContent?.indexOf('Projects')).toBeLessThan(
-      container.textContent?.indexOf('Recent Sessions') ?? -1
-    )
-    expect(screen.getByTestId('session-row-recent-1')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Show Home sessions' })).toBeNull()
-  })
-
-  it('collapses only the project overview while keeping Recent Sessions visible', () => {
-    const onToggleProjectOverview = vi.fn()
-
-    const { rerender } = render(
-      <SidebarSessionsSection
-        activeSessionId={null}
-        emptyState={<div>Empty</div>}
-        grouping="date"
-        label="Projects"
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onResumeSession={noop}
-        onToggle={noop}
-        onTogglePin={noop}
-        onToggleProjectOverview={onToggleProjectOverview}
-        onToggleUnread={noop}
-        open
-        pinned={false}
-        projectOverview={[homeProject] as never}
-        projectOverviewOpen
-        projectOverviewRecentsLabel="Recent Sessions"
-        sessions={[makeSession('recent-1')]}
-      />
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Hide projects' }))
-    expect(onToggleProjectOverview).toHaveBeenCalledOnce()
-
-    rerender(
-      <SidebarSessionsSection
-        activeSessionId={null}
-        emptyState={<div>Empty</div>}
-        grouping="date"
-        label="Projects"
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onResumeSession={noop}
-        onToggle={noop}
-        onTogglePin={noop}
-        onToggleProjectOverview={onToggleProjectOverview}
-        onToggleUnread={noop}
-        open
-        pinned={false}
-        projectOverview={[homeProject] as never}
-        projectOverviewOpen={false}
-        projectOverviewRecentsLabel="Recent Sessions"
-        sessions={[makeSession('recent-1')]}
-      />
-    )
-
-    expect(screen.queryByText('Home')).toBeNull()
     expect(screen.getByText('Recent Sessions')).toBeTruthy()
     expect(screen.getByTestId('session-row-recent-1')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Show projects' })).toBeTruthy()
-  })
-
-  it('expands a bounded five-session Home preview and keeps full drill-in separate', () => {
-    const onEnterProject = vi.fn()
-    const previews = generateSessions(5)
-
-    render(
-      <SidebarSessionsSection
-        activeSessionId={null}
-        emptyState={<div>Empty</div>}
-        label="Projects"
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onEnterProject={onEnterProject}
-        onResumeSession={noop}
-        onToggle={noop}
-        onTogglePin={noop}
-        onToggleUnread={noop}
-        open
-        pinned={false}
-        projectOverview={[{ ...homeProject, previewSessions: previews, sessionCount: 9 }] as never}
-        sessions={[]}
-      />
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show Home sessions' }))
-
-    for (const preview of previews) {
-      expect(screen.getByTestId(`session-row-${preview.id}`)).toBeTruthy()
-    }
-
-    expect(screen.getAllByTestId(/^session-row-/)).toHaveLength(5)
-
-    fireEvent.click(screen.getByRole('button', { name: 'View all 9 sessions' }))
-    expect(onEnterProject).toHaveBeenCalledWith('__no_project__')
-  })
-
-  it('hides global recents while drilled into a project', () => {
-    render(
-      <SidebarSessionsSection
-        activeSessionId={null}
-        emptyState={<div>Project empty</div>}
-        label="Demo"
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onResumeSession={noop}
-        onToggle={noop}
-        onTogglePin={noop}
-        onToggleUnread={noop}
-        open
-        pinned={false}
-        projectContent={{ ...homeProject, id: 'p-demo', isNoProject: false, label: 'Demo' } as never}
-        projectOverviewRecentsLabel="Recent Sessions"
-        sessions={[makeSession('global-recent')]}
-      />
-    )
-
-    expect(screen.getByText('Project empty')).toBeTruthy()
-    expect(screen.queryByText('Recent Sessions')).toBeNull()
-    expect(screen.queryByTestId('session-row-global-recent')).toBeNull()
   })
 })

@@ -7,7 +7,8 @@ model ID so clients can use a single local endpoint:
   - gpt* / o* / codex* / chatgpt* -> openai-codex
   - hermes* / nous* -> nous
 
-This is a local Axiom patch until upstream implements multi-provider routing.
+Provider-specific credential refresh and response translation remain delegated
+to the selected upstream adapter.
 """
 
 from __future__ import annotations
@@ -33,7 +34,9 @@ _HEALTH_CACHE_ENV = "HERMES_PROXY_MODEL_HEALTH_CACHE"
 _HEALTH_TTL_ENV = "HERMES_PROXY_MODEL_HEALTH_TTL_SECONDS"
 
 
-def _model_entries(model_ids: Iterable[str], owned_by: str, *, health: str = "unknown") -> list[dict]:
+def _model_entries(
+    model_ids: Iterable[str], owned_by: str, *, health: str = "unknown"
+) -> list[dict]:
     return [
         {
             "id": model_id,
@@ -62,7 +65,9 @@ _XAI_UNROUTABLE_MODEL_IDS = {
 }
 
 
-def _chat_model_ids(model_ids: Iterable[str], *, provider: str | None = None) -> list[str]:
+def _chat_model_ids(
+    model_ids: Iterable[str], *, provider: str | None = None
+) -> list[str]:
     """Keep the routed proxy catalog focused on chat-completions models."""
     blocked_fragments = (
         "audio",
@@ -87,7 +92,10 @@ def _chat_model_ids(model_ids: Iterable[str], *, provider: str | None = None) ->
         if not clean:
             continue
         lowered = clean.lower()
-        if normalized_provider in {"xai", "xai-oauth"} and lowered in _XAI_UNROUTABLE_MODEL_IDS:
+        if (
+            normalized_provider in {"xai", "xai-oauth"}
+            and lowered in _XAI_UNROUTABLE_MODEL_IDS
+        ):
             continue
         if any(fragment in lowered for fragment in blocked_fragments):
             continue
@@ -195,7 +203,9 @@ def _load_routable_model_ids() -> set[str]:
     except FileNotFoundError:
         return set()
     except Exception as exc:
-        logger.warning("Could not read Hermes proxy model health cache %s: %s", path, exc)
+        logger.warning(
+            "Could not read Hermes proxy model health cache %s: %s", path, exc
+        )
         return set()
 
     now = time.time()
@@ -267,9 +277,18 @@ class RoutedOAuthAdapter(UpstreamAdapter):
     def available_models(self) -> list[dict]:
         models: list[dict] = []
         if self.xai.is_authenticated():
-            models.extend(_model_entries(_provider_models("xai-oauth", _XAI_FALLBACK_MODELS), "xai-oauth"))
+            models.extend(
+                _model_entries(
+                    _provider_models("xai-oauth", _XAI_FALLBACK_MODELS), "xai-oauth"
+                )
+            )
         if self.codex.is_authenticated():
-            models.extend(_model_entries(_provider_models("openai-codex", _CODEX_FALLBACK_MODELS), "openai-codex"))
+            models.extend(
+                _model_entries(
+                    _provider_models("openai-codex", _CODEX_FALLBACK_MODELS),
+                    "openai-codex",
+                )
+            )
         if self.nous.is_authenticated():
             models.extend(_model_entries(_provider_models("nous", []), "nous"))
 
@@ -304,7 +323,11 @@ class RoutedOAuthAdapter(UpstreamAdapter):
     def _select_adapter(self, rel_path: str, body: bytes) -> UpstreamAdapter:
         model = self._model_from_body(body)
 
-        if model.startswith("grok") or model.startswith("xai") or model.startswith("x-ai/"):
+        if (
+            model.startswith("grok")
+            or model.startswith("xai")
+            or model.startswith("x-ai/")
+        ):
             return self.xai
 
         if (
@@ -334,18 +357,36 @@ class RoutedOAuthAdapter(UpstreamAdapter):
 
         raise RuntimeError(
             "No authenticated Hermes OAuth upstreams are available. "
-            "Run `hermes login --provider xai-oauth`, `hermes login --provider openai-codex`, "
-            "or `hermes login --provider nous`."
+            "Run `hermes auth add xai-oauth --type oauth`, "
+            "`hermes auth add openai-codex --type oauth`, or `hermes auth add nous`."
         )
 
     def get_credential(self) -> UpstreamCredential:
         # Fallback for server versions that do not pass request bodies.
         return self._select_adapter("", b"").get_credential()
 
-    def get_credential_for_request(self, rel_path: str, body: bytes) -> UpstreamCredential:
+    def get_credential_for_request(
+        self, rel_path: str, body: bytes
+    ) -> UpstreamCredential:
         adapter = self._select_adapter(rel_path, body)
         logger.debug("proxy router: %s -> %s", rel_path, adapter.display_name)
         return adapter.get_credential()
+
+    def get_retry_credential_for_request(
+        self,
+        *,
+        context: dict[str, Any],
+        failed_credential: UpstreamCredential,
+        status_code: int,
+    ) -> UpstreamCredential | None:
+        """Delegate refresh/rotation to the adapter selected for this request."""
+        adapter = context.get("selected_adapter") if isinstance(context, dict) else None
+        if not isinstance(adapter, UpstreamAdapter):
+            return None
+        return adapter.get_retry_credential(
+            failed_credential=failed_credential,
+            status_code=status_code,
+        )
 
     def prepare_proxy_request(
         self,
@@ -355,20 +396,34 @@ class RoutedOAuthAdapter(UpstreamAdapter):
     ):
         adapter = self._select_adapter(rel_path, body)
         if hasattr(adapter, "prepare_proxy_request"):
-            inner_rel_path, inner_body, inner_headers, inner_context = adapter.prepare_proxy_request(  # type: ignore[attr-defined]
-                rel_path,
-                body,
-                headers,
+            inner_rel_path, inner_body, inner_headers, inner_context = (
+                adapter.prepare_proxy_request(  # type: ignore[attr-defined]
+                    rel_path,
+                    body,
+                    headers,
+                )
             )
-            return inner_rel_path, inner_body, inner_headers, {
-                "selected_adapter": adapter,
-                "inner_context": inner_context,
-            }
-        return rel_path, body, headers, {"selected_adapter": adapter, "inner_context": {}}
+            return (
+                inner_rel_path,
+                inner_body,
+                inner_headers,
+                {
+                    "selected_adapter": adapter,
+                    "inner_context": inner_context,
+                },
+            )
+        return (
+            rel_path,
+            body,
+            headers,
+            {"selected_adapter": adapter, "inner_context": {}},
+        )
 
     async def finalize_proxy_response(self, request, upstream_resp, session, context):
         adapter = context.get("selected_adapter") if isinstance(context, dict) else None
-        inner_context = context.get("inner_context", {}) if isinstance(context, dict) else {}
+        inner_context = (
+            context.get("inner_context", {}) if isinstance(context, dict) else {}
+        )
         if adapter is not None and hasattr(adapter, "finalize_proxy_response"):
             return await adapter.finalize_proxy_response(  # type: ignore[attr-defined]
                 request,

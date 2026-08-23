@@ -126,6 +126,27 @@ class TestDetectDangerousRm:
                 None,
             )
 
+    def test_windows_msys_raw_temp_spelling_is_exempt(self):
+        basename = "hermes-verify-example.py"
+
+        def canonicalize(value):
+            if value == "/tmp":
+                return "/canonical/tmp"
+            if value == f"/tmp/{basename}":
+                return f"/canonical/tmp/{basename}"
+            return value
+
+        with (
+            mock_patch("tempfile.gettempdir", return_value="/tmp"),
+            mock_patch("tools.approval.os.name", "nt"),
+            mock_patch("tools.approval.os.path.realpath", side_effect=canonicalize),
+        ):
+            assert detect_dangerous_command(f"rm -f /tmp/{basename}") == (
+                False,
+                None,
+                None,
+            )
+
     def test_verification_cleanup_exemption_rejects_broader_deletions(self):
         commands = (
             "rm -rf /tmp/hermes-verify-example.py",

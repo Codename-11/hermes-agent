@@ -226,6 +226,8 @@ def _cmd_subscribe(args):
         print(f"  Toolsets: {', '.join(route['toolsets'])}")
     if route.get("script"):
         print(f"  Script: {route['script']}")
+    if route.get("toolsets"):
+        print(f"  Toolsets: {', '.join(route['toolsets'])}")
     print("\n  Configure your service to POST to the URL above.")
     print("  Use the secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
@@ -258,6 +260,8 @@ def _cmd_list(args):
             print(f"    Skills:  {', '.join(route['skills'])}")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
+        if route.get("toolsets"):
+            print(f"    Toolsets: {', '.join(route['toolsets'])}")
         print()
 
 def _cmd_remove(args):

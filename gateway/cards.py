@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional
 # ---------------------------------------------------------------------------
 
 _SEMANTIC_COLORS: Dict[str, str] = {
-    "info":    "#3bb8f0",   # Axiom-Labs accent cyan
+    "info":    "#3bb8f0",   # accent cyan
     "success": "#2ecc71",
     "warning": "#f1c40f",
     "error":   "#e74c3c",

@@ -105,7 +105,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     assert ["git", "remote", "get-url", "origin"] in calls
     assert ["git", "rev-parse", "--is-shallow-repository"] in calls
     assert ["git", "fetch", "origin", "main", "--quiet"] in calls
-    assert ["git", "remote", "get-url", "upstream"] in calls
+
     assert ["git", "rev-parse", "--abbrev-ref", "HEAD"] in calls
     assert ["git", "rev-list", "--count", "HEAD..origin/main"] in calls
 

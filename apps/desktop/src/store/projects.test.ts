@@ -3,13 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
-import {
-  $activeGatewayProfile,
-  $profiles,
-  $showAllProfiles,
-  setShowAllProfiles
-} from '@/store/profile'
-import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
+import { $connection, $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
   $activeProjectId,
@@ -17,6 +12,7 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $projectTreeLoading,
   $removedSessionIds,
   $sessionMutationsInFlight,
   $worktreeRefreshToken,
@@ -24,10 +20,8 @@ import {
   beginSessionMutation,
   createProject,
   endSessionMutation,
-  ensureProjectFolder,
   enterProject,
   exitProjectScope,
-  moveSessionToProject,
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,
@@ -52,7 +46,6 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('@/lib/desktop-fs', () => ({
   desktopDefaultCwd: vi.fn(),
-  ensureDesktopDirectory: vi.fn(),
   isDesktopFsRemoteMode: vi.fn(),
   selectDesktopPaths: vi.fn(),
   writeDesktopFileText: vi.fn()
@@ -61,9 +54,7 @@ vi.mock('@/lib/desktop-fs', () => ({
 vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
-  ensureActiveGatewayOpen: vi.fn(),
-  gatewayForProfile: vi.fn(),
-  openGatewayForProfile: vi.fn()
+  ensureActiveGatewayOpen: vi.fn()
 }))
 
 vi.mock('@/lib/desktop-git', async importOriginal => ({
@@ -81,21 +72,19 @@ vi.mock('@/hermes', () => ({
 
 const fs = await import('@/lib/desktop-fs')
 const desktopDefaultCwd = vi.mocked(fs.desktopDefaultCwd)
-const ensureDesktopDirectory = vi.mocked(fs.ensureDesktopDirectory)
 const isDesktopFsRemoteMode = vi.mocked(fs.isDesktopFsRemoteMode)
 const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 
 const gw = await import('@/store/gateway')
 const activeGateway = vi.mocked(gw.activeGateway)
 const gatewayAtom = gw.$gateway
-const gatewayForProfile = vi.mocked(gw.gatewayForProfile)
-const openGatewayForProfile = vi.mocked(gw.openGatewayForProfile)
 
 const git = await import('@/lib/desktop-git')
 const desktopGit = vi.mocked(git.desktopGit)
 
 const hermes = await import('@/hermes')
 const getHermesConfig = vi.mocked(hermes.getHermesConfig)
+const hermesApi = vi.mocked(hermes.hermesApi)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
@@ -132,11 +121,9 @@ describe('project scope', () => {
     expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
-  it('entering Home scopes the view and clears the active project target', () => {
-    $activeProjectId.set('p_previous')
+  it('entering the synthetic Home bucket still scopes (no active pin)', () => {
     enterProject(NO_PROJECT_ID)
     expect($projectScope.get()).toBe(NO_PROJECT_ID)
-    expect($activeProjectId.get()).toBeNull()
   })
 
   it('persists the scope to localStorage', () => {
@@ -166,8 +153,10 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
-    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
-    expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
+    expect(hermesApi).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/api/profiles/projects/tree?preview_limit=3'
+    }))
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.project_sessions', {
       profile: 'coder',
       project_id: 'p_123'
     })
@@ -270,50 +259,6 @@ describe('resolveNewSessionCwd', () => {
     // Focused session has no workspace → fall through to configured default,
     // not the stale $currentCwd from an earlier chat.
     expect(resolveNewSessionCwd()).toBe('/home/user/configured')
-  })
-})
-
-describe('moveSessionToProject', () => {
-  beforeEach(() => {
-    $projectTree.set([])
-    $sessions.set([
-      {
-        id: 'session-1',
-        cwd: '/repo/old',
-        git_branch: 'feature',
-        git_repo_root: '/repo/old'
-      } as never
-    ])
-  })
-
-  afterEach(() => {
-    activeGateway.mockReset()
-    $projectTree.set([])
-    $sessions.set([])
-  })
-
-  it('unassigns to Home without sending an invalid empty cwd', async () => {
-    const request = vi.fn(async (method: string) => {
-      if (method === 'session.workspace.move') {
-        return { cwd: '/home/bailey', branch: null, git_repo_root: null }
-      }
-
-      return { active_id: null, projects: [], scoped_session_ids: [] }
-    })
-
-    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-
-    await moveSessionToProject('session-1', null)
-
-    expect(request).toHaveBeenCalledWith('session.workspace.move', {
-      session_key: 'session-1',
-      unassigned: true
-    })
-    expect($sessions.get()[0]).toMatchObject({
-      cwd: '/home/bailey',
-      git_branch: null,
-      git_repo_root: null
-    })
   })
 })
 
@@ -496,16 +441,6 @@ describe('createProject', () => {
       'sidebar.projects.staleBackend'
     )
     expect($projectsRpcAvailable.get()).toBe(false)
-  })
-})
-
-describe('ensureProjectFolder', () => {
-  it('returns the path normalized by the active local/remote filesystem authority', async () => {
-    ensureDesktopDirectory.mockResolvedValue({ path: '/resolved/demo' })
-
-    await expect(ensureProjectFolder('  ~/demo  ')).resolves.toBe('/resolved/demo')
-
-    expect(ensureDesktopDirectory).toHaveBeenCalledWith('~/demo')
   })
 })
 
@@ -798,40 +733,26 @@ describe('project tree profile isolation', () => {
   })
 
   it('does not publish a late response from the previous gateway', async () => {
-    let resolveA: ((value: unknown) => void) | undefined
-
-    const responseA = new Promise(resolve => {
-      resolveA = resolve
+    const { promise: responseA, resolve: resolveA } = deferred<unknown>()
+    hermesApi.mockImplementationOnce(() => responseA)
+    hermesApi.mockResolvedValueOnce({
+      active_id: null,
+      projects: [{ id: 'gateway-b', label: 'Gateway B', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
     })
-
-    const gatewayA = { connectionState: 'open', request: vi.fn(() => responseA) }
-
-    const gatewayB = {
-      connectionState: 'open',
-      request: vi.fn().mockResolvedValue({
-        active_id: null,
-        projects: [{ id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }],
-        scoped_session_ids: []
-      })
-    }
-
-    let current = gatewayA
-    activeGateway.mockImplementation(() => current as never)
-    gatewayAtom.set(gatewayA as never)
+    $connection.set({ connectionId: 'gateway-a' } as never)
 
     const pendingA = refreshProjectTree()
-    current = gatewayB
-    $activeGatewayProfile.set('profile-b')
-    gatewayAtom.set(gatewayB as never)
+    $connection.set({ connectionId: 'gateway-b' } as never)
     await refreshProjectTree()
-    resolveA?.({
+    resolveA({
       active_id: null,
-      projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
+      projects: [{ id: 'gateway-a', label: 'Gateway A', path: null, repos: [], sessionCount: 0 }],
       scoped_session_ids: []
     })
     await pendingA
 
-    expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    expect($projectTree.get().map(project => project.id)).toEqual(['gateway-b'])
   })
 
   it('does not publish a late projects.list response from the previous profile', async () => {
@@ -862,34 +783,26 @@ describe('project tree profile isolation', () => {
     expect($projects.get().map(project => project.id)).toEqual(['profile-b'])
   })
 
-  it('does not publish a late projects.tree response from the previous profile', async () => {
-    const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
-
-    const request = vi.fn((_method: string, params: Record<string, unknown>) =>
-      params.profile === 'default'
-        ? defaultResponse
-        : Promise.resolve({
-            active_id: null,
-            projects: [{ id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }],
-            scoped_session_ids: []
-          })
-    )
-
-    const gateway = { connectionState: 'open', request }
-    activeGateway.mockReturnValue(gateway as never)
-    gatewayAtom.set(gateway as never)
-
-    const pendingDefault = refreshProjectTree()
-    $activeGatewayProfile.set('profile-b')
-    await refreshProjectTree()
-    resolveDefault({
+  it('keeps the newest gateway aggregate when profile browsing changes mid-refresh', async () => {
+    const { promise: firstResponse, resolve: resolveFirst } = deferred<unknown>()
+    hermesApi.mockImplementationOnce(() => firstResponse)
+    hermesApi.mockResolvedValueOnce({
       active_id: null,
-      projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
+      projects: [{ id: 'newest', label: 'Newest', path: null, repos: [], sessionCount: 0 }],
       scoped_session_ids: []
     })
-    await pendingDefault
 
-    expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    const pendingFirst = refreshProjectTree()
+    $activeGatewayProfile.set('profile-b')
+    await refreshProjectTree()
+    resolveFirst({
+      active_id: null,
+      projects: [{ id: 'stale', label: 'Stale', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
+    })
+    await pendingFirst
+
+    expect($projectTree.get().map(project => project.id)).toEqual(['newest'])
   })
 
   it('drops a late hydrated-project response from the previous profile', async () => {
@@ -921,15 +834,7 @@ describe('project tree profile isolation', () => {
 
 describe('tombstone pruning', () => {
   const openGatewayReturning = (scopedIds: string[]) => {
-    const gateway = {
-      connectionState: 'open',
-      request: vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: scopedIds })
-    }
-
-    activeGateway.mockImplementation(() => gateway as never)
-    gatewayAtom.set(gateway as never)
-
-    return gateway
+    hermesApi.mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: scopedIds })
   }
 
   beforeEach(() => {
@@ -965,88 +870,47 @@ describe('tombstone pruning', () => {
   })
 })
 
-describe('all-profile project previews', () => {
-  afterEach(() => {
-    $showAllProfiles.set(false)
-    $profiles.set([])
-    $selectedStoredSessionId.set(null)
-    Reflect.deleteProperty(window, 'hermesDesktop')
-    vi.restoreAllMocks()
+describe('selected-gateway project overview', () => {
+  beforeEach(() => {
+    hermesApi.mockReset()
+    $projectTree.set([])
+    $connection.set({ connectionId: 'local' } as never)
   })
 
-  it('passes the selected session through to the all-profile tree request', async () => {
-    const api = vi.fn().mockResolvedValue({
+  it('publishes only the newest selected gateway aggregate and settles loading', async () => {
+    const { promise: first, resolve: resolveFirst } = deferred<unknown>()
+    hermesApi.mockImplementationOnce(() => first)
+    hermesApi.mockResolvedValueOnce({
       active_id: null,
-      projects: [],
-      scoped_session_ids: []
-    })
-
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { api }
-    })
-    $showAllProfiles.set(true)
-    $selectedStoredSessionId.set('victor/active session')
-
-    await refreshProjectTree()
-
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/profiles/projects/tree?preview_limit=5&active_session_id=victor%2Factive%20session'
-      })
-    )
-  })
-
-  it('merges projects from profile-pinned remote gateways into the local all-profile tree', async () => {
-    const api = vi.fn().mockResolvedValue({
-      active_id: null,
-      projects: [{ id: 'local', label: 'Local', path: '/local', repos: [], sessionCount: 1 }],
-      scoped_session_ids: ['local-session']
-    })
-
-    const getConnection = vi.fn(async (profile: string) => ({
-      mode: profile === 'server-atlas' ? 'remote' : 'local',
-      source: profile === 'server-atlas' ? 'profile' : 'local'
-    }))
-
-    const remoteRequest = vi.fn().mockResolvedValue({
-      active_id: null,
-      projects: [
-        {
-          id: 'remote',
-          label: 'Remote',
-          lastActive: 2,
-          path: '/remote',
-          previewSessions: [{ id: 'remote-session', last_active: 2 }],
-          repos: [],
-          sessionCount: 1
-        }
-      ],
+      projects: [{ id: 'remote', label: 'Remote', path: null, repos: [], sessionCount: 1 }],
       scoped_session_ids: ['remote-session']
     })
 
+    const pendingLocal = refreshProjectTree()
+    $connection.set({ connectionId: 'remote' } as never)
+    await refreshProjectTree()
+    resolveFirst({
+      active_id: null,
+      projects: [{ id: 'local', label: 'Local', path: null, repos: [], sessionCount: 1 }],
+      scoped_session_ids: ['local-session']
+    })
+    await pendingLocal
+
+    expect($projectTree.get().map(project => project.label)).toEqual(['Remote'])
+    expect($projectTreeLoading.get()).toBe(false)
+  })
+
+  it('does not query registered gateways from the selected gateway aggregate', async () => {
+    hermesApi.mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+    const getConnection = vi.fn()
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
-      value: { api, getConnection }
+      value: { getConnection }
     })
-    $profiles.set([
-      { name: 'default', is_default: true } as never,
-      { name: 'server-atlas', is_default: false } as never
-    ])
-    gatewayForProfile.mockReturnValue({ connectionState: 'open', request: remoteRequest } as never)
-    $showAllProfiles.set(true)
 
     await refreshProjectTree()
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('server-atlas')
-    expect(remoteRequest).toHaveBeenCalledWith('projects.tree', {
-      active_session_id: null,
-      preview_limit: 5
-    })
-    expect($projectTree.get().map(project => project.label)).toEqual(['Remote', 'Local'])
-    expect($projectTree.get()[0]?.previewSessions?.[0]).toMatchObject({
-      id: 'remote-session',
-      profile: 'server-atlas'
-    })
+    expect(hermesApi).toHaveBeenCalledOnce()
+    expect(getConnection).not.toHaveBeenCalled()
   })
 })

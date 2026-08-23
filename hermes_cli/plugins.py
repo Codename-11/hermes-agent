@@ -1,6 +1,6 @@
 """
 Hermes Plugin System
-Plugin discovery, loading, and lifecycle management.
+--------------------
 
 Discovers, loads, and manages plugins from four sources:
 
@@ -163,7 +163,6 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "transform_terminal_output",
     "transform_tool_result",
-    "resolve_model",
     # Transform LLM output before it's returned to the user.
     # Plugins return a string to replace the response text, or None/empty to leave unchanged.
     # First non-None string wins. Useful for vocabulary/personality transformation.
@@ -224,12 +223,6 @@ VALID_HOOKS: Set[str] = {
     "on_skill_lifecycle",
     "subagent_start",
     "subagent_stop",
-    # DEPRECATED: third-party plugins may still register this hook, so
-    # the surface remains valid. First-party ``/route`` dispatch now
-    # goes through ``register_command`` with the CommandDef-equivalent
-    # kwargs (args_hint, subcommands, returns_card, ...). New plugins
-    # should prefer register_command over this hook.
-    "handle_route_command",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:
@@ -238,11 +231,6 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
-    # Gateway/platform post-send hook. Fired after an adapter successfully
-    # sends a platform message; async callbacks are awaited by adapters that
-    # support this hook. Kwargs vary by platform but include platform, chat_id,
-    # content, message_ids/message_id, sender_bot_id, adapter, gateway.
-    "post_gateway_send",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
@@ -2120,8 +2108,8 @@ class PluginContext:
         name: str,
         handler: Callable,
         description: str = "",
+        args_hint: str = "",
         *,
-        args_hint: str | None = None,
         subcommands: tuple[str, ...] | None = None,
         category: str = "Plugin",
         gateway_only: bool = False,
@@ -2131,36 +2119,26 @@ class PluginContext:
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
-        The handler signature is ``fn(raw_args: str) -> str | None`` or
-        ``fn(raw_args: str) -> dict`` when ``returns_card=True``. It may also
-        be an async callable — the gateway dispatch handles both.
+        The handler signature is ``fn(raw_args: str) -> str | None`` or may
+        return an InfoCard dict when ``returns_card=True``.
+        It may also be an async callable — the gateway dispatch handles both.
 
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
         terminal commands), this registers in-session slash commands that users
         invoke during a conversation.
 
-        The additional keyword-only arguments give the plugin command the same
-        first-class surface as a static :class:`~hermes_cli.commands.CommandDef`:
+        ``args_hint`` is an optional short string (e.g. ``"<file>"`` or
+        ``"dias:7 formato:json"``) used by gateway adapters to surface the
+        command with an argument field — for example Discord's native slash
+        command picker. Plugin commands without ``args_hint`` register as
+        parameterless in Discord and still accept trailing text when invoked
+        as free-form chat.
 
-        ``args_hint``       Optional short string shown in ``/help`` output and
-                            surfaced by gateway adapters as an argument field,
-                            e.g. ``"[on|off|status]"`` or ``"<file>"``.
-        ``subcommands``     Tab-completion / menu-enumeration list.
-        ``category``        Section header used by ``/help`` grouping.
-        ``gateway_only``    Hide from CLI help, show in gateway/messaging.
-        ``cli_only``        Hide from gateway surfaces; CLI-only.
-        ``aliases``         Additional resolvable names for the same handler.
-        ``returns_card``    Handler may return a ``dict`` matching the
-                            InfoCard schema (see ``gateway/cards.py``); the
-                            gateway dispatcher detects the dict and sends it
-                            via ``adapter.send_info_card`` instead of text.
+        The remaining metadata describes completion/help visibility and lets
+        TUI dispatch keep gateway-only commands and structured card results on
+        the plugin path rather than sending them through the CLI slash worker.
 
-        Plugin commands without ``args_hint`` register as parameterless in
-        Discord and still accept trailing text when invoked as free-form chat.
-        Names conflicting with built-in commands are rejected with a warning,
-        and a best-effort synthetic :class:`CommandDef` is appended to the
-        global command registry so help menus, Telegram autocomplete, and
-        CLI tab-completion all surface the command automatically.
+        Names conflicting with built-in commands are rejected with a warning.
         """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
@@ -2170,27 +2148,16 @@ class PluginContext:
             )
             return
 
-        clean_aliases = tuple(
-            a.lower().strip().lstrip("/").replace(" ", "-")
-            for a in aliases
-            if a and a.strip()
-        )
-
-        # Reject if it conflicts with a built-in command (checks primary name
-        # and every alias). Uses resolve_command which walks the live
-        # _COMMAND_LOOKUP, so previously-registered plugin CommandDefs also
-        # count as collisions — belt-and-suspenders for plugins that race on
-        # the same name.
+        # Reject if it conflicts with a built-in command
         try:
             from hermes_cli.commands import resolve_command
-            for check in (clean, *clean_aliases):
-                if resolve_command(check) is not None:
-                    logger.warning(
-                        "Plugin '%s' tried to register command '/%s' which conflicts "
-                        "with a built-in command. Skipping.",
-                        self.manifest.name, check,
-                    )
-                    return
+            if resolve_command(clean) is not None:
+                logger.warning(
+                    "Plugin '%s' tried to register command '/%s' which conflicts "
+                    "with a built-in command. Skipping.",
+                    self.manifest.name, clean,
+                )
+                return
         except Exception:
             pass  # If commands module isn't available, skip the check
 
@@ -2205,10 +2172,13 @@ class PluginContext:
             "category": category,
             "gateway_only": bool(gateway_only),
             "cli_only": bool(cli_only),
-            "aliases": clean_aliases,
+            "aliases": tuple(
+                alias.lower().strip().lstrip("/").replace(" ", "-")
+                for alias in aliases
+                if alias and alias.strip()
+            ),
             "returns_card": bool(returns_card),
         }
-
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(
             "command",
@@ -2220,37 +2190,6 @@ class PluginContext:
                 self._manager._plugin_commands, clean, entry, replacement
             ),
         )
-
-        # Synthesize a CommandDef so the global command registry surfaces the
-        # plugin command in /help, Telegram autocomplete, CLI tab-completion,
-        # etc. — parity with hand-written CommandDefs.
-        try:
-            from hermes_cli.commands import CommandDef, register_plugin_command_def
-            cmd_def = CommandDef(
-                name=clean,
-                description=description or "Plugin command",
-                category=category,
-                aliases=clean_aliases,
-                args_hint=args_hint or "",
-                subcommands=tuple(subcommands) if subcommands else (),
-                cli_only=bool(cli_only),
-                gateway_only=bool(gateway_only),
-            )
-            if not register_plugin_command_def(cmd_def):
-                logger.warning(
-                    "Plugin '%s' command '/%s' could not be added to the "
-                    "global command registry (name/alias collision).",
-                    self.manifest.name, clean,
-                )
-        except Exception:
-            # Commands module missing or broken — plugin dispatch still works
-            # via _plugin_commands, we just lose the help-menu surface.
-            logger.debug(
-                "Failed to register synthetic CommandDef for plugin '%s' "
-                "command '/%s'",
-                self.manifest.name, clean,
-                exc_info=True,
-            )
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
         return handle
 
@@ -3998,14 +3937,6 @@ class PluginManager:
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
 
-            # Explicit disable always wins. Match on the manifest key, legacy
-            # manifest name, and the path-style key used by older CLI plugin
-            # enable/disable code for bundled platform plugins (e.g.
-            # ``platforms/a2a`` for manifest key ``a2a-platform``).
-            aliases = {lookup_key, manifest.name}
-            if manifest.source == "bundled" and manifest.kind == "platform" and manifest.path:
-                aliases.add(f"platforms/{Path(manifest.path).name}")
-
             # Relay lifecycle ownership now lives in the Hermes core. Loading
             # an old user or entry-point copy would let plugin.initialize()
             # compete for the same process-global Relay registries.
@@ -4026,7 +3957,9 @@ class PluginManager:
                 )
                 continue
 
-            if aliases & disabled:
+            # Explicit disable always wins (matches on key or on legacy
+            # bare name for back-compat with existing user configs).
+            if lookup_key in disabled or manifest.name in disabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = "disabled via config"
                 self._plugins[lookup_key] = loaded
@@ -4071,15 +4004,6 @@ class PluginManager:
                 self._load_plugin(manifest)
                 continue
 
-            # Everything else (standalone, user-installed backends,
-            # entry-point plugins) is opt-in via plugins.enabled.
-            # Accept both the path-derived key and the legacy bare name
-            # so existing configs keep working. We compute this before the
-            # bundled-platform path because a platform plugin may also expose
-            # tools (A2A does); if the operator explicitly enables that plugin,
-            # load it eagerly so its tools register and appear in `hermes tools`.
-            is_enabled = enabled is not None and bool(aliases & enabled)
-
             # Bundled platform plugins (gateway adapters: telegram, discord,
             # feishu, teams, ...) are registered LAZILY. Their modules import
             # heavy, platform-specific SDKs at module level (lark_oapi,
@@ -4091,14 +4015,18 @@ class PluginManager:
             # is imported only when the gateway / cron / setup / send_message
             # path actually asks for that platform. Every platform Hermes ships
             # remains available out of the box — it just loads on first use.
-            # Explicitly enabled bundled platform plugins are loaded eagerly so
-            # any plugin-provided tools/hooks are available to sessions.
             if manifest.source == "bundled" and manifest.kind == "platform":
-                if is_enabled:
-                    self._load_plugin(manifest)
-                else:
-                    self._register_deferred_platform(manifest)
+                self._register_deferred_platform(manifest)
                 continue
+
+            # Everything else (standalone, user-installed backends,
+            # entry-point plugins) is opt-in via plugins.enabled.
+            # Accept both the path-derived key and the legacy bare name
+            # so existing configs keep working.
+            is_enabled = (
+                enabled is not None
+                and (lookup_key in enabled or manifest.name in enabled)
+            )
             if not is_enabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = (
@@ -6555,17 +6483,7 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
 
 
 def get_plugin_command_entry(name: str) -> Optional[Dict[str, Any]]:
-    """Return the full registry entry for a plugin-registered slash command.
-
-    The entry mirrors the keyword args passed to ``register_command`` —
-    handler, description, plugin name, returns_card, and the CommandDef
-    metadata (args_hint, subcommands, category, aliases, gateway_only,
-    cli_only). Returns ``None`` when no plugin has registered the name.
-
-    Used by the gateway dispatcher so it can introspect ``returns_card``
-    and route handler output through ``adapter.send_info_card`` when
-    appropriate.
-    """
+    """Return the full registry entry for a plugin-registered slash command."""
     return _ensure_plugins_discovered()._plugin_commands.get(name)
 
 
