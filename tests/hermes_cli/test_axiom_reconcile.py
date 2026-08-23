@@ -247,7 +247,7 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
                 "id": "test-carry",
                 "order": 10,
                 "status": "active",
-                "paths": ["owned.txt"],
+                "paths": ["owned.txt", "fork-carries.json"],
                 "tests": ["tests/test_owned.py"],
                 "contract": {"path": "FORK.md", "heading": "Test"},
                 "checks": [],
@@ -304,12 +304,19 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     assert report["report_path"] == str(report_path)
     assert json.loads(canonical_state_path.read_text())["state"] == "ready"
     assert report["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
-    source_committer_date = _git(repo, "show", "-s", "--format=%cI", carry_sha)
+    candidate_manifest = subprocess.run(
+        ["git", "show", f"{candidate_sha}:fork-carries.json"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert candidate_manifest == manifest_bytes
+    generated_committer_date = _git(repo, "show", "-s", "--format=%cI", upstream_sha)
     candidate_committer = _git(
         repo, "show", "-s", "--format=%cn|%ce|%cI", candidate_sha
     )
     assert candidate_committer == (
-        f"Axiom Carry Replay|axiom-carry-replay@localhost|{source_committer_date}"
+        f"Axiom Carry Replay|axiom-carry-replay@localhost|{generated_committer_date}"
     )
     assert report["upstream_survival"] == {
         "mode": "generated-from-pinned-upstream",
@@ -398,7 +405,7 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
         "--format=%(refname)",
         "refs/heads/archive/axiom-pre-*",
     ).splitlines()
-    assert promoted == 1
+    assert promoted == 2
     assert promoted_sha == candidate_sha
     assert _git(repo, "rev-parse", "HEAD") == candidate_sha
     assert len(archive_refs) == 2
