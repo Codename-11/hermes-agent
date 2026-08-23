@@ -29,6 +29,7 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import type { WorkspaceMode } from '@/contrib/types'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
@@ -47,6 +48,7 @@ import {
   setActiveSessionStoredIdRotation,
   setSessions
 } from './session'
+import type { SessionProfileRoute } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isSecondaryWindow } from './windows'
 
@@ -615,6 +617,21 @@ export interface SessionTile {
   runtimeId?: string
   /** Resume failed terminally (shown in the tile; retryable). */
   error?: string
+  /** Presentation workspace this tab belongs to. Missing legacy values are Sessions. */
+  workspaceMode?: WorkspaceMode
+  /** Exact opaque owner key for Bot Mode tabs. */
+  workspaceOwnerKey?: string
+  /** Credential-free exact route used to resume this tab after relaunch. */
+  ownerRoute?: SessionProfileRoute
+  /** Stable title for hidden relationship chats absent from the Sessions list. */
+  workspaceTabTitle?: string
+}
+
+export interface SessionTileWorkspaceScope {
+  ownerRoute?: SessionProfileRoute
+  workspaceMode: WorkspaceMode
+  workspaceOwnerKey?: string
+  workspaceTabTitle?: string
 }
 
 // The live list belongs to the window, not the currently routed gateway. v3
@@ -623,80 +640,33 @@ export interface SessionTile {
 const TILES_KEY = 'hermes.desktop.sessionTiles.v3'
 const PROFILE_TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
-export const TILE_PANE_PREFIX = 'session-tile:'
+const TILE_PANE_PREFIX = 'session-tile:'
+const BOTS_TILE_BUCKET = '__bots_workspace__'
 
-export interface SessionTileIdentity {
-  profile: string
-  storedSessionId: string
-}
+/** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
+ *  restart / profile swap re-adopts tiles in the same order, not all stacked
+ *  right of workspace. */
+type StoredTile = Pick<
+  SessionTile,
+  | 'anchor'
+  | 'before'
+  | 'dir'
+  | 'ownerRoute'
+  | 'storedSessionId'
+  | 'workspaceMode'
+  | 'workspaceOwnerKey'
+  | 'workspaceTabTitle'
+>
 
-export const sessionTileKey = (profile: null | string | undefined, storedSessionId: string): string =>
-  encodeURIComponent(normalizeProfileKey(profile)) + ':' + encodeURIComponent(storedSessionId)
-
-export const sessionTilePaneId = (profile: null | string | undefined, storedSessionId: string): string =>
-  TILE_PANE_PREFIX + sessionTileKey(profile, storedSessionId)
-
-const safeDecode = (value: string): string => {
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
-  }
-}
-
-export function decodeSessionTileKey(key: string): SessionTileIdentity | null {
-  const separator = key.indexOf(':')
-
-  if (separator < 0) {
-    return null
-  }
-
-  return {
-    profile: normalizeProfileKey(safeDecode(key.slice(0, separator))),
-    storedSessionId: safeDecode(key.slice(separator + 1))
-  }
-}
-
-export function decodeSessionTilePaneId(paneId: string): (SessionTileIdentity & { legacy: boolean }) | null {
-  if (!paneId.startsWith(TILE_PANE_PREFIX)) {
-    return null
-  }
-
-  const raw = paneId.slice(TILE_PANE_PREFIX.length)
-  const qualified = decodeSessionTileKey(raw)
-
-  return qualified
-    ? { ...qualified, legacy: false }
-    : { profile: 'default', storedSessionId: safeDecode(raw), legacy: true }
-}
-
-export const sessionTileMatches = (
-  tile: Pick<SessionTile, 'profile' | 'storedSessionId'>,
-  storedSessionId: string,
-  profile?: null | string
-): boolean =>
-  tile.storedSessionId === storedSessionId &&
-  (profile == null || normalizeProfileKey(tile.profile) === normalizeProfileKey(profile))
-
-/** Persisted placement. Runtime/error state is deliberately process-local. */
-type StoredTile = Pick<SessionTile, 'anchor' | 'before' | 'dir' | 'profile' | 'storedSessionId'>
-
-const normalizePaneReference = (value: unknown, profile: string): string | undefined => {
-  if (typeof value !== 'string') {
-    return undefined
-  }
-
-  const decoded = decodeSessionTilePaneId(value)
-
-  return decoded?.legacy ? sessionTilePaneId(profile, decoded.storedSessionId) : value
-}
-
-const toStored = (tile: SessionTile): StoredTile => ({
-  anchor: normalizePaneReference(tile.anchor, tile.profile),
-  before: tile.before === null ? null : normalizePaneReference(tile.before, tile.profile),
-  dir: tile.dir,
-  profile: normalizeProfileKey(tile.profile),
-  storedSessionId: tile.storedSessionId
+const toStored = (t: SessionTile): StoredTile => ({
+  anchor: t.anchor,
+  before: t.before,
+  dir: t.dir,
+  ...(t.ownerRoute ? { ownerRoute: t.ownerRoute } : {}),
+  storedSessionId: t.storedSessionId,
+  ...(t.workspaceMode ? { workspaceMode: t.workspaceMode } : {}),
+  ...(t.workspaceOwnerKey ? { workspaceOwnerKey: t.workspaceOwnerKey } : {}),
+  ...(t.workspaceTabTitle ? { workspaceTabTitle: t.workspaceTabTitle } : {})
 })
 
 function parseTileList(value: unknown, fallbackProfile: string): StoredTile[] {
@@ -712,8 +682,26 @@ function parseTileList(value: unknown, fallbackProfile: string): StoredTile[] {
             anchor: normalizePaneReference(raw.anchor, profile),
             before: raw.before === null ? null : normalizePaneReference(raw.before, profile),
             dir: raw.dir,
-            profile,
-            storedSessionId: raw.storedSessionId
+            ownerRoute:
+              raw.ownerRoute &&
+              typeof raw.ownerRoute.connectionId === 'string' &&
+              typeof raw.ownerRoute.profile === 'string'
+                ? {
+                    connectionId: raw.ownerRoute.connectionId,
+                    mode: raw.ownerRoute.mode,
+                    profile: raw.ownerRoute.profile,
+                    ...(typeof raw.ownerRoute.targetProfile === 'string'
+                      ? { targetProfile: raw.ownerRoute.targetProfile }
+                      : {})
+                  }
+                : undefined,
+            storedSessionId: raw.storedSessionId,
+            workspaceMode: raw.workspaceMode === 'bots' ? 'bots' : 'sessions',
+            workspaceOwnerKey:
+              raw.workspaceMode === 'bots' && typeof raw.workspaceOwnerKey === 'string'
+                ? raw.workspaceOwnerKey
+                : undefined,
+            workspaceTabTitle: typeof raw.workspaceTabTitle === 'string' ? raw.workspaceTabTitle : undefined
           }
         })
     : []
@@ -724,18 +712,42 @@ function loadWindowTiles(): StoredTile[] {
   const migrated: StoredTile[] = []
   const byProfile = readJson<unknown>(PROFILE_TILES_KEY)
 
-  if (byProfile && typeof byProfile === 'object' && !Array.isArray(byProfile)) {
-    for (const [profile, value] of Object.entries(byProfile as Record<string, unknown>)) {
-      migrated.push(...parseTileList(value, profile))
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    for (const [profile, list] of Object.entries(parsed as Record<string, unknown>)) {
+      const tiles = parseTileList(list)
+      const key = profile === BOTS_TILE_BUCKET ? BOTS_TILE_BUCKET : normalizeProfileKey(profile)
+
+      if (tiles.length > 0) {
+        const sessionTiles = tiles.filter(tile => tile.workspaceMode !== 'bots')
+        const botTiles = tiles.filter(tile => tile.workspaceMode === 'bots')
+
+        if (sessionTiles.length > 0) {
+          byProfile[key] = [...(byProfile[key] ?? []), ...sessionTiles]
+        }
+
+        if (botTiles.length > 0) {
+          byProfile[BOTS_TILE_BUCKET] = [...(byProfile[BOTS_TILE_BUCKET] ?? []), ...botTiles]
+        }
+      }
     }
   }
 
   migrated.push(...parseTileList(readJson<unknown>(LEGACY_TILES_KEY), 'default'))
   const deduped = new Map<string, StoredTile>()
 
-  for (const tile of [...current, ...migrated]) {
-    const key = sessionTileKey(tile.profile, tile.storedSessionId)
-    deduped.set(key, deduped.get(key) ?? tile)
+  if (legacy.length > 0) {
+    const key = normalizeProfileKey('default')
+    const sessionTiles = legacy.filter(tile => tile.workspaceMode !== 'bots')
+    const botTiles = legacy.filter(tile => tile.workspaceMode === 'bots')
+
+    byProfile[key] = [...(byProfile[key] ?? []), ...sessionTiles]
+    byProfile[BOTS_TILE_BUCKET] = [...(byProfile[BOTS_TILE_BUCKET] ?? []), ...botTiles]
+  }
+
+  if (byProfile[BOTS_TILE_BUCKET]?.length) {
+    byProfile[BOTS_TILE_BUCKET] = [
+      ...new Map(byProfile[BOTS_TILE_BUCKET].map(tile => [tile.storedSessionId, tile])).values()
+    ]
   }
 
   const tiles = [...deduped.values()]
@@ -752,9 +764,19 @@ function loadWindowTiles(): StoredTile[] {
 
 export const $sessionTiles = atom<SessionTile[]>(isSecondaryWindow() ? [] : loadWindowTiles())
 
-function migrateLegacyTilePaneIds(node: LayoutNode, tiles: readonly SessionTile[]): LayoutNode {
-  if (node.type === 'split') {
-    return { ...node, children: node.children.map(child => migrateLegacyTilePaneIds(child, tiles)) }
+// Runtime ids are process-scoped — never trust a persisted one, so the live
+// atom hydrates from the stored (runtime-less) tiles for the active profile.
+// A secondary window (single-chat pop-out) shows ONLY its routed session — no
+// tiles, and no repopulation on a profile switch.
+export const $sessionTiles = atom<SessionTile[]>(
+  isSecondaryWindow() ? [] : [...(tilesByProfile[profileKey()] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])]
+)
+
+function persistTiles() {
+  // Shares the origin's storage; a secondary window holds no tiles, so a write
+  // back would only wipe the primary's set.
+  if (isSecondaryWindow()) {
+    return
   }
 
   const migrate = (paneId: string): string => {
@@ -788,31 +810,35 @@ if (!isSecondaryWindow() && restoredTree) {
 }
 
 function saveTiles(tiles: SessionTile[]) {
+  const stored = tiles.map(toStored)
+  const sessionTiles = stored.filter(tile => tile.workspaceMode !== 'bots')
+  const botTiles = stored.filter(tile => tile.workspaceMode === 'bots')
+
+  if (sessionTiles.length > 0) {
+    tilesByProfile[profileKey()] = sessionTiles
+  } else {
+    delete tilesByProfile[profileKey()]
+  }
+
+  if (botTiles.length > 0) {
+    tilesByProfile[BOTS_TILE_BUCKET] = botTiles
+  } else {
+    delete tilesByProfile[BOTS_TILE_BUCKET]
+  }
+
+  persistTiles()
   $sessionTiles.set(tiles)
-
-  if (!isSecondaryWindow()) {
-    const stored = tiles.map(toStored)
-    writeJson(TILES_KEY, stored.length > 0 ? stored : null)
-  }
 }
 
-export function findSessionTile(storedSessionId: string, profile?: null | string): SessionTile | undefined {
-  const tiles = $sessionTiles.get()
-
-  if (profile != null) {
-    return tiles.find(tile => sessionTileMatches(tile, storedSessionId, profile))
-  }
-
-  const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
-
-  return (
-    tiles.find(tile => sessionTileMatches(tile, storedSessionId, activeProfile)) ??
-    tiles.find(tile => tile.storedSessionId === storedSessionId)
-  )
+// Profile switch: surface the new profile's tiles with runtime ids cleared so
+// they re-resume against the now-current gateway. (Fires immediately on
+// subscribe; harmless — the init value already matches.) A secondary window
+// never carries tiles, so it stays out of this entirely.
+if (!isSecondaryWindow()) {
+  $activeGatewayProfile.subscribe(() => {
+    $sessionTiles.set([...(tilesByProfile[profileKey()] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+  })
 }
-
-export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>, profile?: null | string) {
-  const target = findSessionTile(storedSessionId, profile)
 
   if (!target) {
     return
@@ -825,6 +851,38 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
   )
 }
 
+export function sessionTileOwnerRoute(storedSessionId: string): SessionProfileRoute | undefined {
+  return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
+}
+
+export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
+  const ownerRoute = scope.workspaceMode === 'bots' ? scope.ownerRoute : undefined
+  const workspaceTabTitle = scope.workspaceMode === 'bots' ? scope.workspaceTabTitle : undefined
+
+  if (
+    !tile ||
+    ((tile.workspaceMode ?? 'sessions') === scope.workspaceMode &&
+      tile.workspaceOwnerKey === workspaceOwnerKey &&
+      tile.ownerRoute?.connectionId === ownerRoute?.connectionId &&
+      tile.ownerRoute?.profile === ownerRoute?.profile &&
+      tile.ownerRoute?.targetProfile === ownerRoute?.targetProfile &&
+      tile.workspaceTabTitle === workspaceTabTitle)
+  ) {
+    return false
+  }
+
+  patchSessionTile(storedSessionId, {
+    ownerRoute,
+    workspaceMode: scope.workspaceMode,
+    workspaceOwnerKey,
+    workspaceTabTitle
+  })
+
+  return true
+}
+
 /** Drop live runtime bindings so every tile re-resumes — used on gateway
  *  reconnect, where a respawned backend re-mints (recycles) runtime ids.
  *  Also invalidates the wiring cache's stored→runtime map: clearing only the
@@ -832,12 +890,18 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
  *  runtime id from the cache, so post-wake tiles repainted empty and never
  *  actually re-resumed. */
 export function resetTileRuntimeBindings() {
-  sessionTileDelegate()?.invalidateRuntimeBindings?.()
-
   const tiles = $sessionTiles.get()
 
-  if (tiles.some(t => t.runtimeId)) {
-    $sessionTiles.set(tiles.map(toStored))
+  const preservedStoredIds = new Set(
+    tiles
+      .filter(tile => tile.workspaceMode === 'bots' && Boolean(tile.ownerRoute?.connectionId))
+      .map(tile => tile.storedSessionId)
+  )
+
+  sessionTileDelegate()?.invalidateRuntimeBindings?.(preservedStoredIds)
+
+  if (tiles.some(tile => tile.runtimeId && !preservedStoredIds.has(tile.storedSessionId))) {
+    $sessionTiles.set(tiles.map(tile => (preservedStoredIds.has(tile.storedSessionId) ? tile : toStored(tile))))
   }
 }
 
@@ -885,7 +949,7 @@ export interface SessionTileDelegate {
    *  recorded before the reconnect is suspect — without this, `resumeTile`'s
    *  warm path re-binds tiles to dead runtime ids (the sleep/wake "empty
    *  right pane" bug). Bindings re-record from live post-reconnect events. */
-  invalidateRuntimeBindings?(): void
+  invalidateRuntimeBindings?(preserveStoredSessionIds?: ReadonlySet<string>): void
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws. */
   resumeTile(storedSessionId: string, profile: string): Promise<string>
@@ -897,9 +961,11 @@ export interface SessionTileDelegate {
 }
 
 let delegate: SessionTileDelegate | null = null
+export const $sessionTileDelegateRevision = atom(0)
 
 export function setSessionTileDelegate(next: SessionTileDelegate) {
   delegate = next
+  $sessionTileDelegateRevision.set($sessionTileDelegateRevision.get() + 1)
 }
 
 export function sessionTileDelegate(): SessionTileDelegate | null {
@@ -987,7 +1053,7 @@ export function openSessionTile(
   dir: TileDock = 'right',
   anchor?: string,
   before?: null | string,
-  profile: string = $activeGatewayProfile.get()
+  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ) {
   const owner = normalizeProfileKey(profile)
   const tiles = $sessionTiles.get()
@@ -997,22 +1063,39 @@ export function openSessionTile(
   markSessionRead(storedSessionId)
   ackStoredSessionId(storedSessionId)
 
-  if (
-    storedSessionId === $selectedStoredSessionId.get() &&
-    owner === normalizeProfileKey($activeGatewayProfile.get())
-  ) {
+  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
     return
   }
 
   const dock = anchor ?? focusedSessionTabAnchor() ?? undefined
   const existing = tiles.find(tile => sessionTileMatches(tile, storedSessionId, owner))
 
-  if (!existing) {
-    saveTiles([...tiles, { anchor: dock, before, dir, profile: owner, storedSessionId }])
+  const workspaceOwnerKey = workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceOwnerKey : undefined
+
+  if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
+    saveTiles([
+      ...tiles,
+      {
+        anchor: dock,
+        before,
+        dir,
+        ownerRoute: workspaceScope.workspaceMode === 'bots' ? workspaceScope.ownerRoute : undefined,
+        storedSessionId,
+        workspaceMode: workspaceScope.workspaceMode,
+        workspaceOwnerKey,
+        workspaceTabTitle: workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceTabTitle : undefined
+      }
+    ])
+    // Adoption is async via the registry — order sync runs after the move path
+    // below; a brand-new tile's strip slot is already in `before`.
 
     return
   }
 
+  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+
+  // Already open: relocate the existing pane to the drop target (pane-mirror
+  // only docks on first adoption, so a re-drag must move the tree pane itself).
   const tree = $layoutTree.get()
   const target = tree ? findGroupOfPane(tree, dock ?? 'workspace')?.id : null
 
@@ -1095,29 +1178,12 @@ export function openTileNeedsHydration(
  *  Callers that own the router need the `'main'` vs `'tile'` distinction: a
  *  `'main'` hit only reaches the screen if the workspace pane is actually
  *  showing the chat, whereas a tile renders in its own pane regardless. */
-export function focusOpenSession(storedSessionId: string, profile?: string): 'main' | 'tile' | null {
-  const tile = findSessionTile(storedSessionId, profile)
-
-  if (tile) {
-    const state = tile.runtimeId ? $sessionStates.get()[tile.runtimeId] : undefined
-    const stored = $sessions
-      .get()
-      .find(
-        session =>
-          sessionMatchesStoredId(session, storedSessionId) &&
-          normalizeProfileKey(session.profile) === normalizeProfileKey(tile.profile)
-      )
-
-    // An already-open tab is normally focus-only. If its binding is missing or
-    // its idle projection is empty despite stored history, that shortcut merely
-    // reveals a blank pane. Unbind it so SessionTile's existing resume effect
-    // performs the profile-safe REST + gateway hydrate. Busy first turns and
-    // genuinely empty stored sessions remain instant focus-only hits.
-    if (openTileNeedsHydration(tile, state, stored)) {
-      patchSessionTile(storedSessionId, { error: undefined, runtimeId: undefined }, tile.profile)
-    }
-
-    const paneId = sessionTilePaneId(tile.profile, storedSessionId)
+export function focusOpenSession(
+  storedSessionId: string,
+  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+): 'main' | 'tile' | null {
+  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
+    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
     const tree = $layoutTree.get()
     const group = tree ? findGroupOfPane(tree, paneId) : null
@@ -1131,10 +1197,7 @@ export function focusOpenSession(storedSessionId: string, profile?: string): 'ma
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (
-    storedSessionId === $selectedStoredSessionId.get() &&
-    (profile == null || normalizeProfileKey(profile) === normalizeProfileKey($activeGatewayProfile.get()))
-  ) {
+  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 
@@ -1175,16 +1238,19 @@ export function blankDraftTile(
  *  False when there's no such tab, so the caller can fall back. The spent draft
  *  is DISCARDED rather than closed: it never held a conversation, so ⌘⇧T
  *  resurrecting it would just restore an empty tab. */
-export function reuseBlankDraftTile(storedSessionId: string, profile?: string): boolean {
+export function reuseBlankDraftTile(
+  storedSessionId: string,
+  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+): boolean {
   const tile = blankDraftTile($sessionTiles.get(), $sessionStates.get())
 
   if (!tile || sessionTileMatches(tile, storedSessionId, profile)) {
     return false
   }
 
-  discardSessionTile(tile.storedSessionId, tile.profile)
-  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, profile)
-  revealTreePane(sessionTilePaneId(profile, storedSessionId))
+  discardSessionTile(tile.storedSessionId)
+  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, workspaceScope)
+  revealTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`)
 
   return true
 }
@@ -1196,8 +1262,8 @@ const closedTiles: SessionTile[] = []
 export function closeSessionTile(storedSessionId: string, profile?: string) {
   const tile = findSessionTile(storedSessionId, profile)
 
-  if (!tile) {
-    return
+  if (tile) {
+    closedStack().push(toStored(tile))
   }
 
   closedTiles.push(toStored(tile))
@@ -1236,9 +1302,12 @@ export function reopenLastClosedTile(): void {
       continue
     }
 
-    if (!findSessionTile(tile.storedSessionId, tile.profile)) {
-      openSessionTile(tile.storedSessionId, tile.dir, tile.anchor, tile.before, tile.profile)
-      focusOpenSession(tile.storedSessionId, tile.profile)
+    if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
+      openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, {
+        workspaceMode: tile.workspaceMode ?? 'sessions',
+        workspaceOwnerKey: tile.workspaceOwnerKey
+      })
+      focusOpenSession(storedSessionId)
 
       return
     }

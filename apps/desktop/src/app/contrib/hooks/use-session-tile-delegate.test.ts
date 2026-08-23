@@ -3,11 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
-import { chatMessageText } from '@/lib/chat-messages'
-import { createClientSessionState } from '@/lib/chat-runtime'
-import type * as ProfileModule from '@/store/profile'
-import { setSessions } from '@/store/session'
-import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
+import { setSessionOwnerHint, setSessions } from '@/store/session'
+import { sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
@@ -16,6 +13,11 @@ vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
   getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' }))
 }))
+vi.mock('@/store/gateway', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  requestGatewayForAgent: vi.fn(),
+  requestGatewayForProfile: vi.fn()
+}))
 
 vi.mock('@/store/profile', async importActual => ({
   ...(await importActual<typeof ProfileModule>()),
@@ -23,6 +25,7 @@ vi.mock('@/store/profile', async importActual => ({
 }))
 
 const { getLatestSessionMessages } = await import('@/hermes')
+const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
   ({
@@ -93,17 +96,26 @@ describe('useSessionTileDelegate resumeTile', () => {
       method === 'session.resume' ? ({ session_id: 'runtime-1' } as never) : ({} as never)
     )
 
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-1' } as never)
+
     renderTile(requestGateway)
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x', 'ai-engineer')
 
     expect(runtimeId).toBe('runtime-1')
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer')
-    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
-      session_id: 'stored-x',
-      cols: 96,
-      profile: 'ai-engineer',
-      omit_messages: true
-    })
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'ai-engineer',
+      'session.resume',
+      {
+        session_id: 'stored-x',
+        cols: 96,
+        profile: 'ai-engineer',
+        omit_messages: true
+      },
+      undefined,
+      undefined
+    )
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('resolves and carries a default-profile session explicitly', async () => {
@@ -124,41 +136,33 @@ describe('useSessionTileDelegate resumeTile', () => {
     })
   })
 
-  it('does not reuse an empty cached runtime for a stored session with history', async () => {
-    setSessions([row({ id: 'stored-z', message_count: 4, profile: 'default' })])
+  it('routes a Bot tile prefetch and resume through its exact connection owner', async () => {
+    const route = {
+      connectionId: 'barry',
+      mode: 'remote' as const,
+      profile: 'oxcoder',
+      targetProfile: 'backend-oxcoder'
+    }
 
-    const emptyCached = { ...createClientSessionState('stored-z'), busy: true }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-z', 'runtime-empty']]) }
-    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-empty', emptyCached]]) }
+    setSessionOwnerHint('stored-remote', route)
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({ session_id: 'runtime-remote' } as never)
+    const ambientRequest = vi.fn(async () => ({}) as never)
 
-    const updateSessionState = vi.fn((_sessionId, updater, storedSessionId) =>
-      updater(createClientSessionState(storedSessionId ?? null))
-    )
+    renderTile(ambientRequest)
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-remote')
 
-    const requestGateway = vi.fn(async (method: string) =>
-      method === 'session.resume' ? ({ session_id: 'runtime-rebound', messages: [] } as never) : ({} as never)
-    )
-
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      messages: [
-        { content: 'hello', role: 'user', timestamp: 1 },
-        { content: 'hi', role: 'assistant', timestamp: 2 }
-      ],
-      session_id: 'stored-z'
-    } as never)
-
-    renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState })
-    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-z', 'default')
-
-    expect(runtimeId).toBe('runtime-rebound')
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-z', 'default')
-    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
-      session_id: 'stored-z',
-      cols: 96,
-      profile: 'default',
-      omit_messages: true
+    expect(runtimeId).toBe('runtime-remote')
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-remote', {
+      connectionId: 'barry',
+      profile: 'backend-oxcoder'
     })
-    expect(updateSessionState).toHaveBeenCalled()
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('barry', 'oxcoder', 'session.resume', {
+      session_id: 'stored-remote',
+      cols: 96,
+      omit_messages: true,
+      profile: 'backend-oxcoder'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 
   it('reuses a warm binding that still carries a transcript', async () => {

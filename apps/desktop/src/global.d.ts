@@ -217,6 +217,10 @@ declare global {
       }
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       ensureDirectory?: (dirPath: string) => Promise<{ path: string }>
+      /** Full-source read for runtime desktop plugins (readFileText truncates
+       *  at the 512 KiB preview cap). Absent on older shells — callers fall
+       *  back to readFileText and must reject a `truncated` result. */
+      readPluginSource?: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       /** Native save dialog; returns the chosen path or null on cancel. */
       selectSavePath?: (options?: {
@@ -1068,6 +1072,7 @@ export interface DesktopRosterAgent {
   connectionKind: DesktopConnectionKind
   connectionLabel: string
   profile: string
+  targetProfile?: string
   handle: string
 }
 

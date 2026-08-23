@@ -201,6 +201,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
   ensureDirectory: dirPath => ipcRenderer.invoke('hermes:fs:ensureDirectory', dirPath),
+  readPluginSource: (filePath: string) => ipcRenderer.invoke('hermes:readPluginSource', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
