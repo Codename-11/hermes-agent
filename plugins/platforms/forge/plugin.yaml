@@ -11,8 +11,7 @@ requires_env:
     description: "Forge API key with WRITE_COMMENTS / chat permissions"
     prompt: "Forge API key"
     password: true
-optional_env:
   - name: FORGE_BASE_URL
-    description: "Forge base URL; defaults to https://forge.axiom-labs.dev"
+    description: "Forge deployment base URL"
     prompt: "Forge base URL"
     password: false

@@ -20,16 +20,20 @@ from gateway.platforms.base import BasePlatformAdapter, PlatformConfig, SendResu
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "https://forge.axiom-labs.dev"
-
 
 def _clean_base_url(value: str | None) -> str:
-    return (value or DEFAULT_BASE_URL).strip().rstrip("/") or DEFAULT_BASE_URL
+    base_url = (value or "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError("Forge requires FORGE_BASE_URL")
+    return base_url
 
 
 def check_requirements() -> bool:
     """Return whether environment credentials can deliver Forge replies."""
-    return bool(os.getenv("FORGE_API_KEY"))
+    return bool(
+        os.getenv("FORGE_API_KEY", "").strip()
+        and os.getenv("FORGE_BASE_URL", "").strip()
+    )
 
 
 def _api_key_from_config(config: PlatformConfig) -> str:
@@ -50,7 +54,13 @@ def _base_url_from_config(config: PlatformConfig) -> str:
 
 
 def validate_config(config: PlatformConfig) -> bool:
-    return bool(_api_key_from_config(config))
+    if not _api_key_from_config(config):
+        return False
+    try:
+        _base_url_from_config(config)
+    except ValueError:
+        return False
+    return True
 
 
 def is_connected(config: PlatformConfig) -> bool:
@@ -58,7 +68,7 @@ def is_connected(config: PlatformConfig) -> bool:
 
 
 def _env_enablement() -> Dict[str, Any]:
-    if not os.getenv("FORGE_API_KEY"):
+    if not check_requirements():
         return {}
     return {
         "url": _clean_base_url(os.getenv("FORGE_BASE_URL")),
@@ -296,9 +306,9 @@ def register(ctx):
         validate_config=validate_config,
         is_connected=is_connected,
         env_enablement_fn=_env_enablement,
-        required_env=["FORGE_API_KEY"],
+        required_env=["FORGE_API_KEY", "FORGE_BASE_URL"],
         install_hint=(
-            "Set FORGE_API_KEY and optional FORGE_BASE_URL in the Hermes profile .env"
+            "Set FORGE_API_KEY and FORGE_BASE_URL in the Hermes profile .env"
         ),
         emoji="🛠️",
         pii_safe=False,
