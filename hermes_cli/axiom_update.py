@@ -52,7 +52,436 @@ logger = logging.getLogger("hermes_cli.axiom_update")
 # handoff marker. Not referenced upstream.
 DEPLOY_HANDOFF_FILE = ".update_handoff.json"
 UPDATE_REVIEW_DIR = "update-reports"
+RECONCILIATION_DIR = "update-reconciliation"
+RECONCILIATION_QUEUED = -1
 DEPLOY_BRANCHES = {"axiom", "tgi"}
+
+
+def _reconciliation_state_path(branch: str) -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / RECONCILIATION_DIR / f"{branch}.json"
+
+
+def _write_reconciliation_state(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _read_reconciliation_state(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _claim_reconciliation_lock(path: Path) -> int | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return None
+    os.write(descriptor, f"{os.getpid()}\n".encode())
+    return descriptor
+
+
+def _release_reconciliation_lock(path: Path, descriptor: int | None) -> None:
+    if descriptor is None:
+        return
+    try:
+        os.close(descriptor)
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _pid_is_running(pid: object) -> bool:
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(
+            process_query_limited_information | synchronize, False, value
+        )
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(value, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _queue_fork_reconciliation(
+    *, repo: Path, branch: str, upstream_sha: str
+) -> dict[str, object]:
+    """Atomically launch one detached worker from immutable copied inputs."""
+    repo = repo.resolve()
+    state_path = _reconciliation_state_path(branch)
+    lock_path = state_path.with_suffix(".lock")
+    descriptor = _claim_reconciliation_lock(lock_path)
+    if descriptor is None:
+        current = _read_reconciliation_state(state_path)
+        return current or {
+            "state": "claiming",
+            "branch": branch,
+            "upstream_sha": upstream_sha,
+        }
+    try:
+        current = _read_reconciliation_state(state_path)
+        if (
+            current.get("upstream_sha") == upstream_sha
+            and current.get("state") in {"queued", "running"}
+            and _pid_is_running(current.get("pid"))
+        ):
+            return current
+
+        source_paths = {
+            "worker": repo / "hermes_cli" / "axiom_reconcile.py",
+            "manifest": repo / "fork-carries.json",
+            "validator": repo / "scripts" / "fork_carry_manifest.py",
+        }
+        try:
+            source_bytes = {name: path.read_bytes() for name, path in source_paths.items()}
+        except OSError as exc:
+            failed = {
+                "state": "failed",
+                "branch": branch,
+                "upstream_sha": upstream_sha,
+                "error": f"cannot snapshot reconciliation inputs: {type(exc).__name__}: {exc}",
+            }
+            _write_reconciliation_state(state_path, failed)
+            return failed
+
+        digest = hashlib.sha256()
+        digest.update(branch.encode())
+        digest.update(b"\0")
+        digest.update(upstream_sha.encode())
+        for name in sorted(source_bytes):
+            digest.update(b"\0" + name.encode() + b"\0" + source_bytes[name])
+        input_digest = digest.hexdigest()
+        run_id = input_digest[:24]
+        run_dir = state_path.parent / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        worker_path = run_dir / "axiom_reconcile.py"
+        manifest_path = run_dir / "fork-carries.json"
+        validator_path = run_dir / "fork_carry_manifest.py"
+        worker_path.write_bytes(source_bytes["worker"])
+        manifest_path.write_bytes(source_bytes["manifest"])
+        validator_path.write_bytes(source_bytes["validator"])
+        run_state_path = run_dir / "state.json"
+        report_path = run_dir / "report.json"
+        log_path = run_dir / "worker.log"
+        queued: dict[str, object] = {
+            "state": "queued",
+            "branch": branch,
+            "candidate_branch": f"{branch}-next",
+            "repo": str(repo),
+            "upstream_sha": upstream_sha,
+            "pid": None,
+            "queued_at": datetime.now().isoformat(timespec="seconds"),
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "input_digest": input_digest,
+            "manifest_sha256": hashlib.sha256(source_bytes["manifest"]).hexdigest(),
+            "worker_sha256": hashlib.sha256(source_bytes["worker"]).hexdigest(),
+            "validator_sha256": hashlib.sha256(source_bytes["validator"]).hexdigest(),
+            "state_path": str(run_state_path),
+            "report_path": str(report_path),
+            "log_path": str(log_path),
+        }
+        _write_reconciliation_state(run_state_path, queued)
+        _write_reconciliation_state(state_path, queued)
+
+        command = [
+            sys.executable,
+            str(worker_path),
+            "--repo",
+            str(repo),
+            "--branch",
+            branch,
+            "--upstream-sha",
+            upstream_sha,
+            "--state-path",
+            str(run_state_path),
+            "--canonical-state-path",
+            str(state_path),
+            "--report-path",
+            str(report_path),
+            "--manifest-path",
+            str(manifest_path),
+            "--validator-path",
+            str(validator_path),
+            "--input-digest",
+            input_digest,
+        ]
+        detach: dict[str, object] = {}
+        if os.name == "nt":
+            detach["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+        else:
+            detach["start_new_session"] = True
+        try:
+            with log_path.open("ab") as log_file:
+                process = subprocess.Popen(
+                    command,
+                    cwd=run_dir,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    close_fds=True,
+                    **detach,
+                )
+        except OSError as exc:
+            failed = {
+                **queued,
+                "state": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            _write_reconciliation_state(run_state_path, failed)
+            _write_reconciliation_state(state_path, failed)
+            return failed
+
+        queued["pid"] = process.pid
+        _write_reconciliation_state(run_state_path, queued)
+        _write_reconciliation_state(state_path, queued)
+        return queued
+    finally:
+        _release_reconciliation_lock(lock_path, descriptor)
+
+
+def _remote_head_sha(git_cmd: list[str], repo: Path, branch: str) -> str:
+    result = subprocess.run(
+        git_cmd + ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return ""
+    value = result.stdout.split()[0]
+    return value if re.fullmatch(r"[0-9a-fA-F]{40,64}", value) else ""
+
+
+def _promote_ready_reconciliation_candidate(
+    *,
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    upstream_sha: str,
+    pre_update_head: str,
+    state_path: Path | None = None,
+) -> int | None:
+    """Lease-promote one verified candidate, archive deploy HEAD, and realign live."""
+    state_path = state_path or _reconciliation_state_path(branch)
+    state = _read_reconciliation_state(state_path)
+    if state.get("state") != "ready" or state.get("upstream_sha") != upstream_sha:
+        return None
+    report_path_raw = str(state.get("report_path") or "").strip()
+    report_path = Path(report_path_raw).resolve() if report_path_raw else None
+    run_dir_raw = str(state.get("run_dir") or "").strip()
+    if run_dir_raw and report_path != (Path(run_dir_raw).resolve() / "report.json"):
+        print("✗ Reconciliation report path is outside its immutable run directory.")
+        return 0
+    report = _read_reconciliation_state(report_path) if report_path else {}
+    candidate_sha = str(state.get("candidate_sha") or "").strip()
+    candidate_branch = f"{branch}-next"
+    input_digest = str(state.get("input_digest") or "").strip()
+    try:
+        live_manifest_sha256 = hashlib.sha256(
+            (repo / "fork-carries.json").read_bytes()
+        ).hexdigest()
+    except OSError:
+        live_manifest_sha256 = ""
+    survival = report.get("upstream_survival")
+    checks = report.get("checks")
+    report_valid = (
+        report.get("state") == "ready"
+        and state.get("branch") == branch
+        and state.get("candidate_branch") == candidate_branch
+        and report.get("branch") == branch
+        and report.get("candidate_branch") == candidate_branch
+        and report.get("report_path") == str(report_path)
+        and bool(input_digest)
+        and report.get("input_digest") == input_digest
+        and report.get("manifest_sha256") == state.get("manifest_sha256")
+        and report.get("manifest_sha256") == live_manifest_sha256
+        and bool(report.get("replay_sha256"))
+        and report.get("replay_sha256") == state.get("replay_sha256")
+        and report.get("published") is True
+        and report.get("upstream_sha") == upstream_sha
+        and report.get("candidate_sha") == candidate_sha
+        and report.get("ownership_diagnostics") == []
+        and isinstance(survival, dict)
+        and survival.get("noncarry_paths_equal") is True
+        and report.get("checks_complete") is True
+        and isinstance(checks, list)
+        and bool(checks)
+        and all(isinstance(row, dict) and row.get("returncode") == 0 for row in checks)
+        and bool(re.fullmatch(r"[0-9a-fA-F]{40,64}", candidate_sha))
+    )
+    if not report_valid:
+        print("✗ Ready reconciliation state does not have a complete verified report; refusing promotion.")
+        return 0
+
+    if _remote_head_sha(git_cmd, repo, candidate_branch) != candidate_sha:
+        print(f"✗ origin/{candidate_branch} does not match the verified candidate SHA.")
+        return 0
+    old_deploy_sha = _remote_head_sha(git_cmd, repo, branch)
+    if not old_deploy_sha:
+        print(f"✗ Could not resolve origin/{branch} before promotion.")
+        return 0
+    live_head = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if (
+        live_head.returncode != 0
+        or live_head.stdout.strip() != pre_update_head
+        or pre_update_head != old_deploy_sha
+    ):
+        print(
+            f"✗ Live checkout is not exactly origin/{branch}; refusing promotion to avoid discarding local commits."
+        )
+        return 0
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive_branch = f"archive/{branch}-pre-{stamp}-{old_deploy_sha[:12]}"
+    archive_push = subprocess.run(
+        git_cmd
+        + [
+            "push",
+            f"--force-with-lease=refs/heads/{archive_branch}:",
+            "origin",
+            f"{old_deploy_sha}:refs/heads/{archive_branch}",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if archive_push.returncode != 0 or _remote_head_sha(git_cmd, repo, archive_branch) != old_deploy_sha:
+        print("✗ Could not publish/read back the rollback archive; deploy ref was not moved.")
+        return 0
+
+    promote = subprocess.run(
+        git_cmd
+        + [
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:{old_deploy_sha}",
+            "origin",
+            f"{candidate_sha}:refs/heads/{branch}",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if promote.returncode != 0 or _remote_head_sha(git_cmd, repo, branch) != candidate_sha:
+        print(f"✗ Candidate promotion lease failed; origin/{branch} was not changed by this updater.")
+        return 0
+
+    refreshed = subprocess.run(
+        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}", "--quiet"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    reset = subprocess.run(
+        git_cmd + ["reset", "--hard", candidate_sha],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    ) if refreshed.returncode == 0 else refreshed
+    if refreshed.returncode != 0 or reset.returncode != 0:
+        rollback = subprocess.run(
+            git_cmd
+            + [
+                "push",
+                f"--force-with-lease=refs/heads/{branch}:{candidate_sha}",
+                "origin",
+                f"{old_deploy_sha}:refs/heads/{branch}",
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        rollback_verified = (
+            rollback.returncode == 0
+            and _remote_head_sha(git_cmd, repo, branch) == old_deploy_sha
+        )
+        local_restore = subprocess.run(
+            git_cmd + ["reset", "--hard", old_deploy_sha],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        local_head = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        local_restore_verified = (
+            local_restore.returncode == 0
+            and local_head.returncode == 0
+            and local_head.stdout.strip() == old_deploy_sha
+        )
+        recovery_required = not (rollback_verified and local_restore_verified)
+        _write_reconciliation_state(
+            state_path,
+            {
+                **state,
+                "state": "recovery_required" if recovery_required else "failed",
+                "rollback_verified": rollback_verified,
+                "local_restore_verified": local_restore_verified,
+                "error": "candidate promoted but live realignment failed",
+            },
+        )
+        note = (
+            "remote and local rollback verified"
+            if not recovery_required
+            else "MANUAL RECOVERY REQUIRED"
+        )
+        print(f"✗ Candidate promoted but live realignment failed ({note}).")
+        return 0
+
+    _write_reconciliation_state(
+        state_path,
+        {
+            **state,
+            "state": "deployed",
+            "deployed_at": datetime.now().isoformat(timespec="seconds"),
+            "deploy_sha": candidate_sha,
+            "previous_deploy_sha": old_deploy_sha,
+            "archive_branch": archive_branch,
+        },
+    )
+    print(f"✓ Promoted verified candidate {candidate_sha[:12]} to origin/{branch}.")
+    print(f"  Rollback: origin/{archive_branch}")
+    return _count_changed_from_pre_update(git_cmd, repo, pre_update_head, 1) or 1
 
 
 def _git_stdout(repo: Path, args: list[str]) -> str | None:
@@ -2480,6 +2909,7 @@ def _run_deploy_branch_update(
     *,
     target_sha: str | None = None,
     publish_only: bool = False,
+    legacy_recovery: bool = False,
 ) -> Optional[int]:
     """Update a merge-based deploy branch without mutating live code on conflicts.
 
@@ -2590,16 +3020,6 @@ def _run_deploy_branch_update(
         _pipe.finish(note=f"fast-forwarded to staged target {target_sha[:12]}")
         return changed
 
-    if not publish_only and not _sync_deploy_main_to_upstream(git_cmd, repo):
-        _pipe.fail(note="cannot sync local main")
-        _print_deploy_branch_handoff(
-            reason="local main cannot be synchronized with upstream/main.",
-            repo=repo,
-            branch=branch,
-            git_cmd=git_cmd,
-        )
-        return None
-
     origin_ahead = _count_commits_between(git_cmd, repo, "HEAD", remote_ref)
     local_ahead = _count_commits_between(git_cmd, repo, remote_ref, "HEAD")
     upstream_ahead = _count_commits_between(git_cmd, repo, remote_ref, "upstream/main")
@@ -2611,6 +3031,85 @@ def _run_deploy_branch_update(
             branch=branch,
             upstream_ahead=upstream_ahead,
             origin_ahead=origin_ahead,
+            git_cmd=git_cmd,
+        )
+        return None
+
+    if local_ahead > 0 and not publish_only and not legacy_recovery:
+        _pipe.fail(note=f"local {branch} contains unpublished commits")
+        print(
+            f"✗ Local {branch} is ahead of origin/{branch}; bare update will not merge, push, or discard local commits."
+        )
+        return None
+
+    if upstream_ahead > 0 and not publish_only and not legacy_recovery:
+        upstream_sha = _full_git_ref(git_cmd, repo, "upstream/main")
+        if not upstream_sha:
+            _pipe.fail(note="cannot resolve upstream/main")
+            print("✗ Could not pin upstream/main for isolated reconciliation.")
+            return None
+
+        promoted = _promote_ready_reconciliation_candidate(
+            git_cmd=git_cmd,
+            repo=repo,
+            branch=branch,
+            upstream_sha=upstream_sha,
+            pre_update_head=pre_update_head,
+        )
+        if promoted is not None:
+            if promoted > 0:
+                _pipe.finish(note="verified candidate promoted and consumed")
+                return promoted
+            _pipe.fail(note="verified candidate promotion refused")
+            return None
+
+        deployed_changed = 0
+        if origin_ahead > 0 and local_ahead == 0:
+            _pipe.advance(f"sync {branch}")
+            ff_result = subprocess.run(
+                git_cmd + ["merge", "--ff-only", remote_ref],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            )
+            if ff_result.returncode != 0:
+                _pipe.fail(note=f"cannot fast-forward to {remote_ref}")
+                print(f"✗ Reviewed {remote_ref} is available but the live checkout cannot fast-forward.")
+                return None
+            deployed_changed = _count_changed_from_pre_update(
+                git_cmd, repo, pre_update_head, origin_ahead
+            )
+            print(f"  ✓ Consumed {origin_ahead} published deploy commit(s).")
+
+        queued = _queue_fork_reconciliation(
+            repo=repo, branch=branch, upstream_sha=upstream_sha
+        )
+        if queued.get("state") == "failed":
+            note = "cannot queue candidate verification"
+            print(f"✗ Candidate verification could not start: {queued.get('error') or 'unknown error'}")
+            if deployed_changed:
+                _pipe.finish(note=f"deploy consumed; {note}")
+                print("  Continuing deployment of the reviewed artifact.")
+                return deployed_changed
+            _pipe.fail(note=note)
+            return None
+        state = str(queued.get("state") or "queued")
+        _pipe.finish(note=f"candidate verification {state}")
+        print("→ Candidate verification started in an isolated worktree.")
+        if deployed_changed:
+            print("  Reviewed deploy update consumed; newer candidate is verifying separately.")
+        else:
+            print("  Current deployment unchanged.")
+        print(f"  Candidate ref: origin/{branch}-next")
+        print(f"  Status: {_reconciliation_state_path(branch)}")
+        return deployed_changed or RECONCILIATION_QUEUED
+
+    if not publish_only and not _sync_deploy_main_to_upstream(git_cmd, repo):
+        _pipe.fail(note="cannot sync local main")
+        _print_deploy_branch_handoff(
+            reason="local main cannot be synchronized with upstream/main.",
+            repo=repo,
+            branch=branch,
             git_cmd=git_cmd,
         )
         return None
