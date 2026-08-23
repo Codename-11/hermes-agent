@@ -230,7 +230,7 @@
       "id": "desktop-registered-source-routing",
       "title": "Desktop registered-source profile and session routing",
       "order": 35,
-      "status": "active",
+      "status": "retired",
       "domain_id": "desktop",
       "ownership": "core",
       "contract": {
@@ -1055,26 +1055,88 @@
         "path": "FORK.md",
         "heading": "Deploy branch update reconciliation"
       },
-      "depends_on": [],
+      "depends_on": [
+        "fork-replay-tooling"
+      ],
       "provenance": [
         {
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
-          "revision": "ca96c2327c61a2bac9e2585d54e9741d05ecfae0"
+          "revision": "dc7cdb25bc6eff2b87d8e922864efc91159667ae"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "134226fa751ebf7b5d37b754b76591ae0959d0e9"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "56bf56a8dfac432f7cc640e945224e88d7eb656b"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "18126df48ec38326b33a6306ad30bb32cf9d7330"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "90f1ec12f314daa1e565aef7124a4470a7dab7f3"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "d6d85d8ae10edd85f0824a9a105e23e39bc771ce"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "e9a8eae27339e165047bb5dbc3bfcc34029affd8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "f04f5835b532487d1c440c8cb4c5754a26a900a4"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "6479bab86c4d742c3949d52c3429c5742ac317ae"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "4e781669ed59c02cc8e01d4473248611633c5817"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "87159dbcfbef834f55625f3d478df61b35634ef8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "75e34f40d71171141cbd723bd62dbc0d121d9ba3"
         }
       ],
       "summary": "Deploy branch update reconciliation",
       "paths": [
         "hermes_cli/_startup_fast.py",
+        "hermes_cli/axiom_reconcile.py",
         "hermes_cli/axiom_update.py",
         "hermes_cli/banner.py",
         "hermes_cli/main.py",
         "hermes_cli/subcommands/update.py",
         "hermes_cli/update_cmd.py",
         "hermes_cli/update_ui.py",
+        "docs/axiom-fork-contract.md",
+        "fork-carries.json",
+        "website/docs/reference/cli-commands.md",
         "scripts/check-merge-drops.py"
       ],
       "tests": [
+        "tests/hermes_cli/test_axiom_reconcile.py",
         "tests/hermes_cli/test_cmd_update.py",
         "tests/hermes_cli/test_update_autostash.py",
         "tests/hermes_cli/test_update_check.py",
@@ -1093,6 +1155,7 @@
             "-q",
             "-o",
             "addopts=",
+            "tests/hermes_cli/test_axiom_reconcile.py",
             "tests/hermes_cli/test_cmd_update.py",
             "tests/hermes_cli/test_update_autostash.py",
             "tests/hermes_cli/test_update_check.py",
@@ -1101,6 +1164,7 @@
           ],
           "env": {},
           "covers": [
+            "tests/hermes_cli/test_axiom_reconcile.py",
             "tests/hermes_cli/test_cmd_update.py",
             "tests/hermes_cli/test_update_autostash.py",
             "tests/hermes_cli/test_update_check.py",
@@ -1129,10 +1193,21 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
-        "base_commit": "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727",
+        "source_ref": "origin/carry/deploy-update-20260823",
+        "base_commit": "f293e7206b4ddd66042329442c6afebc19a8808d",
         "commits": [
-          "ca96c2327c61a2bac9e2585d54e9741d05ecfae0"
+          "dc7cdb25bc6eff2b87d8e922864efc91159667ae",
+          "134226fa751ebf7b5d37b754b76591ae0959d0e9",
+          "56bf56a8dfac432f7cc640e945224e88d7eb656b",
+          "18126df48ec38326b33a6306ad30bb32cf9d7330",
+          "90f1ec12f314daa1e565aef7124a4470a7dab7f3",
+          "d6d85d8ae10edd85f0824a9a105e23e39bc771ce",
+          "e9a8eae27339e165047bb5dbc3bfcc34029affd8",
+          "f04f5835b532487d1c440c8cb4c5754a26a900a4",
+          "6479bab86c4d742c3949d52c3429c5742ac317ae",
+          "4e781669ed59c02cc8e01d4473248611633c5817",
+          "87159dbcfbef834f55625f3d478df61b35634ef8",
+          "75e34f40d71171141cbd723bd62dbc0d121d9ba3"
         ]
       }
     }
