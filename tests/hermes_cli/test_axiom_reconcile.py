@@ -1,8 +1,11 @@
 import hashlib
 import inspect
 import json
+import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +34,133 @@ def test_reconciliation_lock_is_atomic(tmp_path):
     second = axiom_update._claim_reconciliation_lock(lock_path)
     assert second is not None
     axiom_update._release_reconciliation_lock(lock_path, second)
+
+
+def test_reconciliation_lock_reclaims_dead_owner(monkeypatch, tmp_path):
+    lock_path = tmp_path / "axiom.lock"
+    lock_path.write_text("999999999\n", encoding="utf-8")
+    monkeypatch.setattr(
+        axiom_update,
+        "_pid_is_running",
+        lambda pid: int(pid) == 12345,
+    )
+
+    descriptor = axiom_update._claim_reconciliation_lock(lock_path)
+
+    assert descriptor is not None
+    assert lock_path.read_text(encoding="utf-8") == f"{os.getpid()}\n"
+    axiom_update._release_reconciliation_lock(lock_path, descriptor)
+
+
+def test_stale_worker_cannot_overwrite_newer_canonical_state(tmp_path):
+    canonical = tmp_path / "axiom.json"
+    canonical.write_text(
+        json.dumps({"run_id": "new-run", "input_digest": "new-digest", "state": "queued"}),
+        encoding="utf-8",
+    )
+
+    updated = axiom_reconcile._update_canonical_state_if_current(
+        canonical,
+        run_id="old-run",
+        input_digest="old-digest",
+        state="ready",
+        candidate_sha="a" * 40,
+    )
+
+    assert updated is False
+    assert json.loads(canonical.read_text(encoding="utf-8")) == {
+        "run_id": "new-run",
+        "input_digest": "new-digest",
+        "state": "queued",
+    }
+
+
+def test_stale_worker_waits_for_queue_publication_lock(tmp_path):
+    canonical = tmp_path / "axiom.json"
+    canonical.write_text(
+        json.dumps({"run_id": "old-run", "input_digest": "old-digest", "state": "running"}),
+        encoding="utf-8",
+    )
+    lock_path = canonical.with_suffix(".lock")
+    descriptor = axiom_update._claim_reconciliation_lock(lock_path)
+    assert descriptor is not None
+    results = []
+
+    worker = threading.Thread(
+        target=lambda: results.append(
+            axiom_reconcile._update_canonical_state_if_current(
+                canonical,
+                run_id="old-run",
+                input_digest="old-digest",
+                state="ready",
+            )
+        )
+    )
+    worker.start()
+    time.sleep(0.05)
+    canonical.write_text(
+        json.dumps({"run_id": "new-run", "input_digest": "new-digest", "state": "queued"}),
+        encoding="utf-8",
+    )
+    axiom_update._release_reconciliation_lock(lock_path, descriptor)
+    worker.join(timeout=5)
+
+    assert results == [False]
+    assert json.loads(canonical.read_text(encoding="utf-8"))["run_id"] == "new-run"
+
+
+def test_fetch_replay_source_makes_commit_available_in_single_branch_clone(tmp_path):
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    clone = tmp_path / "clone"
+    _git(tmp_path, "init", "--bare", "-q", str(origin))
+    _git(tmp_path, "init", "-q", "-b", "main", str(seed))
+    _git(seed, "config", "user.name", "Source Fetch Test")
+    _git(seed, "config", "user.email", "source-fetch@example.invalid")
+    (seed / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "base.txt")
+    _git(seed, "commit", "-q", "-m", "base")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "push", "-q", "origin", "HEAD:axiom")
+    (seed / "carry.txt").write_text("carry\n", encoding="utf-8")
+    _git(seed, "add", "carry.txt")
+    _git(seed, "commit", "-q", "-m", "carry")
+    carry_sha = _git(seed, "rev-parse", "HEAD")
+    _git(seed, "push", "-q", "origin", "HEAD:carry/test-source")
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "-q",
+            "--single-branch",
+            "--no-local",
+            "--branch",
+            "axiom",
+            str(origin),
+            str(clone),
+        ],
+        check=True,
+    )
+    assert axiom_reconcile._resolve(clone, carry_sha) == ""
+    carries = [
+        {
+            "id": "test-source",
+            "replay": {
+                "source_ref": "origin/carry/test-source",
+                "commits": [carry_sha],
+            },
+        }
+    ]
+
+    private_refs = axiom_reconcile._fetch_replay_sources(
+        clone, carries, run_id="test-run"
+    )
+    try:
+        assert axiom_reconcile._resolve(clone, carry_sha) == carry_sha
+        assert len(private_refs) == 1
+        assert axiom_reconcile._resolve(clone, private_refs[0]) == carry_sha
+    finally:
+        axiom_reconcile._delete_private_refs(clone, private_refs)
 
 
 def test_queue_snapshots_immutable_worker_and_manifest(monkeypatch, tmp_path):
@@ -85,6 +215,91 @@ def test_pid_liveness_probe_does_not_signal_process():
     finally:
         child.terminate()
         child.wait(timeout=10)
+
+
+def test_promotion_rebinds_worker_manifest_validator_and_report(
+    monkeypatch, tmp_path
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "runs" / "run-id"
+    run_dir.mkdir(parents=True)
+    branch = "axiom"
+    upstream_sha = "b" * 40
+    candidate_sha = "a" * 40
+    worker_bytes = b"# immutable worker\n"
+    manifest_bytes = b'{"carries": []}\n'
+    validator_bytes = b"# immutable validator\n"
+    (run_dir / "axiom_reconcile.py").write_bytes(worker_bytes)
+    (run_dir / "fork-carries.json").write_bytes(manifest_bytes)
+    (run_dir / "fork_carry_manifest.py").write_bytes(validator_bytes)
+    (repo / "fork-carries.json").write_bytes(manifest_bytes)
+    digest = hashlib.sha256()
+    digest.update(branch.encode())
+    digest.update(b"\0")
+    digest.update(upstream_sha.encode())
+    for name, payload in sorted(
+        {
+            "worker": worker_bytes,
+            "manifest": manifest_bytes,
+            "validator": validator_bytes,
+        }.items()
+    ):
+        digest.update(b"\0" + name.encode() + b"\0" + payload)
+    input_digest = digest.hexdigest()
+    report_path = run_dir / "report.json"
+    report = {
+        "state": "ready",
+        "branch": branch,
+        "candidate_branch": "axiom-next",
+        "upstream_sha": upstream_sha,
+        "candidate_sha": candidate_sha,
+        "input_digest": input_digest,
+        "worker_sha256": hashlib.sha256(worker_bytes).hexdigest(),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "validator_sha256": hashlib.sha256(validator_bytes).hexdigest(),
+        "replay_sha256": "c" * 64,
+        "report_path": str(report_path.resolve()),
+        "published": True,
+        "ownership_diagnostics": [],
+        "upstream_survival": {"noncarry_paths_equal": True},
+        "checks_complete": True,
+        "checks": [{"id": "verified", "returncode": 0}],
+    }
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    state_path = tmp_path / "axiom.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                **report,
+                "run_id": input_digest[:24],
+                "run_dir": str(run_dir),
+                "report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "axiom_reconcile.py").write_bytes(worker_bytes + b"# mutated\n")
+    monkeypatch.setattr(
+        axiom_update,
+        "_remote_head_sha",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("remote state queried before immutable evidence validation")
+        ),
+    )
+
+    refused = axiom_update._promote_ready_reconciliation_candidate(
+        git_cmd=["git"],
+        repo=repo,
+        branch=branch,
+        upstream_sha=upstream_sha,
+        pre_update_head="d" * 40,
+        state_path=state_path,
+    )
+
+    assert refused == 0
 
 
 def test_bare_update_has_no_legacy_handoff_resolver_call():
@@ -268,15 +483,47 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
         "_run_checks",
         lambda _worktree, _checks: ([{"id": "test", "returncode": 0}], True),
     )
-    state_path = tmp_path / "state" / "axiom.json"
-    state_path.parent.mkdir()
-    state_path.write_text(
-        json.dumps({"state": "queued", "upstream_sha": upstream_sha}),
-        encoding="utf-8",
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    worker_bytes = Path(axiom_reconcile.__file__).read_bytes()
+    validator_bytes = (repo / "validator.py").read_bytes()
+    evidence = axiom_update._reconciliation_input_evidence(
+        "axiom",
+        upstream_sha,
+        {
+            "worker": worker_bytes,
+            "manifest": manifest_bytes,
+            "validator": validator_bytes,
+        },
     )
+    input_digest = evidence["input_digest"]
+    run_id = input_digest[:24]
+    run_dir = state_root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    worker_path = run_dir / "axiom_reconcile.py"
+    manifest_path = run_dir / "fork-carries.json"
+    validator_path = run_dir / "fork_carry_manifest.py"
+    worker_path.write_bytes(worker_bytes)
+    manifest_path.write_bytes(manifest_bytes)
+    validator_path.write_bytes(validator_bytes)
+    state_path = run_dir / "state.json"
+    report_path = run_dir / "report.json"
+    canonical_state_path = state_root / "axiom.json"
+    queued_state = {
+        "state": "queued",
+        "branch": "axiom",
+        "upstream_sha": upstream_sha,
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "input_digest": input_digest,
+        "worker_sha256": evidence["worker_sha256"],
+        "manifest_sha256": evidence["manifest_sha256"],
+        "validator_sha256": evidence["validator_sha256"],
+        "report_path": str(report_path),
+    }
+    state_path.write_text(json.dumps(queued_state), encoding="utf-8")
+    canonical_state_path.write_text(json.dumps(queued_state), encoding="utf-8")
 
-    canonical_state_path = tmp_path / "state" / "canonical.json"
-    report_path = tmp_path / "state" / "run-report.json"
     report = axiom_reconcile.generate_candidate(
         repo=repo,
         branch="axiom",
@@ -284,12 +531,14 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
         state_path=state_path,
         canonical_state_path=canonical_state_path,
         report_path=report_path,
-        manifest_path=repo / "fork-carries.json",
-        validator_path=repo / "validator.py",
-        input_digest="input-digest",
+        manifest_path=manifest_path,
+        validator_path=validator_path,
+        input_digest=input_digest,
+        worker_path=worker_path,
         run_checks=True,
         publish=True,
     )
+    state_path = canonical_state_path
 
     deploy_sha = _git(tmp_path, "--git-dir", str(origin), "rev-parse", "refs/heads/axiom")
     candidate_sha = _git(
@@ -299,7 +548,8 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     assert report["state"] == "ready"
     assert report["published"] is True
     assert report["candidate_sha"] == candidate_sha
-    assert report["input_digest"] == "input-digest"
+    assert report["input_digest"] == input_digest
+    assert report["worker_sha256"] == evidence["worker_sha256"]
     assert report["replay_sha256"]
     assert report["report_path"] == str(report_path)
     assert json.loads(canonical_state_path.read_text())["state"] == "ready"
