@@ -4,7 +4,7 @@ import sys
 from io import StringIO
 from pathlib import Path
 from subprocess import CalledProcessError
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -2957,11 +2957,38 @@ def test_deploy_update_refreshes_stale_origin_ref_before_comparing(monkeypatch, 
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------
 
+
+def test_stale_module_purge_removes_parent_package_binding(monkeypatch):
+    from hermes_cli import update_cmd
+
+    parent = ModuleType("hermes_cli")
+    child = ModuleType("hermes_cli.stale_probe")
+    parent.stale_probe = child
+    modules = {
+        "hermes_cli": parent,
+        "hermes_cli.stale_probe": child,
+    }
+    monkeypatch.setattr(
+        update_cmd,
+        "_m",
+        lambda: SimpleNamespace(sys=SimpleNamespace(modules=modules)),
+    )
+
+    update_cmd._purge_stale_hermes_modules()
+
+    assert "hermes_cli.stale_probe" not in modules
+    assert not hasattr(parent, "stale_probe")
+
+
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
     from hermes_cli import gateway as hermes_gateway
-
     (tmp_path / ".git").mkdir()
+    monkeypatch.setitem(
+        hermes_main.cmd_update.__globals__,
+        "_purge_stale_hermes_modules",
+        lambda: None,
+    )
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
