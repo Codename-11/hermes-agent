@@ -209,7 +209,11 @@ def _validate_replay_commit_sources(
 
 def _delete_private_refs(repo: Path, refs: list[str]) -> None:
     for ref in refs:
-        _run(repo, "update-ref", "-d", ref)
+        deleted = _run(repo, "update-ref", "-d", ref)
+        remaining = _resolve(repo, ref)
+        if deleted.returncode != 0 or remaining:
+            detail = deleted.stderr.strip() or remaining or "unknown cleanup failure"
+            raise RuntimeError(f"could not delete private replay ref {ref}: {detail}")
 
 
 def _replay_digest(carries: list[dict[str, Any]]) -> str:
@@ -456,10 +460,13 @@ def _publish_candidate_if_current(
             "origin",
             f"HEAD:refs/heads/{candidate_branch}",
         )
-        if pushed.returncode != 0:
-            raise RuntimeError(pushed.stderr.strip() or "candidate push failed")
-        if _remote_branch_sha(repo, candidate_branch) != candidate_sha:
-            raise RuntimeError("candidate ref read-back did not match generated SHA")
+        observed_sha = _remote_branch_sha(repo, candidate_branch)
+        if observed_sha != candidate_sha:
+            detail = pushed.stderr.strip() if pushed.returncode != 0 else ""
+            raise RuntimeError(
+                detail
+                or "candidate ref read-back did not match generated SHA"
+            )
     finally:
         if lock_path is not None:
             _release_state_lock(lock_path, descriptor)
@@ -645,7 +652,12 @@ def generate_candidate(
         if added:
             _run(worktree, "cherry-pick", "--abort")
             _run(repo, "worktree", "remove", "--force", str(worktree))
-        _delete_private_refs(repo, private_refs)
+        try:
+            _delete_private_refs(repo, private_refs)
+        except Exception as cleanup_exc:
+            report["state"] = "failed"
+            report["error"] = f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            report["completed_at"] = datetime.now().isoformat(timespec="seconds")
         try:
             container.rmdir()
         except OSError:
