@@ -74,17 +74,20 @@ import {
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
+  $hiddenProfiles,
   $newChatProfile,
   $profileColors,
   $profiles,
   $profileScope,
   ALL_PROFILES,
+  filterVisibleProfiles,
   messagingTotalsKey,
   normalizeProfileKey,
   sidebarProfileForScope
 } from '@/store/profile'
 import {
   $activeProjectId,
+  $projectOverviewOpen,
   $projects,
   $projectScope,
   $projectTree,
@@ -99,7 +102,8 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
-  scanAndRecordRepos
+  scanAndRecordRepos,
+  toggleProjectOverview
 } from '@/store/projects'
 import {
   $prBranchBySession,
@@ -127,7 +131,7 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $focusedStoredSessionId, $workingSessionIds, sessionStatusKey, type SplitDir } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -156,8 +160,6 @@ import {
   liveSessionProjectId,
   orderProjectsByIds,
   overlayLiveLanes,
-  overlayLivePreviews,
-  PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
@@ -388,26 +390,37 @@ export function ChatSidebar({
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
+  const hiddenProfiles = useStore($hiddenProfiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+  const visibleProfiles = filterVisibleProfiles(profiles, hiddenProfiles)
+
+  const visibleProfileKeys = useMemo(
+    () => new Set(visibleProfiles.map(profile => normalizeProfileKey(profile.name))),
+    [visibleProfiles]
+  )
   const activeConnectionId = useStore($activeConnectionId)
 
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
   // become the truth (optimistic update + rollback in markSessionUnread).
-  const toggleUnread = (storedId: string) => {
-    const row = $sessions.get().find(r => r.id === storedId)
+  const toggleUnread = (storedId: string, profile?: string) => {
+    const normalizedProfile = normalizeProfileKey(profile)
+
+    const row = $sessions
+      .get()
+      .find(r => r.id === storedId && normalizeProfileKey(r.profile) === normalizedProfile)
 
     if (!row) {
       return
     }
 
-    markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
+    markSessionUnread(storedId, row.unread !== true, row.profile).catch(err => notifyError(err, s.row.unreadFailed))
   }
 
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
-  const multiProfile = profiles.length > 1
+  const multiProfile = visibleProfiles.length > 1
   // Gate ALL-profiles grouping on multiProfile too: if a user drops back to one
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
@@ -424,6 +437,7 @@ export function ChatSidebar({
   const removedSessionIds = useStore($removedSessionIds)
   const reposScanning = useStore($reposScanning)
   const activeProjectId = useStore($activeProjectId)
+  const projectOverviewOpen = useStore($projectOverviewOpen)
   const projectScope = useStore($projectScope)
   const currentCwd = useStore($currentCwd)
   const gatewayState = useStore($gatewayState)
@@ -490,8 +504,10 @@ export function ChatSidebar({
   const scopedSessions = useMemo(() => {
     const pool = showArchived ? archivedSessions : sessions
 
-    return filterSessionsByProfileScope(pool, profileScope)
-  }, [sessions, archivedSessions, showArchived, profileScope])
+    return showAllProfiles
+      ? pool.filter(session => visibleProfileKeys.has(normalizeProfileKey(session.profile)))
+      : pool.filter(session => normalizeProfileKey(session.profile) === profileScope)
+  }, [sessions, archivedSessions, showArchived, showAllProfiles, profileScope, visibleProfileKeys])
 
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded
@@ -499,7 +515,10 @@ export function ChatSidebar({
   // membership in the filtered set.
   const sessionMatchesFilters = useCallback(
     (session: SessionInfo) => {
-      if (statusFilter.length && !statusFilter.includes(sessionStatusBucket(dotStates[session.id]))) {
+      if (
+        statusFilter.length &&
+        !statusFilter.includes(sessionStatusBucket(dotStates[sessionStatusKey(session.profile, session.id)]))
+      ) {
         return false
       }
 
@@ -1107,24 +1126,8 @@ export function ChatSidebar({
     }
   }, [projectScope, projectsActive, enteredProject])
 
-  // Grouping choice owns presentation even while the tree is empty/loading;
-  // never fall through to flat sessions directly beneath the Projects heading.
-  const projectOverview = worktreeGroupingActive && !inProject ? (agentProjectTree ?? []) : undefined
-
-  // Preview rows come from the backend tree (each project carries its
-  // most-recent sessions), overlaid with live $sessions so a just-created
-  // session shows under its project instantly (and with its working arc),
-  // matching the flat Recents list. Keyed by project id for the rows.
-  const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () =>
-      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, {
-        removed: removedSessionIds,
-        // Rank before the trim, so "3 priciest in this project" isn't "3 most
-        // recent, priciest first".
-        rankIds: sortOrderIds
-      }),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds]
-  )
+  // The project overview (drill-in list) vs. the entered project's content.
+  const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
 
   const onEnterProject = useCallback(
     (id: string) => {
@@ -1812,8 +1815,9 @@ export function ChatSidebar({
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
+                projectOverviewOpen={projectOverviewOpen}
                 projectOverviewRecentsLabel={projectOverview ? s.recentSessions : undefined}
-                projectOverviewPreviews={overviewPreviews}
+                onToggleProjectOverview={projectOverview ? toggleProjectOverview : undefined}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}

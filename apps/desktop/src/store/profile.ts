@@ -28,17 +28,14 @@ import {
   requestGatewayForAgent,
   requestGatewayForProfile
 } from '@/store/gateway'
+import { activateChangeEventsProfile } from '@/store/live-sync'
 import { $connection, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
-// Canonical key for a profile: trimmed, empty → "default". Used everywhere we
-// compare a session's owning profile against the live gateway's profile.
-export function normalizeProfileKey(name: string | null | undefined): string {
-  const value = (name ?? '').trim()
+import { $activeGatewayProfile, normalizeProfileKey } from './profile-scope'
 
-  return value || 'default'
-}
+export { $activeGatewayProfile, $gatewayProfileAdopted, normalizeProfileKey } from './profile-scope'
 
 // Presentation-only label: the display_name from profile.yaml when set (e.g. a
 // renamed default profile), else the canonical name. Never used for
@@ -102,6 +99,40 @@ export function setProfileOrder(names: string[]): void {
   if (!arraysEqual($profileOrder.get(), names)) {
     $profileOrder.set(names)
   }
+}
+
+// ── Rail visibility ────────────────────────────────────────────────────────
+// Local presentation preference only: hiding a profile never mutates, disables,
+// or disconnects its Hermes environment. The default profile stays visible so
+// users cannot hide the rail's stable way home.
+const HIDDEN_PROFILES_STORAGE_KEY = 'hermes.desktop.hiddenProfiles'
+
+export const $hiddenProfiles = atom<string[]>(storedStringArray(HIDDEN_PROFILES_STORAGE_KEY))
+
+$hiddenProfiles.subscribe(value => persistStringArray(HIDDEN_PROFILES_STORAGE_KEY, [...value]))
+
+export function setProfileHidden(name: string, hidden: boolean): void {
+  const key = normalizeProfileKey(name)
+
+  if (key === 'default') {
+    return
+  }
+
+  const current = $hiddenProfiles.get()
+  const next = hidden ? [...new Set([...current, key])] : current.filter(item => item !== key)
+
+  if (!arraysEqual(current, next)) {
+    $hiddenProfiles.set(next)
+  }
+}
+
+export function filterVisibleProfiles<T extends { is_default: boolean; name: string }>(
+  profiles: T[],
+  hidden: string[]
+): T[] {
+  const hiddenKeys = new Set(hidden.map(normalizeProfileKey))
+
+  return profiles.filter(profile => profile.is_default || !hiddenKeys.has(normalizeProfileKey(profile.name)))
 }
 
 // Sort items by the stored order; unordered names alphabetise at the tail.
@@ -195,14 +226,6 @@ export async function switchProfile(name: string): Promise<void> {
 // gateway to that profile's backend (spawned on demand by the Electron pool).
 // A single-profile user never triggers a swap, so their path is unchanged.
 
-// The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot. The gateway registry
-// mirrors its own route into this atom via the onActiveRouteChanged callback
-// (wired in use-gateway-boot's configureGatewayRegistry), so registry-internal
-// eviction fallbacks (idle reap, connection removal, profile delete) can never
-// leave this naming a profile the active socket no longer serves (#89206).
-export const $activeGatewayProfile = atom<string>('default')
-
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
@@ -227,6 +250,7 @@ let _lastRoutedProfile: string | null = null
 $activeGatewayProfile.subscribe(value => {
   const key = normalizeProfileKey(value)
   setApiRequestProfile(key)
+  activateChangeEventsProfile(key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     invalidateCronModelImpactScopeState()
@@ -288,6 +312,14 @@ export function openActiveProfileRoute(profile: string): Promise<void> {
   return connectionId ? openGatewayForAgent(connectionId, profile) : openGatewayForProfile(profile)
 }
 
+export function ensureActiveProfileRoute(profile: string): Promise<void> {
+  const connectionId = activeProfileConnectionId()
+
+  return connectionId ? ensureGatewayAgent(connectionId, profile) : ensureGatewayProfile(profile)
+}
+
+// Connection-qualified RPC counterpart to open/ensure. Kept as an additive
+// Axiom seam for callers that must address a profile without activating it.
 export function requestActiveProfileRoute<T>(
   profile: string,
   method: string,
@@ -314,7 +346,7 @@ export function prewarmProfileBackend(name: string): void {
   }
 
   prewarmedAt.set(key, now)
-  openGatewayForProfile(key).catch(() => undefined)
+  openActiveProfileRoute(key).catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null
@@ -524,37 +556,39 @@ export const messagingTotalsKey = (messagingProfile: string, sourceId: string): 
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
-// Opt-in unified view. When false, scope follows the live gateway profile, so
-// single-profile users (who never see the switcher) are completely unaffected.
+// Opt-in unified view. Request routing and browsing are deliberately separate:
+// focusing a mixed-profile chat tab may activate its gateway, but must not
+// replace the sidebar list the user is browsing.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
+export const $browsedProfile = atom<string>(normalizeProfileKey($activeGatewayProfile.get()))
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 
-// The profile context the sidebar is currently showing: a concrete profile key,
-// or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
-// gateway so opening/selecting a profile (which swaps the gateway) moves the
-// whole sidebar with it — a real context switch, not a separate filter to keep
-// in sync.
-export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+// The profile context the sidebar is currently showing: a concrete browse key,
+// or ALL_PROFILES for the unified grouped view. It changes only through explicit
+// profile navigation, never as a side effect of a chat pane routing an RPC.
+export const $profileScope = computed([$showAllProfiles, $browsedProfile], (showAll, browsed) =>
+  showAll ? ALL_PROFILES : normalizeProfileKey(browsed)
 )
 
-// Switch the active context to `name`: leave "All profiles" mode, point new
-// chats at it, and swap the single live gateway onto its backend (which moves
-// $activeGatewayProfile → name, so $profileScope follows).
+// Switch the active context to `name`: leave "All profiles" mode, move the
+// sidebar browse scope immediately, point new chats at it, and activate its
+// backend route independently. A shared remote route may keep the primary
+// gateway profile unchanged, so browse state must not wait for that activation.
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
-  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
+  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($browsedProfile.get())
   $showAllProfiles.set(false)
+  $browsedProfile.set(target)
   $newChatProfile.set(target)
 
   if (switching) {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  void ensureActiveProfileRoute(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -567,7 +601,7 @@ export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  void ensureActiveProfileRoute(target)
 }
 
 export function setShowAllProfiles(value: boolean): void {
@@ -584,7 +618,7 @@ export function toggleShowAllProfiles(): void {
 // when the slot is empty so unused ⌘N keys stay harmless.
 
 function orderedProfileKeys(): string[] {
-  const profiles = $profiles.get()
+  const profiles = filterVisibleProfiles($profiles.get(), $hiddenProfiles.get())
 
   const named = sortByProfileOrder(
     profiles.filter(profile => !profile.is_default),
@@ -606,7 +640,7 @@ export function switchToDefaultProfile(): void {
 // Switch to the Nth named (non-default) profile in rail order (1-based).
 export function switchProfileToSlot(slot: number): void {
   const named = sortByProfileOrder(
-    $profiles.get().filter(profile => !profile.is_default),
+    filterVisibleProfiles($profiles.get(), $hiddenProfiles.get()).filter(profile => !profile.is_default),
     $profileOrder.get()
   )
 
@@ -625,7 +659,7 @@ export function cycleProfile(direction: 1 | -1): void {
     return
   }
 
-  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($activeGatewayProfile.get()))
+  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($browsedProfile.get()))
   const start = current < 0 ? (direction === 1 ? -1 : 0) : current
   const next = (start + direction + keys.length) % keys.length
 

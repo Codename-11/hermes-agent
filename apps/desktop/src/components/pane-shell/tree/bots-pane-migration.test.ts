@@ -16,11 +16,12 @@ describe('Hermes Bots persisted pane migration', () => {
     const oldPane = 'hermes-bots:pane'
     const newPane = 'hermes-bots:bots-dock'
 
-    const sessions = model.group(['sessions', oldPane], {
-      active: 'sessions',
-      headerHidden: false,
-      id: 'grp-sessions'
-    })
+    const sessions = {
+      ...model.group(['sessions', oldPane], { active: 'sessions', id: 'grp-sessions' }),
+      // Legacy persisted-only field: deliberately bypass the current GroupNode
+      // constructor so this fixture exercises the load migration boundary.
+      headerHidden: false
+    }
 
     const terminal = model.group(['terminal'], { active: 'terminal', id: 'grp-terminal', minimized: true })
     const main = model.group(['workspace', 'notes'], { active: 'notes', id: 'grp-main' })

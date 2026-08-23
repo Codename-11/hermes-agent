@@ -18,8 +18,11 @@ import {
 } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $expandedProjectIds, toggleProjectExpanded } from '@/store/projects'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { sessionStatusKey } from '@/store/session-states'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { orderRowsWithinGroups, reorderableRowIds } from './order'
@@ -44,6 +47,7 @@ interface SidebarSectionHeaderProps {
   open: boolean
   onToggle: () => void
   action?: React.ReactNode
+  ariaLabel?: string
   meta?: React.ReactNode
   icon?: React.ReactNode
   // When false the section can't be collapsed: the label renders static (no
@@ -57,6 +61,7 @@ function SidebarSectionHeader({
   open,
   onToggle,
   action,
+  ariaLabel,
   meta,
   icon,
   collapsible = true
@@ -73,6 +78,7 @@ function SidebarSectionHeader({
     <div className="group/section flex shrink-0 items-center justify-between gap-1 pb-1 pt-1.5">
       {collapsible ? (
         <button
+          aria-label={ariaLabel}
           // min-w-0 lets the label truncate at narrow sidebar widths instead of
           // pushing the header's trailing action icons out of view.
           className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-left leading-none"
@@ -99,12 +105,12 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
-  onResumeSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
-  onToggleUnread: (sessionId: string) => void
+  onToggleUnread: (sessionId: string, profile?: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
   pinned: boolean
   rootClassName?: string
@@ -120,10 +126,11 @@ interface SidebarSessionsSectionProps {
   // which then passes `projectContent` on the next render. Takes precedence
   // over `tree` / `groups`.
   projectOverview?: SidebarProjectTree[]
+  projectOverviewOpen?: boolean
+  onToggleProjectOverview?: () => void
   // Hybrid overview: a separate flat recents lane rendered after Projects.
+  // Omitted in project drill-in and flat Sessions mode.
   projectOverviewRecentsLabel?: string
-  // Per-project preview rows (from the backend tree), keyed by project id.
-  projectOverviewPreviews?: Record<string, SessionInfo[]>
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
@@ -160,6 +167,8 @@ interface SidebarSessionsSectionProps {
   // lists (Pinned / search results) in the All-profiles view, where no group
   // header communicates ownership (#66003).
   showProfileTags?: boolean
+  // Show Project/Home identity on global Recent/search rows.
+  showProjectTags?: boolean
   // Which dividers to fold into the flat list: `date` gives the chronological
   // "Yesterday" / "Last week" separators (flat recents + entered-project lanes),
   // `status` splits into WORKING / DONE under the same separators. `none` for
@@ -195,8 +204,9 @@ export function SidebarSessionsSection({
   footer,
   groups,
   projectOverview,
+  projectOverviewOpen = true,
+  onToggleProjectOverview,
   projectOverviewRecentsLabel,
-  projectOverviewPreviews,
   projectsLoading = false,
   onEnterProject,
   projectContent,
@@ -214,13 +224,16 @@ export function SidebarSessionsSection({
   projectBackRow,
   dndSensors,
   showProfileTags = false,
+  showProjectTags = false,
   grouping = 'none',
   card = false
 }: SidebarSessionsSectionProps) {
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
+  const expandedProjectIds = useStore($expandedProjectIds)
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   // A defined project list is itself content (even an empty project should
@@ -256,26 +269,30 @@ export function SidebarSessionsSection({
         branchStem,
         card,
         isPinned: pinned,
-        isSelected: session.id === activeSessionId,
+        isSelected:
+          session.id === activeSessionId &&
+          normalizeProfileKey(session.profile) === normalizeProfileKey(activeGatewayProfile),
         onArchive: () => onArchiveSession(session.id),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
-        onToggleUnread: () => onToggleUnread(session.id),
-        onResume: () => onResumeSession(session.id),
+        onResume: () => onResumeSession(session.id, session.profile),
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
+        showProject: showProjectTags,
+        onToggleUnread: () => onToggleUnread(session.id, session.profile),
         unread: session.unread === true
       }
 
       return draggable && !branchStem ? (
-        <SortableSidebarSessionRow key={session.id} {...rowProps} />
+        <SortableSidebarSessionRow key={`${session.profile || 'default'}:${session.id}`} {...rowProps} />
       ) : (
-        <SidebarSessionRow key={session.id} {...rowProps} />
+        <SidebarSessionRow key={`${session.profile || 'default'}:${session.id}`} {...rowProps} />
       )
     },
     [
+      activeGatewayProfile,
       activeSessionId,
       card,
       onArchiveSession,
@@ -285,7 +302,8 @@ export function SidebarSessionsSection({
       onTogglePin,
       onToggleUnread,
       pinned,
-      showProfileTags
+      showProfileTags,
+      showProjectTags
     ]
   )
 
@@ -347,7 +365,7 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
+              entry => hasLiveTurn(dotStates[sessionStatusKey(entry.session.profile, entry.session.id)] ?? 'idle'),
               statusDividerLabels
             )
           : toSessionRows(displayEntries)
@@ -368,7 +386,7 @@ export function SidebarSessionsSection({
     !pinned &&
     !showEmptyState &&
     !groups?.length &&
-    !projectOverview &&
+    !projectOverview?.length &&
     !projectContent &&
     sessions.length >= VIRTUALIZE_THRESHOLD
 
@@ -379,11 +397,12 @@ export function SidebarSessionsSection({
   const showProjectsSkeleton =
     projectsLoading && !hasProjectOverview && !hasProjectContent && !projectContent && !groups?.length
 
-  const renderFlatContent = (allowVirtual: boolean): React.ReactNode => {
+  const renderFlatContent = (allowVirtual: boolean) => {
     if (allowVirtual && flatVirtualized) {
       const virtual = (
         <VirtualSessionList
           activeSessionId={activeSessionId}
+          activeSessionProfile={activeGatewayProfile}
           card={card}
           className={contentClassName}
           dividerAction={dividerAction}
@@ -396,6 +415,7 @@ export function SidebarSessionsSection({
           pinned={pinned}
           rows={flatRows}
           showProfileTags={showProfileTags}
+          showProjectTags={showProjectTags}
           sortable={sessionsDraggable}
         />
       )
@@ -447,7 +467,7 @@ export function SidebarSessionsSection({
     )
   } else if (showEmptyState) {
     inner = emptyState
-  } else if (projectOverview) {
+  } else if (projectOverview?.length) {
     // The model is already ordered (Home leads; then the default sort groups
     // explicit-before-auto, with a manual drag-order winning when present).
     // Render in that order and make rows drag-to-reorder when a handler is
@@ -457,33 +477,55 @@ export function SidebarSessionsSection({
     const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
     const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
-    const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
-      <Component
-        activeProjectId={activeProjectId}
-        key={project.id}
-        onEnter={onEnterProject}
-        onNewSession={onNewSessionInWorkspace}
-        previewSessions={projectOverviewPreviews?.[project.id]}
-        project={project}
-        renderRows={renderRows}
-      />
-    )
+    const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => {
+      const expanded = expandedProjectIds.includes(project.id)
+      const previews = project.previewSessions ?? []
+
+      return (
+        <div key={project.id}>
+          <Component
+            activeProjectId={activeProjectId}
+            expanded={expanded}
+            onEnter={onEnterProject}
+            onNewSession={onNewSessionInWorkspace}
+            onToggleExpanded={() => toggleProjectExpanded(project.id)}
+            project={project}
+          />
+          {expanded && project.sessionCount > 0 ? (
+            <div className="ml-4 border-l border-(--ui-border-subtle) pl-1">
+              {previews.map(session => renderRow(session, false))}
+              <button
+                className="w-full bg-transparent px-7 py-1 text-left text-[0.6875rem] text-(--ui-text-tertiary) hover:text-foreground hover:underline"
+                onClick={() => onEnterProject?.(project.id)}
+                type="button"
+              >
+                {t.sidebar.projects.viewAllSessions(project.sessionCount)}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      )
+    }
 
     const rows = sortableProjects.map(project => projectRow(project, Row))
 
     inner = (
       <>
-        {home && projectRow(home, ProjectOverviewRow)}
-        {projectsDraggable && onReorderProjects ? (
-          <ReorderableList
-            ids={sortableProjects.map(project => project.id)}
-            onReorder={onReorderProjects}
-            sensors={dndSensors}
-          >
-            {rows}
-          </ReorderableList>
-        ) : (
-          rows
+        {projectOverviewOpen && (
+          <>
+            {home && projectRow(home, ProjectOverviewRow)}
+            {projectsDraggable && onReorderProjects ? (
+              <ReorderableList
+                ids={sortableProjects.map(project => project.id)}
+                onReorder={onReorderProjects}
+                sensors={dndSensors}
+              >
+                {rows}
+              </ReorderableList>
+            ) : (
+              rows
+            )}
+          </>
         )}
         {projectOverviewRecentsLabel && (
           <>
@@ -522,12 +564,15 @@ export function SidebarSessionsSection({
     <SidebarGroup className={rootClassName}>
       <SidebarSectionHeader
         action={headerAction}
+        ariaLabel={
+          projectOverview ? (projectOverviewOpen ? t.sidebar.projects.hideOverview : t.sidebar.showProjects) : undefined
+        }
         collapsible={collapsible}
         icon={labelIcon}
         label={label}
         meta={labelMeta}
-        onToggle={onToggle}
-        open={sectionOpen}
+        onToggle={projectOverview && onToggleProjectOverview ? onToggleProjectOverview : onToggle}
+        open={projectOverview ? projectOverviewOpen : sectionOpen}
       />
       {sectionOpen && (
         <SidebarGroupContent className={resolvedContentClassName}>
