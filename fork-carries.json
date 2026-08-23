@@ -144,7 +144,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "fece0a0e845a4ff061f97451181e505d80576e8c",
         "commits": [
           "bdc36447610a96f8d2d18adbf2f307c348d48699"
         ]
@@ -171,6 +171,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "31462164dae1f1726f8f7f8052d4efbe3c7a52aa"
         }
       ],
       "summary": "Forge platform integration",
@@ -213,9 +218,101 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "0c5ebda3bd082c59b999f50fb635b0f79f61fe31",
         "commits": [
-          "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8"
+          "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
+          "31462164dae1f1726f8f7f8052d4efbe3c7a52aa"
+        ]
+      }
+    },
+    {
+      "id": "desktop-registered-source-routing",
+      "title": "Desktop registered-source profile and session routing",
+      "order": 35,
+      "status": "active",
+      "domain_id": "desktop",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Desktop registered-source routing"
+      },
+      "depends_on": [
+        "forge-integration"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1f25fcfcbb63f42944d598097fab87a389e0b9d5"
+        }
+      ],
+      "summary": "Preserve registered connection identity for overlapping remote rosters and all-profile session opens.",
+      "paths": [
+        "apps/desktop/src/app/session/hooks/use-session-actions/index.ts",
+        "apps/desktop/src/plugins/hermes-bots/plugin.js",
+        "apps/desktop/src/store/profile.ts"
+      ],
+      "tests": [
+        "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx",
+        "apps/desktop/src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs",
+        "apps/desktop/src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
+        "apps/desktop/src/store/profile.test.ts"
+      ],
+      "checks": [
+        {
+          "id": "desktop-registered-source-routing-ui-tests",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npx",
+            "vitest",
+            "run",
+            "--project",
+            "ui",
+            "src/store/profile.test.ts",
+            "src/app/session/hooks/use-session-actions.test.tsx"
+          ],
+          "env": {
+            "NODE_ENV": "test"
+          },
+          "covers": [
+            "apps/desktop/src/store/profile.test.ts",
+            "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx"
+          ]
+        },
+        {
+          "id": "desktop-registered-source-routing-bot-tests",
+          "cwd": "apps/desktop",
+          "argv": [
+            "node",
+            "--test",
+            "src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
+            "src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs"
+          ],
+          "env": {},
+          "covers": [
+            "apps/desktop/src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
+            "apps/desktop/src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs"
+          ]
+        },
+        {
+          "id": "desktop-registered-source-routing-typecheck",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npm",
+            "run",
+            "typecheck"
+          ],
+          "env": {},
+          "covers": []
+        }
+      ],
+      "retirement": "Retire when upstream preserves qualified registered-source identity across remote roster and all-profile session navigation and these parity tests pass without the carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/axiom-next",
+        "base_commit": "31462164dae1f1726f8f7f8052d4efbe3c7a52aa",
+        "commits": [
+          "1f25fcfcbb63f42944d598097fab87a389e0b9d5"
         ]
       }
     },
@@ -281,7 +378,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
         "commits": [
           "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0"
         ]
@@ -337,7 +434,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0",
         "commits": [
           "50f52e564a978c4cd2e0b1cd9aadede5909b9c76"
         ]
@@ -395,7 +492,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "50f52e564a978c4cd2e0b1cd9aadede5909b9c76",
         "commits": [
           "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18"
         ]
@@ -454,7 +551,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18",
         "commits": [
           "b7204a0d31a1b725635714d5b7d0f952499be6c0"
         ]
@@ -518,7 +615,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "b7204a0d31a1b725635714d5b7d0f952499be6c0",
         "commits": [
           "63cec49ba790b60c4213aaae20ea159bb7d8a965"
         ]
@@ -573,7 +670,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "63cec49ba790b60c4213aaae20ea159bb7d8a965",
         "commits": [
           "e389f3a63b51b6cf9c6b726c66bf60bca708e74f"
         ]
@@ -633,7 +730,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "e389f3a63b51b6cf9c6b726c66bf60bca708e74f",
         "commits": [
           "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6"
         ]
@@ -703,7 +800,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6",
         "commits": [
           "02e52ba46bdadd09dbeea57133621a8be9367f42"
         ]
@@ -760,7 +857,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "02e52ba46bdadd09dbeea57133621a8be9367f42",
         "commits": [
           "cdabca78a50bbe71fd3903e19ec7a32973e48232"
         ]
@@ -819,7 +916,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "cdabca78a50bbe71fd3903e19ec7a32973e48232",
         "commits": [
           "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5"
         ]
@@ -879,7 +976,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5",
         "commits": [
           "f3faaa2c31615f341a0a07b41ee8091e35f17323"
         ]
@@ -940,7 +1037,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "f3faaa2c31615f341a0a07b41ee8091e35f17323",
         "commits": [
           "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727"
         ]
@@ -1032,7 +1129,7 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
-        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "base_commit": "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727",
         "commits": [
           "ca96c2327c61a2bac9e2585d54e9741d05ecfae0"
         ]

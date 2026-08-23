@@ -5,6 +5,7 @@ This deploy fork is generated from an exact upstream commit plus an ordered, rep
 ## Branch and replay contract
 
 - Upstream base: `987064caa4f8845f605ac7346fed5b72fddfb21c`.
+- Candidate refreshed through upstream `530028c213ae9eed5d7f1a826451e0edf24a11d2` without historical `origin/axiom` ancestry.
 - Candidate branch: `origin/axiom-next` until operator-approved promotion.
 - Existing deploy rollback: `origin/archive/axiom-pre-regeneration-20260822`.
 - Never merge historical `origin/axiom` ancestry into a regenerated candidate.
@@ -13,6 +14,10 @@ This deploy fork is generated from an exact upstream commit plus an ordered, rep
 ## Desktop gateway-scoped hybrid Projects
 
 Project overview is aggregated across profiles hosted by the selected gateway only. It never fans into another registered gateway and never follows the focused chat profile. Actual project rows render under **Projects**; ordinary rows render separately under **Recent Sessions**. Empty/loading trees remain in project mode rather than falling through to mislabeled sessions.
+
+## Desktop registered-source routing
+
+Remote profile identity is the qualified pair `(connectionId, profile)`. Overlapping local/remote roster names cannot reclassify the selected remote primary as local, and opening a session from **Display all profiles** retains the session row's registered source instead of falling back to a same-named local profile.
 
 ## Fork replay tooling
 

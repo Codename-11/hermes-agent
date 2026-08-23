@@ -64,13 +64,15 @@ Conclusion: `fork-carries.json` is currently a declaration inventory, not a repl
 
 - Candidate branch: `candidate/axiom-next-20260822`.
 - Pinned upstream base: `987064caa4f8845f605ac7346fed5b72fddfb21c`.
-- Runtime carries: 16 active, 16 replay-ready, zero incomplete.
-- Carry replay probes: 16/16 apply cleanly from the pinned base with zero conflicts.
+- Runtime carries: 17 active, 17 replay-ready, zero incomplete.
+- Carry replay probes: 17/17 apply cleanly from the pinned base with zero conflicts.
 - Candidate path ownership: 107/107 changed paths declared before final contract/report support files; zero unexplained runtime paths.
 - Focused Python carry integration: 764 passed, 10 skipped before updater integration; updater checks add 166 passed, 1 skipped plus 4 isolated preview tests; subsequent carry suites (cron, webhook/auth, proxy, Lucid/Buzz, TUI, Discord) all passed.
 - Desktop: full typecheck passed; focused Projects suite 44/44; web PTY 2/2; full run 6,980 passed, 45 failed, 5 skipped. Twenty-six Electron failures reproduce on exact upstream under Windows. The remaining 19 UI failures pass in isolation on both upstream and candidate and are full-suite order/concurrency pollution.
 - Exact upstream broad-failure control was run with the same dependency tree and environment.
 - No historical `origin/axiom` merge ancestry appears in the candidate range.
+- Final candidate refresh includes upstream through `530028c213ae9eed5d7f1a826451e0edf24a11d2`, registered-source routing (`30/30` Node, `71/71` Vitest, full Desktop typecheck), Forge URL hardening (`43/43`), and the upstream-refresh gateway/updater isolation gates (`62 passed / 16 skipped`, `131 passed / 1 skipped`, version preview `4/4`).
+- Axiom Enhancements `0.5.0` is restored from the private Agent Library source; contract smoke and all `37/37` plugin tests pass.
 
 ## Promotion boundary
 
