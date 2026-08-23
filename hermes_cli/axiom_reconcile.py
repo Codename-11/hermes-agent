@@ -136,39 +136,47 @@ def _fetch_replay_sources(
 ) -> list[str]:
     private_refs: list[str] = []
     seen: set[str] = set()
-    for carry in carries:
-        replay = carry.get("replay")
-        source_ref = replay.get("source_ref") if isinstance(replay, dict) else None
-        if not isinstance(source_ref, str) or not source_ref.strip():
-            continue
-        source_ref = source_ref.strip()
-        if source_ref in seen:
-            continue
-        seen.add(source_ref)
-        if "/" not in source_ref:
-            raise RuntimeError(f"invalid replay source_ref: {source_ref}")
-        remote, branch = source_ref.split("/", 1)
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", remote) or not re.fullmatch(
-            r"(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._/-]+", branch
-        ):
-            raise RuntimeError(f"invalid replay source_ref: {source_ref}")
-        suffix = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
-        private_ref = f"refs/axiom-reconcile/{run_id}/sources/{suffix}"
-        fetched = _run(
-            repo,
-            "fetch",
-            "--no-tags",
-            remote,
-            f"+refs/heads/{branch}:{private_ref}",
-        )
-        if fetched.returncode != 0:
-            raise RuntimeError(
-                f"cannot fetch replay source {source_ref}: "
-                + (fetched.stderr.strip() or "git fetch failed")
+    try:
+        for carry in carries:
+            replay = carry.get("replay")
+            source_ref = replay.get("source_ref") if isinstance(replay, dict) else None
+            if not isinstance(source_ref, str) or not source_ref.strip():
+                continue
+            source_ref = source_ref.strip()
+            if source_ref in seen:
+                continue
+            seen.add(source_ref)
+            if "/" not in source_ref:
+                raise RuntimeError(f"invalid replay source_ref: {source_ref}")
+            remote, branch = source_ref.split("/", 1)
+            if (
+                remote.startswith("-")
+                or not re.fullmatch(r"[A-Za-z0-9._-]+", remote)
+                or not re.fullmatch(
+                    r"(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._/-]+", branch
+                )
+            ):
+                raise RuntimeError(f"invalid replay source_ref: {source_ref}")
+            suffix = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
+            private_ref = f"refs/axiom-reconcile/{run_id}/sources/{suffix}"
+            private_refs.append(private_ref)
+            fetched = _run(
+                repo,
+                "fetch",
+                "--no-tags",
+                remote,
+                f"+refs/heads/{branch}:{private_ref}",
             )
-        if not _resolve(repo, private_ref):
-            raise RuntimeError(f"replay source read-back failed: {source_ref}")
-        private_refs.append(private_ref)
+            if fetched.returncode != 0:
+                raise RuntimeError(
+                    f"cannot fetch replay source {source_ref}: "
+                    + (fetched.stderr.strip() or "git fetch failed")
+                )
+            if not _resolve(repo, private_ref):
+                raise RuntimeError(f"replay source read-back failed: {source_ref}")
+    except Exception:
+        _delete_private_refs(repo, private_refs)
+        raise
     return private_refs
 
 
@@ -286,7 +294,7 @@ def _pid_is_running(pid: object) -> bool:
         kernel32.OpenProcess.restype = ctypes.c_void_p
         handle = kernel32.OpenProcess(0x00101000, False, value)
         if not handle:
-            return False
+            return ctypes.get_last_error() != 87
         try:
             return kernel32.WaitForSingleObject(handle, 0) == 0x00000102
         finally:
@@ -304,13 +312,23 @@ def _claim_state_lock(path: Path) -> int:
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             try:
+                before = path.stat()
                 owner = path.read_text(encoding="utf-8").strip()
+                after = path.stat()
             except (OSError, UnicodeError):
-                owner = ""
-            if owner and _pid_is_running(owner):
+                time.sleep(0.01)
+                continue
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                time.sleep(0.01)
+                continue
+            if _pid_is_running(owner):
                 time.sleep(0.01)
                 continue
             try:
+                current = path.stat()
+                if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+                    time.sleep(0.01)
+                    continue
                 path.unlink()
             except (FileNotFoundError, OSError):
                 time.sleep(0.01)
@@ -319,6 +337,27 @@ def _claim_state_lock(path: Path) -> int:
         os.fsync(descriptor)
         return descriptor
     raise RuntimeError(f"could not acquire canonical state lock: {path}")
+
+
+def _release_state_lock(path: Path, descriptor: int | None) -> None:
+    if descriptor is None:
+        return
+    try:
+        owned = os.fstat(descriptor)
+        current = path.stat()
+        owns_path = (owned.st_dev, owned.st_ino) == (current.st_dev, current.st_ino)
+    except (FileNotFoundError, OSError):
+        owns_path = False
+    try:
+        os.close(descriptor)
+    finally:
+        if owns_path:
+            try:
+                current = path.stat()
+                if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                    path.unlink()
+            except (FileNotFoundError, OSError):
+                pass
 
 
 def _update_canonical_state_if_current(
@@ -343,11 +382,7 @@ def _update_canonical_state_if_current(
         _write_json(path, current)
         return True
     finally:
-        os.close(descriptor)
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
+        _release_state_lock(lock_path, descriptor)
 
 
 def _remote_branch_sha(repo: Path, branch: str) -> str:
@@ -356,6 +391,53 @@ def _remote_branch_sha(repo: Path, branch: str) -> str:
         return ""
     value = result.stdout.split()[0]
     return value if len(value) >= 40 else ""
+
+
+def _publish_candidate_if_current(
+    *,
+    repo: Path,
+    worktree: Path,
+    branch: str,
+    candidate_sha: str,
+    canonical_state_path: Path | None,
+    run_id: str,
+    input_digest: str,
+) -> None:
+    lock_path = (
+        canonical_state_path.with_suffix(".lock")
+        if canonical_state_path is not None
+        else None
+    )
+    descriptor = _claim_state_lock(lock_path) if lock_path is not None else None
+    try:
+        if canonical_state_path is not None:
+            try:
+                current = json.loads(canonical_state_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("cannot validate canonical reconciliation state") from exc
+            if (
+                not isinstance(current, dict)
+                or current.get("run_id") != run_id
+                or current.get("input_digest") != input_digest
+            ):
+                raise RuntimeError("stale reconciliation worker cannot publish candidate")
+        candidate_branch = f"{branch}-next"
+        old_sha = _remote_branch_sha(repo, candidate_branch)
+        lease = f"--force-with-lease=refs/heads/{candidate_branch}:{old_sha}"
+        pushed = _run(
+            worktree,
+            "push",
+            lease,
+            "origin",
+            f"HEAD:refs/heads/{candidate_branch}",
+        )
+        if pushed.returncode != 0:
+            raise RuntimeError(pushed.stderr.strip() or "candidate push failed")
+        if _remote_branch_sha(repo, candidate_branch) != candidate_sha:
+            raise RuntimeError("candidate ref read-back did not match generated SHA")
+    finally:
+        if lock_path is not None:
+            _release_state_lock(lock_path, descriptor)
 
 
 def generate_candidate(
@@ -513,21 +595,15 @@ def generate_candidate(
             raise RuntimeError("upstream/main moved during verification; queue a fresh candidate")
 
         if publish:
-            candidate_branch = f"{branch}-next"
-            old_sha = _remote_branch_sha(repo, candidate_branch)
-            lease = f"--force-with-lease=refs/heads/{candidate_branch}:{old_sha}"
-            pushed = _run(
-                worktree,
-                "push",
-                lease,
-                "origin",
-                f"HEAD:refs/heads/{candidate_branch}",
+            _publish_candidate_if_current(
+                repo=repo,
+                worktree=worktree,
+                branch=branch,
+                candidate_sha=report["candidate_sha"],
+                canonical_state_path=canonical_state_path,
+                run_id=run_id,
+                input_digest=input_digest,
             )
-            if pushed.returncode != 0:
-                raise RuntimeError(pushed.stderr.strip() or "candidate push failed")
-            read_back = _remote_branch_sha(repo, candidate_branch)
-            if read_back != report["candidate_sha"]:
-                raise RuntimeError("candidate ref read-back did not match generated SHA")
             report["published"] = True
 
         report["state"] = "ready"

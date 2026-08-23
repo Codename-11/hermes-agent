@@ -150,7 +150,16 @@ def _purge_stale_hermes_modules() -> None:
                 # Prefix-string match caught an unrelated package
                 # (e.g. ``gateway_foo``) — leave it alone.
                 continue
-            if _m().sys.modules.pop(name, None) is not None:
+            removed = _m().sys.modules.pop(name, None)
+            if removed is not None:
+                parent_name, separator, child_name = name.rpartition(".")
+                if separator:
+                    parent = _m().sys.modules.get(parent_name)
+                    if parent is not None and getattr(parent, child_name, None) is removed:
+                        try:
+                            delattr(parent, child_name)
+                        except (AttributeError, TypeError):
+                            pass
                 purged.append(name)
         if purged:
             logger.debug(
