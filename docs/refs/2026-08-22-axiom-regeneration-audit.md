@@ -74,10 +74,13 @@ Conclusion: `fork-carries.json` is currently a declaration inventory, not a repl
 - Final candidate refresh includes upstream through `530028c213ae9eed5d7f1a826451e0edf24a11d2`, registered-source routing (`30/30` Node, `71/71` Vitest, full Desktop typecheck), Forge URL hardening (`43/43`), and the upstream-refresh gateway/updater isolation gates (`62 passed / 16 skipped`, `131 passed / 1 skipped`, version preview `4/4`).
 - Axiom Enhancements `0.5.0` is restored from the private Agent Library source; contract smoke and all `37/37` plugin tests pass.
 
-## Promotion boundary
+## Promotion result
 
-Publish only to `origin/axiom-next`. Do not rewrite `origin/axiom` until operator review and live candidate Desktop local/remote/profile/project/plugin smoke complete.
+- Operator live smoke passed for local/remote project isolation, registered-source session navigation, and Axiom Enhancements.
+- Verified candidate `2c337df3aab21eb9cdb45cdac99395e8fdaba9ae` was promoted to `origin/axiom` with an exact `--force-with-lease` against the frozen prior SHA.
+- `origin/axiom-next` retained the same tested commit at promotion time.
+- Rollback remains `origin/archive/axiom-pre-regeneration-20260822` at `d80816d200974e20702364ddd4426e97c6a2399e`.
 
-## Safety boundary
+## Ongoing maintenance boundary
 
-This audit must publish a candidate to `origin/axiom-next` first. It must not rewrite `origin/axiom` without operator review of the verified candidate, rollback ref, and exact parity report.
+The regeneration audit is closed. Later `upstream/main` movement is ordinary deploy-branch maintenance and must use the replay/merge checks declared in `fork-carries.json`; it does not reopen the historical carry audit unless a new upstream change overlaps or supersedes a declared carry.

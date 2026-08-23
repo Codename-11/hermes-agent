@@ -6,7 +6,7 @@ This deploy fork is generated from an exact upstream commit plus an ordered, rep
 
 - Upstream base: `987064caa4f8845f605ac7346fed5b72fddfb21c`.
 - Candidate refreshed through upstream `530028c213ae9eed5d7f1a826451e0edf24a11d2` without historical `origin/axiom` ancestry.
-- Candidate branch: `origin/axiom-next` until operator-approved promotion.
+- Deploy branch: `origin/axiom`, promoted from the verified `origin/axiom-next` candidate at `2c337df3aab21eb9cdb45cdac99395e8fdaba9ae` on 2026-08-22.
 - Existing deploy rollback: `origin/archive/axiom-pre-regeneration-20260822`.
 - Never merge historical `origin/axiom` ancestry into a regenerated candidate.
 - Every candidate-changed path must belong to one active carry path/test/contract.
