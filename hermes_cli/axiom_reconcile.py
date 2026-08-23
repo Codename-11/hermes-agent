@@ -208,12 +208,22 @@ def _validate_replay_commit_sources(
 
 
 def _delete_private_refs(repo: Path, refs: list[str]) -> None:
+    failures: list[str] = []
     for ref in refs:
         deleted = _run(repo, "update-ref", "-d", ref)
-        remaining = _resolve(repo, ref)
-        if deleted.returncode != 0 or remaining:
-            detail = deleted.stderr.strip() or remaining or "unknown cleanup failure"
-            raise RuntimeError(f"could not delete private replay ref {ref}: {detail}")
+        verified = _run(repo, "show-ref", "--verify", "--quiet", ref)
+        if deleted.returncode != 0:
+            detail = deleted.stderr.strip() or "git update-ref failed"
+            failures.append(f"could not delete private replay ref {ref}: {detail}")
+        if verified.returncode == 0:
+            failures.append(f"private replay ref remains after deletion: {ref}")
+        elif verified.returncode != 1:
+            detail = verified.stderr.strip() or f"git show-ref exited {verified.returncode}"
+            failures.append(
+                f"could not verify private replay ref absence {ref}: {detail}"
+            )
+    if failures:
+        raise RuntimeError("could not clean private replay refs: " + "; ".join(failures))
 
 
 def _replay_digest(carries: list[dict[str, Any]]) -> str:
