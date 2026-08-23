@@ -601,7 +601,9 @@ def test_deploy_branch_update_merges_live_ahead_with_origin_then_upstream(monkey
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 7
     commands = [cmd for cmd, _ in calls]
@@ -709,7 +711,9 @@ def test_deploy_branch_update_merges_upstream_in_temp_worktree(monkeypatch, tmp_
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 4
     commands = [cmd for cmd, _ in calls]
@@ -965,7 +969,9 @@ def test_deploy_branch_update_recovers_when_push_reject_remote_already_contains_
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 3
     assert not parent.exists()
@@ -1046,7 +1052,9 @@ def test_deploy_branch_update_retries_push_after_merging_remote_advanced_origin(
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 4
     assert not parent.exists()
@@ -1127,7 +1135,9 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed is None
     assert worktree_path.exists()
@@ -1212,7 +1222,7 @@ def test_deploy_update_first_host_publishes_second_host_consumes_real_git(tmp_pa
 
     host_a_before = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
     changed_a = hermes_axiom_update._run_deploy_branch_update(
-        ["git"], host_a, "axiom", host_a_before
+        ["git"], host_a, "axiom", host_a_before, legacy_recovery=True
     )
     published = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
     origin_after_a = git(
@@ -1224,7 +1234,7 @@ def test_deploy_update_first_host_publishes_second_host_consumes_real_git(tmp_pa
     git(host_a, "merge-base", "--is-ancestor", "upstream/main", "HEAD")
 
     changed_b = hermes_axiom_update._run_deploy_branch_update(
-        ["git"], host_b, "axiom", host_b_before
+        ["git"], host_b, "axiom", host_b_before, legacy_recovery=True
     )
     host_b_after = git(host_b, "rev-parse", "HEAD", capture=True).stdout.strip()
     origin_after_b = git(
