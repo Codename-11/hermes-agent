@@ -2991,6 +2991,14 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
 
     recorded = []
+    install_prefix = [
+        "/usr/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "-e",
+    ]
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
@@ -3003,13 +3011,13 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
         if plain == ["git", "merge", "--ff-only", "origin/main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
+        if cmd == [*install_prefix, ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
+        if cmd == [*install_prefix, "."]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
+        if cmd == [*install_prefix, ".[matrix]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
+        if cmd == [*install_prefix, ".[mcp]"]:
             return SimpleNamespace(returncode=0)
         # Catch-all must include stdout/stderr so consumers that parse
         # output (e.g. the dashboard-restart `ps -A` scan added in the
@@ -3022,10 +3030,10 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert install_cmds == [
-        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
-        ["/usr/bin/uv", "pip", "install", "-e", "."],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+        [*install_prefix, ".[all]"],
+        [*install_prefix, "."],
+        [*install_prefix, ".[matrix]"],
+        [*install_prefix, ".[mcp]"],
     ]
 
     out = capsys.readouterr().out
