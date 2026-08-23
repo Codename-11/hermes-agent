@@ -427,7 +427,10 @@ def test_real_manifest_loader_uses_repository_validator():
     manifest, diagnostics = axiom_reconcile._load_manifest(repo)
 
     assert diagnostics == []
-    assert len([c for c in manifest["carries"] if c["status"] == "active"]) == 17
+    assert len([c for c in manifest["carries"] if c["status"] == "active"]) == 16
+    assert next(
+        c for c in manifest["carries"] if c["id"] == "desktop-registered-source-routing"
+    )["status"] == "retired"
 
 
 def test_candidate_path_ownership_rejects_noncarry_delta():
