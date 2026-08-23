@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -78,55 +79,108 @@ def _read_reconciliation_state(path: Path) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _is_link_or_reparse(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & 0x400
+    )
+
+
+def _read_confined_regular_file(root: Path, path: Path) -> bytes:
+    """Read one regular file without following links outside a lexical run root."""
+    root = Path(os.path.abspath(root))
+    path = Path(os.path.abspath(path))
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise OSError("evidence path is outside the canonical run root") from exc
+
+    current = root
+    for component in (Path(), *relative.parts):
+        if component != Path():
+            current /= component
+        metadata = os.lstat(current)
+        if _is_link_or_reparse(metadata):
+            raise OSError(f"evidence path contains a link or reparse point: {current}")
+        if current != path and not stat.S_ISDIR(metadata.st_mode):
+            raise OSError(f"evidence path parent is not a directory: {current}")
+
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(f"evidence path is not a regular file: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise OSError(f"evidence file identity changed while opening: {path}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.lstat(path)
+        if (
+            _is_link_or_reparse(after)
+            or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise OSError(f"evidence file identity changed while reading: {path}")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
 def _claim_reconciliation_lock(path: Path) -> int | None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    for _attempt in range(2):
-        try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            try:
-                before = path.stat()
-                owner = path.read_text(encoding="utf-8").strip()
-                after = path.stat()
-            except (OSError, UnicodeError):
-                return None
-            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-                return None
-            if _pid_is_running(owner):
-                return None
-            try:
-                current = path.stat()
-                if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
-                    return None
-                path.unlink()
-            except (FileNotFoundError, OSError):
-                return None
-            continue
-        os.write(descriptor, f"{os.getpid()}\n".encode())
-        os.fsync(descriptor)
-        return descriptor
-    return None
+    descriptor = os.open(
+        path,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError):
+        os.close(descriptor)
+        return None
+    payload = f"{os.getpid()}\n".encode()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    os.write(descriptor, payload)
+    os.ftruncate(descriptor, len(payload))
+    os.fsync(descriptor)
+    return descriptor
 
 
 def _release_reconciliation_lock(path: Path, descriptor: int | None) -> None:
+    del path
     if descriptor is None:
         return
     try:
-        owned = os.fstat(descriptor)
-        current = path.stat()
-        owns_path = (owned.st_dev, owned.st_ino) == (current.st_dev, current.st_ino)
-    except (FileNotFoundError, OSError):
-        owns_path = False
-    try:
-        os.close(descriptor)
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    except OSError:
+        pass
     finally:
-        if owns_path:
-            try:
-                current = path.stat()
-                if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
-                    path.unlink()
-            except (FileNotFoundError, OSError):
-                pass
+        os.close(descriptor)
 
 
 def _pid_is_running(pid: object) -> bool:
@@ -141,7 +195,7 @@ def _pid_is_running(pid: object) -> bool:
 
         process_query_limited_information = 0x1000
         synchronize = 0x00100000
-        wait_timeout = 0x00000102
+        wait_object_0 = 0x00000000
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.restype = ctypes.c_void_p
         handle = kernel32.OpenProcess(
@@ -150,7 +204,7 @@ def _pid_is_running(pid: object) -> bool:
         if not handle:
             return ctypes.get_last_error() != 87
         try:
-            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+            return kernel32.WaitForSingleObject(handle, 0) != wait_object_0
         finally:
             kernel32.CloseHandle(handle)
     try:
@@ -375,9 +429,49 @@ def _promote_ready_reconciliation_candidate(
     pre_update_head: str,
     state_path: Path | None = None,
 ) -> int | None:
-    """Lease-promote one verified candidate, archive deploy HEAD, and realign live."""
-    state_path = (state_path or _reconciliation_state_path(branch)).resolve()
-    state = _read_reconciliation_state(state_path)
+    """Serialize candidate promotion against queue and worker publication."""
+    lexical_state_path = Path(
+        os.path.abspath(state_path or _reconciliation_state_path(branch))
+    )
+    lock_path = lexical_state_path.with_suffix(".lock")
+    descriptor = _claim_reconciliation_lock(lock_path)
+    if descriptor is None:
+        return None
+    try:
+        return _promote_ready_reconciliation_candidate_locked(
+            git_cmd=git_cmd,
+            repo=repo,
+            branch=branch,
+            upstream_sha=upstream_sha,
+            pre_update_head=pre_update_head,
+            state_path=lexical_state_path,
+        )
+    finally:
+        _release_reconciliation_lock(lock_path, descriptor)
+
+
+def _promote_ready_reconciliation_candidate_locked(
+    *,
+    git_cmd: list[str],
+    repo: Path,
+    branch: str,
+    upstream_sha: str,
+    pre_update_head: str,
+    state_path: Path,
+) -> int | None:
+    """Lease-promote one verified candidate while holding the canonical lock."""
+    state_path = Path(os.path.abspath(state_path))
+    state_root = state_path.parent
+    try:
+        state_payload = json.loads(
+            _read_confined_regular_file(state_root, state_path).decode("utf-8")
+        )
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        print("✗ Canonical reconciliation state is not a confined regular file.")
+        return 0
+    state = state_payload if isinstance(state_payload, dict) else {}
     if state.get("state") != "ready" or state.get("upstream_sha") != upstream_sha:
         return None
     input_digest = str(state.get("input_digest") or "").strip()
@@ -385,19 +479,10 @@ def _promote_ready_reconciliation_candidate(
     if not re.fullmatch(r"[0-9a-f]{64}", input_digest) or run_id != input_digest[:24]:
         print("✗ Reconciliation run identity is invalid; refusing promotion.")
         return 0
-    expected_run_dir = state_path.parent / "runs" / run_id
+    expected_run_dir = state_root / "runs" / run_id
     run_dir_raw = str(state.get("run_dir") or "").strip()
-    try:
-        run_dir = Path(run_dir_raw).resolve(strict=True)
-        expected_run_dir_real = expected_run_dir.resolve(strict=True)
-    except OSError:
-        run_dir = None
-        expected_run_dir_real = None
-    if (
-        run_dir is None
-        or run_dir != expected_run_dir_real
-        or expected_run_dir_real != expected_run_dir.absolute()
-    ):
+    run_dir = Path(os.path.abspath(run_dir_raw)) if run_dir_raw else None
+    if run_dir is None or run_dir != expected_run_dir:
         print("✗ Reconciliation run directory is outside the canonical reconciliation root.")
         return 0
     report_path = run_dir / "report.json"
@@ -408,14 +493,22 @@ def _promote_ready_reconciliation_candidate(
     ):
         print("✗ Reconciliation state/report paths are not bound to the canonical run directory.")
         return 0
-    report = _read_reconciliation_state(report_path)
     candidate_sha = str(state.get("candidate_sha") or "").strip()
     candidate_branch = f"{branch}-next"
     try:
+        report_bytes = _read_confined_regular_file(state_root, report_path)
+        report_payload = json.loads(report_bytes.decode("utf-8"))
+        report = report_payload if isinstance(report_payload, dict) else {}
         snapshot_bytes = {
-            "worker": (run_dir / "axiom_reconcile.py").read_bytes(),
-            "manifest": (run_dir / "fork-carries.json").read_bytes(),
-            "validator": (run_dir / "fork_carry_manifest.py").read_bytes(),
+            "worker": _read_confined_regular_file(
+                state_root, run_dir / "axiom_reconcile.py"
+            ),
+            "manifest": _read_confined_regular_file(
+                state_root, run_dir / "fork-carries.json"
+            ),
+            "validator": _read_confined_regular_file(
+                state_root, run_dir / "fork_carry_manifest.py"
+            ),
         }
         rebound = _reconciliation_input_evidence(
             branch, upstream_sha, snapshot_bytes
@@ -423,8 +516,9 @@ def _promote_ready_reconciliation_candidate(
         live_manifest_sha256 = hashlib.sha256(
             (repo / "fork-carries.json").read_bytes()
         ).hexdigest()
-        report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
-    except OSError:
+        report_sha256 = hashlib.sha256(report_bytes).hexdigest()
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        report = {}
         rebound = {}
         live_manifest_sha256 = ""
         report_sha256 = ""
