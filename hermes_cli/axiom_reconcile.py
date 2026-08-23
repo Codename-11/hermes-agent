@@ -59,6 +59,18 @@ def _source_commit_env(repo: Path, commit: str) -> dict[str, str]:
     }
 
 
+def _generated_manifest_env(repo: Path, upstream_sha: str) -> dict[str, str]:
+    env = _source_commit_env(repo, upstream_sha)
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Axiom Carry Replay",
+            "GIT_AUTHOR_EMAIL": "axiom-carry-replay@localhost",
+            "GIT_AUTHOR_DATE": env["GIT_COMMITTER_DATE"],
+        }
+    )
+    return env
+
+
 def _load_manifest(
     repo: Path,
     *,
@@ -320,6 +332,27 @@ def generate_candidate(
                     )
                 applied.append({"carry": str(carry["id"]), "source_commit": commit})
         report["applied"] = applied
+
+        candidate_manifest_path = worktree / "fork-carries.json"
+        candidate_manifest_path.write_bytes(manifest_path.read_bytes())
+        staged_manifest = _run(worktree, "add", "--", "fork-carries.json")
+        if staged_manifest.returncode != 0:
+            raise RuntimeError(staged_manifest.stderr.strip() or "could not stage replay manifest")
+        manifest_changed = _run(worktree, "diff", "--cached", "--quiet", "--", "fork-carries.json")
+        if manifest_changed.returncode == 1:
+            committed_manifest = _run(
+                worktree,
+                "commit",
+                "-m",
+                "chore(fork): record generated carry manifest",
+                env=_generated_manifest_env(repo, upstream_sha),
+            )
+            if committed_manifest.returncode != 0:
+                raise RuntimeError(
+                    committed_manifest.stderr.strip() or "could not commit replay manifest"
+                )
+        elif manifest_changed.returncode != 0:
+            raise RuntimeError(manifest_changed.stderr.strip() or "could not inspect replay manifest")
         report["candidate_sha"] = _resolve(worktree, "HEAD")
 
         changed = _run(worktree, "diff", "--name-only", f"{upstream_sha}..HEAD")
