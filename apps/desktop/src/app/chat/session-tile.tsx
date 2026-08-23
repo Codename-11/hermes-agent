@@ -644,8 +644,8 @@ export const watchSessionTiles = paneMirror<SessionTile>({
       </SessionTabMenu>
     )
   },
-  tabDrag: (key, event, onTap, double) => {
-    startSessionDrag(tileDragPayload(key), event, { double, onTap })
+  tabDrag: (key, event, onTap) => {
+    startSessionDrag(tileDragPayload(key), event, { onTap })
 
     return true
   },
