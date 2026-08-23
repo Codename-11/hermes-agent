@@ -8,12 +8,25 @@ import type { ProfileInfo } from '@/types/hermes'
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
+const openGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+const requestGatewayForAgent = vi.fn(async () => ({ ok: true }))
+const requestGatewayForProfile = vi.fn(async () => ({ ok: true }))
+const getApiRequestConnection = vi.fn<() => null | string>(() => null)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({
+  $gateway,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForAgent,
+  openGatewayForProfile,
+  requestGatewayForAgent,
+  requestGatewayForProfile
+}))
 vi.mock('@/hermes', () => ({
+  getApiRequestConnection,
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
 }))
@@ -25,7 +38,9 @@ const {
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  openActiveProfileRoute,
   prewarmProfileBackend,
+  requestActiveProfileRoute,
   refreshProfiles
 } = await import('./profile')
 
@@ -53,8 +68,14 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 
 beforeEach(() => {
   getConnection.mockReset()
+  ensureGatewayForAgent.mockClear()
   ensureGatewayForProfile.mockClear()
+  openGatewayForAgent.mockClear()
   openGatewayForProfile.mockClear()
+  requestGatewayForAgent.mockClear()
+  requestGatewayForProfile.mockClear()
+  getApiRequestConnection.mockReset()
+  getApiRequestConnection.mockReturnValue(null)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
@@ -114,6 +135,45 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('registered-source active profile routing', () => {
+  it('keeps a remote-primary descriptor on all-profile open and request routes', async () => {
+    $connection.set(
+      remoteConn({
+        connectionId: 'homelab',
+        profile: 'default',
+        registryScoped: true
+      })
+    )
+
+    await openActiveProfileRoute('victor')
+    await requestActiveProfileRoute('victor', 'session.resume', { session_id: 'stored-victor' })
+
+    expect(openGatewayForAgent).toHaveBeenCalledWith('homelab', 'victor')
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'homelab',
+      'victor',
+      'session.resume',
+      { session_id: 'stored-victor' }
+    )
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('keeps the legacy local fallback without a registered source', async () => {
+    await openActiveProfileRoute('victor')
+    await requestActiveProfileRoute('victor', 'session.resume', { session_id: 'stored-victor' })
+
+    expect(openGatewayForProfile).toHaveBeenCalledWith('victor')
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'victor',
+      'session.resume',
+      { session_id: 'stored-victor' }
+    )
+    expect(openGatewayForAgent).not.toHaveBeenCalled()
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 })
 

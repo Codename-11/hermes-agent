@@ -403,6 +403,58 @@ test('merge: legacy remote descriptor infers a matching remote primary when loca
   assert.equal(out.profiles.find(p => p.name === 'archie').remoteSource, true)
 })
 
+test('merge: remote-primary inventory wins when local overlaps only a subset of rich rows', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = {
+    profiles: [
+      { name: 'default', last_session: { id: 'remote-default' } },
+      { name: 'victor', last_session: { id: 'victor-bot-chat' } },
+      { name: 'sentinel', last_session: { id: 'sentinel-chat' } }
+    ]
+  }
+  const union = {
+    primaryConnectionId: 'homelab',
+    agents: [
+      {
+        connectionId: 'local',
+        connectionKind: 'local',
+        connectionLabel: 'This device',
+        profile: 'default',
+        handle: 'default-this-device'
+      },
+      {
+        connectionId: 'homelab',
+        connectionKind: 'remote',
+        connectionLabel: 'Homelab',
+        profile: 'default',
+        handle: 'default-homelab'
+      },
+      {
+        connectionId: 'homelab',
+        connectionKind: 'remote',
+        connectionLabel: 'Homelab',
+        profile: 'victor',
+        handle: 'victor'
+      },
+      {
+        connectionId: 'homelab',
+        connectionKind: 'remote',
+        connectionLabel: 'Homelab',
+        profile: 'sentinel',
+        handle: 'sentinel'
+      }
+    ]
+  }
+
+  const out = merge(local, union, null)
+  const victor = out.profiles.find(p => p.name === 'victor')
+  const localDefault = out.profiles.find(p => p.connectionId === 'local' && p.name === 'default')
+
+  assert.equal(victor.connectionId, 'homelab')
+  assert.equal(victor.remoteSource, undefined)
+  assert.equal(localDefault.remoteSource, true)
+})
+
 test('merge: previously seen remotes survive a connect-on-demand empty union', () => {
   const { __mergeMultiSourceRoster: merge } = runtime()
   const previous = [

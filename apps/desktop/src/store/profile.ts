@@ -1,7 +1,13 @@
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
-import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import {
+  getApiRequestConnection,
+  getProfiles,
+  hermesApi,
+  setApiRequestProfile,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -13,8 +19,16 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import {
+  $gateway,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForAgent,
+  openGatewayForProfile,
+  requestGatewayForAgent,
+  requestGatewayForProfile
+} from '@/store/gateway'
+import { $connection, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -250,6 +264,41 @@ export const $gatewaySwapTarget = atom<string | null>(null)
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
+
+// Profile names are unique only within a registered source. Secondary routes
+// publish that source through the gateway pool, while a registered remote can
+// be the primary socket (where the pool source is intentionally null) and must
+// retain the source published in its connection descriptor.
+function activeProfileConnectionId(): null | string {
+  const gatewaySource = (getApiRequestConnection() ?? '').trim()
+
+  if (gatewaySource) {
+    return gatewaySource
+  }
+
+  const connection = $connection.get()
+  const descriptorSource = connection?.registryScoped ? (connection.connectionId ?? '').trim() : ''
+
+  return descriptorSource || null
+}
+
+export function openActiveProfileRoute(profile: string): Promise<void> {
+  const connectionId = activeProfileConnectionId()
+
+  return connectionId ? openGatewayForAgent(connectionId, profile) : openGatewayForProfile(profile)
+}
+
+export function requestActiveProfileRoute<T>(
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  const connectionId = activeProfileConnectionId()
+
+  return connectionId
+    ? requestGatewayForAgent<T>(connectionId, profile, method, params)
+    : requestGatewayForProfile<T>(profile, method, params)
+}
 
 export function prewarmProfileBackend(name: string): void {
   const key = normalizeProfileKey(name)

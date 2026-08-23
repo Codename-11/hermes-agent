@@ -13,7 +13,7 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { normalizeChoices, setClarifyRequest } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
-import { openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
+import { openGatewayForAgent, requestGatewayForAgent } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
@@ -24,7 +24,9 @@ import {
   $showAllProfiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
-  normalizeProfileKey
+  normalizeProfileKey,
+  openActiveProfileRoute,
+  requestActiveProfileRoute
 } from '@/store/profile'
 import {
   beginSessionMutation,
@@ -745,11 +747,13 @@ export function useSessionActions({
       // profile. Rows without the tag keep the legacy profile path.
       // All-profiles / plugin navigation must not steal chrome API-home:
       // dial the owning backend without moving $activeGatewayProfile.
-      if ($showAllProfiles.get()) {
+      const showAllProfiles = $showAllProfiles.get()
+
+      if (showAllProfiles) {
         if (storedForProfile?.connection_id) {
           await openGatewayForAgent(storedForProfile.connection_id, sessionProfile || 'default')
         } else if (sessionProfile) {
-          await openGatewayForProfile(normalizeProfileKey(sessionProfile))
+          await openActiveProfileRoute(sessionProfile)
         }
       } else if (storedForProfile?.connection_id) {
         await ensureGatewayAgent(storedForProfile.connection_id, sessionProfile || 'default')
@@ -768,9 +772,15 @@ export function useSessionActions({
       // of the session — the backend boots, sits idle, and the renderer burns
       // its bounded retries into the "retries gave up" screen while the bot's
       // own backend is healthy one port over (#89206: local pool AND SSH).
-      // requestForSessionProfile re-resolves the route at each call.
+      // Primary all-profile rows have no connection_id tag, so retain the
+      // active registered source; explicitly tagged secondary rows stay pinned
+      // to their owning (connectionId, profile) route.
       const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
-        requestForSessionProfile<T>(sessionProfile, requestGateway, method, params)
+        storedForProfile?.connection_id
+          ? requestGatewayForAgent<T>(storedForProfile.connection_id, sessionProfile || 'default', method, params)
+          : showAllProfiles
+            ? requestActiveProfileRoute<T>(sessionProfile || 'default', method, params)
+            : requestForSessionProfile<T>(sessionProfile, requestGateway, method, params)
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
