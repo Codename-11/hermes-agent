@@ -136,6 +136,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -211,6 +213,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -369,6 +373,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -487,6 +493,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -546,6 +554,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -608,6 +618,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -667,6 +679,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -727,6 +741,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -789,6 +805,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -854,6 +872,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -913,6 +933,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -971,6 +993,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -1032,6 +1056,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -1168,6 +1194,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -1195,6 +1223,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
