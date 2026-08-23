@@ -48,7 +48,8 @@
           "argv": [
             "npm",
             "ci",
-            "--ignore-scripts"
+            "--ignore-scripts",
+            "--include=dev"
           ],
           "env": {},
           "covers": []
