@@ -4,7 +4,9 @@
 
 - Local and remote Desktop gateways failed after a final upstream refresh preserved `gateway_ws(auth_identity=..., subprotocol=...)` but retained a stale `handle_ws(ws)` implementation.
 - The 2026-08-22 generated candidate architecture remains valid; the missing controls were exact upstream survival for non-carry paths and route-level caller-to-real-implementation verification after every final refresh.
-- Reconciliation, deploy-ref promotion, and live deployment are now three separate operations. Audit work may publish a candidate ref but must not move `origin/axiom`, edit live checkouts, install Desktop, or restart services.
+- Reconciliation, deploy-ref promotion, and live deployment are separate authorization states. Audit work may publish a candidate ref but must not move `origin/axiom`, edit live checkouts, install Desktop, or restart services.
+- Bare `hermes update` now consumes any already-reviewed deploy artifact, otherwise queues a detached exact carry replay to `origin/<deploy>-next` and returns before install/restart. A later explicit invocation validates the complete exact-SHA report, publishes/read-backs a rollback archive, lease-promotes the candidate, realigns the stashed checkout, and resumes the normal update lifecycle.
+- The generated worker enforces active replay readiness, carry-owned deltas, generated-from-pinned-upstream survival, deduplicated declared checks, a final upstream refresh, candidate-ref lease publication, and exact read-back. It never pushes the deploy ref.
 - Canonical procedure: `docs/refs/axiom-fork-reconciliation-standard.md`; operational source of truth: Obsidian `3. System/Operations/Runbooks/Hermes Axiom Sync Runbook.md`.
 
 ## 2026-08-22 — Regenerate Axiom from current upstream carry stack

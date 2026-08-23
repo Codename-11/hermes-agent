@@ -13,7 +13,7 @@ candidate@C --explicit promotion--> origin/axiom@C
 origin/axiom@C --maintenance window--> live checkouts/services
 ```
 
-Reconciliation, promotion, and deployment are three separate operations. Completion of one never authorizes the next.
+Reconciliation, promotion, and deployment are three separate authorization states. Candidate completion never moves the deploy ref by itself. A later explicit `hermes update` invocation may approve promotion and deployment together only after revalidating the exact ready report, refs, and rollback lease described below.
 
 ## Non-deploying audit boundary
 
@@ -139,6 +139,19 @@ The candidate report must include:
 
 Push only the candidate branch, read it back, and stop. Candidate publication does not move `origin/axiom` and does not affect running deployments.
 
+## Bare `hermes update` lifecycle
+
+On configured generated deploy branches (`axiom` and `tgi`), ordinary `hermes update` is a consume-or-queue command, not a live merge engine:
+
+1. Fetch `origin/<deploy>` and `upstream/main`.
+2. If a reviewed deploy artifact is already ahead, consume it through the normal update lifecycle.
+3. If upstream is pending and no matching ready report exists, write queue state under `$HERMES_HOME/update-reconciliation/<branch>.json`, launch `python -m hermes_cli.axiom_reconcile` detached, and return before dependency installation or service restart when no deploy artifact was consumed.
+4. The worker validates the manifest, creates a temporary worktree at exact `U`, replays immutable carry commits, enforces carry ownership and upstream survival, runs deduplicated declared checks, re-fetches upstream, and publishes only `origin/<branch>-next` with an expected-SHA lease.
+5. The worker writes an exact-SHA JSON report beside the state file. Failure leaves the current deployment and `origin/<deploy>` unchanged.
+6. A later explicit `hermes update` for the same `U` requires a complete ready report, clean ownership, upstream survival, successful checks, and exact candidate-ref read-back. It archives/read-backs old `origin/<deploy>`, lease-promotes exact `C`, realigns the stashed live checkout, then continues the normal dependency/restart verification path.
+
+Repeated invocations while the same worker PID is active are idempotent. A moved `upstream/main`, mismatched report, failed check, moved deploy ref, failed rollback archive, or failed lease stops promotion.
+
 ## Promotion and deployment
 
 Promotion requires a separate explicit operator decision after reviewing the candidate report.
@@ -147,8 +160,8 @@ Promotion requires a separate explicit operator decision after reviewing the can
 2. Create/read back an immutable rollback ref for `D`.
 3. Promote exact `C` with an expected-SHA lease.
 4. Read back candidate, deploy, and rollback refs.
-5. Do not mutate live checkouts from a running Hermes process.
-6. During a separate maintenance window, check active turns/sessions, stop only affected services, fast-forward live checkouts to exact `C`, refresh dependencies/artifacts, restart, and verify the live acceptance matrix.
+5. Do not manually mutate live checkouts from an agent process. The normal updater may realign its own already-stashed checkout to exact generated `C` only after the gates above pass.
+6. Continue the existing dependency refresh, selected service restart, and live fleet-version verification path; manual deployments still require the same maintenance checks.
 
 Source SHA, installed package stamp/hash, running executable, backend process, and live workflow are separate facts; report each independently.
 

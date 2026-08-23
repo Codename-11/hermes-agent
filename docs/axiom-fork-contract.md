@@ -19,7 +19,7 @@ This repository is Bailey/Axiom's deploy fork of `NousResearch/hermes-agent`.
 
   The checkout's current branch does not replace this setting; a checkout can
   be on `axiom` while Desktop still checks another configured update channel.
-- Bare `hermes update`, `hermes update --check`, and `hermes --version` remain deploy-branch-aware on `axiom`, but operational policy separates reconciliation from deployment. If `upstream/main` is not already contained in `origin/axiom`, do **not** let a running host become the integration host. Generate and verify an isolated candidate first using `docs/refs/axiom-fork-reconciliation-standard.md`; promote it separately, then let hosts consume exact `origin/axiom` during a maintenance window.
+- Bare `hermes update`, `hermes update --check`, and `hermes --version` remain deploy-branch-aware on `axiom`, but operational policy separates reconciliation from deployment. When `upstream/main` is not already contained in `origin/axiom`, bare update queues detached carry replay to `origin/axiom-next` and returns without runtime mutation. A later explicit bare update may promote/deploy only an exact ready report through rollback archival, expected-SHA leases, ref read-back, and the normal updater lifecycle.
 - Desktop's update UI should distinguish deploy-branch freshness from upstream disparity: `HEAD..origin/axiom` means a published result is ready to consume, while `origin/axiom..upstream/main` means reconciliation is required—not that the live host should merge it now.
 - No unattended host or ordinary audit run may publish `origin/axiom` merely because it is the first to observe upstream movement. Candidate publication, deploy promotion, and live deployment are separate approvals.
 
