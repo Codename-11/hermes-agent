@@ -1,0 +1,22 @@
+# Hermes Agent — Axiom Dev Log
+
+## 2026-08-23 — Standardize non-deploying fork reconciliation
+
+- Local and remote Desktop gateways failed after a final upstream refresh preserved `gateway_ws(auth_identity=..., subprotocol=...)` but retained a stale `handle_ws(ws)` implementation.
+- The 2026-08-22 generated candidate architecture remains valid; the missing controls were exact upstream survival for non-carry paths and route-level caller-to-real-implementation verification after every final refresh.
+- Reconciliation, deploy-ref promotion, and live deployment are separate authorization states. Audit work may publish a candidate ref but must not move `origin/axiom`, edit live checkouts, install Desktop, or restart services.
+- Bare `hermes update` now consumes any already-reviewed deploy artifact, otherwise queues a detached exact carry replay to `origin/<deploy>-next` and returns before install/restart. A later explicit invocation validates the complete exact-SHA report, publishes/read-backs a rollback archive, lease-promotes the candidate, realigns the stashed checkout, and resumes the normal update lifecycle.
+- The generated worker enforces active replay readiness, carry-owned deltas, generated-from-pinned-upstream survival, deduplicated declared checks, a final upstream refresh, candidate-ref lease publication, and exact read-back. It never pushes the deploy ref.
+- Canonical procedure: `docs/refs/axiom-fork-reconciliation-standard.md`; operational source of truth: Obsidian `3. System/Operations/Runbooks/Hermes Axiom Sync Runbook.md`.
+
+## 2026-08-22 — Regenerate Axiom from current upstream carry stack
+
+- Base: `upstream/main` at `987064caa4f8845f605ac7346fed5b72fddfb21c`.
+- Rollback: `origin/archive/axiom-pre-regeneration-20260822` at `d80816d200974e20702364ddd4426e97c6a2399e`.
+- Replaced historical whole-branch merge ancestry with 17 bounded, immutable carries, then refreshed the candidate through upstream `530028c213`.
+- Retired broad legacy Desktop profile/session, staged updater UI, OAuth/media, HUD/theme/window, voice/terminal, and project-lifecycle snapshots in favor of current upstream.
+- Preserved gateway-scoped hybrid Projects, registered-source profile/session routing, Forge, project source policy, PTY profile tokens, MCP OAuth locking, Windows portability, webhook route toolsets, dashboard plugin auth, routed proxy providers, cron profile ownership, Lucid, Buzz mention policy, TUI plugin cards, Discord bot admission, and deploy-branch update reconciliation.
+- `fork-carries.json` validates with 17 replay-ready carries and zero declaration-only active carries.
+- Candidate verification: manifest/replay tooling 111 passed; initial 16/16 and final 17/17 clean carry probes; focused Python integration 764 passed / 10 skipped plus updater 170 passed / 1 skipped; Desktop typecheck and package build passed; focused Projects 44/44; PTY 2/2; full Desktop 6,980 passed with all 45 broad failures classified against upstream/order-isolation controls.
+- Operator live smoke passed for local/remote project isolation, registered-source session navigation, and Axiom Enhancements. The verified candidate `2c337df3aa` was promoted to `origin/axiom`; `origin/axiom-next` remains at the same tested commit and the pre-regeneration rollback ref remains frozen.
+- Final delta gates: registered-source routing 30/30 Node and 71/71 Vitest with full Desktop typecheck; Forge 43/43; upstream refresh 62 passed/16 skipped gateway-webhook, 131 passed/1 skipped updater, and 4/4 version preview; Axiom Enhancements 0.5.0 contract smoke and 37/37 tests.
