@@ -6,9 +6,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -126,6 +128,55 @@ def _active_replay_carries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(active, key=lambda carry: int(carry.get("order", 0)))
 
 
+def _fetch_replay_sources(
+    repo: Path,
+    carries: list[dict[str, Any]],
+    *,
+    run_id: str,
+) -> list[str]:
+    private_refs: list[str] = []
+    seen: set[str] = set()
+    for carry in carries:
+        replay = carry.get("replay")
+        source_ref = replay.get("source_ref") if isinstance(replay, dict) else None
+        if not isinstance(source_ref, str) or not source_ref.strip():
+            continue
+        source_ref = source_ref.strip()
+        if source_ref in seen:
+            continue
+        seen.add(source_ref)
+        if "/" not in source_ref:
+            raise RuntimeError(f"invalid replay source_ref: {source_ref}")
+        remote, branch = source_ref.split("/", 1)
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", remote) or not re.fullmatch(
+            r"(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._/-]+", branch
+        ):
+            raise RuntimeError(f"invalid replay source_ref: {source_ref}")
+        suffix = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
+        private_ref = f"refs/axiom-reconcile/{run_id}/sources/{suffix}"
+        fetched = _run(
+            repo,
+            "fetch",
+            "--no-tags",
+            remote,
+            f"+refs/heads/{branch}:{private_ref}",
+        )
+        if fetched.returncode != 0:
+            raise RuntimeError(
+                f"cannot fetch replay source {source_ref}: "
+                + (fetched.stderr.strip() or "git fetch failed")
+            )
+        if not _resolve(repo, private_ref):
+            raise RuntimeError(f"replay source read-back failed: {source_ref}")
+        private_refs.append(private_ref)
+    return private_refs
+
+
+def _delete_private_refs(repo: Path, refs: list[str]) -> None:
+    for ref in refs:
+        _run(repo, "update-ref", "-d", ref)
+
+
 def _replay_digest(carries: list[dict[str, Any]]) -> str:
     specification = [
         {
@@ -221,11 +272,82 @@ def _update_state(state_path: Path, **updates: Any) -> dict[str, Any]:
     return payload
 
 
-def _update_states(state_paths: list[Path], **updates: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    for path in state_paths:
-        payload = _update_state(path, **updates)
-    return payload
+def _pid_is_running(pid: object) -> bool:
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x00101000, False, value)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(value, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _claim_state_lock(path: Path) -> int:
+    for _attempt in range(100):
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                owner = path.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeError):
+                owner = ""
+            if owner and _pid_is_running(owner):
+                time.sleep(0.01)
+                continue
+            try:
+                path.unlink()
+            except (FileNotFoundError, OSError):
+                time.sleep(0.01)
+            continue
+        os.write(descriptor, f"{os.getpid()}\n".encode())
+        os.fsync(descriptor)
+        return descriptor
+    raise RuntimeError(f"could not acquire canonical state lock: {path}")
+
+
+def _update_canonical_state_if_current(
+    path: Path,
+    *,
+    run_id: str,
+    input_digest: str,
+    **updates: Any,
+) -> bool:
+    lock_path = path.with_suffix(".lock")
+    descriptor = _claim_state_lock(lock_path)
+    try:
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        if not isinstance(current, dict):
+            return False
+        if current.get("run_id") != run_id or current.get("input_digest") != input_digest:
+            return False
+        current.update(updates)
+        _write_json(path, current)
+        return True
+    finally:
+        os.close(descriptor)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _remote_branch_sha(repo: Path, branch: str) -> str:
@@ -247,6 +369,7 @@ def generate_candidate(
     manifest_path: Path | None = None,
     validator_path: Path | None = None,
     input_digest: str = "",
+    worker_path: Path | None = None,
     run_checks: bool = True,
     publish: bool = True,
 ) -> dict[str, Any]:
@@ -254,16 +377,17 @@ def generate_candidate(
     repo = repo.resolve()
     manifest_path = (manifest_path or (repo / "fork-carries.json")).resolve()
     validator_path = (validator_path or (repo / "scripts" / "fork_carry_manifest.py")).resolve()
+    worker_path = (worker_path or Path(__file__)).resolve()
     report_path = report_path or state_path.with_suffix(".report.json")
-    state_paths = [state_path]
-    if canonical_state_path is not None and canonical_state_path != state_path:
-        state_paths.append(canonical_state_path)
+    run_id = input_digest[:24]
     report: dict[str, Any] = {
         "state": "failed",
         "branch": branch,
         "candidate_branch": f"{branch}-next",
         "upstream_sha": upstream_sha,
         "input_digest": input_digest,
+        "run_id": run_id,
+        "worker_sha256": hashlib.sha256(worker_path.read_bytes()).hexdigest(),
         "manifest_sha256": "",
         "validator_sha256": hashlib.sha256(validator_path.read_bytes()).hexdigest(),
         "replay_sha256": "",
@@ -280,17 +404,25 @@ def generate_candidate(
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "report_path": str(report_path),
     }
-    _update_states(
-        state_paths,
+    running_updates = dict(
         state="running",
         pid=os.getpid(),
         started_at=report["started_at"],
         report_path=str(report_path),
     )
+    _update_state(state_path, **running_updates)
+    if canonical_state_path is not None and canonical_state_path != state_path:
+        _update_canonical_state_if_current(
+            canonical_state_path,
+            run_id=run_id,
+            input_digest=input_digest,
+            **running_updates,
+        )
 
     container = Path(tempfile.mkdtemp(prefix=f"hermes-{branch}-candidate-"))
     worktree = container / "worktree"
     added = False
+    private_refs: list[str] = []
     try:
         manifest, diagnostics = _load_manifest(
             repo, manifest_path=manifest_path, validator_path=validator_path
@@ -307,6 +439,7 @@ def generate_candidate(
             raise RuntimeError("active carries are not replay-ready: " + ", ".join(incomplete))
         if _resolve(repo, upstream_sha) != upstream_sha:
             raise RuntimeError(f"pinned upstream commit is unavailable: {upstream_sha}")
+        private_refs = _fetch_replay_sources(repo, carries, run_id=run_id)
 
         add = _run(repo, "worktree", "add", "--detach", str(worktree), upstream_sha)
         if add.returncode != 0:
@@ -406,18 +539,21 @@ def generate_candidate(
         if added:
             _run(worktree, "cherry-pick", "--abort")
             _run(repo, "worktree", "remove", "--force", str(worktree))
+        _delete_private_refs(repo, private_refs)
         try:
             container.rmdir()
         except OSError:
             pass
         _write_json(report_path, report)
-        _update_states(
-            state_paths,
+        report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
+        final_updates = dict(
             state=report["state"],
             branch=branch,
             candidate_branch=f"{branch}-next",
             upstream_sha=upstream_sha,
             input_digest=input_digest,
+            run_id=run_id,
+            worker_sha256=report.get("worker_sha256", ""),
             manifest_sha256=report.get("manifest_sha256", ""),
             validator_sha256=report.get("validator_sha256", ""),
             replay_sha256=report.get("replay_sha256", ""),
@@ -425,8 +561,22 @@ def generate_candidate(
             candidate_sha=report.get("candidate_sha", ""),
             completed_at=report["completed_at"],
             report_path=str(report_path),
+            report_sha256=report_sha256,
             error=report.get("error", ""),
         )
+        _update_state(state_path, **final_updates)
+        if canonical_state_path is not None and canonical_state_path != state_path:
+            canonical_updates = {
+                key: value
+                for key, value in final_updates.items()
+                if key not in {"run_id", "input_digest"}
+            }
+            _update_canonical_state_if_current(
+                canonical_state_path,
+                run_id=run_id,
+                input_digest=input_digest,
+                **canonical_updates,
+            )
     return report
 
 

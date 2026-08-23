@@ -53,7 +53,7 @@ Any movement of `U` or `D` makes the promotion plan stale. Re-fetch and regenera
 
 1. Create an isolated worktree at exact `U`. Never build from the live checkout.
 2. Validate `fork-carries.json` and require every active carry to be replay-ready.
-3. Apply carries in manifest order using immutable commit IDs.
+3. Fetch every distinct `replay.source_ref` into a run-scoped private ref, read it back, and apply carries in manifest order using immutable commit IDs. Delete the private refs when the run ends.
 4. Stop at the first named conflict. Resolve only within that carry's declared intent and protected paths.
 5. Never merge historical deploy ancestry into the candidate.
 6. Install dependencies inside the candidate worktree from its own lockfiles.
@@ -146,11 +146,11 @@ On configured generated deploy branches (`axiom` and `tgi`), ordinary `hermes up
 1. Fetch `origin/<deploy>` and `upstream/main`.
 2. If a reviewed deploy artifact is already ahead, consume it through the normal update lifecycle.
 3. If upstream is pending and no matching ready report exists, write queue state under `$HERMES_HOME/update-reconciliation/<branch>.json`, launch `python -m hermes_cli.axiom_reconcile` detached, and return before dependency installation or service restart when no deploy artifact was consumed.
-4. The worker validates the manifest, creates a temporary worktree at exact `U`, replays immutable carry commits, enforces carry ownership and upstream survival, runs deduplicated declared checks, re-fetches upstream, and publishes only `origin/<branch>-next` with an expected-SHA lease.
-5. The worker writes an exact-SHA JSON report beside the state file. Failure leaves the current deployment and `origin/<deploy>` unchanged.
-6. A later explicit `hermes update` for the same `U` requires a complete ready report, clean ownership, upstream survival, successful checks, and exact candidate-ref read-back. It archives/read-backs old `origin/<deploy>`, lease-promotes exact `C`, realigns the stashed live checkout, then continues the normal dependency/restart verification path.
+4. The worker validates the manifest, fetches declared replay sources into private refs, creates a temporary worktree at exact `U`, replays immutable carry commits, enforces carry ownership and upstream survival, runs deduplicated declared checks, re-fetches upstream, and publishes only `origin/<branch>-next` with an expected-SHA lease.
+5. The worker writes an exact-SHA JSON report inside the immutable run directory. Canonical state is updated only when its `run_id` and `input_digest` still identify that worker, so an older run cannot overwrite a newer result. Failure leaves the current deployment and `origin/<deploy>` unchanged.
+6. A later explicit `hermes update` for the same `U` recomputes the input digest from the run-directory worker, manifest, and validator snapshots; verifies their hashes across state/report; verifies the canonical report hash; requires clean ownership, upstream survival, successful checks, and exact candidate-ref read-back; then archives/read-backs old `origin/<deploy>`, lease-promotes exact `C`, realigns the stashed live checkout, and continues the normal dependency/restart verification path.
 
-Repeated invocations while the same worker PID is active are idempotent. A moved `upstream/main`, mismatched report, failed check, moved deploy ref, failed rollback archive, or failed lease stops promotion.
+Repeated invocations while the same worker PID is active are idempotent. Queue locks record their owner PID and may be reclaimed only after that process is no longer alive. A moved `upstream/main`, mismatched snapshot or report, stale run identity, failed check, moved deploy ref, failed rollback archive, or failed lease stops promotion.
 
 ## Promotion and deployment
 

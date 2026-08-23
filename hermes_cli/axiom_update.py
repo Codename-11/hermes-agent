@@ -80,12 +80,32 @@ def _read_reconciliation_state(path: Path) -> dict[str, object]:
 
 def _claim_reconciliation_lock(path: Path) -> int | None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        return None
-    os.write(descriptor, f"{os.getpid()}\n".encode())
-    return descriptor
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                before = path.stat()
+                owner = path.read_text(encoding="utf-8").strip()
+                after = path.stat()
+            except (OSError, UnicodeError):
+                return None
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                return None
+            if _pid_is_running(owner):
+                return None
+            try:
+                current = path.stat()
+                if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+                    return None
+                path.unlink()
+            except (FileNotFoundError, OSError):
+                return None
+            continue
+        os.write(descriptor, f"{os.getpid()}\n".encode())
+        os.fsync(descriptor)
+        return descriptor
+    return None
 
 
 def _release_reconciliation_lock(path: Path, descriptor: int | None) -> None:
@@ -131,6 +151,24 @@ def _pid_is_running(pid: object) -> bool:
     return True
 
 
+def _reconciliation_input_evidence(
+    branch: str,
+    upstream_sha: str,
+    source_bytes: dict[str, bytes],
+) -> dict[str, str]:
+    digest = hashlib.sha256()
+    digest.update(branch.encode())
+    digest.update(b"\0")
+    digest.update(upstream_sha.encode())
+    evidence: dict[str, str] = {}
+    for name in sorted(source_bytes):
+        payload = source_bytes[name]
+        digest.update(b"\0" + name.encode() + b"\0" + payload)
+        evidence[f"{name}_sha256"] = hashlib.sha256(payload).hexdigest()
+    evidence["input_digest"] = digest.hexdigest()
+    return evidence
+
+
 def _queue_fork_reconciliation(
     *, repo: Path, branch: str, upstream_sha: str
 ) -> dict[str, object]:
@@ -172,13 +210,10 @@ def _queue_fork_reconciliation(
             _write_reconciliation_state(state_path, failed)
             return failed
 
-        digest = hashlib.sha256()
-        digest.update(branch.encode())
-        digest.update(b"\0")
-        digest.update(upstream_sha.encode())
-        for name in sorted(source_bytes):
-            digest.update(b"\0" + name.encode() + b"\0" + source_bytes[name])
-        input_digest = digest.hexdigest()
+        input_evidence = _reconciliation_input_evidence(
+            branch, upstream_sha, source_bytes
+        )
+        input_digest = input_evidence["input_digest"]
         run_id = input_digest[:24]
         run_dir = state_path.parent / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -202,9 +237,9 @@ def _queue_fork_reconciliation(
             "run_id": run_id,
             "run_dir": str(run_dir),
             "input_digest": input_digest,
-            "manifest_sha256": hashlib.sha256(source_bytes["manifest"]).hexdigest(),
-            "worker_sha256": hashlib.sha256(source_bytes["worker"]).hexdigest(),
-            "validator_sha256": hashlib.sha256(source_bytes["validator"]).hexdigest(),
+            "manifest_sha256": input_evidence["manifest_sha256"],
+            "worker_sha256": input_evidence["worker_sha256"],
+            "validator_sha256": input_evidence["validator_sha256"],
             "state_path": str(run_state_path),
             "report_path": str(report_path),
             "log_path": str(log_path),
@@ -302,7 +337,8 @@ def _promote_ready_reconciliation_candidate(
     report_path_raw = str(state.get("report_path") or "").strip()
     report_path = Path(report_path_raw).resolve() if report_path_raw else None
     run_dir_raw = str(state.get("run_dir") or "").strip()
-    if run_dir_raw and report_path != (Path(run_dir_raw).resolve() / "report.json"):
+    run_dir = Path(run_dir_raw).resolve() if run_dir_raw else None
+    if run_dir is None or report_path != (run_dir / "report.json"):
         print("✗ Reconciliation report path is outside its immutable run directory.")
         return 0
     report = _read_reconciliation_state(report_path) if report_path else {}
@@ -310,11 +346,22 @@ def _promote_ready_reconciliation_candidate(
     candidate_branch = f"{branch}-next"
     input_digest = str(state.get("input_digest") or "").strip()
     try:
+        snapshot_bytes = {
+            "worker": (run_dir / "axiom_reconcile.py").read_bytes(),
+            "manifest": (run_dir / "fork-carries.json").read_bytes(),
+            "validator": (run_dir / "fork_carry_manifest.py").read_bytes(),
+        }
+        rebound = _reconciliation_input_evidence(
+            branch, upstream_sha, snapshot_bytes
+        )
         live_manifest_sha256 = hashlib.sha256(
             (repo / "fork-carries.json").read_bytes()
         ).hexdigest()
+        report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
     except OSError:
+        rebound = {}
         live_manifest_sha256 = ""
+        report_sha256 = ""
     survival = report.get("upstream_survival")
     checks = report.get("checks")
     report_valid = (
@@ -325,9 +372,17 @@ def _promote_ready_reconciliation_candidate(
         and report.get("candidate_branch") == candidate_branch
         and report.get("report_path") == str(report_path)
         and bool(input_digest)
+        and state.get("run_id") == input_digest[:24]
+        and rebound.get("input_digest") == input_digest
         and report.get("input_digest") == input_digest
+        and report.get("worker_sha256") == state.get("worker_sha256")
+        and report.get("worker_sha256") == rebound.get("worker_sha256")
         and report.get("manifest_sha256") == state.get("manifest_sha256")
+        and report.get("manifest_sha256") == rebound.get("manifest_sha256")
         and report.get("manifest_sha256") == live_manifest_sha256
+        and report.get("validator_sha256") == state.get("validator_sha256")
+        and report.get("validator_sha256") == rebound.get("validator_sha256")
+        and state.get("report_sha256") == report_sha256
         and bool(report.get("replay_sha256"))
         and report.get("replay_sha256") == state.get("replay_sha256")
         and report.get("published") is True
