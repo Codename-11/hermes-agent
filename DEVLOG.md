@@ -1,5 +1,12 @@
 # Hermes Agent — Axiom Dev Log
 
+## 2026-08-23 — Standardize non-deploying fork reconciliation
+
+- Local and remote Desktop gateways failed after a final upstream refresh preserved `gateway_ws(auth_identity=..., subprotocol=...)` but retained a stale `handle_ws(ws)` implementation.
+- The 2026-08-22 generated candidate architecture remains valid; the missing controls were exact upstream survival for non-carry paths and route-level caller-to-real-implementation verification after every final refresh.
+- Reconciliation, deploy-ref promotion, and live deployment are now three separate operations. Audit work may publish a candidate ref but must not move `origin/axiom`, edit live checkouts, install Desktop, or restart services.
+- Canonical procedure: `docs/refs/axiom-fork-reconciliation-standard.md`; operational source of truth: Obsidian `3. System/Operations/Runbooks/Hermes Axiom Sync Runbook.md`.
+
 ## 2026-08-22 — Regenerate Axiom from current upstream carry stack
 
 - Base: `upstream/main` at `987064caa4f8845f605ac7346fed5b72fddfb21c`.

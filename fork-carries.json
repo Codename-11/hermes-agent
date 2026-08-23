@@ -151,7 +151,8 @@
       },
       "references": [
         "DEVLOG.md",
-        "docs/refs/2026-08-22-axiom-regeneration-audit.md"
+        "docs/refs/2026-08-22-axiom-regeneration-audit.md",
+        "docs/refs/axiom-fork-reconciliation-standard.md"
       ]
     },
     {

@@ -10,6 +10,23 @@ This deploy fork is generated from an exact upstream commit plus an ordered, rep
 - Existing deploy rollback: `origin/archive/axiom-pre-regeneration-20260822`.
 - Never merge historical `origin/axiom` ancestry into a regenerated candidate.
 - Every candidate-changed path must belong to one active carry path/test/contract.
+- After every upstream refresh, every path not owned by an active carry must equal the pinned upstream tree exactly. Carry-path ownership alone does not prove upstream code survived.
+- Reconciliation is non-deploying by default: build and verify an isolated candidate, publish only a candidate ref, then stop. Moving `origin/axiom` and updating live hosts require a separate explicit promotion/deployment decision.
+- Canonical procedure: `docs/refs/axiom-fork-reconciliation-standard.md` and Obsidian `3. System/Operations/Runbooks/Hermes Axiom Sync Runbook.md`.
+
+## Reconciliation and promotion boundary
+
+The standard flow is:
+
+```text
+upstream/main@U + ordered carry stack = candidate@C
+candidate@C --explicit promotion--> origin/axiom@C
+origin/axiom@C --maintenance window--> live deployments
+```
+
+Never merge current upstream directly into the running deploy checkout. Never let an audit invocation move `origin/axiom`, install Desktop, or restart services. A final upstream refresh invalidates earlier path/test evidence and must rerun manifest ownership, upstream-survival parity, changed-signature caller audits, focused checks, and independent review against the refreshed candidate.
+
+The 2026-08-23 WebSocket outage is the reference failure: a clean refresh retained an old `tui_gateway.ws.handle_ws` while upstream/fork code called it with authenticated identity and subprotocol parameters. Full carry ownership and broad green tests did not catch the split contract. Route-level caller-to-real-implementation tests and non-carry upstream parity are mandatory.
 
 ## Desktop gateway-scoped hybrid Projects
 
