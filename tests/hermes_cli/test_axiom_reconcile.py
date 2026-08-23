@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli import axiom_reconcile
 from hermes_cli import axiom_update
 from hermes_cli import main as hermes_main
@@ -50,6 +52,48 @@ def test_reconciliation_lock_reclaims_dead_owner(monkeypatch, tmp_path):
     assert descriptor is not None
     assert lock_path.read_text(encoding="utf-8") == f"{os.getpid()}\n"
     axiom_update._release_reconciliation_lock(lock_path, descriptor)
+
+
+@pytest.mark.parametrize(
+    ("module", "claim_name", "release_name"),
+    [
+        (
+            axiom_update,
+            "_claim_reconciliation_lock",
+            "_release_reconciliation_lock",
+        ),
+        (
+            axiom_reconcile,
+            "_claim_state_lock",
+            "_release_state_lock",
+        ),
+    ],
+)
+def test_lock_release_does_not_remove_replacement(
+    module, claim_name, release_name, monkeypatch, tmp_path
+):
+    del claim_name
+    release = getattr(module, release_name)
+    lock_path = tmp_path / "axiom.lock"
+    closed = []
+    unlinked = []
+    monkeypatch.setattr(
+        module.os,
+        "fstat",
+        lambda _descriptor: SimpleNamespace(st_dev=1, st_ino=1),
+    )
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda _path: SimpleNamespace(st_dev=1, st_ino=2),
+    )
+    monkeypatch.setattr(module.os, "close", lambda descriptor: closed.append(descriptor))
+    monkeypatch.setattr(Path, "unlink", lambda path: unlinked.append(path))
+
+    release(lock_path, 42)
+
+    assert closed == [42]
+    assert unlinked == []
 
 
 def test_stale_worker_cannot_overwrite_newer_canonical_state(tmp_path):
@@ -109,6 +153,34 @@ def test_stale_worker_waits_for_queue_publication_lock(tmp_path):
     assert json.loads(canonical.read_text(encoding="utf-8"))["run_id"] == "new-run"
 
 
+def test_stale_worker_does_not_query_or_publish_candidate_ref(
+    monkeypatch, tmp_path
+):
+    canonical = tmp_path / "axiom.json"
+    canonical.write_text(
+        json.dumps({"run_id": "new-run", "input_digest": "new-digest"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_remote_branch_sha",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stale worker queried candidate ref")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="stale reconciliation worker"):
+        axiom_reconcile._publish_candidate_if_current(
+            repo=tmp_path,
+            worktree=tmp_path,
+            branch="axiom",
+            candidate_sha="a" * 40,
+            canonical_state_path=canonical,
+            run_id="old-run",
+            input_digest="old-digest",
+        )
+
+
 def test_fetch_replay_source_makes_commit_available_in_single_branch_clone(tmp_path):
     origin = tmp_path / "origin.git"
     seed = tmp_path / "seed"
@@ -161,6 +233,59 @@ def test_fetch_replay_source_makes_commit_available_in_single_branch_clone(tmp_p
         assert axiom_reconcile._resolve(clone, private_refs[0]) == carry_sha
     finally:
         axiom_reconcile._delete_private_refs(clone, private_refs)
+
+
+def test_fetch_replay_sources_rejects_leading_dash_remote(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("git invoked for invalid source_ref")
+        ),
+    )
+    carries = [
+        {
+            "id": "invalid-source",
+            "replay": {
+                "source_ref": "-origin/carry/source",
+                "commits": ["a" * 40],
+            },
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="invalid replay source_ref"):
+        axiom_reconcile._fetch_replay_sources(
+            tmp_path, carries, run_id="b" * 24
+        )
+
+
+def test_fetch_replay_sources_cleans_private_ref_after_readback_failure(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    def fake_run(_repo, *args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(axiom_reconcile, "_run", fake_run)
+    monkeypatch.setattr(axiom_reconcile, "_resolve", lambda *_args: "")
+    carries = [
+        {
+            "id": "missing-readback",
+            "replay": {
+                "source_ref": "origin/carry/source",
+                "commits": ["a" * 40],
+            },
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="read-back failed"):
+        axiom_reconcile._fetch_replay_sources(
+            tmp_path, carries, run_id="b" * 24
+        )
+
+    assert any(args[:2] == ("update-ref", "-d") for args in calls)
 
 
 def test_queue_snapshots_immutable_worker_and_manifest(monkeypatch, tmp_path):
@@ -302,6 +427,88 @@ def test_promotion_rebinds_worker_manifest_validator_and_report(
     assert refused == 0
 
 
+def test_promotion_rejects_run_directory_outside_canonical_root(
+    tmp_path, capsys
+):
+    state_path = tmp_path / "state" / "axiom.json"
+    state_path.parent.mkdir()
+    input_digest = "a" * 64
+    run_id = input_digest[:24]
+    external_run_dir = tmp_path / "external" / run_id
+    external_run_dir.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "state": "ready",
+                "upstream_sha": "b" * 40,
+                "run_id": run_id,
+                "input_digest": input_digest,
+                "run_dir": str(external_run_dir),
+                "state_path": str(external_run_dir / "state.json"),
+                "report_path": str(external_run_dir / "report.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    refused = axiom_update._promote_ready_reconciliation_candidate(
+        git_cmd=["git"],
+        repo=tmp_path,
+        branch="axiom",
+        upstream_sha="b" * 40,
+        pre_update_head="c" * 40,
+        state_path=state_path,
+    )
+
+    assert refused == 0
+    assert "outside the canonical reconciliation root" in capsys.readouterr().out
+
+
+def test_push_ref_uses_remote_readback_after_ambiguous_transport_failure(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        axiom_update.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="connection closed"
+        ),
+    )
+    monkeypatch.setattr(
+        axiom_update,
+        "_remote_head_sha",
+        lambda *_args, **_kwargs: "a" * 40,
+    )
+
+    assert axiom_update._push_ref_and_verify(
+        git_cmd=["git"],
+        repo=tmp_path,
+        push_args=["push", "origin", "source:refs/heads/axiom"],
+        branch="axiom",
+        expected_sha="a" * 40,
+    )
+
+
+def test_reset_and_verify_rejects_successful_reset_with_wrong_head(
+    monkeypatch, tmp_path
+):
+    responses = iter(
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="b" * 40 + "\n", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(
+        axiom_update.subprocess,
+        "run",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    assert not axiom_update._reset_and_verify_local_head(
+        git_cmd=["git"], repo=tmp_path, expected_sha="a" * 40
+    )
+
+
 def test_bare_update_has_no_legacy_handoff_resolver_call():
     source = inspect.getsource(update_cmd._cmd_update_impl)
     assert "_resolve_deploy_handoff(" not in source
@@ -383,9 +590,13 @@ def test_deploy_branch_update_consumes_published_candidate_before_queueing_new_u
     calls = []
     queued = []
     queue_call_counts = []
+    promotion_calls = []
+    events = []
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if cmd == ["git", "merge", "--ff-only", "origin/axiom"]:
+            events.append("merge")
         responses = {
             ("git", "fetch", "upstream", "--quiet"): "",
             ("git", "fetch", "origin", "axiom:refs/remotes/origin/axiom", "--quiet"): "",
@@ -395,6 +606,7 @@ def test_deploy_branch_update_consumes_published_candidate_before_queueing_new_u
             ("git", "merge", "--ff-only", "origin/axiom"): "Updating\n",
             ("git", "rev-list", "--count", "oldhead..HEAD"): "2\n",
             ("git", "rev-parse", "--verify", "upstream/main^{commit}"): f"{'b' * 40}\n",
+            ("git", "rev-parse", "--verify", "origin/axiom^{commit}"): f"{'d' * 40}\n",
         }
         key = tuple(cmd)
         if key in responses:
@@ -404,18 +616,30 @@ def test_deploy_branch_update_consumes_published_candidate_before_queueing_new_u
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
     def record_queue(**kwargs):
+        events.append("queue")
         queue_call_counts.append(len(calls))
         queued.append(kwargs)
         return {"state": "queued", "pid": 43}
 
+    def record_promotion(**kwargs):
+        events.append("promote")
+        promotion_calls.append((len(calls), kwargs))
+        return None
+
     monkeypatch.setattr(axiom_update, "_queue_fork_reconciliation", record_queue)
+    monkeypatch.setattr(
+        axiom_update,
+        "_promote_ready_reconciliation_candidate",
+        record_promotion,
+    )
 
     changed = hermes_main._run_deploy_branch_update(
         ["git"], tmp_path, "axiom", "oldhead"
     )
 
     assert changed == 2
-    assert calls.index(["git", "merge", "--ff-only", "origin/axiom"]) < queue_call_counts[0]
+    assert events[:3] == ["merge", "promote", "queue"]
+    assert promotion_calls[0][1]["pre_update_head"] == "d" * 40
     assert queued[0]["upstream_sha"] == "b" * 40
     assert not any("push" in cmd or "worktree" in cmd for cmd in calls)
 
@@ -519,6 +743,7 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
         "worker_sha256": evidence["worker_sha256"],
         "manifest_sha256": evidence["manifest_sha256"],
         "validator_sha256": evidence["validator_sha256"],
+        "state_path": str(state_path),
         "report_path": str(report_path),
     }
     state_path.write_text(json.dumps(queued_state), encoding="utf-8")
