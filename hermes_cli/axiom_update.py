@@ -436,6 +436,8 @@ def _promote_ready_reconciliation_candidate(
         and state.get("candidate_branch") == candidate_branch
         and report.get("branch") == branch
         and report.get("candidate_branch") == candidate_branch
+        and report.get("run_dir") == str(run_dir)
+        and report.get("state_path") == str(run_state_path)
         and report.get("report_path") == str(report_path)
         and report.get("run_id") == run_id
         and bool(input_digest)
