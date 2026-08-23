@@ -457,10 +457,12 @@ def generate_candidate(
 ) -> dict[str, Any]:
     """Generate one carry-stack candidate from exact immutable inputs."""
     repo = repo.resolve()
+    state_path = state_path.resolve()
     manifest_path = (manifest_path or (repo / "fork-carries.json")).resolve()
     validator_path = (validator_path or (repo / "scripts" / "fork_carry_manifest.py")).resolve()
     worker_path = (worker_path or Path(__file__)).resolve()
-    report_path = report_path or state_path.with_suffix(".report.json")
+    report_path = (report_path or state_path.with_suffix(".report.json")).resolve()
+    run_dir = state_path.parent
     run_id = input_digest[:24]
     report: dict[str, Any] = {
         "state": "failed",
@@ -484,6 +486,8 @@ def generate_candidate(
         "checks_complete": False,
         "published": False,
         "started_at": datetime.now().isoformat(timespec="seconds"),
+        "run_dir": str(run_dir),
+        "state_path": str(state_path),
         "report_path": str(report_path),
     }
     running_updates = dict(

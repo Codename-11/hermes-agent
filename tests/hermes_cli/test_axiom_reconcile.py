@@ -777,6 +777,8 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     assert report["worker_sha256"] == evidence["worker_sha256"]
     assert report["replay_sha256"]
     assert report["report_path"] == str(report_path)
+    assert report["run_dir"] == str(run_dir)
+    assert report["state_path"] == str(run_dir / "state.json")
     assert json.loads(canonical_state_path.read_text())["state"] == "ready"
     assert report["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
     candidate_manifest = subprocess.run(
