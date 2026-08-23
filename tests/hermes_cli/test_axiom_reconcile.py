@@ -283,6 +283,35 @@ def test_stale_worker_does_not_query_or_publish_candidate_ref(
         )
 
 
+def test_candidate_publish_accepts_ambiguous_push_after_exact_readback(
+    monkeypatch, tmp_path
+):
+    candidate_sha = "a" * 40
+    reads = iter(["b" * 40, candidate_sha])
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_remote_branch_sha",
+        lambda *_args, **_kwargs: next(reads),
+    )
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="transport disconnected"
+        ),
+    )
+
+    axiom_reconcile._publish_candidate_if_current(
+        repo=tmp_path,
+        worktree=tmp_path,
+        branch="axiom",
+        candidate_sha=candidate_sha,
+        canonical_state_path=None,
+        run_id="run-id",
+        input_digest="digest",
+    )
+
+
 def test_fetch_replay_source_makes_commit_available_in_single_branch_clone(tmp_path):
     origin = tmp_path / "origin.git"
     seed = tmp_path / "seed"
@@ -388,6 +417,22 @@ def test_fetch_replay_sources_cleans_private_ref_after_readback_failure(
         )
 
     assert any(args[:2] == ("update-ref", "-d") for args in calls)
+
+
+def test_private_ref_cleanup_fails_when_ref_remains(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="delete refused"
+        ),
+    )
+    monkeypatch.setattr(axiom_reconcile, "_resolve", lambda *_args: "a" * 40)
+
+    with pytest.raises(RuntimeError, match="could not delete private replay ref"):
+        axiom_reconcile._delete_private_refs(
+            tmp_path, ["refs/axiom-reconcile/run/sources/source"]
+        )
 
 
 def test_replay_commit_must_descend_from_declared_source(monkeypatch, tmp_path):
