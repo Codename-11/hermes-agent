@@ -112,12 +112,21 @@ def _release_reconciliation_lock(path: Path, descriptor: int | None) -> None:
     if descriptor is None:
         return
     try:
+        owned = os.fstat(descriptor)
+        current = path.stat()
+        owns_path = (owned.st_dev, owned.st_ino) == (current.st_dev, current.st_ino)
+    except (FileNotFoundError, OSError):
+        owns_path = False
+    try:
         os.close(descriptor)
     finally:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        if owns_path:
+            try:
+                current = path.stat()
+                if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                    path.unlink()
+            except (FileNotFoundError, OSError):
+                pass
 
 
 def _pid_is_running(pid: object) -> bool:
@@ -139,7 +148,7 @@ def _pid_is_running(pid: object) -> bool:
             process_query_limited_information | synchronize, False, value
         )
         if not handle:
-            return False
+            return ctypes.get_last_error() != 87
         try:
             return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
         finally:
@@ -320,6 +329,43 @@ def _remote_head_sha(git_cmd: list[str], repo: Path, branch: str) -> str:
     return value if re.fullmatch(r"[0-9a-fA-F]{40,64}", value) else ""
 
 
+def _push_ref_and_verify(
+    *,
+    git_cmd: list[str],
+    repo: Path,
+    push_args: list[str],
+    branch: str,
+    expected_sha: str,
+) -> bool:
+    subprocess.run(
+        git_cmd + push_args,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    return _remote_head_sha(git_cmd, repo, branch) == expected_sha
+
+
+def _reset_and_verify_local_head(
+    *, git_cmd: list[str], repo: Path, expected_sha: str
+) -> bool:
+    reset = subprocess.run(
+        git_cmd + ["reset", "--hard", expected_sha],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if reset.returncode != 0:
+        return False
+    local_head = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    return local_head.returncode == 0 and local_head.stdout.strip() == expected_sha
+
+
 def _promote_ready_reconciliation_candidate(
     *,
     git_cmd: list[str],
@@ -330,21 +376,41 @@ def _promote_ready_reconciliation_candidate(
     state_path: Path | None = None,
 ) -> int | None:
     """Lease-promote one verified candidate, archive deploy HEAD, and realign live."""
-    state_path = state_path or _reconciliation_state_path(branch)
+    state_path = (state_path or _reconciliation_state_path(branch)).resolve()
     state = _read_reconciliation_state(state_path)
     if state.get("state") != "ready" or state.get("upstream_sha") != upstream_sha:
         return None
-    report_path_raw = str(state.get("report_path") or "").strip()
-    report_path = Path(report_path_raw).resolve() if report_path_raw else None
-    run_dir_raw = str(state.get("run_dir") or "").strip()
-    run_dir = Path(run_dir_raw).resolve() if run_dir_raw else None
-    if run_dir is None or report_path != (run_dir / "report.json"):
-        print("✗ Reconciliation report path is outside its immutable run directory.")
+    input_digest = str(state.get("input_digest") or "").strip()
+    run_id = str(state.get("run_id") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", input_digest) or run_id != input_digest[:24]:
+        print("✗ Reconciliation run identity is invalid; refusing promotion.")
         return 0
-    report = _read_reconciliation_state(report_path) if report_path else {}
+    expected_run_dir = state_path.parent / "runs" / run_id
+    run_dir_raw = str(state.get("run_dir") or "").strip()
+    try:
+        run_dir = Path(run_dir_raw).resolve(strict=True)
+        expected_run_dir_real = expected_run_dir.resolve(strict=True)
+    except OSError:
+        run_dir = None
+        expected_run_dir_real = None
+    if (
+        run_dir is None
+        or run_dir != expected_run_dir_real
+        or expected_run_dir_real != expected_run_dir.absolute()
+    ):
+        print("✗ Reconciliation run directory is outside the canonical reconciliation root.")
+        return 0
+    report_path = run_dir / "report.json"
+    run_state_path = run_dir / "state.json"
+    if (
+        str(state.get("report_path") or "") != str(report_path)
+        or str(state.get("state_path") or "") != str(run_state_path)
+    ):
+        print("✗ Reconciliation state/report paths are not bound to the canonical run directory.")
+        return 0
+    report = _read_reconciliation_state(report_path)
     candidate_sha = str(state.get("candidate_sha") or "").strip()
     candidate_branch = f"{branch}-next"
-    input_digest = str(state.get("input_digest") or "").strip()
     try:
         snapshot_bytes = {
             "worker": (run_dir / "axiom_reconcile.py").read_bytes(),
@@ -371,8 +437,8 @@ def _promote_ready_reconciliation_candidate(
         and report.get("branch") == branch
         and report.get("candidate_branch") == candidate_branch
         and report.get("report_path") == str(report_path)
+        and report.get("run_id") == run_id
         and bool(input_digest)
-        and state.get("run_id") == input_digest[:24]
         and rebound.get("input_digest") == input_digest
         and report.get("input_digest") == input_digest
         and report.get("worker_sha256") == state.get("worker_sha256")
@@ -426,35 +492,35 @@ def _promote_ready_reconciliation_candidate(
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     archive_branch = f"archive/{branch}-pre-{stamp}-{old_deploy_sha[:12]}"
-    archive_push = subprocess.run(
-        git_cmd
-        + [
+    archive_verified = _push_ref_and_verify(
+        git_cmd=git_cmd,
+        repo=repo,
+        push_args=[
             "push",
             f"--force-with-lease=refs/heads/{archive_branch}:",
             "origin",
             f"{old_deploy_sha}:refs/heads/{archive_branch}",
         ],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+        branch=archive_branch,
+        expected_sha=old_deploy_sha,
     )
-    if archive_push.returncode != 0 or _remote_head_sha(git_cmd, repo, archive_branch) != old_deploy_sha:
+    if not archive_verified:
         print("✗ Could not publish/read back the rollback archive; deploy ref was not moved.")
         return 0
 
-    promote = subprocess.run(
-        git_cmd
-        + [
+    promoted_remote = _push_ref_and_verify(
+        git_cmd=git_cmd,
+        repo=repo,
+        push_args=[
             "push",
             f"--force-with-lease=refs/heads/{branch}:{old_deploy_sha}",
             "origin",
             f"{candidate_sha}:refs/heads/{branch}",
         ],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+        branch=branch,
+        expected_sha=candidate_sha,
     )
-    if promote.returncode != 0 or _remote_head_sha(git_cmd, repo, branch) != candidate_sha:
+    if not promoted_remote:
         print(f"✗ Candidate promotion lease failed; origin/{branch} was not changed by this updater.")
         return 0
 
@@ -464,45 +530,24 @@ def _promote_ready_reconciliation_candidate(
         capture_output=True,
         text=True,
     )
-    reset = subprocess.run(
-        git_cmd + ["reset", "--hard", candidate_sha],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    ) if refreshed.returncode == 0 else refreshed
-    if refreshed.returncode != 0 or reset.returncode != 0:
-        rollback = subprocess.run(
-            git_cmd
-            + [
+    local_aligned = refreshed.returncode == 0 and _reset_and_verify_local_head(
+        git_cmd=git_cmd, repo=repo, expected_sha=candidate_sha
+    )
+    if not local_aligned:
+        rollback_verified = _push_ref_and_verify(
+            git_cmd=git_cmd,
+            repo=repo,
+            push_args=[
                 "push",
                 f"--force-with-lease=refs/heads/{branch}:{candidate_sha}",
                 "origin",
                 f"{old_deploy_sha}:refs/heads/{branch}",
             ],
-            cwd=repo,
-            capture_output=True,
-            text=True,
+            branch=branch,
+            expected_sha=old_deploy_sha,
         )
-        rollback_verified = (
-            rollback.returncode == 0
-            and _remote_head_sha(git_cmd, repo, branch) == old_deploy_sha
-        )
-        local_restore = subprocess.run(
-            git_cmd + ["reset", "--hard", old_deploy_sha],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-        )
-        local_head = subprocess.run(
-            git_cmd + ["rev-parse", "HEAD"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-        )
-        local_restore_verified = (
-            local_restore.returncode == 0
-            and local_head.returncode == 0
-            and local_head.stdout.strip() == old_deploy_sha
+        local_restore_verified = _reset_and_verify_local_head(
+            git_cmd=git_cmd, repo=repo, expected_sha=old_deploy_sha
         )
         recovery_required = not (rollback_verified and local_restore_verified)
         _write_reconciliation_state(
@@ -3104,22 +3149,13 @@ def _run_deploy_branch_update(
             print("✗ Could not pin upstream/main for isolated reconciliation.")
             return None
 
-        promoted = _promote_ready_reconciliation_candidate(
-            git_cmd=git_cmd,
-            repo=repo,
-            branch=branch,
-            upstream_sha=upstream_sha,
-            pre_update_head=pre_update_head,
-        )
-        if promoted is not None:
-            if promoted > 0:
-                _pipe.finish(note="verified candidate promoted and consumed")
-                return promoted
-            _pipe.fail(note="verified candidate promotion refused")
-            return None
-
         deployed_changed = 0
+        promotion_head = pre_update_head
         if origin_ahead > 0 and local_ahead == 0:
+            remote_deploy_sha = _full_git_ref(git_cmd, repo, remote_ref)
+            if not remote_deploy_sha:
+                _pipe.fail(note=f"cannot resolve {remote_ref}")
+                return None
             _pipe.advance(f"sync {branch}")
             ff_result = subprocess.run(
                 git_cmd + ["merge", "--ff-only", remote_ref],
@@ -3134,7 +3170,24 @@ def _run_deploy_branch_update(
             deployed_changed = _count_changed_from_pre_update(
                 git_cmd, repo, pre_update_head, origin_ahead
             )
+            promotion_head = remote_deploy_sha
             print(f"  ✓ Consumed {origin_ahead} published deploy commit(s).")
+
+        promoted = _promote_ready_reconciliation_candidate(
+            git_cmd=git_cmd,
+            repo=repo,
+            branch=branch,
+            upstream_sha=upstream_sha,
+            pre_update_head=promotion_head,
+        )
+        if promoted is not None and promoted > 0:
+            changed = _count_changed_from_pre_update(
+                git_cmd, repo, pre_update_head, deployed_changed or promoted
+            )
+            _pipe.finish(note="verified candidate promoted and consumed")
+            return changed or promoted
+        if promoted == 0:
+            print("  Ready candidate promotion was refused; queueing fresh verification.")
 
         queued = _queue_fork_reconciliation(
             repo=repo, branch=branch, upstream_sha=upstream_sha
