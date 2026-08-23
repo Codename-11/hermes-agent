@@ -23,6 +23,41 @@ def _git(repo, *args):
     ).stdout.strip()
 
 
+@pytest.mark.parametrize("reparse_component", ["root", "runs", "run", "file"])
+def test_confined_evidence_reader_rejects_reparse_component(
+    reparse_component, monkeypatch, tmp_path
+):
+    state_root = tmp_path / "state"
+    runs = state_root / "runs"
+    root = runs / "run-id"
+    root.mkdir(parents=True)
+    evidence = root / "report.json"
+    evidence.write_text('{"state": "ready"}\n', encoding="utf-8")
+    marked = {
+        "root": state_root,
+        "runs": runs,
+        "run": root,
+        "file": evidence,
+    }[reparse_component]
+    original_lstat = os.lstat
+
+    def fake_lstat(path):
+        result = original_lstat(path)
+        if Path(path) != marked:
+            return result
+        return SimpleNamespace(
+            st_mode=result.st_mode,
+            st_dev=result.st_dev,
+            st_ino=result.st_ino,
+            st_file_attributes=0x400,
+        )
+
+    monkeypatch.setattr(axiom_update.os, "lstat", fake_lstat)
+
+    with pytest.raises(OSError, match="link or reparse"):
+        axiom_update._read_confined_regular_file(state_root, evidence)
+
+
 def test_reconciliation_lock_is_atomic(tmp_path):
     lock_path = tmp_path / "axiom.lock"
 
@@ -50,8 +85,32 @@ def test_reconciliation_lock_reclaims_dead_owner(monkeypatch, tmp_path):
     descriptor = axiom_update._claim_reconciliation_lock(lock_path)
 
     assert descriptor is not None
-    assert lock_path.read_text(encoding="utf-8") == f"{os.getpid()}\n"
     axiom_update._release_reconciliation_lock(lock_path, descriptor)
+    assert lock_path.read_text(encoding="utf-8") == f"{os.getpid()}\n"
+
+
+@pytest.mark.parametrize(
+    ("module", "claim_name", "release_name"),
+    [
+        (axiom_update, "_claim_reconciliation_lock", "_release_reconciliation_lock"),
+        (axiom_reconcile, "_claim_state_lock", "_release_state_lock"),
+    ],
+)
+def test_stale_lock_takeover_never_unlinks_path(
+    module, claim_name, release_name, monkeypatch, tmp_path
+):
+    lock_path = tmp_path / "axiom.lock"
+    lock_path.write_text("999999999\n", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        lambda _path: (_ for _ in ()).throw(AssertionError("lock path was unlinked")),
+    )
+
+    descriptor = getattr(module, claim_name)(lock_path)
+
+    assert descriptor is not None
+    getattr(module, release_name)(lock_path, descriptor)
 
 
 @pytest.mark.parametrize(
@@ -151,6 +210,49 @@ def test_stale_worker_waits_for_queue_publication_lock(tmp_path):
 
     assert results == [False]
     assert json.loads(canonical.read_text(encoding="utf-8"))["run_id"] == "new-run"
+
+
+def test_promotion_holds_canonical_lock_for_entire_transaction(
+    monkeypatch, tmp_path
+):
+    state_path = tmp_path / "state" / "axiom.json"
+    state_path.parent.mkdir()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fake_locked(**_kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return 1
+
+    monkeypatch.setattr(
+        axiom_update,
+        "_promote_ready_reconciliation_candidate_locked",
+        fake_locked,
+    )
+    result = []
+    thread = threading.Thread(
+        target=lambda: result.append(
+            axiom_update._promote_ready_reconciliation_candidate(
+                git_cmd=["git"],
+                repo=tmp_path,
+                branch="axiom",
+                upstream_sha="a" * 40,
+                pre_update_head="b" * 40,
+                state_path=state_path,
+            )
+        )
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    contender = axiom_update._claim_reconciliation_lock(
+        state_path.with_suffix(".lock")
+    )
+    assert contender is None
+    release.set()
+    thread.join(timeout=5)
+
+    assert result == [1]
 
 
 def test_stale_worker_does_not_query_or_publish_candidate_ref(
@@ -288,6 +390,26 @@ def test_fetch_replay_sources_cleans_private_ref_after_readback_failure(
     assert any(args[:2] == ("update-ref", "-d") for args in calls)
 
 
+def test_replay_commit_must_descend_from_declared_source(monkeypatch, tmp_path):
+    carry = {
+        "id": "bounded-carry",
+        "replay": {
+            "source_ref": "origin/carry/bounded-carry",
+            "commits": ["a" * 40],
+        },
+    }
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError, match="not reachable from declared source"):
+        axiom_reconcile._validate_replay_commit_sources(
+            tmp_path, [carry], run_id="run-id"
+        )
+
+
 def test_queue_snapshots_immutable_worker_and_manifest(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     (repo / "hermes_cli").mkdir(parents=True)
@@ -340,6 +462,28 @@ def test_pid_liveness_probe_does_not_signal_process():
     finally:
         child.terminate()
         child.wait(timeout=10)
+
+
+@pytest.mark.parametrize("module", [axiom_update, axiom_reconcile])
+def test_windows_wait_failure_is_not_treated_as_dead(module, monkeypatch):
+    import ctypes
+
+    class FakeCall:
+        def __init__(self, result):
+            self.result = result
+            self.restype = None
+
+        def __call__(self, *_args):
+            return self.result
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=FakeCall(42),
+        WaitForSingleObject=FakeCall(0xFFFFFFFF),
+        CloseHandle=FakeCall(1),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32)
+
+    assert module._pid_is_running(12345) is True
 
 
 def test_promotion_rebinds_worker_manifest_validator_and_report(
