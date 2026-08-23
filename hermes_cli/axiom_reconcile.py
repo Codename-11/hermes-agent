@@ -128,6 +128,11 @@ def _active_replay_carries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(active, key=lambda carry: int(carry.get("order", 0)))
 
 
+def _private_replay_ref(source_ref: str, run_id: str) -> str:
+    suffix = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
+    return f"refs/axiom-reconcile/{run_id}/sources/{suffix}"
+
+
 def _fetch_replay_sources(
     repo: Path,
     carries: list[dict[str, Any]],
@@ -157,8 +162,7 @@ def _fetch_replay_sources(
                 )
             ):
                 raise RuntimeError(f"invalid replay source_ref: {source_ref}")
-            suffix = hashlib.sha256(source_ref.encode()).hexdigest()[:16]
-            private_ref = f"refs/axiom-reconcile/{run_id}/sources/{suffix}"
+            private_ref = _private_replay_ref(source_ref, run_id)
             private_refs.append(private_ref)
             fetched = _run(
                 repo,
@@ -178,6 +182,29 @@ def _fetch_replay_sources(
         _delete_private_refs(repo, private_refs)
         raise
     return private_refs
+
+
+def _validate_replay_commit_sources(
+    repo: Path,
+    carries: list[dict[str, Any]],
+    *,
+    run_id: str,
+) -> None:
+    for carry in carries:
+        replay = carry.get("replay")
+        if not isinstance(replay, dict):
+            continue
+        source_ref = replay.get("source_ref")
+        if not isinstance(source_ref, str) or not source_ref.strip():
+            continue
+        private_ref = _private_replay_ref(source_ref.strip(), run_id)
+        for commit in replay.get("commits", []):
+            ancestry = _run(repo, "merge-base", "--is-ancestor", str(commit), private_ref)
+            if ancestry.returncode != 0:
+                raise RuntimeError(
+                    f"carry {carry.get('id')} commit {commit} is not reachable from "
+                    f"declared source {source_ref}"
+                )
 
 
 def _delete_private_refs(repo: Path, refs: list[str]) -> None:
@@ -296,7 +323,7 @@ def _pid_is_running(pid: object) -> bool:
         if not handle:
             return ctypes.get_last_error() != 87
         try:
-            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102
+            return kernel32.WaitForSingleObject(handle, 0) != 0x00000000
         finally:
             kernel32.CloseHandle(handle)
     try:
@@ -308,56 +335,54 @@ def _pid_is_running(pid: object) -> bool:
 
 def _claim_state_lock(path: Path) -> int:
     for _attempt in range(100):
+        descriptor = os.open(
+            path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
         try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            try:
-                before = path.stat()
-                owner = path.read_text(encoding="utf-8").strip()
-                after = path.stat()
-            except (OSError, UnicodeError):
-                time.sleep(0.01)
-                continue
-            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-                time.sleep(0.01)
-                continue
-            if _pid_is_running(owner):
-                time.sleep(0.01)
-                continue
-            try:
-                current = path.stat()
-                if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
-                    time.sleep(0.01)
-                    continue
-                path.unlink()
-            except (FileNotFoundError, OSError):
-                time.sleep(0.01)
+            if os.name == "nt":
+                import msvcrt
+
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"\0")
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            os.close(descriptor)
+            time.sleep(0.01)
             continue
-        os.write(descriptor, f"{os.getpid()}\n".encode())
+        payload = f"{os.getpid()}\n".encode()
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.write(descriptor, payload)
+        os.ftruncate(descriptor, len(payload))
         os.fsync(descriptor)
         return descriptor
     raise RuntimeError(f"could not acquire canonical state lock: {path}")
 
 
 def _release_state_lock(path: Path, descriptor: int | None) -> None:
+    del path
     if descriptor is None:
         return
     try:
-        owned = os.fstat(descriptor)
-        current = path.stat()
-        owns_path = (owned.st_dev, owned.st_ino) == (current.st_dev, current.st_ino)
-    except (FileNotFoundError, OSError):
-        owns_path = False
-    try:
-        os.close(descriptor)
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    except OSError:
+        pass
     finally:
-        if owns_path:
-            try:
-                current = path.stat()
-                if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
-                    path.unlink()
-            except (FileNotFoundError, OSError):
-                pass
+        os.close(descriptor)
 
 
 def _update_canonical_state_if_current(
@@ -526,6 +551,7 @@ def generate_candidate(
         if _resolve(repo, upstream_sha) != upstream_sha:
             raise RuntimeError(f"pinned upstream commit is unavailable: {upstream_sha}")
         private_refs = _fetch_replay_sources(repo, carries, run_id=run_id)
+        _validate_replay_commit_sources(repo, carries, run_id=run_id)
 
         add = _run(repo, "worktree", "add", "--detach", str(worktree), upstream_sha)
         if add.returncode != 0:
