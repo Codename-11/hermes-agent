@@ -397,7 +397,11 @@ def test_fetch_replay_sources_cleans_private_ref_after_readback_failure(
 
     def fake_run(_repo, *args, **_kwargs):
         calls.append(args)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(
+            returncode=1 if args[:3] == ("show-ref", "--verify", "--quiet") else 0,
+            stdout="",
+            stderr="",
+        )
 
     monkeypatch.setattr(axiom_reconcile, "_run", fake_run)
     monkeypatch.setattr(axiom_reconcile, "_resolve", lambda *_args: "")
@@ -433,6 +437,47 @@ def test_private_ref_cleanup_fails_when_ref_remains(monkeypatch, tmp_path):
         axiom_reconcile._delete_private_refs(
             tmp_path, ["refs/axiom-reconcile/run/sources/source"]
         )
+
+
+def test_private_ref_cleanup_rejects_ambiguous_absence_query(monkeypatch, tmp_path):
+    def fake_run(_repo, *args, **_kwargs):
+        if args[:2] == ("update-ref", "-d"):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=128, stdout="", stderr="repository unreadable")
+
+    monkeypatch.setattr(axiom_reconcile, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="could not verify private replay ref absence"):
+        axiom_reconcile._delete_private_refs(
+            tmp_path, ["refs/axiom-reconcile/run/sources/source"]
+        )
+
+
+def test_private_ref_cleanup_attempts_all_refs_before_raising(monkeypatch, tmp_path):
+    first = "refs/axiom-reconcile/run/sources/first"
+    second = "refs/axiom-reconcile/run/sources/second"
+    deleted = []
+
+    def fake_run(_repo, *args, **_kwargs):
+        if args[:2] == ("update-ref", "-d"):
+            deleted.append(args[2])
+            return SimpleNamespace(
+                returncode=1 if args[2] == first else 0,
+                stdout="",
+                stderr="delete refused" if args[2] == first else "",
+            )
+        return SimpleNamespace(
+            returncode=0 if args[-1] == first else 1,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(axiom_reconcile, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="could not clean private replay refs"):
+        axiom_reconcile._delete_private_refs(tmp_path, [first, second])
+
+    assert deleted == [first, second]
 
 
 def test_replay_commit_must_descend_from_declared_source(monkeypatch, tmp_path):
