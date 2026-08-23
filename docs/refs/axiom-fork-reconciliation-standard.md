@@ -126,16 +126,16 @@ Add a route-level test that mints/consumes a ticket-bearing `Sec-WebSocket-Proto
 
 ## Candidate report and stop point
 
-The candidate report must include:
+The candidate review dossier has two stages. The immutable worker report is produced before independent review and must include:
 
-- `U`, `D`, and `C` SHAs;
-- carry count/order and replay result;
-- manifest/path ownership result;
+- `U` and `C` SHAs;
+- ordered applied carry IDs/source commits and replay result;
+- manifest/input/replay hashes and path-ownership result;
 - upstream-survival result;
-- exact commands and pass/fail/baseline classification;
-- independent review verdict;
-- artifact hashes/stamps if Desktop was packaged;
-- unresolved risks and live acceptance rows still requiring operator interaction.
+- exact declared checks and pass/fail classification;
+- unresolved worker errors and artifact hashes/stamps when packaging occurred.
+
+After generation, the operator review record adds the observed pre-promotion deploy SHA `D`, independent-review verdict, reviewer suggestions/risks, and live acceptance rows still requiring operator interaction. The worker must never fabricate fields that can only exist after review. The complete dossier—not the worker JSON alone—is the approval evidence used by the operator before a later promotion invocation.
 
 Push only the candidate branch, read it back, and stop. Candidate publication does not move `origin/axiom` and does not affect running deployments.
 
@@ -151,6 +151,10 @@ On configured generated deploy branches (`axiom` and `tgi`), ordinary `hermes up
 6. A later explicit `hermes update` holds that canonical lock for the entire promotion transaction. It keeps the state root lexical, derives the only valid run directory from that root and the validated digest-prefix `run_id`, and rejects symlink/reparse components at the root, `runs` directory, run directory, and every evidence file. Evidence is opened with no-follow where available and descriptor/path identity is checked before and after reading. The updater requires exact bindings for run `state.json`, `report.json`, and `report.run_id`; recomputes the input digest from immutable worker, manifest, and validator bytes; verifies all hashes and the completed report hash before remote queries; requires clean ownership, upstream survival, successful checks, and exact candidate-ref read-back; then archives/read-backs old `origin/<deploy>`, lease-promotes exact `C`, realigns the stashed live checkout, and publishes terminal state before releasing the lock.
 
 Repeated invocations while the same worker PID is active are idempotent. If reviewed `origin/<deploy>` is already ahead, the updater consumes that artifact before considering ready-report promotion or queueing newer upstream work. Push return codes are treated as transport evidence rather than final remote truth: archive, promotion, and rollback succeed only when exact remote read-back matches the intended SHA. A moved `upstream/main`, mismatched snapshot or report, stale run identity, failed check, moved deploy ref, failed rollback archive/read-back, or failed lease stops promotion.
+
+### Local filesystem trust boundary
+
+`$HERMES_HOME/update-reconciliation` must be private to the operator account. The updater rejects static symlink/reparse redirection, identity-checks evidence reads, and serializes all cooperating queue/worker/promotion processes with a kernel lock. It does not claim to defend against a malicious process already running as the same operator that actively renames trusted directory components during promotion; that identity can also replace the updater executable, manifest, credentials, or Git configuration. Such a same-identity compromise is outside this updater's threat model. Do not place `HERMES_HOME` in a directory writable by another user or untrusted service.
 
 ## Promotion and deployment
 
