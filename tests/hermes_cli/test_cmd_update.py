@@ -55,6 +55,12 @@ def _patch_managed_uv(request, monkeypatch):
     import shutil
     from hermes_cli import main as hm
 
+    monkeypatch.setitem(
+        cmd_update.__globals__,
+        "_purge_stale_hermes_modules",
+        lambda: None,
+    )
+
     # resolve_uv delegates to shutil.which("uv") so that test patches
     # on shutil.which flow through naturally.
     def _fake_resolve_uv():
