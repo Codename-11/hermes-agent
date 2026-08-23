@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -263,9 +264,12 @@ def _run_checks(worktree: Path, checks: list[dict[str, Any]]) -> tuple[list[dict
     for check in checks:
         env = os.environ.copy()
         env.update({str(k): str(v) for k, v in (check.get("env") or {}).items()})
+        argv = [str(item) for item in check["argv"]]
+        if os.name == "nt":
+            argv[0] = shutil.which(argv[0]) or argv[0]
         try:
             result = subprocess.run(
-                [str(item) for item in check["argv"]],
+                argv,
                 cwd=worktree / str(check["cwd"]),
                 env=env,
                 text=True,
