@@ -620,6 +620,8 @@
             "run",
             "--extra",
             "dev",
+            "--extra",
+            "messaging",
             "pytest",
             "-q",
             "-o",
