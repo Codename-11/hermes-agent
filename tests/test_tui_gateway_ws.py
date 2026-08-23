@@ -56,6 +56,46 @@ def _run_disconnect(monkeypatch, seed):
     asyncio.run(ws_mod.handle_ws(FakeWS()))
 
 
+def test_ws_carries_authenticated_identity_and_negotiated_subprotocol(monkeypatch):
+    """The dashboard route must be able to pass its verified WS identity through."""
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    created = []
+    accepted = []
+    real_transport = ws_mod.WSTransport
+
+    monkeypatch.setattr(
+        ws_mod,
+        "WSTransport",
+        lambda ws, loop, **kw: created.append(real_transport(ws, loop, **kw))
+        or created[-1],
+    )
+
+    class FakeWS:
+        async def accept(self, *, subprotocol=None):
+            accepted.append(subprotocol)
+
+        async def send_text(self, line):
+            pass
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    identity = {"user_id": "operator", "provider": "oauth"}
+    asyncio.run(
+        ws_mod.handle_ws(
+            FakeWS(),
+            auth_identity=identity,
+            subprotocol="hermes.dashboard.v1",
+        )
+    )
+
+    assert accepted == ["hermes.dashboard.v1"]
+    assert created[0].auth_identity is identity
+
+
 def test_ws_disconnect_reaps_flagged_session_and_closes_worker(monkeypatch):
     closed = []
 
