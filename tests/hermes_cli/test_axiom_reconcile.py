@@ -23,6 +23,36 @@ def _git(repo, *args):
     ).stdout.strip()
 
 
+def test_run_checks_resolves_windows_command_shims(monkeypatch, tmp_path):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    observed = []
+
+    monkeypatch.setattr(axiom_reconcile.os, "name", "nt")
+    monkeypatch.setattr(
+        axiom_reconcile.shutil,
+        "which",
+        lambda command: "C:/Program Files/nodejs/npx.CMD"
+        if command == "npx"
+        else None,
+    )
+
+    def fake_run(argv, **_kwargs):
+        observed.append(argv)
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(axiom_reconcile.subprocess, "run", fake_run)
+
+    reports, complete = axiom_reconcile._run_checks(
+        worktree,
+        [{"id": "desktop", "cwd": ".", "argv": ["npx", "vitest", "run"]}],
+    )
+
+    assert complete is True
+    assert reports[0]["returncode"] == 0
+    assert observed == [["C:/Program Files/nodejs/npx.CMD", "vitest", "run"]]
+
+
 @pytest.mark.parametrize("reparse_component", ["root", "runs", "run", "file"])
 def test_confined_evidence_reader_rejects_reparse_component(
     reparse_component, monkeypatch, tmp_path
