@@ -43,6 +43,17 @@
       ],
       "checks": [
         {
+          "id": "candidate-node-dependencies",
+          "cwd": ".",
+          "argv": [
+            "npm",
+            "ci",
+            "--ignore-scripts"
+          ],
+          "env": {},
+          "covers": []
+        },
+        {
           "id": "desktop-gateway-projects-tests",
           "cwd": "apps/desktop",
           "argv": [
