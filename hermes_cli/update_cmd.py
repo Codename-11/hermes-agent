@@ -50,6 +50,15 @@ def _deploy_reconciliation_was_queued(result: int | None) -> bool:
     return result == RECONCILIATION_QUEUED
 
 
+def _exit_for_queued_reconciliation() -> None:
+    """End this invocation with an explicit accepted-but-not-deployed status."""
+    print()
+    print("⏳ Update pending — candidate verification was queued.")
+    print("   Current deployment is unchanged.")
+    print("   Run `hermes update` again after verification completes.")
+    raise SystemExit(3)
+
+
 def _m():
     """Lazy ``hermes_cli.main`` reference.
 
@@ -5246,7 +5255,9 @@ def _cold_start_windows_gateway_after_update() -> None:
 
     if pid:
         print()
-        gateway_windows._report_gateway_start(f"cold-start after update (PID {pid})")
+        gateway_windows._report_gateway_start(
+            "cold-start after update", launched_pid=pid
+        )
 
 def _for_each_systemd_gateway_unit(
     list_units_stdout: str,
@@ -5631,24 +5642,26 @@ def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
     except Exception as exc:
         logger.debug("Could not refresh bootstrap-cache scripts after update: %s", exc)
 
-def _resume_windows_gateways_after_update(token: dict | None) -> None:
-    """Restart Windows profile gateways previously paused for update."""
+def _resume_windows_gateways_after_update(
+    token: dict | None, *, update_succeeded: bool = False
+) -> None:
+    """Restore paused gateways; run success-only maintenance after an update."""
     if not token or not token.get("resume_needed"):
         return
     token["resume_needed"] = False
     if not _m()._is_windows():
         return
 
-    # Regenerate the persisted launcher scripts before respawning anything,
-    # so a legacy pythonw-era Scheduled Task / Startup entry comes back on
-    # the current hidden-console design at the next login too.
-    _m()._refresh_windows_gateway_launchers()
+    if update_succeeded:
+        # Launcher refresh is update finalization, not rollback. An aborted
+        # attempt must only restore processes it actually paused.
+        _m()._refresh_windows_gateway_launchers()
 
     profiles = token.get("profiles") or {}
     unmapped = token.get("unmapped") or []
     cold_start = bool(token.get("cold_start_if_installed"))
     if not profiles and not any(u.get("argv") for u in unmapped):
-        if cold_start:
+        if cold_start and update_succeeded:
             _m()._cold_start_windows_gateway_after_update()
         return
 
@@ -6293,13 +6306,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
+        _zip_update_succeeded = False
         try:
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
+            _zip_update_succeeded = True
         finally:
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _m()._resume_windows_gateways_after_update(
+                _windows_gateway_resume,
+                update_succeeded=_zip_update_succeeded,
+            )
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
         return
@@ -6396,7 +6414,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         prompt_user=False,
                         input_fn=gw_input_fn,
                     )
-                return
+                _exit_for_queued_reconciliation()
             if deploy_commit_count == 0 and _m()._completed_deploy_handoff_requires_post_update(
                 git_cmd, _m().PROJECT_ROOT, current_branch
             ):
@@ -8561,7 +8579,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception:
                 pass
 
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        _m()._resume_windows_gateways_after_update(
+            _windows_gateway_resume, update_succeeded=True
+        )
 
         # Warn if legacy Hermes gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the
