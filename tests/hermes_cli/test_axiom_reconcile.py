@@ -396,6 +396,38 @@ def test_fetch_replay_source_makes_commit_available_in_single_branch_clone(tmp_p
         axiom_reconcile._delete_private_refs(clone, private_refs)
 
 
+def test_replay_sources_are_reverified_and_cleaned_after_publication(
+    monkeypatch, tmp_path
+):
+    events = []
+    carries = [{"id": "carry", "replay": {"source_ref": "origin/carry/source"}}]
+
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_fetch_replay_sources",
+        lambda repo, rows, *, run_id: events.append(("fetch", repo, rows, run_id))
+        or ["refs/private/source"],
+    )
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_validate_replay_commit_sources",
+        lambda repo, rows, *, run_id: events.append(
+            ("validate", repo, rows, run_id)
+        ),
+    )
+    monkeypatch.setattr(
+        axiom_reconcile,
+        "_delete_private_refs",
+        lambda repo, refs: events.append(("cleanup", repo, refs)),
+    )
+
+    axiom_reconcile._verify_replay_sources_available(
+        tmp_path, carries, run_id="post-publication"
+    )
+
+    assert [event[0] for event in events] == ["fetch", "validate", "cleanup"]
+
+
 def test_fetch_replay_sources_rejects_leading_dash_remote(monkeypatch, tmp_path):
     monkeypatch.setattr(
         axiom_reconcile,
@@ -1043,6 +1075,7 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     assert deploy_sha == upstream_sha
     assert report["state"] == "ready"
     assert report["published"] is True
+    assert report["source_availability_verified"] is True
     assert report["observed_upstream_sha"] == observed_upstream_sha
     assert report["candidate_sha"] == candidate_sha
     assert report["input_digest"] == input_digest
