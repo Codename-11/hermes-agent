@@ -466,6 +466,20 @@ def test_optional_commit_series_replay_metadata_is_valid(tmp_path: Path) -> None
     assert load_module().validate_manifest(manifest, tmp_path) == []
 
 
+def test_mutable_candidate_ref_is_rejected_as_replay_source(tmp_path: Path) -> None:
+    manifest = minimal_manifest(tmp_path)
+    manifest["carries"][0]["replay"] = {  # type: ignore[index]
+        "kind": "commit_series",
+        "source_ref": "origin/axiom-next",
+        "base_commit": "1" * 40,
+        "commits": ["2" * 40],
+    }
+
+    diagnostics = load_module().validate_manifest(manifest, tmp_path)
+
+    assert any("must not use mutable candidate ref" in row for row in diagnostics)
+
+
 @pytest.mark.parametrize(
     ("replay", "expected"),
     [
