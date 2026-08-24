@@ -205,6 +205,13 @@ def _content_diagnostics(carries: list[Any]) -> list[str]:
             source_ref = replay.get("source_ref")
             if not isinstance(source_ref, str) or not source_ref.strip():
                 diagnostics.append(f"{location}.source_ref: must be nonblank")
+            elif (
+                carry.get("status") == "active"
+                and source_ref.strip().rsplit("/", 1)[-1].endswith("-next")
+            ):
+                diagnostics.append(
+                    f"{location}.source_ref: must not use mutable candidate ref '*-next'"
+                )
             base_commit = replay.get("base_commit")
             if not isinstance(base_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", base_commit):
                 diagnostics.append(
