@@ -89,7 +89,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-desktop-gateway-projects",
         "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
         "commits": [
           "fece0a0e845a4ff061f97451181e505d80576e8c",
@@ -157,7 +157,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-fork-replay-tooling",
         "base_commit": "fece0a0e845a4ff061f97451181e505d80576e8c",
         "commits": [
           "bdc36447610a96f8d2d18adbf2f307c348d48699"
@@ -234,7 +234,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-forge-integration",
         "base_commit": "0c5ebda3bd082c59b999f50fb635b0f79f61fe31",
         "commits": [
           "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
@@ -396,7 +396,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-project-source-policy",
         "base_commit": "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
         "commits": [
           "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0"
@@ -452,7 +452,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-dashboard-profile-pty",
         "base_commit": "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0",
         "commits": [
           "50f52e564a978c4cd2e0b1cd9aadede5909b9c76"
@@ -512,7 +512,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-mcp-oauth-concurrency",
         "base_commit": "50f52e564a978c4cd2e0b1cd9aadede5909b9c76",
         "commits": [
           "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18"
@@ -573,7 +573,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-windows-portability",
         "base_commit": "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18",
         "commits": [
           "b7204a0d31a1b725635714d5b7d0f952499be6c0"
@@ -641,7 +641,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-webhook-route-toolsets",
         "base_commit": "b7204a0d31a1b725635714d5b7d0f952499be6c0",
         "commits": [
           "63cec49ba790b60c4213aaae20ea159bb7d8a965"
@@ -698,7 +698,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-dashboard-plugin-admin-auth",
         "base_commit": "63cec49ba790b60c4213aaae20ea159bb7d8a965",
         "commits": [
           "e389f3a63b51b6cf9c6b726c66bf60bca708e74f"
@@ -760,7 +760,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-proxy-provider-routing",
         "base_commit": "e389f3a63b51b6cf9c6b726c66bf60bca708e74f",
         "commits": [
           "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6"
@@ -832,7 +832,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-shared-cron-profile-ownership",
         "base_commit": "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6",
         "commits": [
           "02e52ba46bdadd09dbeea57133621a8be9367f42"
@@ -891,7 +891,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-lucid-memory-integration",
         "base_commit": "02e52ba46bdadd09dbeea57133621a8be9367f42",
         "commits": [
           "cdabca78a50bbe71fd3903e19ec7a32973e48232"
@@ -952,7 +952,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-buzz-active-thread-mentions",
         "base_commit": "cdabca78a50bbe71fd3903e19ec7a32973e48232",
         "commits": [
           "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5"
@@ -1014,7 +1014,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-tui-plugin-command-cards",
         "base_commit": "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5",
         "commits": [
           "f3faaa2c31615f341a0a07b41ee8091e35f17323"
@@ -1077,7 +1077,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-discord-bot-admission",
         "base_commit": "f3faaa2c31615f341a0a07b41ee8091e35f17323",
         "commits": [
           "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727"
@@ -1173,6 +1173,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "b83cc94cee87b0ce70fe60d07a6e30005c384cea"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1be4d5f562cb1d7086e388d9b857fcb3ee848d34"
         }
       ],
       "summary": "Deploy branch update reconciliation",
