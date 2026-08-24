@@ -789,7 +789,7 @@
         {
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
-          "revision": "02e52ba46bdadd09dbeea57133621a8be9367f42"
+          "revision": "f1210e419a3f980b27a9480b6dc086c8ec3c7ec0"
         }
       ],
       "summary": "Shared cron profile ownership",
@@ -839,9 +839,9 @@
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/carry/source-shared-cron-profile-ownership",
-        "base_commit": "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6",
+        "base_commit": "057dcdf236f8a6a26721c10fcc6ccb72726e272a",
         "commits": [
-          "02e52ba46bdadd09dbeea57133621a8be9367f42"
+          "f1210e419a3f980b27a9480b6dc086c8ec3c7ec0"
         ]
       }
     },
