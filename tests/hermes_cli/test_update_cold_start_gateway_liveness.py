@@ -84,3 +84,17 @@ def test_gateway_ready_prefers_control_socket_identity(monkeypatch):
     assert gateway_windows._wait_for_gateway_ready(
         timeout_s=0.01, interval_s=0
     ) == [7777]
+
+
+def test_gateway_ready_does_not_treat_process_scan_as_readiness(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda _home, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        hermes_gateway, "find_gateway_pids", lambda **_kwargs: [4242]
+    )
+
+    assert gateway_windows._wait_for_gateway_ready(
+        timeout_s=0.01, interval_s=0
+    ) == []

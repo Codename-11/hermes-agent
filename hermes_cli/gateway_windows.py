@@ -1183,7 +1183,6 @@ def _wait_for_gateway_ready(timeout_s: float = 30.0, interval_s: float = 0.4) ->
     """
     from gateway.control_socket import identify_gateway
     from hermes_cli.config import get_hermes_home
-    from hermes_cli.gateway import find_gateway_pids
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -1194,9 +1193,6 @@ def _wait_for_gateway_ready(timeout_s: float = 30.0, interval_s: float = 0.4) ->
                 return [pid]
         except Exception:
             pass
-        pids = list(find_gateway_pids())
-        if pids:
-            return pids
         time.sleep(interval_s)
     return []
 

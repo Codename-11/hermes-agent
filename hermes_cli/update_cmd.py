@@ -3193,7 +3193,7 @@ def _reconcile_desktop_build() -> None:
         print("  ✓ Desktop app up to date")
 
 
-def _repair_node_deps_on_current_checkout(print_completion) -> None:
+def _repair_node_deps_on_current_checkout(print_completion) -> bool:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
     A current checkout does not imply healthy Node deps: a previous npm
@@ -3213,7 +3213,7 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
         print_completion(
             "⚠ Checkout is current, but Node.js dependencies could not be repaired."
         )
-        return
+        return False
     # Pair the refresh with the web build like every other
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
@@ -3222,6 +3222,7 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     # the Desktop build. Git parity is therefore not Desktop artifact parity.
     _reconcile_desktop_build()
     print_completion("✓ Already up to date!")
+    return True
 
 
 def _update_node_dependencies() -> list[str]:
@@ -6713,6 +6714,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("⚠ Checkout is current, but the venv is unhealthy:")
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
+            current_update_succeeded = False
             if handed_off_sync or not healthy:
                 # Self-lock deferral (#86735): the repair rewrites the venv
                 # too — same mapped-extension hazard as the update sync.
@@ -6773,11 +6775,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if healthy_after:
                     print("✓ Dependencies repaired!")
                     _print_update_completion("✓ Update complete!")
+                    current_update_succeeded = True
                 else:
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                _repair_node_deps_on_current_checkout(_print_update_completion)
+                current_update_succeeded = _repair_node_deps_on_current_checkout(
+                    _print_update_completion
+                )
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(
@@ -6788,7 +6793,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "long-lived processes still use the previous runtime."
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _m()._resume_windows_gateways_after_update(
+                _windows_gateway_resume,
+                update_succeeded=current_update_succeeded,
+            )
             return
 
         if commit_count > 0:
