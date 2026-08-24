@@ -323,13 +323,18 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+        ), patch.object(
+            hm, "_sync_with_upstream_if_needed"
+        ) as sync_mock, patch.object(
+            hm, "_resume_windows_gateways_after_update"
+        ) as resume_mock:
             cmd_update(mock_args)
 
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
         sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
+        assert resume_mock.call_args.kwargs == {"update_succeeded": True}
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
