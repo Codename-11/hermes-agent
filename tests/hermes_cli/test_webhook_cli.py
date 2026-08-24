@@ -59,6 +59,8 @@ def test_webhook_base_url_brackets_pinned_ipv6_host(monkeypatch):
     )
     assert _get_webhook_base_url() == "http://[::1]:9123"
 
+
+class TestSubscribe:
     def test_route_toolsets_are_persisted(self):
         webhook_command(_make_args(
             webhook_action="subscribe",
@@ -71,8 +73,6 @@ def test_webhook_base_url_brackets_pinned_ipv6_host(monkeypatch):
             "file",
         ]
 
-
-class TestSubscribe:
     def test_basic_create(self, capsys):
         webhook_command(_make_args(webhook_action="subscribe", name="test-hook"))
         out = capsys.readouterr().out

@@ -160,7 +160,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ profile: PROFILE, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: PROFILE, requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -213,7 +213,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ profile: PROFILE, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: PROFILE, requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -258,7 +258,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ profile: PROFILE, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: PROFILE, requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -302,7 +302,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ profile: PROFILE, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: PROFILE, requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -348,7 +348,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ profile: PROFILE, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ profile: PROFILE, requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     await act(async () => {

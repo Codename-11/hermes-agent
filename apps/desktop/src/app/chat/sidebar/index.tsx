@@ -1126,8 +1126,9 @@ export function ChatSidebar({
     }
   }, [projectScope, projectsActive, enteredProject])
 
-  // The project overview (drill-in list) vs. the entered project's content.
-  const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
+  // Grouping choice owns presentation even while the tree is empty/loading;
+  // never fall through to flat sessions directly beneath the Projects heading.
+  const projectOverview = worktreeGroupingActive && !inProject ? (agentProjectTree ?? []) : undefined
 
   const onEnterProject = useCallback(
     (id: string) => {

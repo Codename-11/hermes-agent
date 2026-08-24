@@ -386,7 +386,7 @@ export function SidebarSessionsSection({
     !pinned &&
     !showEmptyState &&
     !groups?.length &&
-    !projectOverview?.length &&
+    !projectOverview &&
     !projectContent &&
     sessions.length >= VIRTUALIZE_THRESHOLD
 
@@ -467,7 +467,7 @@ export function SidebarSessionsSection({
     )
   } else if (showEmptyState) {
     inner = emptyState
-  } else if (projectOverview?.length) {
+  } else if (projectOverview) {
     // The model is already ordered (Home leads; then the default sort groups
     // explicit-before-auto, with a manual drag-order winning when present).
     // Render in that order and make rows drag-to-reorder when a handler is

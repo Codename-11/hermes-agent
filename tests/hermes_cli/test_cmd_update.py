@@ -55,6 +55,12 @@ def _patch_managed_uv(request, monkeypatch):
     import shutil
     from hermes_cli import main as hm
 
+    monkeypatch.setitem(
+        cmd_update.__globals__,
+        "_purge_stale_hermes_modules",
+        lambda: None,
+    )
+
     # resolve_uv delegates to shutil.which("uv") so that test patches
     # on shutil.which flow through naturally.
     def _fake_resolve_uv():
@@ -1078,7 +1084,6 @@ class TestNodeRuntimeNpmResolution:
         monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
         monkeypatch.setattr(hm, "_is_windows", lambda: True)
         monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
-        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
         monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "")
         monkeypatch.setattr(
             hm,
