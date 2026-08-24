@@ -1203,6 +1203,17 @@ def test_update_command_stops_post_update_pipeline_for_queued_reconciliation():
     assert update_cmd._deploy_reconciliation_was_queued(3) is False
 
 
+def test_queued_reconciliation_exits_as_explicit_pending(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        update_cmd._exit_for_queued_reconciliation()
+
+    assert excinfo.value.code == 3
+    rendered = capsys.readouterr().out
+    assert "Update pending" in rendered
+    assert "deployment is unchanged" in rendered
+    assert "Run `hermes update` again" in rendered
+
+
 def test_real_manifest_loader_uses_repository_validator():
     repo = Path(__file__).resolve().parents[2]
 

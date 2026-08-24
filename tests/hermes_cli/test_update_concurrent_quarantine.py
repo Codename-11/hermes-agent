@@ -651,6 +651,81 @@ def test_resume_windows_gateways_deduplicates_unmapped_commands(
     assert cmdline_calls == [(301, work)]
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_abort_resume_restores_paused_gateway_without_success_finalization(
+    _winp, monkeypatch
+):
+    """An aborted update restores what it paused but performs no success work."""
+    import hermes_cli.gateway as gateway_mod
+
+    refresh_calls = []
+    cold_start_calls = []
+    restart_calls = []
+    monkeypatch.setattr(
+        cli_main,
+        "_refresh_windows_gateway_launchers",
+        lambda: refresh_calls.append(True),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_cold_start_windows_gateway_after_update",
+        lambda: cold_start_calls.append(True),
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, pid: restart_calls.append((profile, pid)) or True,
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_gateway_restart_by_cmdline",
+        lambda *_args: False,
+    )
+    token = {
+        "resume_needed": True,
+        "profiles": {"default": 101},
+        "unmapped": [],
+        "cold_start_if_installed": True,
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert restart_calls == [("default", 101)]
+    assert refresh_calls == []
+    assert cold_start_calls == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_success_resume_refreshes_launchers_and_honors_cold_start(
+    _winp, monkeypatch
+):
+    refresh_calls = []
+    cold_start_calls = []
+    monkeypatch.setattr(
+        cli_main,
+        "_refresh_windows_gateway_launchers",
+        lambda: refresh_calls.append(True),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_cold_start_windows_gateway_after_update",
+        lambda: cold_start_calls.append(True),
+    )
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped": [],
+        "cold_start_if_installed": True,
+    }
+
+    cli_main._resume_windows_gateways_after_update(
+        token, update_succeeded=True
+    )
+
+    assert refresh_calls == [True]
+    assert cold_start_calls == [True]
+
+
 
 
 
