@@ -1,0 +1,1289 @@
+{
+  "schema_version": 1,
+  "carries": [
+    {
+      "id": "desktop-gateway-projects",
+      "title": "Desktop gateway-scoped hybrid Projects",
+      "order": 10,
+      "status": "active",
+      "domain_id": "desktop",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Desktop gateway-scoped hybrid Projects"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "fece0a0e845a4ff061f97451181e505d80576e8c"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "0c5ebda3bd082c59b999f50fb635b0f79f61fe31"
+        }
+      ],
+      "summary": "Desktop gateway-scoped hybrid Projects",
+      "paths": [
+        "apps/desktop/src/app/chat/sidebar/index.tsx",
+        "apps/desktop/src/app/chat/sidebar/sessions-section.tsx",
+        "apps/desktop/src/i18n/ar.ts",
+        "apps/desktop/src/i18n/en.ts",
+        "apps/desktop/src/i18n/ja.ts",
+        "apps/desktop/src/i18n/types.ts",
+        "apps/desktop/src/i18n/zh-hant.ts",
+        "apps/desktop/src/i18n/zh.ts",
+        "apps/desktop/src/store/projects.ts"
+      ],
+      "tests": [
+        "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
+        "apps/desktop/src/store/projects.test.ts"
+      ],
+      "checks": [
+        {
+          "id": "candidate-node-dependencies",
+          "cwd": ".",
+          "argv": [
+            "npm",
+            "ci",
+            "--ignore-scripts",
+            "--include=dev"
+          ],
+          "env": {},
+          "covers": []
+        },
+        {
+          "id": "desktop-gateway-projects-tests",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npx",
+            "vitest",
+            "run",
+            "--project",
+            "ui",
+            "src/app/chat/sidebar/sessions-section.test.tsx",
+            "src/store/projects.test.ts"
+          ],
+          "env": {
+            "NODE_ENV": "test"
+          },
+          "covers": [
+            "apps/desktop/src/app/chat/sidebar/sessions-section.test.tsx",
+            "apps/desktop/src/store/projects.test.ts"
+          ]
+        },
+        {
+          "id": "desktop-gateway-projects-typecheck",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npm",
+            "run",
+            "typecheck"
+          ],
+          "env": {},
+          "covers": []
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-desktop-gateway-projects",
+        "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
+        "commits": [
+          "fece0a0e845a4ff061f97451181e505d80576e8c",
+          "0c5ebda3bd082c59b999f50fb635b0f79f61fe31"
+        ]
+      }
+    },
+    {
+      "id": "fork-replay-tooling",
+      "title": "Fork replay tooling",
+      "order": 20,
+      "status": "active",
+      "domain_id": "fork",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Fork replay tooling"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "bdc36447610a96f8d2d18adbf2f307c348d48699"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1ff19252127e40013d6709f5dbe5ad671c13fe7a"
+        }
+      ],
+      "summary": "Fork replay tooling",
+      "paths": [
+        "fork-carries.schema.json",
+        "scripts/fork-status.py",
+        "scripts/fork_carry_manifest.py",
+        "scripts/fork_carry_replay.py",
+        "scripts/hooks/pre-push"
+      ],
+      "tests": [
+        "tests/scripts/test_fork_carry_manifest.py",
+        "tests/scripts/test_fork_carry_replay.py",
+        "tests/test_fork_status.py"
+      ],
+      "checks": [
+        {
+          "id": "fork-replay-tooling-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/scripts/test_fork_carry_manifest.py",
+            "tests/scripts/test_fork_carry_replay.py",
+            "tests/test_fork_status.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/scripts/test_fork_carry_manifest.py",
+            "tests/scripts/test_fork_carry_replay.py",
+            "tests/test_fork_status.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-fork-replay-tooling",
+        "base_commit": "fece0a0e845a4ff061f97451181e505d80576e8c",
+        "commits": [
+          "bdc36447610a96f8d2d18adbf2f307c348d48699",
+          "1ff19252127e40013d6709f5dbe5ad671c13fe7a"
+        ]
+      },
+      "references": [
+        "DEVLOG.md",
+        "docs/refs/2026-08-22-axiom-regeneration-audit.md",
+        "docs/refs/axiom-fork-reconciliation-standard.md"
+      ]
+    },
+    {
+      "id": "forge-integration",
+      "title": "Forge platform integration",
+      "order": 30,
+      "status": "active",
+      "domain_id": "forge",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Forge platform integration"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "31462164dae1f1726f8f7f8052d4efbe3c7a52aa"
+        }
+      ],
+      "summary": "Forge platform integration",
+      "paths": [
+        "agent/runtime_tool_policy.py",
+        "model_tools.py",
+        "plugins/platforms/forge/__init__.py",
+        "plugins/platforms/forge/adapter.py",
+        "plugins/platforms/forge/plugin.yaml"
+      ],
+      "tests": [
+        "tests/agent/test_runtime_tool_policy.py",
+        "tests/gateway/test_forge_plugin.py",
+        "tests/test_model_tools.py"
+      ],
+      "checks": [
+        {
+          "id": "forge-integration-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/agent/test_runtime_tool_policy.py",
+            "tests/gateway/test_forge_plugin.py",
+            "tests/test_model_tools.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/agent/test_runtime_tool_policy.py",
+            "tests/gateway/test_forge_plugin.py",
+            "tests/test_model_tools.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-forge-integration",
+        "base_commit": "0c5ebda3bd082c59b999f50fb635b0f79f61fe31",
+        "commits": [
+          "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
+          "31462164dae1f1726f8f7f8052d4efbe3c7a52aa"
+        ]
+      }
+    },
+    {
+      "id": "desktop-registered-source-routing",
+      "title": "Desktop registered-source profile and session routing",
+      "order": 35,
+      "status": "retired",
+      "domain_id": "desktop",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Desktop registered-source routing"
+      },
+      "depends_on": [
+        "forge-integration"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1f25fcfcbb63f42944d598097fab87a389e0b9d5"
+        }
+      ],
+      "summary": "Preserve registered connection identity for overlapping remote rosters and all-profile session opens.",
+      "paths": [
+        "apps/desktop/src/app/session/hooks/use-session-actions/index.ts",
+        "apps/desktop/src/plugins/hermes-bots/plugin.js",
+        "apps/desktop/src/store/profile.ts"
+      ],
+      "tests": [
+        "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx",
+        "apps/desktop/src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs",
+        "apps/desktop/src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
+        "apps/desktop/src/store/profile.test.ts"
+      ],
+      "checks": [
+        {
+          "id": "desktop-registered-source-routing-ui-tests",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npx",
+            "vitest",
+            "run",
+            "--project",
+            "ui",
+            "src/store/profile.test.ts",
+            "src/app/session/hooks/use-session-actions.test.tsx"
+          ],
+          "env": {
+            "NODE_ENV": "test"
+          },
+          "covers": [
+            "apps/desktop/src/store/profile.test.ts",
+            "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx"
+          ]
+        },
+        {
+          "id": "desktop-registered-source-routing-bot-tests",
+          "cwd": "apps/desktop",
+          "argv": [
+            "node",
+            "--test",
+            "src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
+            "src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs"
+          ],
+          "env": {},
+          "covers": [
+            "apps/desktop/src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
+            "apps/desktop/src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs"
+          ]
+        },
+        {
+          "id": "desktop-registered-source-routing-typecheck",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npm",
+            "run",
+            "typecheck"
+          ],
+          "env": {},
+          "covers": []
+        }
+      ],
+      "retirement": "Retire when upstream preserves qualified registered-source identity across remote roster and all-profile session navigation and these parity tests pass without the carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/axiom-next",
+        "base_commit": "31462164dae1f1726f8f7f8052d4efbe3c7a52aa",
+        "commits": [
+          "1f25fcfcbb63f42944d598097fab87a389e0b9d5"
+        ]
+      }
+    },
+    {
+      "id": "project-source-policy",
+      "title": "Project navigation source policy",
+      "order": 40,
+      "status": "active",
+      "domain_id": "project",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Project navigation source policy"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0"
+        }
+      ],
+      "summary": "Project navigation source policy",
+      "paths": [
+        "hermes_cli/session_source_policy.py",
+        "hermes_cli/web_routers/profiles.py",
+        "tui_gateway/methods_config.py",
+        "tui_gateway/project_tree.py",
+        "tui_gateway/server.py"
+      ],
+      "tests": [
+        "tests/hermes_cli/test_profiles_sidebar_scope.py",
+        "tests/tui_gateway/test_project_tree.py",
+        "tests/tui_gateway/test_project_tree_source_policy.py",
+        "tests/tui_gateway/test_projects_rpc.py"
+      ],
+      "checks": [
+        {
+          "id": "project-source-policy-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_profiles_sidebar_scope.py",
+            "tests/tui_gateway/test_project_tree.py",
+            "tests/tui_gateway/test_project_tree_source_policy.py",
+            "tests/tui_gateway/test_projects_rpc.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/hermes_cli/test_profiles_sidebar_scope.py",
+            "tests/tui_gateway/test_project_tree.py",
+            "tests/tui_gateway/test_project_tree_source_policy.py",
+            "tests/tui_gateway/test_projects_rpc.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-project-source-policy",
+        "base_commit": "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
+        "commits": [
+          "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0"
+        ]
+      }
+    },
+    {
+      "id": "dashboard-profile-pty",
+      "title": "Dashboard profile-scoped PTY attachments",
+      "order": 50,
+      "status": "active",
+      "domain_id": "dashboard",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Dashboard profile-scoped PTY attachments"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "50f52e564a978c4cd2e0b1cd9aadede5909b9c76"
+        }
+      ],
+      "summary": "Dashboard profile-scoped PTY attachments",
+      "paths": [
+        "web/src/lib/pty-attach-token.ts",
+        "web/src/pages/ChatPage.tsx"
+      ],
+      "tests": [
+        "web/src/lib/pty-attach-token.test.ts"
+      ],
+      "checks": [
+        {
+          "id": "dashboard-profile-pty-tests",
+          "cwd": "web",
+          "argv": [
+            "npm",
+            "test",
+            "--",
+            "--run",
+            "src/lib/pty-attach-token.test.ts"
+          ],
+          "env": {
+            "NODE_ENV": "test"
+          },
+          "covers": [
+            "web/src/lib/pty-attach-token.test.ts"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-dashboard-profile-pty",
+        "base_commit": "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0",
+        "commits": [
+          "50f52e564a978c4cd2e0b1cd9aadede5909b9c76"
+        ]
+      }
+    },
+    {
+      "id": "mcp-oauth-concurrency",
+      "title": "MCP OAuth refresh concurrency",
+      "order": 60,
+      "status": "active",
+      "domain_id": "mcp",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "MCP OAuth refresh concurrency"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18"
+        }
+      ],
+      "summary": "MCP OAuth refresh concurrency",
+      "paths": [
+        "tools/mcp_oauth_manager.py"
+      ],
+      "tests": [
+        "tests/tools/test_mcp_oauth_bidirectional.py",
+        "tests/tools/test_mcp_oauth_metadata.py"
+      ],
+      "checks": [
+        {
+          "id": "mcp-oauth-concurrency-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/tools/test_mcp_oauth_bidirectional.py",
+            "tests/tools/test_mcp_oauth_metadata.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/tools/test_mcp_oauth_bidirectional.py",
+            "tests/tools/test_mcp_oauth_metadata.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-mcp-oauth-concurrency",
+        "base_commit": "50f52e564a978c4cd2e0b1cd9aadede5909b9c76",
+        "commits": [
+          "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18"
+        ]
+      }
+    },
+    {
+      "id": "windows-portability",
+      "title": "Windows portability fixes",
+      "order": 70,
+      "status": "active",
+      "domain_id": "windows",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Windows portability fixes"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "b7204a0d31a1b725635714d5b7d0f952499be6c0"
+        }
+      ],
+      "summary": "Windows portability fixes",
+      "paths": [
+        "hermes_cli/kanban_db.py",
+        "tools/approval.py"
+      ],
+      "tests": [
+        "tests/hermes_cli/test_kanban_db.py",
+        "tests/tools/test_approval.py"
+      ],
+      "checks": [
+        {
+          "id": "windows-portability-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_kanban_db.py",
+            "tests/tools/test_approval.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/hermes_cli/test_kanban_db.py",
+            "tests/tools/test_approval.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-windows-portability",
+        "base_commit": "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18",
+        "commits": [
+          "b7204a0d31a1b725635714d5b7d0f952499be6c0"
+        ]
+      }
+    },
+    {
+      "id": "webhook-route-toolsets",
+      "title": "Webhook route-level toolsets",
+      "order": 80,
+      "status": "active",
+      "domain_id": "webhook",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Webhook route-level toolsets"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "63cec49ba790b60c4213aaae20ea159bb7d8a965"
+        }
+      ],
+      "summary": "Webhook route-level toolsets",
+      "paths": [
+        "gateway/platforms/base.py",
+        "gateway/platforms/webhook.py",
+        "gateway/run.py",
+        "hermes_cli/webhook.py"
+      ],
+      "tests": [
+        "tests/gateway/test_reasoning_command.py",
+        "tests/gateway/test_webhook_adapter.py",
+        "tests/hermes_cli/test_webhook_cli.py"
+      ],
+      "checks": [
+        {
+          "id": "webhook-route-toolsets-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "--extra",
+            "messaging",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/gateway/test_reasoning_command.py",
+            "tests/gateway/test_webhook_adapter.py",
+            "tests/hermes_cli/test_webhook_cli.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/gateway/test_reasoning_command.py",
+            "tests/gateway/test_webhook_adapter.py",
+            "tests/hermes_cli/test_webhook_cli.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-webhook-route-toolsets",
+        "base_commit": "b7204a0d31a1b725635714d5b7d0f952499be6c0",
+        "commits": [
+          "63cec49ba790b60c4213aaae20ea159bb7d8a965"
+        ]
+      }
+    },
+    {
+      "id": "dashboard-plugin-admin-auth",
+      "title": "Dashboard plugin administration auth",
+      "order": 90,
+      "status": "active",
+      "domain_id": "dashboard",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Dashboard plugin administration auth"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "e389f3a63b51b6cf9c6b726c66bf60bca708e74f"
+        }
+      ],
+      "summary": "Dashboard plugin administration auth",
+      "paths": [
+        "hermes_cli/web_server.py"
+      ],
+      "tests": [
+        "tests/hermes_cli/test_web_server.py"
+      ],
+      "checks": [
+        {
+          "id": "dashboard-plugin-admin-auth-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_web_server.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/hermes_cli/test_web_server.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-dashboard-plugin-admin-auth",
+        "base_commit": "63cec49ba790b60c4213aaae20ea159bb7d8a965",
+        "commits": [
+          "e389f3a63b51b6cf9c6b726c66bf60bca708e74f"
+        ]
+      }
+    },
+    {
+      "id": "proxy-provider-routing",
+      "title": "Routed OAuth proxy providers",
+      "order": 100,
+      "status": "active",
+      "domain_id": "proxy",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Routed OAuth proxy providers"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6"
+        }
+      ],
+      "summary": "Routed OAuth proxy providers",
+      "paths": [
+        "hermes_cli/proxy/adapters/__init__.py",
+        "hermes_cli/proxy/adapters/openai_codex.py",
+        "hermes_cli/proxy/adapters/routed.py",
+        "hermes_cli/proxy/adapters/xai_oauth.py",
+        "hermes_cli/proxy/cli.py",
+        "hermes_cli/proxy/server.py"
+      ],
+      "tests": [
+        "tests/hermes_cli/test_proxy.py"
+      ],
+      "checks": [
+        {
+          "id": "proxy-provider-routing-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_proxy.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/hermes_cli/test_proxy.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-proxy-provider-routing",
+        "base_commit": "e389f3a63b51b6cf9c6b726c66bf60bca708e74f",
+        "commits": [
+          "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6"
+        ]
+      }
+    },
+    {
+      "id": "shared-cron-profile-ownership",
+      "title": "Shared cron profile ownership",
+      "order": 110,
+      "status": "active",
+      "domain_id": "shared",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Shared cron profile ownership"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "f1210e419a3f980b27a9480b6dc086c8ec3c7ec0"
+        }
+      ],
+      "summary": "Shared cron profile ownership",
+      "paths": [
+        "cron/jobs.py",
+        "cron/scheduler.py",
+        "hermes_cli/cron.py",
+        "tools/cronjob_tools.py"
+      ],
+      "tests": [
+        "tests/cron/test_cron_profile_isolation.py",
+        "tests/cron/test_cron_profile_storage.py",
+        "tests/cron/test_cron_script.py",
+        "tests/hermes_cli/test_web_server_cron_profiles.py",
+        "tests/test_cron_manage_profile_scope.py"
+      ],
+      "checks": [
+        {
+          "id": "shared-cron-profile-ownership-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/cron/test_cron_profile_isolation.py",
+            "tests/cron/test_cron_profile_storage.py",
+            "tests/cron/test_cron_script.py",
+            "tests/hermes_cli/test_web_server_cron_profiles.py",
+            "tests/test_cron_manage_profile_scope.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/cron/test_cron_profile_isolation.py",
+            "tests/cron/test_cron_profile_storage.py",
+            "tests/cron/test_cron_script.py",
+            "tests/hermes_cli/test_web_server_cron_profiles.py",
+            "tests/test_cron_manage_profile_scope.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-shared-cron-profile-ownership",
+        "base_commit": "057dcdf236f8a6a26721c10fcc6ccb72726e272a",
+        "commits": [
+          "f1210e419a3f980b27a9480b6dc086c8ec3c7ec0"
+        ]
+      }
+    },
+    {
+      "id": "lucid-memory-integration",
+      "title": "Lucid memory integration",
+      "order": 120,
+      "status": "active",
+      "domain_id": "lucid",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Lucid memory integration"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "cdabca78a50bbe71fd3903e19ec7a32973e48232"
+        }
+      ],
+      "summary": "Lucid memory integration",
+      "paths": [
+        "plugins/memory/neural/__init__.py",
+        "plugins/memory/neural/memory_client.py",
+        "plugins/memory/neural/neural_memory.py"
+      ],
+      "tests": [
+        "tests/plugins/memory/test_neural_provider.py"
+      ],
+      "checks": [
+        {
+          "id": "lucid-memory-integration-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/plugins/memory/test_neural_provider.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/plugins/memory/test_neural_provider.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-lucid-memory-integration",
+        "base_commit": "02e52ba46bdadd09dbeea57133621a8be9367f42",
+        "commits": [
+          "cdabca78a50bbe71fd3903e19ec7a32973e48232"
+        ]
+      }
+    },
+    {
+      "id": "buzz-active-thread-mentions",
+      "title": "Buzz active-thread mentions",
+      "order": 130,
+      "status": "active",
+      "domain_id": "buzz",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Buzz active-thread mentions"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5"
+        }
+      ],
+      "summary": "Buzz active-thread mentions",
+      "paths": [
+        "cli-config.yaml.example",
+        "hermes_cli/config_defaults.py",
+        "plugins/platforms/buzz/adapter.py",
+        "website/docs/reference/environment-variables.md",
+        "website/docs/user-guide/messaging/buzz.md"
+      ],
+      "tests": [
+        "tests/gateway/test_buzz_adapter.py"
+      ],
+      "checks": [
+        {
+          "id": "buzz-active-thread-mentions-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/gateway/test_buzz_adapter.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/gateway/test_buzz_adapter.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-buzz-active-thread-mentions",
+        "base_commit": "cdabca78a50bbe71fd3903e19ec7a32973e48232",
+        "commits": [
+          "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5"
+        ]
+      }
+    },
+    {
+      "id": "tui-plugin-command-cards",
+      "title": "TUI plugin command cards",
+      "order": 140,
+      "status": "active",
+      "domain_id": "tui",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "TUI plugin command cards"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "f3faaa2c31615f341a0a07b41ee8091e35f17323"
+        }
+      ],
+      "summary": "TUI plugin command cards",
+      "paths": [
+        "gateway/cards.py",
+        "hermes_cli/plugins.py",
+        "tui_gateway/methods_tools.py"
+      ],
+      "tests": [
+        "tests/hermes_cli/test_plugins.py",
+        "tests/tui_gateway/test_protocol.py"
+      ],
+      "checks": [
+        {
+          "id": "tui-plugin-command-cards-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_plugins.py",
+            "tests/tui_gateway/test_protocol.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/hermes_cli/test_plugins.py",
+            "tests/tui_gateway/test_protocol.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-tui-plugin-command-cards",
+        "base_commit": "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5",
+        "commits": [
+          "f3faaa2c31615f341a0a07b41ee8091e35f17323"
+        ]
+      }
+    },
+    {
+      "id": "discord-bot-admission",
+      "title": "Discord bot admission controls",
+      "order": 150,
+      "status": "active",
+      "domain_id": "discord",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Discord bot admission controls"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727"
+        }
+      ],
+      "summary": "Discord bot admission controls",
+      "paths": [
+        "cli-config.yaml.example",
+        "hermes_cli/config_defaults.py",
+        "plugins/platforms/discord/adapter.py",
+        "website/docs/user-guide/messaging/discord.md"
+      ],
+      "tests": [
+        "tests/gateway/test_discord_allowed_mentions.py",
+        "tests/gateway/test_discord_bot_filter.py"
+      ],
+      "checks": [
+        {
+          "id": "discord-bot-admission-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/gateway/test_discord_allowed_mentions.py",
+            "tests/gateway/test_discord_bot_filter.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/gateway/test_discord_allowed_mentions.py",
+            "tests/gateway/test_discord_bot_filter.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-discord-bot-admission",
+        "base_commit": "f3faaa2c31615f341a0a07b41ee8091e35f17323",
+        "commits": [
+          "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727"
+        ]
+      }
+    },
+    {
+      "id": "deploy-branch-update",
+      "title": "Deploy branch update reconciliation",
+      "order": 160,
+      "status": "active",
+      "domain_id": "deploy",
+      "ownership": "core",
+      "contract": {
+        "path": "FORK.md",
+        "heading": "Deploy branch update reconciliation"
+      },
+      "depends_on": [
+        "fork-replay-tooling"
+      ],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "dc7cdb25bc6eff2b87d8e922864efc91159667ae"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "134226fa751ebf7b5d37b754b76591ae0959d0e9"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "56bf56a8dfac432f7cc640e945224e88d7eb656b"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "18126df48ec38326b33a6306ad30bb32cf9d7330"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "90f1ec12f314daa1e565aef7124a4470a7dab7f3"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "d6d85d8ae10edd85f0824a9a105e23e39bc771ce"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "e9a8eae27339e165047bb5dbc3bfcc34029affd8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "f04f5835b532487d1c440c8cb4c5754a26a900a4"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "6479bab86c4d742c3949d52c3429c5742ac317ae"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "4e781669ed59c02cc8e01d4473248611633c5817"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "87159dbcfbef834f55625f3d478df61b35634ef8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "75e34f40d71171141cbd723bd62dbc0d121d9ba3"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "2246ba28e53fcdf23215c31e00b5c0b26a412def"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "d85ad66074d57b1173a9035975077baf1f664b94"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "b83cc94cee87b0ce70fe60d07a6e30005c384cea"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1be4d5f562cb1d7086e388d9b857fcb3ee848d34"
+        }
+      ],
+      "summary": "Deploy branch update reconciliation",
+      "paths": [
+        "hermes_cli/_startup_fast.py",
+        "hermes_cli/axiom_reconcile.py",
+        "hermes_cli/axiom_update.py",
+        "hermes_cli/banner.py",
+        "hermes_cli/main.py",
+        "hermes_cli/subcommands/update.py",
+        "hermes_cli/update_cmd.py",
+        "hermes_cli/update_ui.py",
+        "docs/axiom-fork-contract.md",
+        "fork-carries.json",
+        "website/docs/reference/cli-commands.md",
+        "scripts/check-merge-drops.py"
+      ],
+      "tests": [
+        "tests/hermes_cli/test_axiom_reconcile.py",
+        "tests/hermes_cli/test_cmd_update.py",
+        "tests/hermes_cli/test_update_autostash.py",
+        "tests/hermes_cli/test_update_check.py",
+        "tests/hermes_cli/test_update_concurrent_quarantine.py",
+        "tests/hermes_cli/test_update_ui.py",
+        "tests/hermes_cli/test_version_preview.py"
+      ],
+      "checks": [
+        {
+          "id": "deploy-branch-update-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_axiom_reconcile.py",
+            "tests/hermes_cli/test_cmd_update.py",
+            "tests/hermes_cli/test_update_autostash.py",
+            "tests/hermes_cli/test_update_check.py",
+            "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_update_ui.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/hermes_cli/test_axiom_reconcile.py",
+            "tests/hermes_cli/test_cmd_update.py",
+            "tests/hermes_cli/test_update_autostash.py",
+            "tests/hermes_cli/test_update_check.py",
+            "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_update_ui.py"
+          ]
+        },
+        {
+          "id": "deploy-branch-update-preview-tests",
+          "cwd": ".",
+          "argv": [
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-q",
+            "-o",
+            "addopts=",
+            "tests/hermes_cli/test_version_preview.py"
+          ],
+          "env": {},
+          "covers": [
+            "tests/hermes_cli/test_version_preview.py"
+          ]
+        }
+      ],
+      "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/deploy-update-20260823",
+        "base_commit": "f293e7206b4ddd66042329442c6afebc19a8808d",
+        "commits": [
+          "dc7cdb25bc6eff2b87d8e922864efc91159667ae",
+          "134226fa751ebf7b5d37b754b76591ae0959d0e9",
+          "56bf56a8dfac432f7cc640e945224e88d7eb656b",
+          "18126df48ec38326b33a6306ad30bb32cf9d7330",
+          "90f1ec12f314daa1e565aef7124a4470a7dab7f3",
+          "d6d85d8ae10edd85f0824a9a105e23e39bc771ce",
+          "e9a8eae27339e165047bb5dbc3bfcc34029affd8",
+          "f04f5835b532487d1c440c8cb4c5754a26a900a4",
+          "6479bab86c4d742c3949d52c3429c5742ac317ae",
+          "4e781669ed59c02cc8e01d4473248611633c5817",
+          "87159dbcfbef834f55625f3d478df61b35634ef8",
+          "75e34f40d71171141cbd723bd62dbc0d121d9ba3",
+          "2246ba28e53fcdf23215c31e00b5c0b26a412def",
+          "d85ad66074d57b1173a9035975077baf1f664b94",
+          "b83cc94cee87b0ce70fe60d07a6e30005c384cea",
+          "1be4d5f562cb1d7086e388d9b857fcb3ee848d34"
+        ]
+      }
+    }
+  ]
+}
