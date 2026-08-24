@@ -1184,6 +1184,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "1be4d5f562cb1d7086e388d9b857fcb3ee848d34"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "583d3d7a562a1ba1fdac04065ca09395b652b4e3"
         }
       ],
       "summary": "Deploy branch update reconciliation",
@@ -1192,6 +1197,7 @@
         "hermes_cli/axiom_reconcile.py",
         "hermes_cli/axiom_update.py",
         "hermes_cli/banner.py",
+        "hermes_cli/gateway_windows.py",
         "hermes_cli/main.py",
         "hermes_cli/subcommands/update.py",
         "hermes_cli/update_cmd.py",
@@ -1207,7 +1213,9 @@
         "tests/hermes_cli/test_update_autostash.py",
         "tests/hermes_cli/test_update_check.py",
         "tests/hermes_cli/test_update_concurrent_quarantine.py",
+        "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
         "tests/hermes_cli/test_update_ui.py",
+        "tests/hermes_cli/test_gateway_windows.py",
         "tests/hermes_cli/test_version_preview.py"
       ],
       "checks": [
@@ -1228,6 +1236,8 @@
             "tests/hermes_cli/test_update_autostash.py",
             "tests/hermes_cli/test_update_check.py",
             "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
+            "tests/hermes_cli/test_gateway_windows.py",
             "tests/hermes_cli/test_update_ui.py"
           ],
           "env": {},
@@ -1237,6 +1247,8 @@
             "tests/hermes_cli/test_update_autostash.py",
             "tests/hermes_cli/test_update_check.py",
             "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
+            "tests/hermes_cli/test_gateway_windows.py",
             "tests/hermes_cli/test_update_ui.py"
           ]
         },
@@ -1281,7 +1293,8 @@
           "2246ba28e53fcdf23215c31e00b5c0b26a412def",
           "d85ad66074d57b1173a9035975077baf1f664b94",
           "b83cc94cee87b0ce70fe60d07a6e30005c384cea",
-          "1be4d5f562cb1d7086e388d9b857fcb3ee848d34"
+          "1be4d5f562cb1d7086e388d9b857fcb3ee848d34",
+          "583d3d7a562a1ba1fdac04065ca09395b652b4e3"
         ]
       }
     }
