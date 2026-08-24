@@ -1504,11 +1504,107 @@ def _update_complete_message(pre_version: str | None) -> str:
     return "✓ Update complete!"
 
 
+def _print_reconciliation_receipt(
+    *,
+    repo: Path,
+    previous_sha: str,
+    branch: str,
+    git_cmd: list[str] | None = None,
+) -> None:
+    """Print and persist an evidence-backed deploy reconciliation summary."""
+    git = list(git_cmd or ["git"])
+    origin_ref = f"origin/{branch}"
+    upstream_ref = "upstream/main"
+
+    def _git_output(*args: str) -> str:
+        try:
+            result = subprocess.run(
+                git + list(args),
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=True,
+            )
+            return result.stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+
+    current_sha = _git_output("rev-parse", "HEAD")
+    origin_sha = _git_output("rev-parse", "--verify", origin_ref)
+    upstream_sha = _git_output("rev-parse", "--verify", upstream_ref)
+    if not current_sha:
+        return
+
+    def _short(sha: str) -> str:
+        return sha[:10] if sha else "unavailable"
+
+    current_matches_origin = bool(origin_sha and current_sha == origin_sha)
+    upstream_is_merged = False
+    if upstream_sha:
+        upstream_is_merged = subprocess.run(
+            git + ["merge-base", "--is-ancestor", upstream_sha, current_sha],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).returncode == 0
+
+    print()
+    print("━━ Reconciliation ━━")
+    print(f"  {'Branch':<10} {branch}")
+    print(f"  {'Previous':<10} {_short(previous_sha)}")
+    print(f"  {'Current':<10} {_short(current_sha)}")
+    print(f"  {'Upstream':<10} {_short(upstream_sha)}  ({upstream_ref})")
+    print(f"  {'Origin':<10} {_short(origin_sha)}  ({origin_ref})")
+    if current_matches_origin:
+        print(f"  ✓ current matches {origin_ref}")
+    else:
+        print(f"  ⚠ current differs from {origin_ref}")
+    if upstream_is_merged:
+        print(f"  ✓ {upstream_ref} is merged into current")
+    else:
+        print(f"  ⚠ {upstream_ref} is not merged into current")
+
+    if not (previous_sha and upstream_sha and upstream_is_merged):
+        return
+    old_upstream_sha = _git_output("merge-base", previous_sha, upstream_sha)
+    if not old_upstream_sha or old_upstream_sha == upstream_sha:
+        return
+
+    from hermes_cli.update_ui import compute_pending_digest, write_update_brief
+
+    # Persist the full artifact for the agent/operator and print the compact
+    # categorized view. Using the old deployment's upstream merge-base avoids
+    # presenting regenerated carry commits as newly-arrived upstream work.
+    write_update_brief(
+        repo,
+        old_upstream_sha,
+        upstream_sha,
+        git_cmd=git,
+        branch=branch,
+    )
+    digest = compute_pending_digest(
+        repo,
+        old_upstream_sha,
+        upstream_sha,
+        git_cmd=git,
+        title="Upstream changes included",
+    )
+    if digest:
+        print(digest)
+
+
 def _print_update_summary(
     *,
     node_failures: list,
     desktop_build_ok: bool,
     pre_update_version: str | None,
+    previous_sha: str | None = None,
+    branch: str | None = None,
+    git_cmd: list[str] | None = None,
 ) -> None:
     """Final update banner. A failed Desktop rebuild is non-fatal for the
     Python side, but must not print ``✓ Update complete!`` (#88251)."""
@@ -1531,6 +1627,13 @@ def _print_update_summary(
             print("  Run `hermes desktop` to retry the desktop rebuild.")
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
+        if previous_sha and branch:
+            _print_reconciliation_receipt(
+                repo=_m().PROJECT_ROOT,
+                previous_sha=previous_sha,
+                branch=branch,
+                git_cmd=git_cmd,
+            )
 
 
 def _write_gateway_update_exit_code(ok: bool) -> None:
@@ -7650,6 +7753,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             node_failures=node_failures,
             desktop_build_ok=desktop_build_ok,
             pre_update_version=pre_update_version,
+            previous_sha=pre_update_head if is_deploy_branch else None,
+            branch=branch if is_deploy_branch else None,
+            git_cmd=git_cmd,
         )
 
         # Search-index optimization notice (v23). Existing installs keep their
