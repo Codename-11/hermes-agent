@@ -1040,7 +1040,7 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
         print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
     elif start_now:
         pid = _spawn_detached()
-        _report_gateway_start(f"direct spawn (PID {pid})")
+        _report_gateway_start("direct spawn", launched_pid=pid)
     else:
         profile_arg = _profile_arg()
         start_cmd = f"hermes {profile_arg} gateway start" if profile_arg else "hermes gateway start"
@@ -1073,7 +1073,7 @@ def install(
                 print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
             else:
                 pid = _spawn_detached()
-                _report_gateway_start(f"direct spawn (PID {pid})")
+                _report_gateway_start("direct spawn", launched_pid=pid)
         else:
             print("ℹ Gateway not started and no auto-start service installed.")
             print("  Run later with: hermes gateway start")
@@ -1116,7 +1116,7 @@ def install(
                 print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
             else:
                 pid = _spawn_detached()
-                _report_gateway_start(f"direct spawn (PID {pid})")
+                _report_gateway_start("direct spawn", launched_pid=pid)
         else:
             print("ℹ Gateway not started now.")
             print("  Start manually with: hermes gateway start")
@@ -1162,7 +1162,7 @@ def install(
             print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
         elif start_now:
             pid = _spawn_detached()
-            _report_gateway_start(f"direct spawn (PID {pid})")
+            _report_gateway_start("direct spawn", launched_pid=pid)
         else:
             profile_arg = _profile_arg()
             start_cmd = f"hermes {profile_arg} gateway start" if profile_arg else "hermes gateway start"
@@ -1175,16 +1175,25 @@ def install(
     raise RuntimeError(f"Windows gateway install failed: {detail}")
 
 
-def _wait_for_gateway_ready(timeout_s: float = 6.0, interval_s: float = 0.4) -> list[int]:
-    """Poll for a live gateway process for up to ``timeout_s`` seconds.
+def _wait_for_gateway_ready(timeout_s: float = 30.0, interval_s: float = 0.4) -> list[int]:
+    """Poll for authoritative gateway identity for up to ``timeout_s`` seconds.
 
     Returns the list of PIDs found. Empty list means nothing came up in
     time — the caller should surface that to the user as a failed start.
     """
+    from gateway.control_socket import identify_gateway
+    from hermes_cli.config import get_hermes_home
     from hermes_cli.gateway import find_gateway_pids
 
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            identity = identify_gateway(Path(get_hermes_home()), timeout=0.2)
+            pid = int((identity or {}).get("pid") or 0)
+            if pid > 0:
+                return [pid]
+        except Exception:
+            pass
         pids = list(find_gateway_pids())
         if pids:
             return pids
@@ -1192,12 +1201,33 @@ def _wait_for_gateway_ready(timeout_s: float = 6.0, interval_s: float = 0.4) -> 
     return []
 
 
-def _report_gateway_start(via: str) -> None:
+def _report_gateway_start(via: str, *, launched_pid: int | None = None) -> None:
     pids = _wait_for_gateway_ready()
     if pids:
-        print(f"✓ Gateway started via {via} (PID: {', '.join(map(str, pids))})")
+        gateway_pids = ", ".join(map(str, pids))
+        detail = f"gateway PID: {gateway_pids}"
+        if launched_pid and launched_pid not in pids:
+            detail += f"; launcher PID: {launched_pid}"
+        print(f"✓ Gateway started via {via} ({detail})")
     else:
-        print(f"⚠ Launched gateway via {via}, but no process detected after 6s.")
+        launcher_alive = False
+        if launched_pid:
+            try:
+                from gateway.status import _pid_exists
+
+                launcher_alive = bool(_pid_exists(launched_pid))
+            except Exception:
+                pass
+        if launcher_alive:
+            print(
+                f"ℹ Gateway launch accepted via {via}; still starting "
+                f"(launcher PID: {launched_pid})."
+            )
+            return
+        launcher = f" (launcher PID: {launched_pid})" if launched_pid else ""
+        print(
+            f"⚠ Gateway launch via {via}{launcher} exited before the gateway became ready."
+        )
         print("  Check the log for startup errors:")
         from hermes_cli.config import get_hermes_home
         print(f"    type {Path(get_hermes_home())}\\logs\\gateway.log")
@@ -1515,7 +1545,7 @@ def start() -> None:
     # and install --start-now. Scheduled Task / Startup entries are only login
     # persistence mechanisms.
     pid = _spawn_detached()
-    _report_gateway_start(f"direct spawn (PID {pid})")
+    _report_gateway_start("direct spawn", launched_pid=pid)
 
 
 def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
