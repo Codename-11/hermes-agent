@@ -227,6 +227,20 @@ def _delete_private_refs(repo: Path, refs: list[str]) -> None:
         raise RuntimeError("could not clean private replay refs: " + "; ".join(failures))
 
 
+def _verify_replay_sources_available(
+    repo: Path,
+    carries: list[dict[str, Any]],
+    *,
+    run_id: str,
+) -> None:
+    """Re-fetch, re-prove, and clean replay sources after publication."""
+    private_refs = _fetch_replay_sources(repo, carries, run_id=run_id)
+    try:
+        _validate_replay_commit_sources(repo, carries, run_id=run_id)
+    finally:
+        _delete_private_refs(repo, private_refs)
+
+
 def _replay_digest(carries: list[dict[str, Any]]) -> str:
     specification = [
         {
@@ -659,6 +673,12 @@ def generate_candidate(
                 input_digest=input_digest,
             )
             report["published"] = True
+            _verify_replay_sources_available(
+                repo,
+                carries,
+                run_id=f"{run_id}-post-publication",
+            )
+            report["source_availability_verified"] = True
 
         report["state"] = "ready"
         report["completed_at"] = datetime.now().isoformat(timespec="seconds")
