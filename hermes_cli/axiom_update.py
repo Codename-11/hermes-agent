@@ -548,6 +548,7 @@ def _promote_ready_reconciliation_candidate_locked(
         and bool(report.get("replay_sha256"))
         and report.get("replay_sha256") == state.get("replay_sha256")
         and report.get("published") is True
+        and report.get("source_availability_verified") is True
         and report.get("upstream_sha") == upstream_sha
         and report.get("candidate_sha") == candidate_sha
         and report.get("ownership_diagnostics") == []
