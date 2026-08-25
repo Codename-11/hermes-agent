@@ -1054,7 +1054,7 @@
         "website/docs/user-guide/messaging/discord.md"
       ],
       "tests": [
-        "tests/gateway/test_discord_allowed_mentions.py",
+        "tests/gateway/test_discord_approval_mentions.py",
         "tests/gateway/test_discord_bot_filter.py"
       ],
       "checks": [
@@ -1070,12 +1070,12 @@
             "-q",
             "-o",
             "addopts=",
-            "tests/gateway/test_discord_allowed_mentions.py",
+            "tests/gateway/test_discord_approval_mentions.py",
             "tests/gateway/test_discord_bot_filter.py"
           ],
           "env": {},
           "covers": [
-            "tests/gateway/test_discord_allowed_mentions.py",
+            "tests/gateway/test_discord_approval_mentions.py",
             "tests/gateway/test_discord_bot_filter.py"
           ]
         }
@@ -1214,6 +1214,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "6ea153ba0e9051af7a57440ecbabb65677c0faa9"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "b69666344817c633abbc3a0ff8bb4d7a71c7699c"
         }
       ],
       "summary": "Deploy branch update reconciliation",
@@ -1324,7 +1329,8 @@
           "79158461b407a0f94dcc4aea82742addba0acd44",
           "a02a0b363db62ee545e673d7f318eb49e54e8991",
           "f39c50c9135bde07687bd23bdcfc9d709d6a3352",
-          "6ea153ba0e9051af7a57440ecbabb65677c0faa9"
+          "6ea153ba0e9051af7a57440ecbabb65677c0faa9",
+          "b69666344817c633abbc3a0ff8bb4d7a71c7699c"
         ]
       }
     }
