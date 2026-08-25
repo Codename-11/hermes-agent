@@ -1628,12 +1628,16 @@ def _print_update_summary(
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
         if previous_sha and branch:
-            _print_reconciliation_receipt(
-                repo=_m().PROJECT_ROOT,
-                previous_sha=previous_sha,
-                branch=branch,
-                git_cmd=git_cmd,
-            )
+            try:
+                _print_reconciliation_receipt(
+                    repo=_m().PROJECT_ROOT,
+                    previous_sha=previous_sha,
+                    branch=branch,
+                    git_cmd=git_cmd,
+                )
+            except Exception:
+                logger.debug("Reconciliation receipt generation failed", exc_info=True)
+                print("  ⚠ Reconciliation receipt unavailable; update remains complete.")
 
 
 def _write_gateway_update_exit_code(ok: bool) -> None:
