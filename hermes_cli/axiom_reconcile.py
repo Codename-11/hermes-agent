@@ -79,6 +79,7 @@ def _load_manifest(
     *,
     manifest_path: Path | None = None,
     validator_path: Path | None = None,
+    check_path_existence: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
     validator_path = validator_path or (repo / "scripts" / "fork_carry_manifest.py")
     manifest_path = manifest_path or (repo / "fork-carries.json")
@@ -88,7 +89,9 @@ def _load_manifest(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     manifest = module.load_manifest(manifest_path)
-    diagnostics = module.validate_manifest(manifest, repo)
+    diagnostics = module.validate_manifest(
+        manifest, repo, check_path_existence=check_path_existence
+    )
     return manifest, diagnostics
 
 
@@ -571,7 +574,10 @@ def generate_candidate(
     private_refs: list[str] = []
     try:
         manifest, diagnostics = _load_manifest(
-            repo, manifest_path=manifest_path, validator_path=validator_path
+            repo,
+            manifest_path=manifest_path,
+            validator_path=validator_path,
+            check_path_existence=False,
         )
         report["manifest_sha256"] = hashlib.sha256(
             manifest_path.read_bytes()
@@ -633,6 +639,16 @@ def generate_candidate(
                 )
         elif manifest_changed.returncode != 0:
             raise RuntimeError(manifest_changed.stderr.strip() or "could not inspect replay manifest")
+        _, candidate_diagnostics = _load_manifest(
+            worktree,
+            manifest_path=candidate_manifest_path,
+            validator_path=validator_path,
+            check_path_existence=True,
+        )
+        if candidate_diagnostics:
+            raise RuntimeError(
+                "invalid generated carry manifest: " + "; ".join(candidate_diagnostics)
+            )
         report["candidate_sha"] = _resolve(worktree, "HEAD")
 
         changed = _run(worktree, "diff", "--name-only", f"{upstream_sha}..HEAD")
