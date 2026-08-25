@@ -28,19 +28,25 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
-import { $activeGatewayProfile } from './profile-scope'
-import { $cronSessions, $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
+import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
-  $attentionSessionKeys,
+  $attentionSessionIds,
   $draftSessionIds,
   $sessionStates,
   $stalledSessionIds,
-  $workingSessionKeys,
-  sessionStatusKey
+  $workingSessionIds
 } from './session-states'
-import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS, unreadWriteGuardKey } from './session-unread-remote'
+import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from './session-unread-remote'
 import { $subagentsBySession, activeSubagentCount } from './subagents'
 
+// Sessions parked in async delegation: the parent turn has ended (busy=false —
+// delegate_task(background=true) returns its handle the moment the children
+// are spawned) while those subagents keep working for minutes. Without this
+// input the sidebar row dropped to a plain idle dot mid-delegation, reading as
+// "done" while work was still running in child sessions. Same runtime→stored
+// bridge and fresh-chat fallback as $backgroundRunningSessionIds:
+// $subagentsBySession is keyed by runtime id, surfaces key on stored ids, and
+// lineageAliases covers whichever tip of the conversation a surface holds.
 let delegatingIds: readonly string[] = []
 export const $delegatingSessionIds = computed(
   [$subagentsBySession, $sessionStates, $sessions],
@@ -48,9 +54,13 @@ export const $delegatingSessionIds = computed(
     const ids = new Set<string>()
 
     for (const [runtimeId, items] of Object.entries(bySession)) {
-      if (activeSubagentCount(items) === 0) {continue}
+      if (activeSubagentCount(items) === 0) {
+        continue
+      }
 
-      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {ids.add(alias)}
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
+        ids.add(alias)
+      }
     }
 
     return (delegatingIds = stableArray(delegatingIds, [...ids]))
@@ -91,50 +101,23 @@ let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(
   [
-    $attentionSessionKeys,
-    $workingSessionKeys,
+    $attentionSessionIds,
+    $workingSessionIds,
     $stalledSessionIds,
     $backgroundRunningSessionIds,
     $delegatingSessionIds,
     $unreadFinishedSessionIds,
     $draftSessionIds,
     $sessions,
-    $unreadWriteGuard,
-    $activeGatewayProfile
+    $unreadWriteGuard
   ],
-  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard, activeProfile) => {
+  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard) => {
     const next: Record<string, SessionDotState> = {}
 
-    const scopedAliases = (session: (typeof sessions)[number]) =>
-      lineageAliases(
-        session.id,
-        sessions.filter(
-          candidate => (candidate.profile?.trim() || 'default') === (session.profile?.trim() || 'default')
-        )
-      )
-
-    const claimBare = (ids: readonly string[], state: SessionDotState) => {
-      const members = new Set(ids)
-
-      for (const session of sessions) {
-        if (scopedAliases(session).some(alias => members.has(alias))) {
-          next[sessionStatusKey(session.profile, session.id)] = state
-        }
-      }
-    }
-
-    const claimKeys = (keys: readonly string[], state: SessionDotState) => {
-      for (const key of keys) {
-        next[key] = state
-      }
-    }
-
-    const claimRows = (rows: readonly (typeof sessions)[number][], state: SessionDotState) => {
-      const members = new Set(rows.map(session => sessionStatusKey(session.profile, session.id)))
-
-      for (const session of sessions) {
-        if (scopedAliases(session).some(alias => members.has(sessionStatusKey(session.profile, alias)))) {
-          next[sessionStatusKey(session.profile, session.id)] = state
+    const claim = (ids: readonly string[], state: SessionDotState) => {
+      for (const id of ids) {
+        for (const alias of lineageAliases(id, sessions)) {
+          next[alias] = state
         }
       }
     }
@@ -145,52 +128,56 @@ export const $sessionDotStateById = computed(
     //
     // Draft is weakest of all: it says only "no turn has happened here yet", so
     // the first thing that does happen speaks over it.
-    claimBare(draft, 'draft')
-    claimBare(unread, 'unread')
+    claim(draft, 'draft')
+    claim(unread, 'unread')
 
-    const persistedUnread: (typeof sessions)[number][] = []
+    // Persisted read state (backend watermark): a row marked unread keeps the
+    // same emerald dot a background finish would paint, and survives
+    // restarts. Same tier as the runtime marker — both mean "there is
+    // something here you haven't opened". A list page that predates one of
+    // our own writes is fenced out by the write guard: keep OUR value until a
+    // page confirms it or the guard expires.
+    const persistedUnread: string[] = []
 
-    for (const session of sessions) {
-      const entry = unreadWriteGuard.get(unreadWriteGuardKey(session.id, session.profile))
+    for (const s of sessions) {
+      const entry = unreadWriteGuard.get(s.id)
 
       if (entry && Date.now() - entry.at < UNREAD_WRITE_GUARD_MS) {
-        if (entry.value) {persistedUnread.push(session)}
+        if (entry.value) {
+          persistedUnread.push(s.id)
+        }
 
         continue
       }
 
-      if (session.unread === true) {persistedUnread.push(session)}
+      if (s.unread === true) {
+        persistedUnread.push(s.id)
+      }
     }
 
-    claimRows(persistedUnread, 'unread')
-    claimBare(background, 'background')
-    claimBare(delegating, 'background')
-    claimKeys(working, 'working')
+    claim(persistedUnread, 'unread')
+
+    claim(background, 'background')
+    // Async delegation: the parent turn has ended but its subagents are still
+    // running, so the session's work continues in child sessions. Same visual
+    // claim as background processes — and it yields to `working` below the
+    // moment the parent turn itself is live (synchronous orchestrator children).
+    claim(delegating, 'background')
+    claim(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still
     // authoritatively running, it has just gone quiet — so it only downgrades a
     // session already claimed as working. The hint outlives its turn by a tick
     // on some paths; without this it could invent a running session.
-    const stalledIds = new Set(stalled)
-
-    for (const session of sessions) {
-      const key = sessionStatusKey(session.profile, session.id)
-
-      if (next[key] === 'working' && scopedAliases(session).some(alias => stalledIds.has(alias))) {
-        next[key] = 'stalled'
+    for (const id of stalled) {
+      for (const alias of lineageAliases(id, sessions)) {
+        if (next[alias] === 'working') {
+          next[alias] = 'stalled'
+        }
       }
     }
 
-    claimKeys(attention, 'needs-input')
-
-    // Profile-qualified keys keep duplicate stored ids isolated. Preserve the
-    // store's original bare-id contract as an active-profile compatibility
-    // view so legacy consumers never observe another profile's status.
-    const activePrefix = sessionStatusKey(activeProfile, '')
-
-    for (const [key, state] of Object.entries(next)) {
-      if (key.startsWith(activePrefix)) {next[key.slice(activePrefix.length)] = state}
-    }
+    claim(attention, 'needs-input')
 
     return (dotStates = stableRecord(dotStates, next))
   }
@@ -215,7 +202,12 @@ export function unreadSessionCount(
   return n
 }
 
+/** The titlebar badge. Cron sessions are deliberately EXCLUDED: cron runs
+ *  finish unwatched by design, so counting them turns the badge into a cron
+ *  run counter that is permanently lit (#93552). Their unread state stays
+ *  visible where it belongs — the sidebar's cron section rows — and
+ *  "mark all as read" still acks them (ackAllSessionsRead iterates cron rows). */
 export const $unreadSessionCount = computed(
-  [$sessionDotStateById, $sessions, $cronSessions, $messagingSessions],
-  (byId, sessions, cron, messaging) => unreadSessionCount(byId, sessions, cron, messaging)
+  [$sessionDotStateById, $sessions, $messagingSessions],
+  (byId, sessions, messaging) => unreadSessionCount(byId, sessions, messaging)
 )

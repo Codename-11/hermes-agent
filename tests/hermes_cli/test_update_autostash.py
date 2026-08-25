@@ -4,7 +4,7 @@ import sys
 from io import StringIO
 from pathlib import Path
 from subprocess import CalledProcessError
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -601,7 +601,9 @@ def test_deploy_branch_update_merges_live_ahead_with_origin_then_upstream(monkey
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 7
     commands = [cmd for cmd, _ in calls]
@@ -709,7 +711,9 @@ def test_deploy_branch_update_merges_upstream_in_temp_worktree(monkeypatch, tmp_
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 4
     commands = [cmd for cmd, _ in calls]
@@ -965,7 +969,9 @@ def test_deploy_branch_update_recovers_when_push_reject_remote_already_contains_
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 3
     assert not parent.exists()
@@ -1046,7 +1052,9 @@ def test_deploy_branch_update_retries_push_after_merging_remote_advanced_origin(
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed == 4
     assert not parent.exists()
@@ -1127,7 +1135,9 @@ def test_deploy_branch_update_conflict_prints_handoff_and_keeps_worktree(
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    changed = hermes_main._run_deploy_branch_update(["git"], repo, "axiom", "oldhead")
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], repo, "axiom", "oldhead", legacy_recovery=True
+    )
 
     assert changed is None
     assert worktree_path.exists()
@@ -1212,7 +1222,7 @@ def test_deploy_update_first_host_publishes_second_host_consumes_real_git(tmp_pa
 
     host_a_before = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
     changed_a = hermes_axiom_update._run_deploy_branch_update(
-        ["git"], host_a, "axiom", host_a_before
+        ["git"], host_a, "axiom", host_a_before, legacy_recovery=True
     )
     published = git(host_a, "rev-parse", "HEAD", capture=True).stdout.strip()
     origin_after_a = git(
@@ -1224,7 +1234,7 @@ def test_deploy_update_first_host_publishes_second_host_consumes_real_git(tmp_pa
     git(host_a, "merge-base", "--is-ancestor", "upstream/main", "HEAD")
 
     changed_b = hermes_axiom_update._run_deploy_branch_update(
-        ["git"], host_b, "axiom", host_b_before
+        ["git"], host_b, "axiom", host_b_before, legacy_recovery=True
     )
     host_b_after = git(host_b, "rev-parse", "HEAD", capture=True).stdout.strip()
     origin_after_b = git(
@@ -2947,11 +2957,38 @@ def test_deploy_update_refreshes_stale_origin_ref_before_comparing(monkeypatch, 
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------
 
+
+def test_stale_module_purge_removes_parent_package_binding(monkeypatch):
+    from hermes_cli import update_cmd
+
+    parent = ModuleType("hermes_cli")
+    child = ModuleType("hermes_cli.stale_probe")
+    parent.stale_probe = child
+    modules = {
+        "hermes_cli": parent,
+        "hermes_cli.stale_probe": child,
+    }
+    monkeypatch.setattr(
+        update_cmd,
+        "_m",
+        lambda: SimpleNamespace(sys=SimpleNamespace(modules=modules)),
+    )
+
+    update_cmd._purge_stale_hermes_modules()
+
+    assert "hermes_cli.stale_probe" not in modules
+    assert not hasattr(parent, "stale_probe")
+
+
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
     from hermes_cli import gateway as hermes_gateway
-
     (tmp_path / ".git").mkdir()
+    monkeypatch.setitem(
+        hermes_main.cmd_update.__globals__,
+        "_purge_stale_hermes_modules",
+        lambda: None,
+    )
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
@@ -2981,6 +3018,14 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
 
     recorded = []
+    install_prefix = [
+        "/usr/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "-e",
+    ]
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
@@ -2993,13 +3038,13 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
         if plain == ["git", "merge", "--ff-only", "origin/main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
+        if cmd == [*install_prefix, ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
+        if cmd == [*install_prefix, "."]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
+        if cmd == [*install_prefix, ".[matrix]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
+        if cmd == [*install_prefix, ".[mcp]"]:
             return SimpleNamespace(returncode=0)
         # Catch-all must include stdout/stderr so consumers that parse
         # output (e.g. the dashboard-restart `ps -A` scan added in the
@@ -3012,10 +3057,10 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert install_cmds == [
-        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
-        ["/usr/bin/uv", "pip", "install", "-e", "."],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+        [*install_prefix, ".[all]"],
+        [*install_prefix, "."],
+        [*install_prefix, ".[matrix]"],
+        [*install_prefix, ".[mcp]"],
     ]
 
     out = capsys.readouterr().out

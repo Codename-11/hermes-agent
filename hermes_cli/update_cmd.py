@@ -44,6 +44,21 @@ logger = logging.getLogger(__name__)
 DEPLOY_BRANCHES = {"axiom", "tgi"}
 
 
+def _deploy_reconciliation_was_queued(result: int | None) -> bool:
+    from hermes_cli.axiom_update import RECONCILIATION_QUEUED
+
+    return result == RECONCILIATION_QUEUED
+
+
+def _exit_for_queued_reconciliation() -> None:
+    """End this invocation with an explicit accepted-but-not-deployed status."""
+    print()
+    print("⏳ Update pending — candidate verification was queued.")
+    print("   Current deployment is unchanged.")
+    print("   Run `hermes update` again after verification completes.")
+    raise SystemExit(3)
+
+
 def _m():
     """Lazy ``hermes_cli.main`` reference.
 
@@ -144,7 +159,16 @@ def _purge_stale_hermes_modules() -> None:
                 # Prefix-string match caught an unrelated package
                 # (e.g. ``gateway_foo``) — leave it alone.
                 continue
-            if _m().sys.modules.pop(name, None) is not None:
+            removed = _m().sys.modules.pop(name, None)
+            if removed is not None:
+                parent_name, separator, child_name = name.rpartition(".")
+                if separator:
+                    parent = _m().sys.modules.get(parent_name)
+                    if parent is not None and getattr(parent, child_name, None) is removed:
+                        try:
+                            delattr(parent, child_name)
+                        except (AttributeError, TypeError):
+                            pass
                 purged.append(name)
         if purged:
             logger.debug(
@@ -1480,11 +1504,119 @@ def _update_complete_message(pre_version: str | None) -> str:
     return "✓ Update complete!"
 
 
+def _print_reconciliation_receipt(
+    *,
+    repo: Path,
+    previous_sha: str,
+    branch: str,
+    git_cmd: list[str] | None = None,
+) -> None:
+    """Print and persist an evidence-backed deploy reconciliation summary."""
+    git = list(git_cmd or ["git"])
+    origin_ref = f"origin/{branch}"
+    upstream_ref = "upstream/main"
+
+    def _git_output(*args: str) -> str:
+        try:
+            result = subprocess.run(
+                git + list(args),
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=True,
+            )
+            return result.stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+
+    current_sha = _git_output("rev-parse", "HEAD")
+    origin_sha = _git_output("rev-parse", "--verify", origin_ref)
+    upstream_sha = _git_output("rev-parse", "--verify", upstream_ref)
+
+    def _short(sha: str) -> str:
+        return sha[:10] if sha else "unavailable"
+
+    current_matches_origin: bool | None = (
+        current_sha == origin_sha if current_sha and origin_sha else None
+    )
+    upstream_is_merged: bool | None = None
+    if upstream_sha and current_sha:
+        try:
+            ancestry = subprocess.run(
+                git + ["merge-base", "--is-ancestor", upstream_sha, current_sha],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError:
+            ancestry = None
+        if ancestry is not None:
+            if ancestry.returncode == 0:
+                upstream_is_merged = True
+            elif ancestry.returncode == 1:
+                upstream_is_merged = False
+
+    print()
+    print("━━ Reconciliation ━━")
+    print(f"  {'Branch':<10} {branch}")
+    print(f"  {'Previous':<10} {_short(previous_sha)}")
+    print(f"  {'Current':<10} {_short(current_sha)}")
+    print(f"  {'Upstream':<10} {_short(upstream_sha)}  ({upstream_ref})")
+    print(f"  {'Origin':<10} {_short(origin_sha)}  ({origin_ref})")
+    if current_matches_origin is True:
+        print(f"  ✓ current matches {origin_ref}")
+    elif current_matches_origin is False:
+        print(f"  ⚠ current differs from {origin_ref}")
+    else:
+        print("  ⚠ current/origin comparison unavailable")
+    if upstream_is_merged is True:
+        print(f"  ✓ {upstream_ref} is merged into current")
+    elif upstream_is_merged is False:
+        print(f"  ⚠ {upstream_ref} is not merged into current")
+    else:
+        print("  ⚠ upstream ancestry unavailable")
+
+    if not (previous_sha and upstream_sha and upstream_is_merged is True):
+        return
+    old_upstream_sha = _git_output("merge-base", previous_sha, upstream_sha)
+    if not old_upstream_sha or old_upstream_sha == upstream_sha:
+        return
+
+    from hermes_cli.update_ui import compute_pending_digest, write_update_brief
+
+    # Persist the full artifact for the agent/operator and print the compact
+    # categorized view. Using the old deployment's upstream merge-base avoids
+    # presenting regenerated carry commits as newly-arrived upstream work.
+    write_update_brief(
+        repo,
+        old_upstream_sha,
+        upstream_sha,
+        git_cmd=git,
+        branch=branch,
+    )
+    digest = compute_pending_digest(
+        repo,
+        old_upstream_sha,
+        upstream_sha,
+        git_cmd=git,
+        title="Upstream changes included",
+    )
+    if digest:
+        print(digest)
+
+
 def _print_update_summary(
     *,
     node_failures: list,
     desktop_build_ok: bool,
     pre_update_version: str | None,
+    previous_sha: str | None = None,
+    branch: str | None = None,
+    git_cmd: list[str] | None = None,
 ) -> None:
     """Final update banner. A failed Desktop rebuild is non-fatal for the
     Python side, but must not print ``✓ Update complete!`` (#88251)."""
@@ -1507,6 +1639,17 @@ def _print_update_summary(
             print("  Run `hermes desktop` to retry the desktop rebuild.")
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
+        if previous_sha and branch:
+            try:
+                _print_reconciliation_receipt(
+                    repo=_m().PROJECT_ROOT,
+                    previous_sha=previous_sha,
+                    branch=branch,
+                    git_cmd=git_cmd,
+                )
+            except Exception:
+                logger.debug("Reconciliation receipt generation failed", exc_info=True)
+                print("  ⚠ Reconciliation receipt unavailable; update remains complete.")
 
 
 def _write_gateway_update_exit_code(ok: bool) -> None:
@@ -3169,7 +3312,7 @@ def _reconcile_desktop_build() -> None:
         print("  ✓ Desktop app up to date")
 
 
-def _repair_node_deps_on_current_checkout(print_completion) -> None:
+def _repair_node_deps_on_current_checkout(print_completion) -> bool:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
     A current checkout does not imply healthy Node deps: a previous npm
@@ -3189,7 +3332,7 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
         print_completion(
             "⚠ Checkout is current, but Node.js dependencies could not be repaired."
         )
-        return
+        return False
     # Pair the refresh with the web build like every other
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
@@ -3198,6 +3341,7 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     # the Desktop build. Git parity is therefore not Desktop artifact parity.
     _reconcile_desktop_build()
     print_completion("✓ Already up to date!")
+    return True
 
 
 def _update_node_dependencies() -> list[str]:
@@ -5231,7 +5375,9 @@ def _cold_start_windows_gateway_after_update() -> None:
 
     if pid:
         print()
-        gateway_windows._report_gateway_start(f"cold-start after update (PID {pid})")
+        gateway_windows._report_gateway_start(
+            "cold-start after update", launched_pid=pid
+        )
 
 def _for_each_systemd_gateway_unit(
     list_units_stdout: str,
@@ -5616,24 +5762,26 @@ def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
     except Exception as exc:
         logger.debug("Could not refresh bootstrap-cache scripts after update: %s", exc)
 
-def _resume_windows_gateways_after_update(token: dict | None) -> None:
-    """Restart Windows profile gateways previously paused for update."""
+def _resume_windows_gateways_after_update(
+    token: dict | None, *, update_succeeded: bool = False
+) -> None:
+    """Restore paused gateways; run success-only maintenance after an update."""
     if not token or not token.get("resume_needed"):
         return
     token["resume_needed"] = False
     if not _m()._is_windows():
         return
 
-    # Regenerate the persisted launcher scripts before respawning anything,
-    # so a legacy pythonw-era Scheduled Task / Startup entry comes back on
-    # the current hidden-console design at the next login too.
-    _m()._refresh_windows_gateway_launchers()
+    if update_succeeded:
+        # Launcher refresh is update finalization, not rollback. An aborted
+        # attempt must only restore processes it actually paused.
+        _m()._refresh_windows_gateway_launchers()
 
     profiles = token.get("profiles") or {}
     unmapped = token.get("unmapped") or []
     cold_start = bool(token.get("cold_start_if_installed"))
     if not profiles and not any(u.get("argv") for u in unmapped):
-        if cold_start:
+        if cold_start and update_succeeded:
             _m()._cold_start_windows_gateway_after_update()
         return
 
@@ -6278,13 +6426,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
+        _zip_update_succeeded = False
         try:
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
+            _zip_update_succeeded = True
         finally:
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _m()._resume_windows_gateways_after_update(
+                _windows_gateway_resume,
+                update_succeeded=_zip_update_succeeded,
+            )
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
         return
@@ -6355,21 +6508,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             pre_update_head = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
             dependency_base_sha = pre_update_head or None
-            if not exact_target and _m()._deploy_handoff_exists_for(_m().PROJECT_ROOT, current_branch):
-                deploy_commit_count = _m()._resolve_deploy_handoff(
-                    git_cmd=git_cmd,
-                    repo=_m().PROJECT_ROOT,
-                    branch=current_branch,
-                    pre_update_head=pre_update_head,
-                )
-            else:
-                deploy_commit_count = _m()._run_deploy_branch_update(
-                    git_cmd,
-                    _m().PROJECT_ROOT,
-                    current_branch,
-                    pre_update_head,
-                    target_sha=getattr(args, "target_sha", None),
-                )
+            deploy_commit_count = _m()._run_deploy_branch_update(
+                git_cmd,
+                _m().PROJECT_ROOT,
+                current_branch,
+                pre_update_head,
+                target_sha=exact_target,
+            )
             if deploy_commit_count is None:
                 if deploy_stash_ref is not None:
                     _m()._restore_stashed_changes(
@@ -6380,6 +6525,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         input_fn=gw_input_fn,
                     )
                 return
+            if _deploy_reconciliation_was_queued(deploy_commit_count):
+                if deploy_stash_ref is not None:
+                    _m()._restore_stashed_changes(
+                        git_cmd,
+                        _m().PROJECT_ROOT,
+                        deploy_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                _exit_for_queued_reconciliation()
             if deploy_commit_count == 0 and _m()._completed_deploy_handoff_requires_post_update(
                 git_cmd, _m().PROJECT_ROOT, current_branch
             ):
@@ -6678,6 +6833,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("⚠ Checkout is current, but the venv is unhealthy:")
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
+            current_update_succeeded = False
             if handed_off_sync or not healthy:
                 # Self-lock deferral (#86735): the repair rewrites the venv
                 # too — same mapped-extension hazard as the update sync.
@@ -6738,11 +6894,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if healthy_after:
                     print("✓ Dependencies repaired!")
                     _print_update_completion("✓ Update complete!")
+                    current_update_succeeded = True
                 else:
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                _repair_node_deps_on_current_checkout(_print_update_completion)
+                current_update_succeeded = _repair_node_deps_on_current_checkout(
+                    _print_update_completion
+                )
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(
@@ -6753,7 +6912,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "long-lived processes still use the previous runtime."
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _m()._resume_windows_gateways_after_update(
+                _windows_gateway_resume,
+                update_succeeded=current_update_succeeded,
+            )
             return
 
         if commit_count > 0:
@@ -7607,6 +7769,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             node_failures=node_failures,
             desktop_build_ok=desktop_build_ok,
             pre_update_version=pre_update_version,
+            previous_sha=pre_update_head if is_deploy_branch else None,
+            branch=branch if is_deploy_branch else None,
+            git_cmd=git_cmd,
         )
 
         # Search-index optimization notice (v23). Existing installs keep their
@@ -8544,7 +8709,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception:
                 pass
 
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        _m()._resume_windows_gateways_after_update(
+            _windows_gateway_resume, update_succeeded=True
+        )
 
         # Warn if legacy Hermes gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the
@@ -8603,11 +8770,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print_fleet_version_matrix,
             )
 
-            # A brief settle window: freshly restarted gateways need a
-            # moment to rewrite gateway_state.json with their new identity.
+            # Cross-platform "we expected fleet rows" signal (#93406). The
+            # old (restarted_services or killed_pids) condition never fires
+            # on Windows: the pause/resume phase populates neither list, so
+            # a healthy resumed gateway yielded zero rows and exit 0.
+            _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
+                _pre_update_plan,
+                _pre_restart_gateway_pids,
+                _windows_gateway_resume,
+                restarted_services,
+                killed_pids,
+            )
+            # A brief settle window: freshly restarted/resumed gateways need
+            # a moment to rewrite gateway_state.json with their new identity.
             # Skipped when the restart phase touched nothing (no gateways
             # were running) — nothing to settle.
-            if restarted_services or killed_pids:
+            if _fleet_rows_expected:
                 _time.sleep(2.0)
             # Pass the pre-restart PID snapshot so a gateway the restart
             # phase stopped WITHOUT a verified replacement shows as a DOWN
@@ -8616,6 +8794,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 pre_restart_pids=_pre_restart_gateway_pids
             )
             if print_fleet_version_matrix(_fleet_snapshot):
+                gateway_fleet_restart_incomplete = True
+            elif not _fleet_snapshot and _fleet_rows_expected:
+                # Fleet probe returned zero rows even though at least one
+                # gateway runtime was (or may have been) live pre-update —
+                # POSIX restart bookkeeping, the pre-restart PID snapshot,
+                # the pre-update plan inventory, or the Windows pause/resume
+                # token all count as that signal.  Every failure path inside
+                # collect_fleet_versions() is swallowed via logger.debug(),
+                # so an empty list is indistinguishable from a healthy fleet
+                # in the current output.  Treat it as verification failure
+                # so the receipt records "partial" and the exit code is 1
+                # (#93406).
+                print(
+                    "\n⚠ Fleet version check returned no rows even though"
+                    " gateway runtimes were expected — verification incomplete."
+                )
                 gateway_fleet_restart_incomplete = True
         except Exception as _fleet_exc:
             logger.debug("Fleet version verification failed: %s", _fleet_exc)
@@ -8714,6 +8908,61 @@ def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
         return True
     # surviving == []: safe only if we know nothing was running beforehand.
     return pre_restart_pids is None or bool(pre_restart_pids)
+
+
+def _fleet_probe_expected_runtimes(
+    pre_update_plan,
+    pre_restart_pids,
+    windows_resume_token,
+    restarted_services,
+    killed_pids,
+) -> bool:
+    """Whether the post-update fleet probe should have produced rows.
+
+    The zero-rows fail-open (#93406): ``collect_fleet_versions()`` swallows
+    every probe failure via ``logger.debug()`` and ``print_fleet_version_matrix([])``
+    early-returns ``False``, so an empty snapshot reads as \"healthy fleet\" and
+    the update exits 0.  An empty snapshot is only proof-of-safety when NOTHING
+    says a gateway existed before the update.  Any of these signals means at
+    least one runtime was (or may have been) live pre-update, so zero rows is
+    verification failure, not health:
+
+    * ``restarted_services`` / ``killed_pids`` — the POSIX restart phase
+      touched live gateways.
+    * ``pre_restart_pids`` non-empty, or ``None`` (pre-state unreadable —
+      cannot prove nothing was running; same contract as
+      ``_restart_phase_failure_is_incomplete``, #78574).
+    * the pre-update plan inventoried ≥1 runtime.
+    * the Windows pause/resume token carries paused ``profiles`` or
+      ``unmapped`` entries — ``_pause_windows_gateways_for_update`` /
+      ``_resume_windows_gateways_after_update`` populate NEITHER
+      ``restarted_services`` NOR ``killed_pids``, which is exactly why the
+      original ``(restarted_services or killed_pids)`` guard never fires on
+      Windows.
+
+    The same condition gates the 2.0s settle sleep: a freshly resumed Windows
+    gateway needs the settle window to rewrite ``gateway_state.json`` just
+    like a systemd-restarted one.
+
+    Note this keys ONLY on zero-rows-despite-expected-runtimes.  A non-empty
+    snapshot — including rows in ``unknown`` state — is still judged solely by
+    ``print_fleet_version_matrix``.
+    """
+    if restarted_services or killed_pids:
+        return True
+    if pre_restart_pids is None or pre_restart_pids:
+        return True
+    try:
+        if pre_update_plan is not None and pre_update_plan.runtimes:
+            return True
+    except Exception:
+        pass
+    if isinstance(windows_resume_token, dict) and (
+        windows_resume_token.get("profiles")
+        or windows_resume_token.get("unmapped")
+    ):
+        return True
+    return False
 
 
 def _print_items(items, label, key, fallback_key=None):

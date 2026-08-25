@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $rightRailActiveTabId } from './layout'
+import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
   $previewServerRestart,
   $previewServerRestartStatus,
@@ -11,7 +11,7 @@ import {
   closePreviewMatching,
   closeRightRail,
   closeRightRailTab,
-  openBrowser,
+  newBrowserTab,
   openPreview,
   previewTabId,
   type PreviewTarget,
@@ -70,10 +70,10 @@ describe('preview store', () => {
     expect($previewTabs.get().map(tab => tab.target.kind)).toEqual(['file', 'url', 'artifact'])
   })
 
-  // The Browser is a SINGLETON: the tab names the surface, not the page, so a
-  // second URL navigates the browser it already has instead of stacking a
-  // second Browser tab beside the first.
-  it('keeps one Browser tab — a second url swaps its target instead of adding a tab', () => {
+  // A Browser tab is a VESSEL, so a link hands its page to the browser you are
+  // already looking at. New tabs are something you ask for (`newBrowserTab`) —
+  // otherwise an agent opening five pages leaves five Browsers behind.
+  it('navigates the open Browser rather than stacking a second one', () => {
     openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
     openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
 
@@ -84,22 +84,45 @@ describe('preview store', () => {
     expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
   })
 
-  it('opens the Browser at its home page when the sidebar has no existing browser tab', () => {
-    openBrowser()
+  it('opens more than one Browser on request, each holding its own page', () => {
+    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    newBrowserTab()
+    openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
 
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($previewTarget.get()).toMatchObject({ kind: 'url', url: 'https://duckduckgo.com/' })
-    expect($rightRailActiveTabId.get()).toBe('url:browser')
+    const urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+
+    expect(urlTabs.map(tab => tab.target.url)).toEqual(['https://news.ycombinator.com', 'https://www.reddit.com'])
+    expect(new Set(urlTabs.map(tab => tab.id)).size).toBe(2)
   })
 
-  it('re-fronts the existing Browser without navigating it away', () => {
+  // Which Browser a link lands in: the one on screen. Selecting the older tab
+  // must send the next page there, not to whichever was opened most recently.
+  it('navigates the Browser you are looking at', () => {
     openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
-    openPreview(fileTarget('/work/demo.html'), 'file-browser')
+    const first = $previewTabs.get()[0].id
 
-    openBrowser()
+    newBrowserTab()
+    selectRightRailTab(first)
+    openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
 
-    expect($previewTarget.get()?.url).toBe('https://news.ycombinator.com')
-    expect($rightRailActiveTabId.get()).toBe('url:browser')
+    expect($previewTabs.get().find(tab => tab.id === first)?.target.url).toBe('https://www.reddit.com')
+    expect($previewTabs.get()).toHaveLength(2)
+  })
+
+  // A Browser id is minted rather than derived, so it must never be handed out
+  // twice: per-tab state keyed by it would resurface under an unrelated tab.
+  it('never reuses a Browser id, even after one is closed', () => {
+    newBrowserTab()
+    const first = $previewTabs.get()[0].id
+
+    newBrowserTab()
+    closeRightRailTab(first)
+    newBrowserTab()
+
+    const ids = $previewTabs.get().map(tab => tab.id)
+
+    expect(ids).not.toContain(first)
+    expect(new Set(ids).size).toBe(ids.length)
   })
 
   it('re-fronts an existing tab instead of duplicating it, refreshing its target', () => {

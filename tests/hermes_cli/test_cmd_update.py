@@ -55,6 +55,12 @@ def _patch_managed_uv(request, monkeypatch):
     import shutil
     from hermes_cli import main as hm
 
+    monkeypatch.setitem(
+        cmd_update.__globals__,
+        "_purge_stale_hermes_modules",
+        lambda: None,
+    )
+
     # resolve_uv delegates to shutil.which("uv") so that test patches
     # on shutil.which flow through naturally.
     def _fake_resolve_uv():
@@ -317,13 +323,18 @@ class TestCmdUpdateBranchFallback:
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+        ), patch.object(
+            hm, "_sync_with_upstream_if_needed"
+        ) as sync_mock, patch.object(
+            hm, "_resume_windows_gateways_after_update"
+        ) as resume_mock:
             cmd_update(mock_args)
 
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
         sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
+        assert resume_mock.call_args.kwargs == {"update_succeeded": True}
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
@@ -1078,7 +1089,6 @@ class TestNodeRuntimeNpmResolution:
         monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
         monkeypatch.setattr(hm, "_is_windows", lambda: True)
         monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
-        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
         monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "")
         monkeypatch.setattr(
             hm,

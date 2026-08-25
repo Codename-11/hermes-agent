@@ -4,6 +4,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import {
@@ -15,6 +16,7 @@ import {
   type SessionResumeResponse
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $activeGatewayProfile, $newChatProfile, $newChatRoute, ensureGatewayProfile } from '@/store/profile'
@@ -91,7 +93,11 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'removeSession' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  | 'createBackendSessionForSend'
+  | 'openNewSessionTile'
+  | 'removeSession'
+  | 'selectSidebarItem'
+  | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -564,34 +570,6 @@ describe('createBackendSessionForSend profile routing', () => {
     expect(params).toMatchObject({ profile: 'analyst' })
   })
 
-  it('routes a profile-icon new tab through the clicked profile explicitly', async () => {
-    let createParams: Record<string, unknown> | undefined
-
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.create') {
-        createParams = params
-
-        return { session_id: 'runtime-worker-tab', stored_session_id: 'stored-worker-tab' } as never
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-
-    $activeGatewayProfile.set('default')
-    $newChatProfile.set(null)
-    render(<Harness onReady={next => (handle = next)} requestGateway={requestGateway} />)
-    await waitFor(() => expect(handle).not.toBeNull())
-
-    await act(async () => {
-      await handle!.openNewSessionTile('center', { listed: false, profile: 'worker' })
-    })
-
-    expect(ensureGatewayProfile).toHaveBeenCalledWith('worker')
-    expect(createParams).toMatchObject({ profile: 'worker', source: 'desktop' })
-  })
-
   it('passes the default profile for single-profile users (backend resolves it to launch)', async () => {
     const params = await createWith(() => {
       $activeGatewayProfile.set('default')
@@ -834,6 +812,7 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    clearClarifyRequest()
     vi.restoreAllMocks()
   })
 
@@ -850,38 +829,130 @@ describe('resumeSession failure recovery', () => {
     await resume!('stored-1', true)
   }
 
-  it('keeps primary all-profile rows on the active registered source for open and resume', async () => {
-    $showAllProfiles.set(true)
-    setSessions([storedSession({ profile: 'victor' })])
-    vi.mocked(requestActiveProfileRoute).mockImplementation(async (_profile, method) => {
+  it.each([
+    ['Codex tool-only', ''],
+    ['DeepSeek text-plus-tool', 'I found two paths; choose one.']
+  ])('restores a pending clarify as a running inline card for a %s transcript', async (_shape, content) => {
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    const toolCall = {
+      function: { arguments: '{"question":"Which path?","choices":["safe","fast"]}', name: 'clarify' },
+      id: 'call-provider'
+    }
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        { content, role: 'assistant', timestamp: 2, tool_calls: [toolCall] }
+      ],
+      session_id: 'stored-1'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
         return {
-          session_id: 'runtime-1',
-          session_key: 'stored-1',
-          resumed: 'stored-1',
-          message_count: 0,
+          info: {},
+          message_count: 2,
           messages: [],
-          info: {}
+          messages_omitted: true,
+          pending_clarify: {
+            choices: ['safe', 'fast'],
+            question: 'Which path?',
+            request_id: 'req-resumed'
+          },
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
         } as never
       }
 
       return {} as never
     })
-    const ambientRequest = vi.fn(async () => ({}) as never)
 
-    try {
-      await runResume(ambientRequest)
-    } finally {
-      $showAllProfiles.set(false)
-    }
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
 
-    expect(openActiveProfileRoute).toHaveBeenCalledWith('victor')
-    expect(requestActiveProfileRoute).toHaveBeenCalledWith(
-      'victor',
-      'session.resume',
-      expect.objectContaining({ session_id: 'stored-1' })
-    )
-    expect(ambientRequest).not.toHaveBeenCalled()
+    const state = stateMapRef.current.get('runtime-1')
+
+    const clarifyMessages =
+      state?.messages.filter(message =>
+        message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      ) ?? []
+
+    expect(clarifyMessages).toHaveLength(1)
+    expect(clarifyMessages[0].pending).toBe(true)
+    expect(state?.streamId).toBe(clarifyMessages[0].id)
+    expect($clarifyRequests.get()['runtime-1']).toMatchObject({ requestId: 'req-resumed', question: 'Which path?' })
+  })
+
+  it('restores a pending batch clarify whose resume snapshot has no top-level question', async () => {
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: '',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"questions":[{"question":"Color?"},{"question":"Size?"}]}',
+                name: 'clarify'
+              },
+              id: 'call-batch-provider'
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-1'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          pending_clarify: {
+            answers: { q0: 'Blue' },
+            questions: [
+              { choices: ['Blue', 'Red'], qid: 'q0', question: 'Color?' },
+              { choices: ['Small', 'Large'], qid: 'q1', question: 'Size?' }
+            ],
+            request_id: 'req-batch-resumed'
+          },
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+
+    const state = stateMapRef.current.get('runtime-1')
+    const request = $clarifyRequests.get()['runtime-1']
+    expect(request).toMatchObject({
+      lockedAnswers: { q0: 'Blue' },
+      question: '',
+      requestId: 'req-batch-resumed'
+    })
+    expect(request.questions).toHaveLength(2)
+    expect(
+      state?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify')
+    ).toHaveLength(1)
+    expect(state?.messages.filter(message => message.pending)).toHaveLength(1)
+    expect(state?.streamId).toBe(state?.messages.find(message => message.pending)?.id)
   })
 
   it('arms $resumeFailedSessionId when resume RPC and REST fallback both fail', async () => {
@@ -1464,10 +1535,21 @@ describe('branchStoredSession desktop source tagging', () => {
     vi.restoreAllMocks()
   })
 
-  it('opens the branch as a new tab and leaves the parent chat selected', async () => {
+  it('opens the branch as the primary session in the main workspace (#93444)', async () => {
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'branch-stored',
+          session_id: 'branch-runtime',
+          session_key: 'branch-stored'
+        } as never
       }
 
       return {} as never
@@ -1488,17 +1570,69 @@ describe('branchStoredSession desktop source tagging', () => {
         navigate={navigate}
         onReady={branch => (branchStoredSession = branch)}
         requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
       />
     )
     await waitFor(() => expect(branchStoredSession).not.toBeNull())
 
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
-    // The branch opened as its own tab...
+    // The branch becomes the primary session — this is what routes the main
+    // workspace area to it, not just a new sidebar row.
+    expect($selectedStoredSessionId.get()).toBe('branch-stored')
+    // It must not ALSO exist as a tile: a session is either the main thread or
+    // a tile, never both (resumeSession closes any tile with the same id).
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(false)
+  })
+
+  it('keeps the current view when branching a different session from the sidebar (does not reintroduce #69750)', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'branch-stored',
+          session_id: 'branch-runtime',
+          session_key: 'branch-stored'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    // The user is looking at "stored-other" and right-clicks a DIFFERENT,
+    // unrelated session ("stored-parent") in the sidebar to branch it.
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    setSelectedStoredSessionId('stored-other')
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    const navigate = vi.fn()
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        navigate={navigate}
+        onReady={branch => (branchStoredSession = branch)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-other"
+      />
+    )
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    // Branching a session that is not the one currently open must not steal
+    // the user's active view — "stored-other" stays selected.
+    expect($selectedStoredSessionId.get()).toBe('stored-other')
+    // The branch instead opens as its own tile.
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
-    // ...without stealing the primary selection or navigating away from the parent.
-    expect($selectedStoredSessionId.get()).toBe('stored-parent')
-    expect(navigate).not.toHaveBeenCalledWith(sessionRoute('branch-stored'))
   })
 
   it('tags desktop branch sessions as desktop sessions', async () => {
@@ -1790,7 +1924,7 @@ describe('resumeSession drops a redundant tile when the session loads into main'
 
   it('closes the tile so the session is not open in both main and its own tab', async () => {
     // The session is already an open tile (e.g. persisted across a restart)...
-    $sessionTiles.set([{ profile: 'default', storedSessionId: 'stored-1' }])
+    $sessionTiles.set([{ storedSessionId: 'stored-1' }])
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.resume') {
@@ -1815,10 +1949,7 @@ describe('resumeSession drops a redundant tile when the session loads into main'
   })
 
   it('leaves OTHER sessions tiles untouched', async () => {
-    $sessionTiles.set([
-      { profile: 'default', storedSessionId: 'stored-1' },
-      { profile: 'default', storedSessionId: 'stored-2' }
-    ])
+    $sessionTiles.set([{ storedSessionId: 'stored-1' }, { storedSessionId: 'stored-2' }])
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.resume') {
@@ -1860,6 +1991,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       .mockReset()
       .mockResolvedValue({ messages: [] } as never)
     vi.mocked(requestGatewayForAgent).mockReset()
+    clearClarifyRequest()
     vi.restoreAllMocks()
   })
 
@@ -2075,11 +2207,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['stored-A', 'rt-A']])
     }
 
-    const state = clientState('stored-A')
-    state.messages = [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'cached prompt' }] }]
-
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['rt-A', state]])
+      current: new Map([['rt-A', clientState('stored-A')]])
     }
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -2126,62 +2255,81 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 
-  it('rejects an empty warm cache even when sidebar metadata claims the session is empty and inactive', async () => {
+  it('re-arms a pending clarify in place on the warm session.activate path', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
 
+    const state = clientState('stored-A')
+    state.messages = [
+      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'I found two paths.' },
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider',
+            toolName: 'clarify',
+            args: { choices: ['safe', 'fast'], question: 'Which path?' },
+            argsText: '{"question":"Which path?","choices":["safe","fast"]}'
+          }
+        ]
+      }
+    ]
+
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['rt-A', clientState('stored-A')]])
+      current: new Map([['rt-A', state]])
     }
 
-    // Sidebar metadata is an asynchronously refreshed projection. A stale
-    // inactive/zero-count row cannot prove that an empty private cache in this
-    // window is authoritative; another window or a persisted transcript may
-    // still own the conversation.
-    setSessions([storedSession({ id: 'stored-A', is_active: false, message_count: 0 })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       messages: [
-        { content: 'apply and restart now', role: 'user', timestamp: 1 },
-        { content: 'working on it', role: 'assistant', timestamp: 2 }
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: 'I found two paths.',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"question":"Which path?","choices":["safe","fast"]}',
+                name: 'clarify'
+              },
+              id: 'call-provider'
+            }
+          ]
+        }
       ],
       session_id: 'stored-A'
     } as never)
 
     const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.resume') {
-        return {
-          session_id: 'rt-A-live',
-          session_key: 'stored-A',
-          resumed: 'stored-A',
-          messages: [],
-          messages_omitted: true,
-          running: true,
-          info: {}
-        } as never
-      }
-
       if (method === 'session.activate') {
         return {
-          session_id: 'rt-A',
-          session_key: 'stored-A',
-          resumed: 'stored-A',
+          info: {},
+          message_count: 2,
           messages: [],
           messages_omitted: true,
+          pending_clarify: {
+            choices: ['safe', 'fast'],
+            question: 'Which path?',
+            request_id: 'req-warm'
+          },
+          resumed: 'stored-A',
           running: true,
-          info: {}
+          session_id: 'rt-A',
+          session_key: 'stored-A'
         } as never
       }
 
       return {} as never
     })
 
-    let resumedState: ClientSessionState | undefined
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
     render(
       <ResumeHarness
         onReady={ready => (resume = ready)}
-        onStateUpdate={(_sessionId, next) => (resumedState = next)}
         requestGateway={requestGateway}
         runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
         sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
@@ -2190,44 +2338,104 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-A', true)
 
-    const methods = requestGateway.mock.calls.map(([method]) => method)
+    const resumedState = sessionStateByRuntimeIdRef.current.get('rt-A')
 
-    expect(methods).toContain('session.resume')
-    expect(methods).not.toContain('session.activate')
-    expect(resumedState?.messages.length).toBeGreaterThan(0)
+    const clarifyMessages =
+      resumedState?.messages.filter(message =>
+        message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      ) ?? []
+
+    expect(requestGateway.mock.calls.map(([method]) => method)).toContain('session.activate')
+    expect(clarifyMessages).toHaveLength(1)
+    expect(clarifyMessages[0].pending).toBe(true)
+    expect(
+      clarifyMessages[0].parts.find(part => part.type === 'tool-call' && part.toolName === 'clarify')
+    ).toMatchObject({ toolCallId: 'call-provider' })
+    expect(resumedState?.streamId).toBe(clarifyMessages[0].id)
+    expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-warm' })
   })
 
-  it('republishes an evicted warm cache before session.activate settles', async () => {
+  it.each([
+    ['with a stale request-store entry', true],
+    ['after the request store was already cleared', false]
+  ])('de-arms stale clarify state %s when session.activate reports no pending request', async (_case, keepStore) => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
 
     const state = clientState('stored-A')
+    state.busy = true
+    state.needsInput = true
+    state.streamId = 'cached-assistant'
     state.messages = [
-      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'still here?' }] },
-      { id: 'cached-assistant', role: 'assistant', parts: [{ type: 'text', text: 'yes' }] }
+      { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider',
+            toolName: 'clarify',
+            args: { choices: ['safe', 'fast'], question: 'Which path?' },
+            argsText: '{"question":"Which path?","choices":["safe","fast"]}'
+          }
+        ]
+      }
     ]
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
       current: new Map([['rt-A', state]])
     }
 
-    // Model the real A → B → A failure: A's settled heartbeat evicted its
-    // unreferenced public slice, but the private warm cache remained intact.
-    clearAllSessionStates()
-    setSessions([storedSession({ id: 'stored-A', message_count: 2 })])
+    if (keepStore) {
+      setClarifyRequest({
+        choices: ['safe', 'fast'],
+        multiSelect: false,
+        question: 'Which path?',
+        requestId: 'req-stale',
+        sessionId: 'rt-A'
+      })
+    }
 
-    const activation = deferred<never>()
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        {
+          content: '',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"question":"Which path?","choices":["safe","fast"]}',
+                name: 'clarify'
+              },
+              id: 'call-provider'
+            }
+          ]
+        }
+      ],
+      session_id: 'stored-A'
+    } as never)
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.activate') {
-        return activation.promise
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-A',
+          running: false,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
       }
 
       return {} as never
     })
-
-    vi.mocked(getLatestSessionMessages).mockReturnValue(new Promise(() => undefined))
 
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
     render(
@@ -2239,17 +2447,71 @@ describe('resumeSession warm-cache mapping integrity', () => {
       />
     )
     await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
 
-    void resume!('stored-A', true)
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.any(Object)))
+    const resumedState = sessionStateByRuntimeIdRef.current.get('rt-A')
 
-    // PRIMARY_SESSION_VIEW reads this public slice, not the private cache or the
-    // legacy $messages mirror. It must exist immediately while activation is
-    // still pending, or the primary pane remains blank indefinitely.
-    expect($sessionStates.get()['rt-A']?.messages.map(message => message.id)).toEqual([
-      'cached-user',
-      'cached-assistant'
-    ])
+    const clarifyPart = resumedState?.messages
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'tool-call' && part.toolName === 'clarify')
+
+    expect($clarifyRequests.get()['rt-A']).toBeUndefined()
+    expect(resumedState).toMatchObject({ needsInput: false, streamId: null })
+    expect(resumedState?.messages.find(message => message.id === resumedState.streamId)).toBeUndefined()
+    expect(clarifyPart).toHaveProperty('result')
+  })
+
+  it('does not let an older activate response clear a newer clarify request', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', clientState('stored-A')]])
+    }
+
+    const activated = deferred<SessionResumeResponse>()
+
+    const requestGateway = vi.fn((method: string) =>
+      method === 'session.activate' ? activated.promise : Promise.resolve({})
+    )
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway as never}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+    setClarifyRequest({
+      choices: ['new'],
+      multiSelect: false,
+      question: 'New question?',
+      receivedAt: Date.now() / 1000 + 60,
+      requestId: 'req-newer',
+      sessionId: 'rt-A'
+    })
+    activated.resolve({
+      info: {},
+      message_count: 0,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'stored-A',
+      running: false,
+      session_id: 'rt-A',
+      session_key: 'stored-A'
+    })
+    await resumePromise
+
+    expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-newer' })
   })
 
   it('preserves cached image attachments through an idle persisted transcript refresh', async () => {
@@ -2885,6 +3147,7 @@ describe('createBackendSessionForSend workspace target', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    $projectScope.set(ALL_PROJECTS)
     setCurrentCwd('')
     setNewChatWorkspaceTarget(undefined)
     vi.restoreAllMocks()
@@ -2917,6 +3180,69 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+
+  it('does not inherit a stale cwd when Home is the active project scope', async () => {
+    const params = await createWith(
+      () => {
+        $projectScope.set(NO_PROJECT_ID)
+      },
+      () => {
+        // Simulate the stale live path left by the previously selected project
+        // before the new draft is submitted.
+        $currentCwd.set('/previous-project')
+      }
+    )
+
+    expect(params).not.toHaveProperty('cwd')
+  })
+})
+
+describe('openNewSessionTile workspace target', () => {
+  afterEach(() => {
+    cleanup()
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    vi.restoreAllMocks()
+  })
+
+  it('omits cwd for a Home tile even when project scope resolves to a repo', async () => {
+    $projectScope.set('p_voice')
+    $projectTree.set([
+      {
+        id: 'p_voice',
+        label: 'Voice Assistant',
+        path: '/Users/oschmidt/Checkouts/voice-assistant',
+        repos: [],
+        sessionCount: 0
+      } as never
+    ])
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-home-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { cwd: null, listed: false })
+    })
+
+    expect(createParams).not.toHaveProperty('cwd')
   })
 })
 describe('selectSidebarItem', () => {

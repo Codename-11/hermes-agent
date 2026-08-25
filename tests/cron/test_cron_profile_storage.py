@@ -7,6 +7,7 @@ that owner so one profile cannot execute or mutate another profile's jobs.
 import importlib
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -89,7 +90,7 @@ def test_due_jobs_filtered_by_owner_profile(tmp_path, monkeypatch):
     try:
         root_cron = root / "cron"
         root_cron.mkdir(parents=True)
-        due_at = "2000-01-01T00:00:00+00:00"
+        due_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
         payload = {
             "jobs": [
                 {
@@ -162,9 +163,11 @@ def test_run_job_uses_owner_profile_home_for_scripts(tmp_path, monkeypatch):
     profile_home = root / "profiles" / "sentinel"
     scripts_dir = profile_home / "scripts"
     scripts_dir.mkdir(parents=True)
-    script = scripts_dir / "probe.sh"
-    script.write_text("#!/usr/bin/env bash\nprintf '%s' \"$HERMES_HOME\"\n", encoding="utf-8")
-    script.chmod(0o700)
+    script = scripts_dir / "probe.py"
+    script.write_text(
+        "import os\nprint(os.environ['HERMES_HOME'], end='')\n",
+        encoding="utf-8",
+    )
 
     jobs = _reload_jobs(root, root, monkeypatch)
     import cron.scheduler as sched
@@ -173,7 +176,7 @@ def test_run_job_uses_owner_profile_home_for_scripts(tmp_path, monkeypatch):
         ok, _doc, final_response, err = sched.run_job({
             "id": "ownerhome001",
             "name": "owner home",
-            "script": "probe.sh",
+            "script": "probe.py",
             "no_agent": True,
             "owner_profile": "sentinel",
             "scope": "profile",

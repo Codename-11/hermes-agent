@@ -23,10 +23,8 @@ import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
-import { $autoSpeakReplyConversations, autoSpeakRepliesEnabled } from '@/store/voice-prefs'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
-
-import { LiveSessionStatus } from '../live-session-status'
 
 import { AttachmentList } from './attachments'
 import {
@@ -91,7 +89,6 @@ export function ChatBar({
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
-  profile,
   queueSessionKey,
   sessionId,
   state,
@@ -110,7 +107,13 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
-  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode)
+  const hudWindowing = window.hermesDesktop?.hud?.windowing
+  const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
+
+  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode && !hudNativeDrag, {
+    controlDrag: hudWindowing?.controlDrag === true,
+    workspaceTransfer: hudWindowing?.workspaceTransfer === true
+  })
 
   // Typed stop phrase during an active voice conversation ends it — same
   // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
@@ -155,8 +158,7 @@ export function ChatBar({
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const scrolledUp = useStore($threadScrolledUp)
-  useStore($autoSpeakReplyConversations)
-  const autoSpeak = autoSpeakRepliesEnabled(profile, queueSessionKey || sessionId)
+  const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
@@ -332,12 +334,6 @@ export function ChatBar({
     editorRef,
     poppedOut
   })
-  // A live status needs a persistent center lane. While a turn is active, use
-  // the composer's existing stacked controls row so the status never overlays
-  // editable text. Equal flexible side tracks keep it geometrically centered
-  // as controls appear and disappear on either side.
-
-  const controlsStacked = stacked || busy
 
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
@@ -947,7 +943,6 @@ export function ChatBar({
   } = useComposerVoice({
     busy,
     clearDraft,
-    conversationId: queueSessionKey || sessionId,
     disabled,
     focusInput,
     insertText,
@@ -956,7 +951,6 @@ export function ChatBar({
     onInterrupt: haltRun,
     onSubmit,
     onTranscribeAudio,
-    profile,
     sessionId,
     target: scope.target
   })
@@ -1008,7 +1002,7 @@ export function ChatBar({
   )
 
   const input = (
-    <div className={cn('relative', controlsStacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
+    <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
@@ -1017,8 +1011,12 @@ export function ChatBar({
         className={cn(
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
-          controlsStacked && 'pl-3',
-          controlsStacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'
+          stacked && 'pl-3',
+          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1',
+          // Inside the native Wayland HUD drag region: a drag region swallows
+          // the page's mouse input whole, so the input must opt back out or it
+          // becomes unclickable. Buttons use the global no-drag rule.
+          hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
@@ -1196,7 +1194,12 @@ export function ChatBar({
             className={cn(
               'group/composer relative w-full overflow-visible rounded-2xl',
               poppedOut && 'bg-transparent',
-              dragging && 'cursor-grabbing select-none touch-none'
+              dragging && 'cursor-grabbing select-none touch-none',
+              // Native Wayland HUD: setBounds cannot position a top-level
+              // surface, so the bar must ask the compositor to move it. X11
+              // stays out of app-region mode so the renderer receives its
+              // Ctrl+primary-button drag. pt-4 is the carved-out grab band.
+              hudNativeDrag && 'hud-native-drag pt-4 [-webkit-app-region:drag]'
             )}
             data-drag-active={dragActive ? '' : undefined}
             data-hud-grabbing={hudGrabbing ? '' : undefined}
@@ -1208,7 +1211,8 @@ export function ChatBar({
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            onPointerDown={hudMode ? onHudDragPointerDown : popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDown={!hudMode && popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDownCapture={hudMode ? onHudDragPointerDown : undefined}
             onSubmit={e => {
               e.preventDefault()
 
@@ -1332,11 +1336,9 @@ export function ChatBar({
                   <div
                     className={cn(
                       'grid w-full',
-                      busy
-                        ? 'grid-cols-[minmax(max-content,1fr)_auto_minmax(max-content,1fr)] items-center gap-(--composer-control-gap) [grid-template-areas:"input_input_input"_"menu_status_controls"]'
-                        : stacked
-                          ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                          : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+                      stacked
+                        ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
+                        : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                     )}
                   >
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
@@ -1344,14 +1346,6 @@ export function ChatBar({
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
-                    <LiveSessionStatus
-                      awaitingInput={awaitingInput}
-                      busy={busy}
-                      className="[grid-area:status]"
-                      compact={compactPill || poppedOut}
-                      runningLabel={t.desktop.liveSessionRunning}
-                      waitingLabel={t.desktop.liveSessionWaiting}
-                    />
                     <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
                       <ContribSlot area={COMPOSER_AREAS.actions} />
                       {controls}

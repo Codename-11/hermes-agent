@@ -1,7 +1,6 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
@@ -17,11 +16,6 @@ vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   requestGatewayForAgent: vi.fn(),
   requestGatewayForProfile: vi.fn()
-}))
-
-vi.mock('@/store/profile', async importActual => ({
-  ...(await importActual<typeof ProfileModule>()),
-  ensureGatewayProfile: vi.fn(async () => undefined)
 }))
 
 const { getLatestSessionMessages } = await import('@/hermes')
@@ -47,15 +41,11 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
 
 function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
-  options: {
+  refs?: {
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
-    sessionStateByRuntimeIdRef?: { current: Map<string, ClientSessionState> }
-    updateSessionState?: (
-      sessionId: string,
-      updater: (state: ClientSessionState) => ClientSessionState,
-      storedSessionId?: string | null
-    ) => ClientSessionState
-  } = {}
+    sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
+    updateSessionState?: ReturnType<typeof vi.fn>
+  }
 ) {
   renderHook(() =>
     useSessionTileDelegate({
@@ -64,11 +54,9 @@ function renderTile(
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
-      runtimeIdByStoredSessionIdRef: options.runtimeIdByStoredSessionIdRef ?? { current: new Map() },
-      sessionStateByRuntimeIdRef: options.sessionStateByRuntimeIdRef ?? { current: new Map() },
-      updateSessionState:
-        options.updateSessionState ??
-        ((_sessionId, updater, storedSessionId) => updater(createClientSessionState(storedSessionId ?? null)))
+      runtimeIdByStoredSessionIdRef: (refs?.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
+      sessionStateByRuntimeIdRef: (refs?.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
+      updateSessionState: (refs?.updateSessionState ?? vi.fn()) as never
     })
   )
 }
@@ -76,13 +64,11 @@ function renderTile(
 describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
     setSessions([])
-    $sessionTiles.set([])
     vi.mocked(getLatestSessionMessages).mockClear()
   })
 
   afterEach(() => {
     setSessions([])
-    $sessionTiles.set([])
   })
 
   it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {
@@ -99,7 +85,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-1' } as never)
 
     renderTile(requestGateway)
-    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x', 'ai-engineer')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x')
 
     expect(runtimeId).toBe('runtime-1')
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer')
@@ -121,19 +107,29 @@ describe('useSessionTileDelegate resumeTile', () => {
   it('resolves and carries a default-profile session explicitly', async () => {
     setSessions([row({ id: 'stored-y', profile: 'default' })])
 
-    const requestGateway = vi.fn(async (method: string) =>
-      method === 'session.resume' ? ({ session_id: 'runtime-2' } as never) : ({} as never)
-    )
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    // #92961: a known owner is ALWAYS routed through the profile router —
+    // even 'default' — never dispatched on the ambient socket.
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-2' } as never)
 
     renderTile(requestGateway)
-    await sessionTileDelegate()!.resumeTile('stored-y', 'default')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-y')
 
-    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
-      session_id: 'stored-y',
-      cols: 96,
-      profile: 'default',
-      omit_messages: true
-    })
+    expect(runtimeId).toBe('runtime-2')
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'default',
+      'session.resume',
+      {
+        session_id: 'stored-y',
+        cols: 96,
+        profile: 'default',
+        omit_messages: true
+      },
+      undefined,
+      undefined
+    )
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('routes a Bot tile prefetch and resume through its exact connection owner', async () => {
@@ -166,77 +162,60 @@ describe('useSessionTileDelegate resumeTile', () => {
   })
 
   it('reuses a warm binding that still carries a transcript', async () => {
-    const state = { ...createClientSessionState('stored-a'), profile: 'default', messages: [{ id: 'm1' }] as never }
+    const stateA = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-a' }
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-a', 'runtime-a']]) }
-    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', state]]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', stateA]]) }
     const requestGateway = vi.fn(async () => ({}) as never)
 
-    $sessionTiles.set([{ profile: 'default', runtimeId: 'runtime-a', storedSessionId: 'stored-a' }])
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
-    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-a', 'default')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-a')
 
     expect(runtimeId).toBe('runtime-a')
     expect(requestGateway).not.toHaveBeenCalled()
   })
 
-  it('grafts the gateway live projection onto an empty persisted transcript', async () => {
-    setSessions([row({ id: 'stored-running', is_active: true, message_count: 3, profile: 'default' })])
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-running' } as never)
+  it('falls through to a real resume when the warm binding has no transcript (post-wake empty tile)', async () => {
+    // Sleep/wake regression: a released/stale cached state (messages: []) must
+    // NOT satisfy the warm path — reusing it re-bound the tile to a dead
+    // runtime id and painted the pane permanently empty.
+    setSessions([row({ id: 'stored-b', profile: 'default' })])
 
-    const updateSessionState = vi.fn((_sessionId, updater, storedSessionId) =>
-      updater(createClientSessionState(storedSessionId ?? null))
-    )
+    const staleState = { busy: false, messages: [], storedSessionId: 'stored-b' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-b', 'runtime-dead']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', staleState]]) }
 
-    const requestGateway = vi.fn(
-      async () =>
-        ({
-          inflight: { assistant: 'Still working', streaming: true, user: 'Continue OpenShelf' },
-          info: { running: true },
-          messages: [],
-          messages_omitted: true,
-          session_id: 'runtime-running'
-        }) as never
-    )
+    const requestGateway = vi.fn(async () => ({}) as never)
 
-    renderTile(requestGateway, { updateSessionState })
-    await sessionTileDelegate()!.resumeTile('stored-running', 'default')
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-fresh' } as never)
 
-    const updater = updateSessionState.mock.calls[0]?.[1]
-    const hydrated = updater?.(createClientSessionState('stored-running'))
-
-    expect(hydrated?.busy).toBe(true)
-    expect(hydrated?.messages.map(chatMessageText)).toEqual(['Continue OpenShelf', 'Still working'])
-  })
-
-  it('hard rehydrate clears private mappings without interrupting the backend turn', () => {
-    const cached = { ...createClientSessionState('stored-reload'), busy: true }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-reload', 'runtime-reload']]) }
-    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-reload', cached]]) }
-    const requestGateway = vi.fn()
-
-    $sessionTiles.set([{ profile: 'default', runtimeId: 'runtime-reload', storedSessionId: 'stored-reload' }])
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
-    sessionTileDelegate()!.rehydrateTile('stored-reload', 'default')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-b')
 
-    expect(runtimeIdByStoredSessionIdRef.current.has('stored-reload')).toBe(false)
-    expect(sessionStateByRuntimeIdRef.current.has('runtime-reload')).toBe(false)
-    expect(requestGateway).not.toHaveBeenCalledWith('session.interrupt', expect.anything())
+    expect(runtimeId).toBe('runtime-fresh')
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'default',
+      'session.resume',
+      {
+        session_id: 'stored-b',
+        cols: 96,
+        profile: 'default',
+        omit_messages: true
+      },
+      undefined,
+      undefined
+    )
   })
 
   it('invalidateRuntimeBindings clears the stored→runtime map so tiles re-resume after reconnect', async () => {
     setSessions([row({ id: 'stored-c', profile: 'default' })])
 
-    const liveState = {
-      ...createClientSessionState('stored-c'),
-      busy: false,
-      messages: [{ id: 'm1' }]
-    } as ClientSessionState
+    const liveState = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-c' }
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-c', 'runtime-dead']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
 
-    const requestGateway = vi.fn(async (method: string) =>
-      method === 'session.resume' ? ({ session_id: 'runtime-fresh' } as never) : ({} as never)
-    )
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-fresh' } as never)
 
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
 
@@ -245,7 +224,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(runtimeIdByStoredSessionIdRef.current.size).toBe(0)
 
     // The next resume goes cold instead of reusing the dead binding.
-    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c', 'default')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
     expect(runtimeId).toBe('runtime-fresh')
   })
 })
@@ -267,7 +246,7 @@ describe('useSessionTileDelegate interruptSession', () => {
     const requestGateway = vi.fn(async () => ({}) as never)
 
     renderTile(requestGateway)
-    await sessionTileDelegate()!.interruptSession('runtime-tile-1', 'default')
+    await sessionTileDelegate()!.interruptSession('runtime-tile-1')
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-tile-1' })
     // Same 3s cooldown the primary chat's Stop sets: busy reads false while the

@@ -43,6 +43,18 @@
       ],
       "checks": [
         {
+          "id": "candidate-node-dependencies",
+          "cwd": ".",
+          "argv": [
+            "npm",
+            "ci",
+            "--ignore-scripts",
+            "--include=dev"
+          ],
+          "env": {},
+          "covers": []
+        },
+        {
           "id": "desktop-gateway-projects-tests",
           "cwd": "apps/desktop",
           "argv": [
@@ -77,7 +89,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-desktop-gateway-projects",
         "base_commit": "987064caa4f8845f605ac7346fed5b72fddfb21c",
         "commits": [
           "fece0a0e845a4ff061f97451181e505d80576e8c",
@@ -102,6 +114,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "bdc36447610a96f8d2d18adbf2f307c348d48699"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1ff19252127e40013d6709f5dbe5ad671c13fe7a"
         }
       ],
       "summary": "Fork replay tooling",
@@ -124,6 +141,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -143,15 +162,17 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-fork-replay-tooling",
         "base_commit": "fece0a0e845a4ff061f97451181e505d80576e8c",
         "commits": [
-          "bdc36447610a96f8d2d18adbf2f307c348d48699"
+          "bdc36447610a96f8d2d18adbf2f307c348d48699",
+          "1ff19252127e40013d6709f5dbe5ad671c13fe7a"
         ]
       },
       "references": [
         "DEVLOG.md",
-        "docs/refs/2026-08-22-axiom-regeneration-audit.md"
+        "docs/refs/2026-08-22-axiom-regeneration-audit.md",
+        "docs/refs/axiom-fork-reconciliation-standard.md"
       ]
     },
     {
@@ -198,6 +219,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -217,7 +240,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-forge-integration",
         "base_commit": "0c5ebda3bd082c59b999f50fb635b0f79f61fe31",
         "commits": [
           "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
@@ -229,7 +252,7 @@
       "id": "desktop-registered-source-routing",
       "title": "Desktop registered-source profile and session routing",
       "order": 35,
-      "status": "active",
+      "status": "retired",
       "domain_id": "desktop",
       "ownership": "core",
       "contract": {
@@ -356,6 +379,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -377,7 +402,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-project-source-policy",
         "base_commit": "b1b1a31280803f7d5ba41658dcad9a4bbd430ab8",
         "commits": [
           "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0"
@@ -433,7 +458,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-dashboard-profile-pty",
         "base_commit": "26a83ee27b1afce022af41c5fdd4aa17ab4f5db0",
         "commits": [
           "50f52e564a978c4cd2e0b1cd9aadede5909b9c76"
@@ -474,6 +499,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -491,7 +518,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-mcp-oauth-concurrency",
         "base_commit": "50f52e564a978c4cd2e0b1cd9aadede5909b9c76",
         "commits": [
           "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18"
@@ -533,6 +560,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -550,7 +579,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-windows-portability",
         "base_commit": "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18",
         "commits": [
           "b7204a0d31a1b725635714d5b7d0f952499be6c0"
@@ -595,6 +624,10 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
+            "--extra",
+            "messaging",
             "pytest",
             "-q",
             "-o",
@@ -614,7 +647,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-webhook-route-toolsets",
         "base_commit": "b7204a0d31a1b725635714d5b7d0f952499be6c0",
         "commits": [
           "63cec49ba790b60c4213aaae20ea159bb7d8a965"
@@ -654,6 +687,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -669,7 +704,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-dashboard-plugin-admin-auth",
         "base_commit": "63cec49ba790b60c4213aaae20ea159bb7d8a965",
         "commits": [
           "e389f3a63b51b6cf9c6b726c66bf60bca708e74f"
@@ -714,6 +749,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -729,7 +766,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-proxy-provider-routing",
         "base_commit": "e389f3a63b51b6cf9c6b726c66bf60bca708e74f",
         "commits": [
           "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6"
@@ -752,7 +789,7 @@
         {
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
-          "revision": "02e52ba46bdadd09dbeea57133621a8be9367f42"
+          "revision": "f1210e419a3f980b27a9480b6dc086c8ec3c7ec0"
         }
       ],
       "summary": "Shared cron profile ownership",
@@ -776,6 +813,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -799,10 +838,10 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
-        "base_commit": "302c44eb2ac1a029ce8b396d25c4dc44c66d4ed6",
+        "source_ref": "origin/carry/source-shared-cron-profile-ownership",
+        "base_commit": "057dcdf236f8a6a26721c10fcc6ccb72726e272a",
         "commits": [
-          "02e52ba46bdadd09dbeea57133621a8be9367f42"
+          "f1210e419a3f980b27a9480b6dc086c8ec3c7ec0"
         ]
       }
     },
@@ -841,6 +880,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -856,7 +897,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-lucid-memory-integration",
         "base_commit": "02e52ba46bdadd09dbeea57133621a8be9367f42",
         "commits": [
           "cdabca78a50bbe71fd3903e19ec7a32973e48232"
@@ -900,6 +941,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -915,7 +958,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-buzz-active-thread-mentions",
         "base_commit": "cdabca78a50bbe71fd3903e19ec7a32973e48232",
         "commits": [
           "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5"
@@ -958,6 +1001,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -975,7 +1020,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-tui-plugin-command-cards",
         "base_commit": "0cb0fa99055bc37791d5590af46a6ae6fa08d6d5",
         "commits": [
           "f3faaa2c31615f341a0a07b41ee8091e35f17323"
@@ -1019,6 +1064,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -1036,7 +1083,7 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
+        "source_ref": "origin/carry/source-discord-bot-admission",
         "base_commit": "f3faaa2c31615f341a0a07b41ee8091e35f17323",
         "commits": [
           "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727"
@@ -1054,31 +1101,146 @@
         "path": "FORK.md",
         "heading": "Deploy branch update reconciliation"
       },
-      "depends_on": [],
+      "depends_on": [
+        "fork-replay-tooling"
+      ],
       "provenance": [
         {
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
-          "revision": "ca96c2327c61a2bac9e2585d54e9741d05ecfae0"
+          "revision": "dc7cdb25bc6eff2b87d8e922864efc91159667ae"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "134226fa751ebf7b5d37b754b76591ae0959d0e9"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "56bf56a8dfac432f7cc640e945224e88d7eb656b"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "18126df48ec38326b33a6306ad30bb32cf9d7330"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "90f1ec12f314daa1e565aef7124a4470a7dab7f3"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "d6d85d8ae10edd85f0824a9a105e23e39bc771ce"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "e9a8eae27339e165047bb5dbc3bfcc34029affd8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "f04f5835b532487d1c440c8cb4c5754a26a900a4"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "6479bab86c4d742c3949d52c3429c5742ac317ae"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "4e781669ed59c02cc8e01d4473248611633c5817"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "87159dbcfbef834f55625f3d478df61b35634ef8"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "75e34f40d71171141cbd723bd62dbc0d121d9ba3"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "2246ba28e53fcdf23215c31e00b5c0b26a412def"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "d85ad66074d57b1173a9035975077baf1f664b94"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "b83cc94cee87b0ce70fe60d07a6e30005c384cea"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1be4d5f562cb1d7086e388d9b857fcb3ee848d34"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "583d3d7a562a1ba1fdac04065ca09395b652b4e3"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "a68b82b0e1a6ee58d08d38f9edda5be69c0a5652"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "79158461b407a0f94dcc4aea82742addba0acd44"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "a02a0b363db62ee545e673d7f318eb49e54e8991"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "f39c50c9135bde07687bd23bdcfc9d709d6a3352"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "6ea153ba0e9051af7a57440ecbabb65677c0faa9"
         }
       ],
       "summary": "Deploy branch update reconciliation",
       "paths": [
         "hermes_cli/_startup_fast.py",
+        "hermes_cli/axiom_reconcile.py",
         "hermes_cli/axiom_update.py",
         "hermes_cli/banner.py",
+        "hermes_cli/gateway_windows.py",
         "hermes_cli/main.py",
         "hermes_cli/subcommands/update.py",
         "hermes_cli/update_cmd.py",
         "hermes_cli/update_ui.py",
+        "docs/axiom-fork-contract.md",
+        "fork-carries.json",
+        "website/docs/reference/cli-commands.md",
         "scripts/check-merge-drops.py"
       ],
       "tests": [
+        "tests/hermes_cli/test_axiom_reconcile.py",
         "tests/hermes_cli/test_cmd_update.py",
         "tests/hermes_cli/test_update_autostash.py",
         "tests/hermes_cli/test_update_check.py",
         "tests/hermes_cli/test_update_concurrent_quarantine.py",
+        "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
         "tests/hermes_cli/test_update_ui.py",
+        "tests/hermes_cli/test_gateway_windows.py",
         "tests/hermes_cli/test_version_preview.py"
       ],
       "checks": [
@@ -1088,22 +1250,30 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
             "addopts=",
+            "tests/hermes_cli/test_axiom_reconcile.py",
             "tests/hermes_cli/test_cmd_update.py",
             "tests/hermes_cli/test_update_autostash.py",
             "tests/hermes_cli/test_update_check.py",
             "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
+            "tests/hermes_cli/test_gateway_windows.py",
             "tests/hermes_cli/test_update_ui.py"
           ],
           "env": {},
           "covers": [
+            "tests/hermes_cli/test_axiom_reconcile.py",
             "tests/hermes_cli/test_cmd_update.py",
             "tests/hermes_cli/test_update_autostash.py",
             "tests/hermes_cli/test_update_check.py",
             "tests/hermes_cli/test_update_concurrent_quarantine.py",
+            "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
+            "tests/hermes_cli/test_gateway_windows.py",
             "tests/hermes_cli/test_update_ui.py"
           ]
         },
@@ -1113,6 +1283,8 @@
           "argv": [
             "uv",
             "run",
+            "--extra",
+            "dev",
             "pytest",
             "-q",
             "-o",
@@ -1128,10 +1300,31 @@
       "retirement": "Retire when current upstream provides equivalent behavior and focused parity tests pass without this carry.",
       "replay": {
         "kind": "commit_series",
-        "source_ref": "origin/axiom-next",
-        "base_commit": "8e6e6edfd502d44a1a34b4df6874c0b51e2d7727",
+        "source_ref": "origin/carry/deploy-update-20260823",
+        "base_commit": "f293e7206b4ddd66042329442c6afebc19a8808d",
         "commits": [
-          "ca96c2327c61a2bac9e2585d54e9741d05ecfae0"
+          "dc7cdb25bc6eff2b87d8e922864efc91159667ae",
+          "134226fa751ebf7b5d37b754b76591ae0959d0e9",
+          "56bf56a8dfac432f7cc640e945224e88d7eb656b",
+          "18126df48ec38326b33a6306ad30bb32cf9d7330",
+          "90f1ec12f314daa1e565aef7124a4470a7dab7f3",
+          "d6d85d8ae10edd85f0824a9a105e23e39bc771ce",
+          "e9a8eae27339e165047bb5dbc3bfcc34029affd8",
+          "f04f5835b532487d1c440c8cb4c5754a26a900a4",
+          "6479bab86c4d742c3949d52c3429c5742ac317ae",
+          "4e781669ed59c02cc8e01d4473248611633c5817",
+          "87159dbcfbef834f55625f3d478df61b35634ef8",
+          "75e34f40d71171141cbd723bd62dbc0d121d9ba3",
+          "2246ba28e53fcdf23215c31e00b5c0b26a412def",
+          "d85ad66074d57b1173a9035975077baf1f664b94",
+          "b83cc94cee87b0ce70fe60d07a6e30005c384cea",
+          "1be4d5f562cb1d7086e388d9b857fcb3ee848d34",
+          "583d3d7a562a1ba1fdac04065ca09395b652b4e3",
+          "a68b82b0e1a6ee58d08d38f9edda5be69c0a5652",
+          "79158461b407a0f94dcc4aea82742addba0acd44",
+          "a02a0b363db62ee545e673d7f318eb49e54e8991",
+          "f39c50c9135bde07687bd23bdcfc9d709d6a3352",
+          "6ea153ba0e9051af7a57440ecbabb65677c0faa9"
         ]
       }
     }

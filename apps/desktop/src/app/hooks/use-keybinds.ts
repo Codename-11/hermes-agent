@@ -16,7 +16,6 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
-import { useI18n } from '@/i18n'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
@@ -30,7 +29,7 @@ import {
   openFindBar
 } from '@/store/find-in-page'
 import { toggleHud } from '@/store/hud'
-import { $capture, $comboIndex, bindingAllowedForAction, endCapture, setBinding } from '@/store/keybinds'
+import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
   setFileBrowserOpen,
@@ -38,7 +37,6 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
-import { notify } from '@/store/notifications'
 import { openBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -59,22 +57,16 @@ import {
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
-  slotSession,
+  slotSessionId,
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
-import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import {
-  requestAutoSpeakToggle,
-  requestComposerFocus,
-  requestDictationToggle,
-  requestModelMenuToggle,
-  requestVoiceToggle
-} from '../chat/composer/focus'
+import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
 import {
@@ -106,36 +98,6 @@ export interface KeybindRuntimeDeps {
 
 type HandlerMap = Record<string, () => void>
 
-export async function toggleWakeWordFromKeyboard(
-  actionLabel: string,
-  toggle: () => Promise<void> = toggleWakeWord
-): Promise<void> {
-  const before = $wakeWord.get()
-
-  if (before.pending) {
-    notify({
-      id: 'wake-word-keybind-pending',
-      kind: 'warning',
-      message: actionLabel,
-      detail: before.notice
-    })
-
-    return
-  }
-
-  await toggle()
-  const after = $wakeWord.get()
-
-  if (after.listening === before.listening) {
-    notify({
-      id: 'wake-word-keybind-failed',
-      kind: 'error',
-      message: actionLabel,
-      detail: after.notice
-    })
-  }
-}
-
 // Mount once near the top of the app. Owns the single global keydown listener
 // for every rebindable hotkey: it runs the matched action, or — while capture
 // mode is active (edit overlay / panel rebind) — records the pressed combo.
@@ -143,7 +105,6 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const navigate = useNavigate()
   const location = useLocation()
   const { resolvedMode, setMode } = useTheme()
-  const { t } = useI18n()
 
   // Keep the latest closures without re-subscribing the listener.
   const handlersRef = useRef<HandlerMap>({})
@@ -179,9 +140,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
-  const goToSession = (session: null | { id: string; profile?: string }) => {
-    if (session) {
-      openSession(session.id, navigate, 'in-place', session.profile)
+  const goToSession = (sessionId: null | string) => {
+    if (sessionId) {
+      openSession(sessionId, navigate)
     }
   }
 
@@ -191,7 +152,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   for (let slot = 1; slot <= SESSION_SLOT_COUNT; slot += 1) {
     sessionSlotHandlers[`session.slot.${slot}`] = () => {
       closeSwitcher()
-      goToSession(slotSession(slot))
+      goToSession(slotSessionId(slot))
     }
   }
 
@@ -232,9 +193,6 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'composer.voice': requestVoiceToggle,
-    'composer.dictate': requestDictationToggle,
-    'composer.autoSpeak': requestAutoSpeakToggle,
-    'composer.wakeWord': () => void toggleWakeWordFromKeyboard(t.keybinds.actions['composer.wakeWord']),
 
     // On the Settings overlay, ⌘K scopes to settings search; the second press
     // (or Esc) still closes as usual via toggle.
@@ -392,13 +350,6 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           return
         }
 
-        // Dictation must remain reachable while the composer owns focus. Keep
-        // capture armed after a bare/Shift-only key instead of saving a binding
-        // the normal editable-target gate will correctly refuse to dispatch.
-        if (!bindingAllowedForAction(capturing, combo)) {
-          return
-        }
-
         setBinding(capturing, [combo])
         endCapture()
 
@@ -505,6 +456,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // clipboard (text AND images) into the active composer. Bubble phase so
     // editables' own paste handlers run first and mark the event handled.
     window.addEventListener('paste', handleWindowPaste)
+    // ⌘/Ctrl+L moves focus to the composer. Bubble phase so capture-phase
+    // claimants run first; the priority ladder lives in focus-chord.ts.
+    window.addEventListener('keydown', handleComposerFocusChord)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
@@ -512,6 +466,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('contextmenu', onContextMenu, { capture: true })
       window.removeEventListener('paste', handleWindowPaste)
+      window.removeEventListener('keydown', handleComposerFocusChord)
     }
   }, [])
 }
