@@ -94,7 +94,12 @@ def _valid_repo_path(value: str, *, allow_dot: bool = False) -> bool:
     return all(segment not in ("", ".", "..") for segment in value.split("/"))
 
 
-def _path_diagnostics(carries: list[Any], repo_root: Path) -> list[str]:
+def _path_diagnostics(
+    carries: list[Any],
+    repo_root: Path,
+    *,
+    check_path_existence: bool = True,
+) -> list[str]:
     diagnostics: list[str] = []
     root = repo_root.resolve()
     for carry_index, carry in enumerate(carries):
@@ -127,7 +132,7 @@ def _path_diagnostics(carries: list[Any], repo_root: Path) -> list[str]:
                 target = (root / value).resolve()
                 if not target.is_relative_to(root):
                     diagnostics.append(f"{location}: path resolves outside repository")
-                elif active and not target.exists():
+                elif active and check_path_existence and not target.exists():
                     diagnostics.append(f"{location}: path does not exist")
         checks = carry.get("checks")
         if isinstance(checks, list):
@@ -460,7 +465,12 @@ def _diagnostic_sort_key(diagnostic: str) -> tuple[int, int, str]:
     return (1, 0, diagnostic)
 
 
-def validate_manifest(manifest: Any, repo_root: Path = REPO_ROOT) -> list[str]:
+def validate_manifest(
+    manifest: Any,
+    repo_root: Path = REPO_ROOT,
+    *,
+    check_path_existence: bool = True,
+) -> list[str]:
     """Return deterministic diagnostics for a manifest."""
     diagnostics = _object_shape(manifest, "$", ROOT_REQUIRED)
     if not isinstance(manifest, dict):
@@ -485,7 +495,13 @@ def validate_manifest(manifest: Any, repo_root: Path = REPO_ROOT) -> list[str]:
         if isinstance(carry, dict):
             diagnostics.extend(_field_type_diagnostics(carry, location))
     diagnostics.extend(_identifier_and_dependency_diagnostics(carries))
-    diagnostics.extend(_path_diagnostics(carries, repo_root))
+    diagnostics.extend(
+        _path_diagnostics(
+            carries,
+            repo_root,
+            check_path_existence=check_path_existence,
+        )
+    )
     diagnostics.extend(_content_diagnostics(carries))
     diagnostics.extend(_check_diagnostics(carries))
     return sorted(diagnostics, key=_diagnostic_sort_key)
