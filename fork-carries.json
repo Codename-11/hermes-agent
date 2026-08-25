@@ -119,6 +119,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "1ff19252127e40013d6709f5dbe5ad671c13fe7a"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "d517d3a141df9a043d8eedec6f91acd9ad56f321"
         }
       ],
       "summary": "Fork replay tooling",
@@ -166,7 +171,8 @@
         "base_commit": "fece0a0e845a4ff061f97451181e505d80576e8c",
         "commits": [
           "bdc36447610a96f8d2d18adbf2f307c348d48699",
-          "1ff19252127e40013d6709f5dbe5ad671c13fe7a"
+          "1ff19252127e40013d6709f5dbe5ad671c13fe7a",
+          "d517d3a141df9a043d8eedec6f91acd9ad56f321"
         ]
       },
       "references": [
@@ -1054,7 +1060,7 @@
         "website/docs/user-guide/messaging/discord.md"
       ],
       "tests": [
-        "tests/gateway/test_discord_approval_mentions.py",
+        "tests/gateway/test_discord_allowed_mentions.py",
         "tests/gateway/test_discord_bot_filter.py"
       ],
       "checks": [
@@ -1070,12 +1076,12 @@
             "-q",
             "-o",
             "addopts=",
-            "tests/gateway/test_discord_approval_mentions.py",
+            "tests/gateway/test_discord_allowed_mentions.py",
             "tests/gateway/test_discord_bot_filter.py"
           ],
           "env": {},
           "covers": [
-            "tests/gateway/test_discord_approval_mentions.py",
+            "tests/gateway/test_discord_allowed_mentions.py",
             "tests/gateway/test_discord_bot_filter.py"
           ]
         }
@@ -1219,6 +1225,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "b69666344817c633abbc3a0ff8bb4d7a71c7699c"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "bbcd97c11d903dd6509d9e8d222edfdaff0eb334"
         }
       ],
       "summary": "Deploy branch update reconciliation",
@@ -1330,7 +1341,8 @@
           "a02a0b363db62ee545e673d7f318eb49e54e8991",
           "f39c50c9135bde07687bd23bdcfc9d709d6a3352",
           "6ea153ba0e9051af7a57440ecbabb65677c0faa9",
-          "b69666344817c633abbc3a0ff8bb4d7a71c7699c"
+          "b69666344817c633abbc3a0ff8bb4d7a71c7699c",
+          "bbcd97c11d903dd6509d9e8d222edfdaff0eb334"
         ]
       }
     }
