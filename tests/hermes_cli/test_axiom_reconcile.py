@@ -602,6 +602,46 @@ def test_queue_snapshots_immutable_worker_and_manifest(monkeypatch, tmp_path):
     assert kwargs["cwd"] == run_dir
 
 
+def test_queue_returns_same_failed_inputs_without_relaunch(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "hermes_cli").mkdir(parents=True)
+    (repo / "scripts").mkdir()
+    (repo / "hermes_cli" / "axiom_reconcile.py").write_text("# worker\n", encoding="utf-8")
+    (repo / "scripts" / "fork_carry_manifest.py").write_text("# validator\n", encoding="utf-8")
+    (repo / "fork-carries.json").write_text('{"carries": []}\n', encoding="utf-8")
+    state_path = tmp_path / "state" / "axiom.json"
+    monkeypatch.setattr(axiom_update, "_reconciliation_state_path", lambda _branch: state_path)
+    launched = []
+
+    class FakeProcess:
+        pid = 4242
+
+    monkeypatch.setattr(
+        axiom_update.subprocess,
+        "Popen",
+        lambda *args, **kwargs: launched.append((args, kwargs)) or FakeProcess(),
+    )
+
+    queued = axiom_update._queue_fork_reconciliation(
+        repo=repo, branch="axiom", upstream_sha="a" * 40
+    )
+    failed = {
+        **queued,
+        "state": "failed",
+        "pid": None,
+        "error": "RuntimeError: invalid carry manifest",
+    }
+    state_path.write_text(json.dumps(failed), encoding="utf-8")
+
+    repeated = axiom_update._queue_fork_reconciliation(
+        repo=repo, branch="axiom", upstream_sha="a" * 40
+    )
+
+    assert repeated["state"] == "failed"
+    assert repeated["error"] == "RuntimeError: invalid carry manifest"
+    assert len(launched) == 1
+
+
 def test_pid_liveness_probe_does_not_signal_process():
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
@@ -878,6 +918,44 @@ def test_deploy_branch_update_queues_upstream_without_mutating_live_refs(
     out = capsys.readouterr().out
     assert "Candidate verification started" in out
     assert "Current deployment unchanged" in out
+
+
+def test_deploy_branch_update_reports_failed_candidate_instead_of_requeue(
+    monkeypatch, tmp_path, capsys
+):
+    def fake_run(cmd, **kwargs):
+        responses = {
+            ("git", "fetch", "upstream", "--quiet"): "",
+            ("git", "fetch", "origin", "axiom:refs/remotes/origin/axiom", "--quiet"): "",
+            ("git", "rev-list", "--count", "HEAD..origin/axiom"): "0\n",
+            ("git", "rev-list", "--count", "origin/axiom..HEAD"): "0\n",
+            ("git", "rev-list", "--count", "origin/axiom..upstream/main"): "3\n",
+            ("git", "rev-parse", "--verify", "upstream/main^{commit}"): f"{'a' * 40}\n",
+        }
+        key = tuple(cmd)
+        if key in responses:
+            return SimpleNamespace(stdout=responses[key], stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        axiom_update,
+        "_queue_fork_reconciliation",
+        lambda **_kwargs: {
+            "state": "failed",
+            "error": "RuntimeError: invalid carry manifest: stale test path",
+        },
+    )
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], tmp_path, "axiom", "oldhead"
+    )
+
+    assert changed is None
+    out = capsys.readouterr().out
+    assert "Candidate verification failed" in out
+    assert "invalid carry manifest: stale test path" in out
+    assert "Candidate verification started" not in out
 
 
 def test_deploy_branch_update_consumes_published_candidate_before_queueing_new_upstream(
