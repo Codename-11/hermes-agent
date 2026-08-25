@@ -171,3 +171,21 @@ def test_success_summary_survives_receipt_failure(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "✓ Update complete! (v0.20.5)" in out
     assert "⚠ Reconciliation receipt unavailable" in out
+
+
+def test_reconciliation_receipt_marks_missing_evidence_unavailable(tmp_path, capsys):
+    update_cmd._print_reconciliation_receipt(
+        repo=tmp_path,
+        previous_sha="a" * 40,
+        branch="axiom",
+        git_cmd=["git"],
+    )
+
+    out = capsys.readouterr().out
+    assert "Current    unavailable" in out
+    assert "Upstream   unavailable" in out
+    assert "Origin     unavailable" in out
+    assert "⚠ current/origin comparison unavailable" in out
+    assert "⚠ upstream ancestry unavailable" in out
+    assert "current differs" not in out
+    assert "is not merged" not in out
