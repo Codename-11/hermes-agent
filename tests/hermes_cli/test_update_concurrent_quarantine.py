@@ -941,15 +941,10 @@ def test_update_gate_still_aborts_on_non_gateway_concurrent(
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_cmd_update_pauses_windows_gateways_before_concurrent_guard(
+def test_cmd_update_classifies_concurrent_holders_before_pausing_gateways(
     _winp, tmp_path
 ):
-    """Gateway pause/resume must run before the generic hermes.exe guard.
-
-    A Windows A2A/API gateway can be launched as ``hermes.exe gateway run``.
-    If the concurrent-shim guard runs first, ``hermes update`` aborts before
-    reaching the gateway pause path that would release the venv shim lock.
-    """
+    """Reject unsafe holders before stopping gateways, then pause before mutation."""
     scripts_dir = tmp_path / "Scripts"
     scripts_dir.mkdir()
     token = {
@@ -959,16 +954,16 @@ def test_cmd_update_pauses_windows_gateways_before_concurrent_guard(
     }
     order = []
 
+    def fake_detect(_scripts_dir):
+        order.append("detect")
+        return []
+
     def fake_pause():
         order.append("pause")
         return token
 
     def fake_register(func, arg):
         order.append(("register", func, arg))
-
-    def fake_detect(_scripts_dir):
-        order.append("detect")
-        return []
 
     def fake_backup(_args):
         order.append("backup")
@@ -990,13 +985,16 @@ def test_cmd_update_pauses_windows_gateways_before_concurrent_guard(
         with pytest.raises(RuntimeError, match="reached post-gate body"):
             cli_main.cmd_update(_update_args())
 
-    assert order[0] == "pause"
-    assert order[1] == (
-        "register",
-        cli_main._resume_windows_gateways_after_update,
-        token,
-    )
-    assert order[2:] == ["detect", "backup"]
+    assert order == [
+        "detect",
+        "pause",
+        (
+            "register",
+            cli_main._resume_windows_gateways_after_update,
+            token,
+        ),
+        "backup",
+    ]
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)

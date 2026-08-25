@@ -6289,27 +6289,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except Exception as _plan_exc:
         logger.debug("Update plan phase failed: %s", _plan_exc)
 
-    # Pause gateways before the generic Windows shim guard. A gateway started
-    # as ``hermes.exe gateway run`` keeps its launcher shim mapped; checking for
-    # concurrent shims first would abort before the pause path can release it.
-    # The receipt/plan snapshot stays above this pause so it inventories the
-    # live pre-update fleet rather than the temporarily quiesced one.
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-
-        _atexit.register(
-            _m()._resume_windows_gateways_after_update,
-            _windows_gateway_resume,
-        )
-
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
     # that silently falls back to the slower ZIP route. See issue #26670.
     #
     # Exception (#37039): when every concurrent instance is a gateway
-    # runtime, the pause machinery a few lines below
+    # runtime, the pause machinery below
     # (``_pause_windows_gateways_for_update``) stops it before any file
     # mutation, and the post-update restart phase brings it back. Aborting
     # just to make the user run the same kill manually is friction without
@@ -6331,6 +6317,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         )
                     )
                     sys.exit(2)
+
+    # Stop the recognized gateway fleet only after the concurrent guard has
+    # rejected unsafe/non-gateway holders. Register recovery before backup or
+    # any checkout/venv mutation.
+    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+    if _windows_gateway_resume:
+        import atexit as _atexit
+
+        _atexit.register(
+            _m()._resume_windows_gateways_after_update,
+            _windows_gateway_resume,
+        )
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
