@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +78,93 @@ def _read_reconciliation_state(path: Path) -> dict[str, object]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+_RECONCILIATION_SUCCESS_STATES = {"ready", "deployed"}
+_RECONCILIATION_FAILURE_STATES = {"failed", "blocked", "cancelled", "stale"}
+
+
+def _format_reconciliation_status(state: dict[str, object]) -> str:
+    name = str(state.get("state") or "unknown")
+    lines = [f"Reconciliation: {name}"]
+    phase = str(state.get("phase") or "")
+    detail = str(state.get("detail") or "")
+    if phase:
+        if phase == "checks" and state.get("check_index") and state.get("check_total"):
+            phase = f"checks {state['check_index']}/{state['check_total']}"
+        lines.append(f"Phase: {phase}" + (f" — {detail}" if detail else ""))
+    candidate = str(state.get("candidate_sha") or "")
+    if candidate:
+        lines.append(f"Candidate: {candidate[:12]}")
+    if state.get("pid"):
+        lines.append(f"PID: {state['pid']}")
+    if state.get("started_at"):
+        lines.append(f"Started: {state['started_at']}")
+    error = str(state.get("error") or "")
+    if error:
+        lines.append(f"Error: {error}")
+    for label, key in (("Log", "log_path"), ("Report", "report_path")):
+        value = str(state.get(key) or "")
+        if value:
+            lines.append(f"{label}: {value}")
+    return "\n".join(lines)
+
+
+def show_reconciliation_status(
+    branch: str,
+    *,
+    wait: bool = False,
+    poll_interval: float = 1.0,
+) -> int:
+    """Print one reconciliation snapshot or follow it to a terminal state."""
+    state_path = _reconciliation_state_path(branch)
+    last_signature: tuple[object, ...] | None = None
+    log_positions: dict[Path, int] = {}
+    while True:
+        state = _read_reconciliation_state(state_path)
+        if not state:
+            print(f"No reconciliation state found for {branch}: {state_path}")
+            return 1
+
+        signature = (
+            state.get("state"),
+            state.get("phase"),
+            state.get("detail"),
+            state.get("check_index"),
+            state.get("check_total"),
+            state.get("candidate_sha"),
+            state.get("error"),
+        )
+        if signature != last_signature:
+            if last_signature is not None:
+                print()
+            print(_format_reconciliation_status(state))
+            last_signature = signature
+
+        if wait:
+            raw_log_path = str(state.get("log_path") or "")
+            if raw_log_path:
+                log_path = Path(raw_log_path)
+                position = log_positions.get(log_path, 0)
+                try:
+                    size = log_path.stat().st_size
+                    if size < position:
+                        position = 0
+                    with log_path.open("r", encoding="utf-8", errors="replace") as log_file:
+                        log_file.seek(position)
+                        chunk = log_file.read()
+                        log_positions[log_path] = log_file.tell()
+                    if chunk:
+                        print(chunk, end="" if chunk.endswith("\n") else "\n")
+                except OSError:
+                    pass
+
+        name = str(state.get("state") or "")
+        if not wait or name in _RECONCILIATION_SUCCESS_STATES:
+            return 0
+        if name in _RECONCILIATION_FAILURE_STATES:
+            return 1
+        time.sleep(poll_interval)
 
 
 def _is_link_or_reparse(metadata: os.stat_result) -> bool:

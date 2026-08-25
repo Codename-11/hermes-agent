@@ -37,8 +37,8 @@ def test_run_checks_resolves_windows_command_shims(monkeypatch, tmp_path):
         else None,
     )
 
-    def fake_run(argv, **_kwargs):
-        observed.append(argv)
+    def fake_run(argv, **kwargs):
+        observed.append((argv, kwargs))
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(axiom_reconcile.subprocess, "run", fake_run)
@@ -50,7 +50,74 @@ def test_run_checks_resolves_windows_command_shims(monkeypatch, tmp_path):
 
     assert complete is True
     assert reports[0]["returncode"] == 0
-    assert observed == [["C:/Program Files/nodejs/npx.CMD", "vitest", "run"]]
+    assert observed[0][0] == ["C:/Program Files/nodejs/npx.CMD", "vitest", "run"]
+    assert observed[0][1]["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
+def test_run_checks_streams_log_and_reports_progress(tmp_path):
+    log_path = tmp_path / "worker.log"
+    progress = []
+    checks = [
+        {
+            "id": "visible-check",
+            "cwd": ".",
+            "argv": [sys.executable, "-c", "print('visible output')"],
+            "env": {},
+        }
+    ]
+
+    reports, ok = axiom_reconcile._run_checks(
+        tmp_path,
+        checks,
+        log_path=log_path,
+        on_progress=lambda **row: progress.append(row),
+    )
+
+    assert ok is True
+    assert reports[0]["stdout"].strip() == "visible output"
+    assert progress == [
+        {"check_index": 1, "check_total": 1, "check_id": "visible-check"}
+    ]
+    log = log_path.read_text(encoding="utf-8")
+    assert "[check 1/1] visible-check" in log
+    assert "visible output" in log
+    assert "[passed] visible-check" in log
+
+
+def test_publish_progress_updates_run_and_canonical_state(tmp_path):
+    run_state = tmp_path / "runs" / "run-id" / "state.json"
+    canonical_state = tmp_path / "axiom.json"
+    log_path = run_state.parent / "worker.log"
+    initial = {
+        "state": "running",
+        "run_id": "run-id",
+        "input_digest": "digest",
+    }
+    axiom_reconcile._write_json(run_state, initial)
+    axiom_reconcile._write_json(canonical_state, initial)
+
+    axiom_reconcile._publish_progress(
+        state_path=run_state,
+        canonical_state_path=canonical_state,
+        run_id="run-id",
+        input_digest="digest",
+        log_path=log_path,
+        phase="checks",
+        detail="visible-check",
+        check_index=2,
+        check_total=5,
+        check_id="visible-check",
+    )
+
+    for path in (run_state, canonical_state):
+        state = json.loads(path.read_text(encoding="utf-8"))
+        assert state["phase"] == "checks"
+        assert state["detail"] == "visible-check"
+        assert state["check_index"] == 2
+        assert state["check_total"] == 5
+        assert state["check_id"] == "visible-check"
+        assert state["progress_updated_at"]
+    assert "[phase] checks: visible-check" in log_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("reparse_component", ["root", "runs", "run", "file"])
@@ -1088,7 +1155,7 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     monkeypatch.setattr(
         axiom_reconcile,
         "_run_checks",
-        lambda _worktree, _checks: ([{"id": "test", "returncode": 0}], True),
+        lambda _worktree, _checks, **_kwargs: ([{"id": "test", "returncode": 0}], True),
     )
     state_root = tmp_path / "state"
     state_root.mkdir()

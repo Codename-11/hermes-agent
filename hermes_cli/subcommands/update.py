@@ -32,6 +32,19 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=False,
         help="Check whether an update is available without installing anything",
     )
+    monitor_group = update_parser.add_mutually_exclusive_group()
+    monitor_group.add_argument(
+        "--status",
+        action="store_true",
+        default=False,
+        help="Show the current deploy-branch reconciliation status",
+    )
+    monitor_group.add_argument(
+        "--wait",
+        action="store_true",
+        default=False,
+        help="Follow reconciliation progress and verifier output until completion",
+    )
     update_parser.add_argument(
         "--plan",
         action="store_true",
