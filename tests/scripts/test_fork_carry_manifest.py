@@ -299,6 +299,19 @@ def test_active_paths_tests_and_check_cwd_must_exist(tmp_path: Path) -> None:
     assert "carries[0].checks[0].cwd: directory does not exist" in diagnostics
 
 
+def test_path_existence_can_be_deferred_until_candidate_tree(tmp_path: Path) -> None:
+    manifest = minimal_manifest(tmp_path)
+    carry = manifest["carries"][0]  # type: ignore[index]
+    carry["paths"] = ["src/missing.py"]  # type: ignore[index]
+    carry["tests"] = ["tests/missing.py"]  # type: ignore[index]
+
+    diagnostics = load_module().validate_manifest(
+        manifest, tmp_path, check_path_existence=False
+    )
+
+    assert not any("path does not exist" in item for item in diagnostics)
+
+
 def test_retired_carry_allows_empty_and_missing_historical_artifacts(tmp_path: Path) -> None:
     manifest = minimal_manifest(tmp_path)
     carry = manifest["carries"][0]  # type: ignore[index]
