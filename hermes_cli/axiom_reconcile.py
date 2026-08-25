@@ -276,48 +276,101 @@ def _deduplicated_checks(carries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return checks
 
 
-def _run_checks(worktree: Path, checks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+def _windows_no_window_flags() -> int:
+    if os.name != "nt":
+        return 0
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _run_checks(
+    worktree: Path,
+    checks: list[dict[str, Any]],
+    *,
+    log_path: Path | None = None,
+    on_progress=None,
+) -> tuple[list[dict[str, Any]], bool]:
     reports: list[dict[str, Any]] = []
-    for check in checks:
+    total = len(checks)
+    for index, check in enumerate(checks, start=1):
+        check_id = str(check["id"])
+        if on_progress is not None:
+            on_progress(check_index=index, check_total=total, check_id=check_id)
         env = os.environ.copy()
         env.update({str(k): str(v) for k, v in (check.get("env") or {}).items()})
         argv = [str(item) for item in check["argv"]]
         if os.name == "nt":
             argv[0] = shutil.which(argv[0]) or argv[0]
+        common = {
+            "cwd": worktree / str(check["cwd"]),
+            "env": env,
+            "shell": False,
+            "check": False,
+            "timeout": CHECK_TIMEOUT_SECONDS,
+            "creationflags": _windows_no_window_flags(),
+        }
+        output = ""
+        log_file = None
+        row: dict[str, Any] | None = None
         try:
-            result = subprocess.run(
-                argv,
-                cwd=worktree / str(check["cwd"]),
-                env=env,
-                text=True,
-                capture_output=True,
-                shell=False,
-                check=False,
-                timeout=CHECK_TIMEOUT_SECONDS,
-            )
+            if log_path is None:
+                result = subprocess.run(
+                    argv,
+                    text=True,
+                    capture_output=True,
+                    **common,
+                )
+                output = result.stdout
+                stderr = result.stderr
+            else:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_file = log_path.open("a+b")
+                header = f"\n[check {index}/{total}] {check_id}\n$ {' '.join(argv)}\n"
+                log_file.write(header.encode("utf-8", errors="replace"))
+                log_file.flush()
+                output_start = log_file.tell()
+                result = subprocess.run(
+                    argv,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    **common,
+                )
+                log_file.flush()
+                output_end = log_file.tell()
+                log_file.seek(output_start)
+                output = log_file.read(output_end - output_start).decode(
+                    "utf-8", errors="replace"
+                )
+                stderr = ""
             row = {
-                "id": check["id"],
+                "id": check_id,
                 "returncode": result.returncode,
-                "stdout": _bounded(result.stdout),
-                "stderr": _bounded(result.stderr),
+                "stdout": _bounded(output),
+                "stderr": _bounded(stderr),
                 "timed_out": False,
             }
         except subprocess.TimeoutExpired as exc:
             row = {
-                "id": check["id"],
+                "id": check_id,
                 "returncode": None,
-                "stdout": _bounded(exc.stdout or ""),
+                "stdout": _bounded(output or exc.stdout or ""),
                 "stderr": _bounded(exc.stderr or ""),
                 "timed_out": True,
             }
         except OSError as exc:
             row = {
-                "id": check["id"],
+                "id": check_id,
                 "returncode": None,
-                "stdout": "",
+                "stdout": _bounded(output),
                 "stderr": f"{type(exc).__name__}: {exc}",
                 "timed_out": False,
             }
+        finally:
+            if log_file is not None:
+                status = "passed" if row is not None and row["returncode"] == 0 else "failed"
+                log_file.seek(0, os.SEEK_END)
+                log_file.write(f"\n[{status}] {check_id}\n".encode("utf-8"))
+                log_file.close()
+        assert row is not None
         reports.append(row)
         if row["returncode"] != 0:
             return reports, False
@@ -445,6 +498,38 @@ def _update_canonical_state_if_current(
         _release_state_lock(lock_path, descriptor)
 
 
+def _publish_progress(
+    *,
+    state_path: Path,
+    canonical_state_path: Path | None,
+    run_id: str,
+    input_digest: str,
+    log_path: Path,
+    phase: str,
+    detail: str = "",
+    **progress: Any,
+) -> None:
+    updates = {
+        "phase": phase,
+        "detail": detail,
+        "progress_updated_at": datetime.now().isoformat(timespec="seconds"),
+        **progress,
+    }
+    _update_state(state_path, **updates)
+    if canonical_state_path is not None and canonical_state_path != state_path:
+        _update_canonical_state_if_current(
+            canonical_state_path,
+            run_id=run_id,
+            input_digest=input_digest,
+            **updates,
+        )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = f": {detail}" if detail else ""
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write(f"[phase] {phase}{suffix}\n")
+        log_file.flush()
+
+
 def _remote_branch_sha(repo: Path, branch: str) -> str:
     result = _run(repo, "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
     if result.returncode != 0 or not result.stdout.strip():
@@ -526,6 +611,7 @@ def generate_candidate(
     worker_path = (worker_path or Path(__file__)).resolve()
     report_path = (report_path or state_path.with_suffix(".report.json")).resolve()
     run_dir = state_path.parent
+    log_path = run_dir / "worker.log"
     run_id = input_digest[:24]
     report: dict[str, Any] = {
         "state": "failed",
@@ -568,11 +654,24 @@ def generate_candidate(
             **running_updates,
         )
 
+    def progress(phase: str, detail: str = "", **fields: Any) -> None:
+        _publish_progress(
+            state_path=state_path,
+            canonical_state_path=canonical_state_path,
+            run_id=run_id,
+            input_digest=input_digest,
+            log_path=log_path,
+            phase=phase,
+            detail=detail,
+            **fields,
+        )
+
     container = Path(tempfile.mkdtemp(prefix=f"hermes-{branch}-candidate-"))
     worktree = container / "worktree"
     added = False
     private_refs: list[str] = []
     try:
+        progress("manifest", "validating immutable carry manifest")
         manifest, diagnostics = _load_manifest(
             repo,
             manifest_path=manifest_path,
@@ -591,17 +690,29 @@ def generate_candidate(
             raise RuntimeError("active carries are not replay-ready: " + ", ".join(incomplete))
         if _resolve(repo, upstream_sha) != upstream_sha:
             raise RuntimeError(f"pinned upstream commit is unavailable: {upstream_sha}")
+        progress("sources", "fetching and validating carry source refs")
         private_refs = _fetch_replay_sources(repo, carries, run_id=run_id)
         _validate_replay_commit_sources(repo, carries, run_id=run_id)
 
+        progress("worktree", f"creating candidate from {upstream_sha[:12]}")
         add = _run(repo, "worktree", "add", "--detach", str(worktree), upstream_sha)
         if add.returncode != 0:
             raise RuntimeError(add.stderr.strip() or "could not create candidate worktree")
         added = True
 
         applied: list[dict[str, str]] = []
+        replay_total = sum(len(carry["replay"]["commits"]) for carry in carries)
+        replay_index = 0
         for carry in carries:
             for commit in carry["replay"]["commits"]:
+                replay_index += 1
+                progress(
+                    "replay",
+                    f"{carry['id']} {commit[:12]}",
+                    replay_index=replay_index,
+                    replay_total=replay_total,
+                    carry_id=str(carry["id"]),
+                )
                 if _resolve(repo, commit) != commit:
                     raise RuntimeError(f"missing carry commit {commit} for {carry['id']}")
                 picked = _run(
@@ -619,6 +730,7 @@ def generate_candidate(
                 applied.append({"carry": str(carry["id"]), "source_commit": commit})
         report["applied"] = applied
 
+        progress("candidate", "validating generated manifest and path ownership")
         candidate_manifest_path = worktree / "fork-carries.json"
         candidate_manifest_path.write_bytes(manifest_path.read_bytes())
         staged_manifest = _run(worktree, "add", "--", "fork-carries.json")
@@ -663,12 +775,21 @@ def generate_candidate(
         report["upstream_survival"]["noncarry_paths_equal"] = True
 
         if run_checks:
-            check_reports, checks_ok = _run_checks(worktree, _deduplicated_checks(carries))
+            checks = _deduplicated_checks(carries)
+            check_reports, checks_ok = _run_checks(
+                worktree,
+                checks,
+                log_path=log_path,
+                on_progress=lambda **row: progress(
+                    "checks", str(row["check_id"]), **row
+                ),
+            )
             report["checks"] = check_reports
             if not checks_ok:
                 raise RuntimeError("candidate verification check failed")
             report["checks_complete"] = True
 
+        progress("upstream", "refreshing upstream after verification")
         refreshed = _run(repo, "fetch", "upstream", "main", "--quiet")
         if refreshed.returncode != 0:
             raise RuntimeError(refreshed.stderr.strip() or "final upstream refresh failed")
@@ -679,6 +800,7 @@ def generate_candidate(
         report["upstream_pending"] = observed_upstream_sha != upstream_sha
 
         if publish:
+            progress("publish", f"publishing {report['candidate_sha'][:12]}")
             _publish_candidate_if_current(
                 repo=repo,
                 worktree=worktree,
@@ -698,9 +820,14 @@ def generate_candidate(
 
         report["state"] = "ready"
         report["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        progress("ready", report["candidate_sha"][:12])
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         report["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        try:
+            progress("failed", report["error"])
+        except Exception:
+            pass
     finally:
         if added:
             _run(worktree, "cherry-pick", "--abort")
@@ -719,6 +846,12 @@ def generate_candidate(
         report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
         final_updates = dict(
             state=report["state"],
+            phase=report["state"],
+            detail=(
+                report.get("error", "")
+                if report["state"] == "failed"
+                else report.get("candidate_sha", "")[:12]
+            ),
             branch=branch,
             candidate_branch=f"{branch}-next",
             upstream_sha=upstream_sha,

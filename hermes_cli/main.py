@@ -10503,6 +10503,18 @@ def cmd_update(args):
         managed_error("update Hermes Agent")
         return
 
+    if getattr(args, "status", False) or getattr(args, "wait", False):
+        from hermes_cli.axiom_update import show_reconciliation_status
+
+        branch = _resolve_update_branch(args)
+        result = show_reconciliation_status(
+            branch,
+            wait=bool(getattr(args, "wait", False)),
+        )
+        if result:
+            sys.exit(result)
+        return
+
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
     # docker/nix/apt refusal gates: on an image-managed or package-managed
     # install the plan itself reports "not updatable in place" plus the
