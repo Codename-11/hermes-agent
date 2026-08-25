@@ -117,3 +117,30 @@ def test_cmd_update_status_bypasses_update_mutation(monkeypatch):
     )
 
     assert observed == [("axiom", {"wait": False})]
+
+
+def test_cmd_update_status_defaults_to_current_deploy_branch(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr(
+        hermes_main.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="axiom\n"),
+    )
+    observed = []
+    monkeypatch.setattr(
+        axiom_update,
+        "show_reconciliation_status",
+        lambda branch, **kwargs: observed.append((branch, kwargs)) or 0,
+    )
+
+    hermes_main.cmd_update(
+        SimpleNamespace(
+            status=True,
+            wait=False,
+            branch=None,
+            plan=False,
+            check=False,
+        )
+    )
+
+    assert observed == [("axiom", {"wait": False})]
