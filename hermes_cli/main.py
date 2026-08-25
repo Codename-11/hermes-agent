@@ -10281,6 +10281,25 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _resolve_reconciliation_branch(args) -> str:
+    explicit = (getattr(args, "branch", None) or "").strip()
+    if explicit:
+        return explicit
+    try:
+        current = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "main"
+    detected = current.stdout.strip() if current.returncode == 0 else ""
+    return detected or "main"
+
+
 def _size_delta_label(saved_mb: float) -> str:
     """Human label for a before/after database size delta, in MB.
 
@@ -10317,7 +10336,7 @@ def cmd_update(args):
     if getattr(args, "status", False) or getattr(args, "wait", False):
         from hermes_cli.axiom_update import show_reconciliation_status
 
-        branch = _resolve_update_branch(args)
+        branch = _resolve_reconciliation_branch(args)
         result = show_reconciliation_status(
             branch,
             wait=bool(getattr(args, "wait", False)),
