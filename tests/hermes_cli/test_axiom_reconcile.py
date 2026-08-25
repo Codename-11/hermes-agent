@@ -1078,11 +1078,13 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     manifest_bytes = (json.dumps(manifest, sort_keys=True) + "\n").encode()
     (repo / "fork-carries.json").write_bytes(manifest_bytes)
     (repo / "validator.py").write_text("# validator\n", encoding="utf-8")
-    monkeypatch.setattr(
-        axiom_reconcile,
-        "_load_manifest",
-        lambda _repo, **_kwargs: (manifest, []),
-    )
+    manifest_validation_modes = []
+
+    def fake_load_manifest(_repo, **kwargs):
+        manifest_validation_modes.append(kwargs.get("check_path_existence"))
+        return manifest, []
+
+    monkeypatch.setattr(axiom_reconcile, "_load_manifest", fake_load_manifest)
     monkeypatch.setattr(
         axiom_reconcile,
         "_run_checks",
@@ -1152,6 +1154,7 @@ def test_generate_candidate_publishes_only_candidate_ref(monkeypatch, tmp_path):
     )
     assert deploy_sha == upstream_sha
     assert report["state"] == "ready"
+    assert manifest_validation_modes == [False, True]
     assert report["published"] is True
     assert report["source_availability_verified"] is True
     assert report["observed_upstream_sha"] == observed_upstream_sha
