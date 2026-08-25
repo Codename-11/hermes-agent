@@ -548,6 +548,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "b7204a0d31a1b725635714d5b7d0f952499be6c0"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "1267b5166f9fa365a3f391b72562a4e524b14cc6"
         }
       ],
       "summary": "Windows portability fixes",
@@ -588,7 +593,8 @@
         "source_ref": "origin/carry/source-windows-portability",
         "base_commit": "abf62308a1cc64d51e3e7a72c0ae0cd4f1124b18",
         "commits": [
-          "b7204a0d31a1b725635714d5b7d0f952499be6c0"
+          "b7204a0d31a1b725635714d5b7d0f952499be6c0",
+          "1267b5166f9fa365a3f391b72562a4e524b14cc6"
         ]
       }
     },
