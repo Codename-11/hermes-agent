@@ -648,6 +648,46 @@ effective backend routing, native OAuth, reconnect, cold-start state, ownership,
 and profile lookup. It is an eight-commit architecture port and was not folded
 into this production sync.
 
+### 14. Desktop remote-display GPU policy control
+
+**Upstream provenance:** PR #53991 already provides the canonical
+`desktop.disable_gpu` config/CLI launch bridge. PR #73471 attempted a binary UI
+control but was closed because it destroyed the required `auto` state; its
+review explicitly called for a tri-state design.
+
+**Required behavior:**
+
+- Settings → Advanced exposes `Automatic`, `GPU on`, and `Software rendering`.
+- `Automatic` preserves upstream RDP/SSH/X11 flicker protection.
+- `GPU on` deliberately overrides remote-display detection for responsive RDP
+  sessions where software compositing is too expensive.
+- `Software rendering` remains available for known-bad GPU/compositor hosts.
+- The setting states that a Desktop restart is required.
+- Direct Start/Desktop/taskbar launches read the same profile-scoped
+  `config.yaml` policy before `app.ready`; they must not silently bypass the
+  config bridge merely because they did not launch through `hermes desktop`.
+- An explicit `HERMES_DESKTOP_DISABLE_GPU` environment value remains the highest
+  precedence rung for recovery and diagnostics.
+
+**Primary files:** `hermes_cli/web_server.py`, Desktop Advanced settings copy,
+`apps/desktop/electron/desktop-gpu-policy.ts`, and the pre-ready GPU decision in
+`apps/desktop/electron/main.ts`.
+
+**Focused verification:**
+
+```bash
+python -m pytest -o 'addopts=' -q \
+  tests/hermes_cli/test_desktop_gpu_policy_schema.py \
+  tests/hermes_cli/test_gui_command.py -k 'desktop_launch_options or gpu_policy_schema'
+cd apps/desktop
+npm run typecheck
+node --import <tsx-loader> --test electron/desktop-gpu-policy.test.ts
+npx vitest run src/app/settings/helpers.test.ts
+```
+
+**Retire when:** upstream ships a tri-state GPU policy UI and direct packaged
+launches honor `desktop.disable_gpu` with equivalent precedence and tests.
+
 ## Current known update/build pitfalls
 
 ### 7. Anthropic Claude OAuth billing-lane fixes

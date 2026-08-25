@@ -1137,6 +1137,19 @@ def _timezone_options() -> List[str]:
 
 
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "desktop.disable_gpu": {
+        "type": "select",
+        "description": (
+            "Desktop GPU policy. Automatic disables acceleration on detected remote displays; "
+            "GPU on overrides that protection; Software rendering always disables acceleration. "
+            "Applies after restarting Hermes Desktop."
+        ),
+        # Values stay compatible with the established config/launcher contract:
+        # config ``false`` bridges to HERMES_DESKTOP_DISABLE_GPU=0 (force GPU),
+        # while ``true`` bridges to =1 (force software rendering).
+        "options": ["auto", "false", "true"],
+        "category": "display",
+    },
     "timezone": {
         "type": "select",
         "description": "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",

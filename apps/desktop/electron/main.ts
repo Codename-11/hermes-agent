@@ -129,6 +129,7 @@ import {
 } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { readDesktopGpuOverride } from './desktop-gpu-policy'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
@@ -414,7 +415,26 @@ const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 // next to the connection's latency. Must run before app `ready` — these
 // switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
 // (1/true → always disable, 0/false → keep GPU on).
-const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
+// `hermes desktop` bridges desktop.disable_gpu into the environment, but the
+// installed Start/Desktop/taskbar shortcuts launch Hermes.exe directly. Read
+// the same config policy here so every launch path honors the Settings UI.
+// An explicit environment override remains authoritative.
+const CONFIG_GPU_OVERRIDE =
+  'HERMES_DESKTOP_DISABLE_GPU' in process.env
+    ? null
+    : readDesktopGpuOverride(resolveHermesHome(), app.getPath('userData'))
+
+const GPU_POLICY_ENV = CONFIG_GPU_OVERRIDE
+  ? { ...process.env, HERMES_DESKTOP_DISABLE_GPU: CONFIG_GPU_OVERRIDE }
+  : process.env
+
+const REMOTE_DISPLAY_REASON = detectRemoteDisplay({ env: GPU_POLICY_ENV })
+
+if (CONFIG_GPU_OVERRIDE) {
+  console.log(
+    `[hermes] desktop.disable_gpu config override active (${CONFIG_GPU_OVERRIDE === '0' ? 'GPU on' : 'software rendering'})`
+  )
+}
 
 if (REMOTE_DISPLAY_REASON) {
   app.disableHardwareAcceleration()

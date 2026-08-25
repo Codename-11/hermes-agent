@@ -17,6 +17,14 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
+  it('surfaces the tri-state Desktop GPU policy in Advanced with user-facing copy', () => {
+    const advanced = SECTIONS.find(section => section.id === 'advanced')
+
+    expect(advanced?.keys).toContain('desktop.disable_gpu')
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'desktop.disable_gpu')).toBe('GPU Acceleration')
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.disable_gpu')).toMatch(/Restart Hermes Desktop/)
+  })
+
   it('surfaces repository discovery config in Workspace with user-facing copy', () => {
     const workspace = SECTIONS.find(section => section.id === 'workspace')
 

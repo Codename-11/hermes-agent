@@ -32,6 +32,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
+import { GPU_POLICY_OPTION_LABELS } from './gpu-policy'
 import {
   clearsEnabledToolsets,
   enumOptionsFor,
@@ -405,7 +406,13 @@ function ConfigSettingsInner({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionLabels={
+                  key === 'desktop.disable_gpu'
+                    ? GPU_POLICY_OPTION_LABELS
+                    : key === 'tts.elevenlabs.voice_id'
+                      ? elevenLabsVoiceLabels
+                      : undefined
+                }
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

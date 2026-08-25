@@ -383,6 +383,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     showReasoning: 'Reasoning Blocks'
   },
   desktop: {
+    disableGpu: 'GPU Acceleration',
     repoScanEnabled: 'Automatic Repository Discovery',
     repoScanRoots: 'Repository Discovery Roots',
     repoScanExcludePaths: 'Excluded Repository Paths'
@@ -549,6 +550,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
   desktop: {
+    disableGpu:
+      'Automatic protects remote displays from flicker. GPU on is faster but may flicker over RDP. Software rendering always disables acceleration. Restart Hermes Desktop after changing this.',
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
     repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
     repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
@@ -764,6 +767,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
       'delegation.reasoning_effort',
+      'desktop.disable_gpu',
       'updates.non_interactive_local_changes'
     ]
   }
