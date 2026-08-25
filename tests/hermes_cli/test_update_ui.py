@@ -151,3 +151,23 @@ def test_reconciliation_receipt_shows_refs_and_upstream_only_digest(
     body = brief.read_text(encoding="utf-8")
     assert "feat(cli): improve update output" in body
     assert "preserved carry from regenerated candidate" not in body
+
+
+def test_success_summary_survives_receipt_failure(monkeypatch, capsys):
+    def fail_receipt(**_kwargs):
+        raise OSError("simulated git launch failure")
+
+    monkeypatch.setattr(update_cmd, "_print_reconciliation_receipt", fail_receipt)
+
+    update_cmd._print_update_summary(
+        node_failures=[],
+        desktop_build_ok=True,
+        pre_update_version="0.20.5",
+        previous_sha="a" * 40,
+        branch="axiom",
+        git_cmd=["git"],
+    )
+
+    out = capsys.readouterr().out
+    assert "✓ Update complete! (v0.20.5)" in out
+    assert "⚠ Reconciliation receipt unavailable" in out
