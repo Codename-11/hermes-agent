@@ -6508,13 +6508,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             pre_update_head = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
             dependency_base_sha = pre_update_head or None
-            deploy_commit_count = _m()._run_deploy_branch_update(
-                git_cmd,
-                _m().PROJECT_ROOT,
-                current_branch,
-                pre_update_head,
-                target_sha=exact_target,
-            )
+            if not exact_target and _m()._deploy_handoff_exists_for(
+                _m().PROJECT_ROOT, current_branch
+            ):
+                deploy_commit_count = _m()._resolve_deploy_handoff(
+                    git_cmd=git_cmd,
+                    repo=_m().PROJECT_ROOT,
+                    branch=current_branch,
+                    pre_update_head=pre_update_head,
+                )
+            else:
+                deploy_commit_count = _m()._run_deploy_branch_update(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    current_branch,
+                    pre_update_head,
+                    target_sha=exact_target,
+                    legacy_recovery=True,
+                )
             if deploy_commit_count is None:
                 if deploy_stash_ref is not None:
                     _m()._restore_stashed_changes(

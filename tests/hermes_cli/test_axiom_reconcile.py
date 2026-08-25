@@ -912,9 +912,11 @@ def test_reset_and_verify_rejects_successful_reset_with_wrong_head(
     )
 
 
-def test_bare_update_has_no_legacy_handoff_resolver_call():
+def test_bare_update_resumes_handoff_and_enables_automatic_resolution():
     source = inspect.getsource(update_cmd._cmd_update_impl)
-    assert "_resolve_deploy_handoff(" not in source
+    assert "_deploy_handoff_exists_for(" in source
+    assert "_resolve_deploy_handoff(" in source
+    assert "legacy_recovery=True" in source
 
 
 def test_bare_update_refuses_locally_ahead_deploy_without_legacy_push(
