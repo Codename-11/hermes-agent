@@ -1534,23 +1534,31 @@ def _print_reconciliation_receipt(
     current_sha = _git_output("rev-parse", "HEAD")
     origin_sha = _git_output("rev-parse", "--verify", origin_ref)
     upstream_sha = _git_output("rev-parse", "--verify", upstream_ref)
-    if not current_sha:
-        return
 
     def _short(sha: str) -> str:
         return sha[:10] if sha else "unavailable"
 
-    current_matches_origin = bool(origin_sha and current_sha == origin_sha)
-    upstream_is_merged = False
-    if upstream_sha:
-        upstream_is_merged = subprocess.run(
-            git + ["merge-base", "--is-ancestor", upstream_sha, current_sha],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        ).returncode == 0
+    current_matches_origin: bool | None = (
+        current_sha == origin_sha if current_sha and origin_sha else None
+    )
+    upstream_is_merged: bool | None = None
+    if upstream_sha and current_sha:
+        try:
+            ancestry = subprocess.run(
+                git + ["merge-base", "--is-ancestor", upstream_sha, current_sha],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError:
+            ancestry = None
+        if ancestry is not None:
+            if ancestry.returncode == 0:
+                upstream_is_merged = True
+            elif ancestry.returncode == 1:
+                upstream_is_merged = False
 
     print()
     print("━━ Reconciliation ━━")
@@ -1559,16 +1567,20 @@ def _print_reconciliation_receipt(
     print(f"  {'Current':<10} {_short(current_sha)}")
     print(f"  {'Upstream':<10} {_short(upstream_sha)}  ({upstream_ref})")
     print(f"  {'Origin':<10} {_short(origin_sha)}  ({origin_ref})")
-    if current_matches_origin:
+    if current_matches_origin is True:
         print(f"  ✓ current matches {origin_ref}")
-    else:
+    elif current_matches_origin is False:
         print(f"  ⚠ current differs from {origin_ref}")
-    if upstream_is_merged:
-        print(f"  ✓ {upstream_ref} is merged into current")
     else:
+        print("  ⚠ current/origin comparison unavailable")
+    if upstream_is_merged is True:
+        print(f"  ✓ {upstream_ref} is merged into current")
+    elif upstream_is_merged is False:
         print(f"  ⚠ {upstream_ref} is not merged into current")
+    else:
+        print("  ⚠ upstream ancestry unavailable")
 
-    if not (previous_sha and upstream_sha and upstream_is_merged):
+    if not (previous_sha and upstream_sha and upstream_is_merged is True):
         return
     old_upstream_sha = _git_output("merge-base", previous_sha, upstream_sha)
     if not old_upstream_sha or old_upstream_sha == upstream_sha:
