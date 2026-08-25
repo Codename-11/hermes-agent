@@ -277,6 +277,11 @@ def _queue_fork_reconciliation(
             branch, upstream_sha, source_bytes
         )
         input_digest = input_evidence["input_digest"]
+        if (
+            current.get("state") == "failed"
+            and current.get("input_digest") == input_digest
+        ):
+            return current
         run_id = input_digest[:24]
         run_dir = state_path.parent / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -3290,8 +3295,9 @@ def _run_deploy_branch_update(
             repo=repo, branch=branch, upstream_sha=upstream_sha
         )
         if queued.get("state") == "failed":
-            note = "cannot queue candidate verification"
-            print(f"✗ Candidate verification could not start: {queued.get('error') or 'unknown error'}")
+            note = "candidate verification failed"
+            print(f"✗ Candidate verification failed: {queued.get('error') or 'unknown error'}")
+            print("  Fix the reported verifier error, then run `hermes update` again.")
             if deployed_changed:
                 _pipe.finish(note=f"deploy consumed; {note}")
                 print("  Continuing deployment of the reviewed artifact.")
