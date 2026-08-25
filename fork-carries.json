@@ -1230,6 +1230,11 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "bbcd97c11d903dd6509d9e8d222edfdaff0eb334"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "7393dd22a85c6c65c37f56eacb17b79cff1a1060"
         }
       ],
       "summary": "Deploy branch update reconciliation",
@@ -1255,6 +1260,7 @@
         "tests/hermes_cli/test_update_check.py",
         "tests/hermes_cli/test_update_concurrent_quarantine.py",
         "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
+        "tests/hermes_cli/test_update_status.py",
         "tests/hermes_cli/test_update_ui.py",
         "tests/hermes_cli/test_gateway_windows.py",
         "tests/hermes_cli/test_version_preview.py"
@@ -1278,6 +1284,7 @@
             "tests/hermes_cli/test_update_check.py",
             "tests/hermes_cli/test_update_concurrent_quarantine.py",
             "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
+            "tests/hermes_cli/test_update_status.py",
             "tests/hermes_cli/test_gateway_windows.py",
             "tests/hermes_cli/test_update_ui.py"
           ],
@@ -1289,6 +1296,7 @@
             "tests/hermes_cli/test_update_check.py",
             "tests/hermes_cli/test_update_concurrent_quarantine.py",
             "tests/hermes_cli/test_update_cold_start_gateway_liveness.py",
+            "tests/hermes_cli/test_update_status.py",
             "tests/hermes_cli/test_gateway_windows.py",
             "tests/hermes_cli/test_update_ui.py"
           ]
@@ -1342,7 +1350,8 @@
           "f39c50c9135bde07687bd23bdcfc9d709d6a3352",
           "6ea153ba0e9051af7a57440ecbabb65677c0faa9",
           "b69666344817c633abbc3a0ff8bb4d7a71c7699c",
-          "bbcd97c11d903dd6509d9e8d222edfdaff0eb334"
+          "bbcd97c11d903dd6509d9e8d222edfdaff0eb334",
+          "7393dd22a85c6c65c37f56eacb17b79cff1a1060"
         ]
       }
     }
