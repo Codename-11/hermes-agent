@@ -1176,8 +1176,12 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        with mock.patch.object(shutil, "which", return_value=None):
+        with (
+            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(kb, "_safe_which_no_cwd", return_value=None),
+        ):
             argv = kb._resolve_hermes_argv()
+    assert argv == [sys.executable, "-m", "hermes_cli.main"]
     r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
