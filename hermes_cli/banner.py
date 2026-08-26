@@ -338,6 +338,11 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
     shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
     is_shallow = shallow == "true"
+    current_branch = _current_git_branch(repo_dir)
+    is_deploy_branch = current_branch in _DEPLOY_BRANCHES
+    origin_branch = current_branch if is_deploy_branch else "main"
+    origin_ref = f"origin/{origin_branch}"
+    has_upstream = _has_git_remote(repo_dir, "upstream")
 
     try:
         # Self-heal abandoned git lock files before fetching. A stale
@@ -353,47 +358,76 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # An unscoped ``git fetch origin`` transfers every remote head (~1,400
         # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
         # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
-        # for the same reason. Modern git updates the ``origin/main`` tracking
-        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
-        # unaffected; the shallow path compares against FETCH_HEAD, which a
-        # scoped fetch also updates.
-        fetch_args = ["git", "fetch", "origin", "main"]
+        # for the same reason. On a deploy branch that target is origin/<branch>,
+        # never origin/main: the deploy artifact is the installable update.
+        # Modern git updates the matching tracking ref on a scoped fetch, and
+        # the shallow path compares against FETCH_HEAD, which it also updates.
+        fetch_args = ["git", "fetch", "origin", origin_branch]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
-        subprocess.run(
+        fetch_proc = subprocess.run(
             fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
+        fetch_ok = fetch_proc.returncode == 0
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        fetch_ok = False  # Offline or timeout — don't use stale refs
+
+    # When the fetch fails, the local origin tracking ref is stale. It
+    # cannot prove *currentness* (a 0 behind-count may just mean the stale ref
+    # hasn't caught up), but if it already shows HEAD behind, that is sound
+    # evidence an update exists — the ref was good at some point in the past.
+    # Return the positive stale count; return None (inconclusive) otherwise so
+    # the caller doesn't cache a false "up to date". (#82166, review #92578)
+    if not fetch_ok:
+        if not is_shallow:
+            try:
+                result = subprocess.run(
+                    ["git", "rev-list", "--count", f"HEAD..{origin_ref}"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=5,
+                    cwd=str(repo_dir),
+                )
+                if result.returncode == 0:
+                    behind = int(result.stdout.strip())
+                    if behind > 0:
+                        return behind
+            except Exception:
+                pass
+        return None
 
     # For forks: also fetch upstream so deploy branches detect upstream-only changes.
-    has_upstream = _has_git_remote(repo_dir, "upstream")
+    upstream_fetch_ok = True
     if has_upstream:
         try:
             fetch_args = ["git", "fetch", "upstream"]
             if is_shallow:
                 fetch_args += ["--depth", "1"]
             fetch_args.append("--quiet")
-            subprocess.run(
+            upstream_fetch_ok = subprocess.run(
                 fetch_args,
                 capture_output=True, timeout=10,
                 cwd=str(repo_dir),
-            )
+            ).returncode == 0
         except Exception:
-            pass
+            upstream_fetch_ok = False
 
-    current_branch = _current_git_branch(repo_dir)
+    # A failed upstream fetch makes an otherwise-zero deploy result
+    # inconclusive: upstream/main may have advanced since its local tracking
+    # ref was last refreshed. Preserve a positive fresh origin count, which is
+    # still sound evidence that the deploy artifact is behind.
+    if is_deploy_branch and has_upstream and not upstream_fetch_ok:
+        origin_ahead = _count_git_range(repo_dir, "HEAD", origin_ref)
+        return origin_ahead if origin_ahead and origin_ahead > 0 else None
 
     if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
         # report presence-only instead of a bogus large commit count.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        if current_branch in _DEPLOY_BRANCHES:
-            remote_ref = f"origin/{current_branch}"
-            target_refs = [remote_ref]
+        if is_deploy_branch:
+            target_refs = [origin_ref]
             if has_upstream:
                 target_refs.append("upstream/main")
         else:
@@ -409,7 +443,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
                 continue
             if head_rev == target_rev:
                 continue
-            if current_branch not in _DEPLOY_BRANCHES:
+            if not is_deploy_branch:
                 counted = _github_compare_behind(head_rev, target_rev)
                 return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
             return UPDATE_AVAILABLE_NO_COUNT
@@ -418,8 +452,8 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         return 0
 
     behind = None
-    if current_branch in _DEPLOY_BRANCHES:
-        remote_ref = f"origin/{current_branch}"
+    if is_deploy_branch:
+        remote_ref = origin_ref
         pending_counts: list[int] = []
         origin_ahead = _count_git_range(repo_dir, "HEAD", remote_ref)
         if origin_ahead is not None:
@@ -538,16 +572,22 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(
-            json.dumps({
-                "schema": _UPDATE_CHECK_CACHE_SCHEMA,
-                "ts": now,
-                "behind": behind,
-                "rev": embedded_rev,
-                "ver": VERSION,
-            }),
-            encoding="utf-8",
-        )
+        # Don't cache inconclusive results (None). A None means the check
+        # could not run — typically a failed git fetch. Caching None would
+        # suppress retries for the full 6-hour cache window, leaving the
+        # user with a stale "up to date" or no information for hours after
+        # connectivity is restored (#82166).
+        if behind is not None:
+            cache_file.write_text(
+                json.dumps({
+                    "schema": _UPDATE_CHECK_CACHE_SCHEMA,
+                    "ts": now,
+                    "behind": behind,
+                    "rev": embedded_rev,
+                    "ver": VERSION,
+                }),
+                encoding="utf-8",
+            )
     except Exception:
         pass
 
