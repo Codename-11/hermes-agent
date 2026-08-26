@@ -41,7 +41,7 @@ class _FakeLock:
 _LAST = {}
 
 
-def _run_cmd_update(monkeypatch, impl, *, reexec: bool):
+def _run_cmd_update(monkeypatch, impl, *, reexec: bool, lock=None):
     """Run cmd_update with everything external mocked; return the events."""
     events = {"order": [], "exit_codes": [], "receipts": []}
 
@@ -61,7 +61,10 @@ def _run_cmd_update(monkeypatch, impl, *, reexec: bool):
 
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda root: "git")
-    monkeypatch.setattr("hermes_cli.update_lock.UpdateLock", lambda: _FakeLock(events["order"]))
+    monkeypatch.setattr(
+        "hermes_cli.update_lock.UpdateLock",
+        lambda: lock or _FakeLock(events["order"]),
+    )
     monkeypatch.setattr(main_mod, "_cmd_update_impl", fake_impl)
     monkeypatch.setattr(main_mod, "_install_hangup_protection", lambda gateway_mode=False: None)
     monkeypatch.setattr(main_mod, "_finalize_update_output", fake_finalize_io)
@@ -91,6 +94,54 @@ def test_handoff_child_hard_exits_zero_after_success(monkeypatch):
     assert events["receipts"] == [(0, "completed at command boundary")]
     # The hard exit is the last thing, after lock release and stdio restore.
     assert events["order"] == ["acquire", "impl", "release", "restore-stdio", "hard-exit"]
+
+
+def test_handoff_child_retries_parent_lock_overlap(monkeypatch):
+    events = []
+
+    class _RetryLock:
+        holder = None
+
+        def __init__(self):
+            self.calls = 0
+
+        def acquire(self):
+            self.calls += 1
+            events.append(f"acquire-{self.calls}")
+            return self.calls >= 2
+
+        def release(self):
+            events.append("release")
+
+    lock = _RetryLock()
+    monkeypatch.setattr(main_mod._time, "sleep", lambda _seconds: None)
+
+    result = _run_cmd_update(monkeypatch, _noop_impl, reexec=True, lock=lock)
+
+    assert lock.calls == 2
+    assert result["exit_codes"] == [0]
+    assert events == ["acquire-1", "acquire-2", "release"]
+
+
+def test_hard_exit_explicitly_restores_inherited_gateway(monkeypatch):
+    from hermes_cli import update_cmd
+
+    token = {"resume_needed": True, "profiles": {"default": 1234}}
+
+    def impl(_args, gateway_mode=False):
+        update_cmd._ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME = token
+
+    events = []
+    monkeypatch.setattr(
+        main_mod,
+        "_resume_windows_gateways_after_update",
+        lambda seen: events.append(("resume", seen)),
+    )
+
+    result = _run_cmd_update(monkeypatch, impl, reexec=True)
+
+    assert events == [("resume", token)]
+    assert result["exit_codes"] == [0]
 
 
 def test_non_handoff_run_never_hard_exits(monkeypatch):

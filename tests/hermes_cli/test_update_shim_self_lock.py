@@ -16,6 +16,7 @@ off at all.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -141,6 +142,92 @@ def test_reexec_runs_same_args_under_venv_python(venv, monkeypatch, capsys):
     ]
     assert env[cli_main._UPDATE_REEXEC_ENV] == "1"
     assert "under the venv Python" in capsys.readouterr().out
+
+
+def test_reexec_transfers_gateway_restart_ownership_to_child(
+    venv, monkeypatch
+):
+    """The parent must not restart a paused gateway before child sync finishes."""
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update", "--yes"])
+    calls = _capture_popen(monkeypatch)
+    context = {
+        "gateway_resume": {
+            "resume_needed": True,
+            "profiles": {"default": 1234},
+            "unmapped_pids": [],
+            "unmapped": [],
+        },
+        "pre_update_snapshot_id": "snapshot-1",
+        "had_desktop_app_before_update": True,
+        "sibling_snapshots": {"sentinel": "snapshot-2"},
+    }
+
+    assert cli_main._reexec_dependency_sync_off_windows_shim(context) is True
+
+    _cmd, child_env, _kwargs = calls[0]
+    assert json.loads(child_env[cli_main._UPDATE_REEXEC_CONTEXT_ENV]) == {
+        "gateway_resume": {
+            "resume_needed": True,
+            "profiles": {"default": 1234},
+            "unmapped_pids": [],
+            "unmapped": [],
+        },
+        "pre_update_snapshot_id": "snapshot-1",
+        "had_desktop_app_before_update": True,
+        "sibling_snapshots": {"sentinel": "snapshot-2"},
+    }
+    # Disarms the parent's atexit callback; the child owns this exact plan.
+    assert context["gateway_resume"]["resume_needed"] is False
+
+
+def test_reexec_child_consumes_context_once(monkeypatch):
+    from hermes_cli import update_cmd
+
+    payload = {
+        "gateway_resume": {
+            "resume_needed": True,
+            "profiles": {"default": 1234},
+            "unmapped_pids": [],
+            "unmapped": [],
+        },
+        "pre_update_snapshot_id": "snapshot-1",
+    }
+    monkeypatch.setenv(cli_main._UPDATE_REEXEC_CONTEXT_ENV, json.dumps(payload))
+
+    assert update_cmd._consume_update_reexec_context() == payload
+    assert cli_main._UPDATE_REEXEC_CONTEXT_ENV not in cli_main.os.environ
+    assert update_cmd._consume_update_reexec_context() == {}
+
+
+def test_reexec_child_waits_for_parent_shim_before_concurrency_guard(monkeypatch):
+    from hermes_cli import update_cmd
+
+    monkeypatch.setenv(cli_main._UPDATE_REEXEC_ENV, "1")
+    observations = iter([[{"pid": 10}], [{"pid": 10}], []])
+    monkeypatch.setattr(
+        cli_main,
+        "_detect_concurrent_hermes_instances",
+        lambda _scripts: next(observations),
+    )
+    monkeypatch.setattr(update_cmd._time, "sleep", lambda _seconds: None)
+
+    assert update_cmd._wait_for_reexec_parent_shim_exit(Path("Scripts"), timeout=1.0)
+
+
+def test_reexec_writes_recovery_marker_before_spawn(venv, monkeypatch):
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
+    events = []
+
+    def fake_popen(*_args, **_kwargs):
+        events.append("spawn")
+        return object()
+
+    monkeypatch.setattr(cli_main.subprocess, "Popen", fake_popen)
+
+    assert cli_main._reexec_dependency_sync_off_windows_shim(
+        before_spawn=lambda: events.append("marker")
+    )
+    assert events == ["marker", "spawn"]
 
 
 def test_reexec_child_runs_unattended(venv, monkeypatch):

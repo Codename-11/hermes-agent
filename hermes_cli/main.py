@@ -9644,9 +9644,30 @@ def _windows_running_hermes_launcher_locked() -> bool:
 
 # Set on the re-exec'd child so it can never spawn another one.
 _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
+# Carries the already-paused gateway restart plan and other parent-only state
+# across the Windows console-shim handoff.
+_UPDATE_REEXEC_CONTEXT_ENV = "HERMES_UPDATE_REEXEC_CONTEXT"
 
 
-def _reexec_dependency_sync_off_windows_shim() -> bool:
+def _resume_gateway_from_update_reexec_env() -> None:
+    """Best-effort service recovery before the child reaches its normal setup."""
+    raw = os.environ.get(_UPDATE_REEXEC_CONTEXT_ENV, "")
+    if not raw:
+        return
+    try:
+        payload = json.loads(raw)
+        token = payload.get("gateway_resume") if isinstance(payload, dict) else None
+        if isinstance(token, dict):
+            _self()._resume_windows_gateways_after_update(token)
+    except Exception:
+        pass
+
+
+def _reexec_dependency_sync_off_windows_shim(
+    handoff_context: dict | None = None,
+    *,
+    before_spawn=None,
+) -> bool:
     """Hand the dependency sync to the venv interpreter, off the console shim.
 
     Returns True when a child was spawned and the caller must exit at once,
@@ -9699,12 +9720,27 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     python_exe = venv_python_path(shim.parent.parent, windows=True)
     cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
     if python_exe.is_file():
+        child_env = {**os.environ, _UPDATE_REEXEC_ENV: "1"}
+        if handoff_context:
+            try:
+                child_env[_UPDATE_REEXEC_CONTEXT_ENV] = json.dumps(handoff_context)
+            except (TypeError, ValueError) as exc:
+                logger.debug("Could not serialize Windows update handoff context: %s", exc)
+                return False
         try:
+            if before_spawn is not None:
+                before_spawn()
             subprocess.Popen(
                 cmd,
-                env={**os.environ, _UPDATE_REEXEC_ENV: "1"},
+                env=child_env,
                 stdin=subprocess.DEVNULL,
             )
+            # This is the same dict captured by the parent's atexit callback.
+            # Disarm it only after spawn succeeds: the child now owns service
+            # restoration and must finish the venv/Desktop work first.
+            gateway_resume = (handoff_context or {}).get("gateway_resume")
+            if isinstance(gateway_resume, dict):
+                gateway_resume["resume_needed"] = False
             print(
                 f"→ Windows: {shim.name} cannot replace itself while it runs; "
                 "finishing the dependency install under the venv Python."
@@ -11031,11 +11067,26 @@ def cmd_update(args):
     )
 
     _update_lock = UpdateLock()
-    if not _update_lock.acquire():
+    _lock_acquired = _update_lock.acquire()
+    if not _lock_acquired and os.environ.get(_UPDATE_REEXEC_ENV) == "1":
+        # The parent spawns this child while it still owns the lock, then exits
+        # specifically to release the shim. Retry only for this intentional
+        # handoff overlap; ordinary concurrent updaters still fail fast.
+        _deadline = _time.monotonic() + 15.0
+        while _time.monotonic() < _deadline:
+            _time.sleep(0.1)
+            if _update_lock.acquire():
+                _lock_acquired = True
+                break
+    if not _lock_acquired:
+        if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
+            _resume_gateway_from_update_reexec_env()
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
+    _handoff_exit_code = 0
+    _handoff_unhandled_exception = False
     try:
         _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
@@ -11045,15 +11096,20 @@ def cmd_update(args):
         # inner finalize. Persist any still-open receipt with the real
         # exit code, then let the exit proceed unchanged. No-op when an
         # inner path already finalized (exactly-once by construction).
+        if _update_exit.code is None:
+            _code = 0
+        else:
+            _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
+        _handoff_exit_code = _code
         try:
             from hermes_cli.update_receipt import finalize_pending_update_receipt
 
-            _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
             finalize_pending_update_receipt(_code, f"sys.exit({_code})")
         except Exception:
             pass
         raise
     except BaseException as _update_exc:
+        _handoff_unhandled_exception = True
         try:
             from hermes_cli.update_receipt import finalize_pending_update_receipt
 
@@ -11073,6 +11129,29 @@ def cmd_update(args):
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)
+        # The detached Windows handoff can inherit non-daemon helper threads
+        # from update/build machinery. Once the receipt, lock, stdio, and
+        # gateway work are complete, skip interpreter shutdown so those stale
+        # threads cannot freeze the terminal. Preserve real exception
+        # tracebacks by using the normal unwind path for unhandled errors.
+        if (
+            os.environ.get(_UPDATE_REEXEC_ENV) == "1"
+            and not _handoff_unhandled_exception
+        ):
+            try:
+                from hermes_cli.update_cmd import (
+                    _resume_reexec_gateway_before_hard_exit,
+                )
+
+                _resume_reexec_gateway_before_hard_exit()
+            except Exception:
+                pass
+            for _stream in (sys.stdout, sys.stderr):
+                try:
+                    _stream.flush()
+                except Exception:
+                    pass
+            os._exit(_handoff_exit_code)
 
 
 def _coalesce_session_name_args(argv: list) -> list:

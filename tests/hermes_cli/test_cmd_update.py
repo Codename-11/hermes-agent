@@ -1,6 +1,7 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+import json
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
@@ -345,6 +346,57 @@ class TestCmdUpdateBranchFallback:
         assert not any("checkout main" in " ".join(cmd) for cmd in calls)
         assert not any("HEAD..origin/main" in " ".join(cmd) for cmd in calls)
 
+    @patch("subprocess.run")
+    def test_deploy_reexec_runs_post_update_when_origin_is_already_current(
+        self, mock_run, mock_args, monkeypatch
+    ):
+        """TGI's child must not return after the parent fast-forwarded it."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        monkeypatch.setenv(hm._UPDATE_REEXEC_ENV, "1")
+        monkeypatch.setenv(
+            hm._UPDATE_REEXEC_CONTEXT_ENV,
+            json.dumps({"sibling_snapshots": {"sentinel": "snapshot-2"}}),
+        )
+        mock_run.side_effect = _make_run_side_effect(
+            branch="tgi", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm, "_get_origin_url", return_value="https://github.com/tgi/hermes-agent.git"
+        ), patch.object(
+            hm, "_has_upstream_remote", return_value=True
+        ), patch.object(
+            hm, "_deploy_handoff_exists_for", return_value=False
+        ), patch.object(
+            hm, "_run_deploy_branch_update", return_value=0
+        ), patch.object(
+            hm, "_completed_deploy_handoff_requires_post_update"
+        ) as legacy_gate, patch.object(
+            hm, "_run_pre_update_backup", return_value=None
+        ), patch.object(
+            hm, "_pause_windows_gateways_for_update", return_value=None
+        ), patch.object(
+            hm, "_detect_concurrent_hermes_instances", return_value=[]
+        ), patch.object(
+            hm, "_detect_venv_python_processes", return_value=[]
+        ), patch.object(
+            update_cmd, "_wait_for_reexec_parent_shim_exit", return_value=True
+        ), patch.object(
+            hm, "_abort_dependency_sync_if_self_locked", side_effect=SystemExit(0)
+        ) as sync_boundary, patch.object(
+            hm.os, "_exit"
+        ) as hard_exit:
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 0
+        sync_boundary.assert_called_once()
+        hard_exit.assert_called_once_with(0)
+        assert update_cmd._LAST_SIBLING_SNAPSHOTS == {"sentinel": "snapshot-2"}
+        legacy_gate.assert_not_called()
+
 
 
 
@@ -447,6 +499,67 @@ class TestCmdUpdateBranchFallback:
         post_update_step.assert_called_once_with()
         captured = capsys.readouterr()
         assert "Already up to date!" not in captured.out
+
+    @patch("subprocess.run")
+    def test_windows_reexec_current_checkout_runs_full_post_update_tail(
+        self, mock_run, mock_args, monkeypatch, capsys
+    ):
+        """The detached child owns deps, builds, and the completion tail.
+
+        Its parent already advanced HEAD, so origin reports zero commits. That
+        zero must not route the child through the narrow repair-and-return path,
+        which skips Desktop rebuilding and restarts the gateway too early.
+        """
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        monkeypatch.setenv(hm._UPDATE_REEXEC_ENV, "1")
+        monkeypatch.setenv(hm._UPDATE_REEXEC_CONTEXT_ENV, "{}")
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm, "_get_origin_url", return_value="https://github.com/NousResearch/hermes-agent.git"
+        ), patch.object(
+            hm, "_run_pre_update_backup", return_value=None
+        ), patch.object(
+            hm, "_pause_windows_gateways_for_update", return_value=None
+        ), patch.object(
+            hm, "_detect_concurrent_hermes_instances", return_value=[]
+        ), patch.object(
+            hm, "_detect_venv_python_processes", return_value=[]
+        ), patch.object(
+            update_cmd, "_wait_for_reexec_parent_shim_exit", return_value=True
+        ), patch.object(
+            hm, "_abort_dependency_sync_if_self_locked"
+        ), patch.object(
+            update_cmd, "_editable_install_is_current", return_value=True
+        ), patch.object(
+            hm, "_install_python_dependencies_with_optional_fallback"
+        ) as install, patch.object(
+            hm, "_clear_bytecode_cache", return_value=0
+        ), patch.object(
+            hm, "_verify_core_dependencies_installed"
+        ), patch.object(
+            hm, "_verify_console_scripts_installed"
+        ), patch.object(
+            hm, "_reload_updated_runtime_modules", side_effect=SystemExit(0)
+        ) as post_update_step, patch.object(
+            hm.os, "_exit"
+        ) as hard_exit, patch(
+            "shutil.which", return_value="uv"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 0
+        # A handoff always performs the pending install even though HEAD itself
+        # is already current and the normal editable-install heuristic says skip.
+        install.assert_called_once()
+        post_update_step.assert_called_once_with()
+        hard_exit.assert_called_once_with(0)
+        assert "Already up to date!" not in capsys.readouterr().out
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

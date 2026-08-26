@@ -1495,7 +1495,12 @@ def _write_gateway_update_exit_code(ok: bool) -> None:
         pass
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(
+    args,
+    *,
+    had_desktop_app_before_update: bool = False,
+    handoff_context: dict | None = None,
+) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
@@ -1713,7 +1718,9 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     # Self-lock deferral (relocated preflight — #86735): the ZIP code swap
     # above is already committed; defer only the dependency sync when this
     # process holds a native extension the sync must rewrite.
-    _m()._abort_dependency_sync_if_self_locked()
+    _m()._abort_dependency_sync_if_self_locked(
+        handoff_context=handoff_context
+    )
     print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -1771,6 +1778,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         install_prefix,
         env=install_env,
     )
+    _m()._clear_update_incomplete_marker()
 
     # ZIP path parity: heal the active memory provider's bridge packages
     # after the dependency reinstall, same as the git-pull path (#53272,
@@ -3644,6 +3652,9 @@ _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # cron-jobs safety net (#66140). Module-level because the snapshot and the
 # restore run in the same process but far apart in _cmd_update_impl.
 _LAST_SIBLING_SNAPSHOTS: dict = {}
+# Inherited restart plan owned by a detached Windows handoff child. The child
+# must run it explicitly before os._exit, which deliberately skips atexit.
+_ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME: dict | None = None
 
 # Per-file size cap for the pre-update quick snapshot. Anything larger is
 # skipped with a warning: the snapshot exists to protect small, hard-to-
@@ -4255,7 +4266,9 @@ def _detect_self_loaded_native_modules() -> list[str]:
     return sorted(set(found))
 
 
-def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
+def _abort_dependency_sync_if_self_locked(
+    gateway_resume=None, *, handoff_context: dict | None = None
+) -> None:
     """Defer the venv rewrite when THIS process holds something it must replace.
 
     Runs at the last moment before the venv rewrite — after the code swap —
@@ -4282,10 +4295,50 @@ def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
             _m()._resume_windows_gateways_after_update(gateway_resume)
         sys.exit(2)
 
-    if _m()._reexec_dependency_sync_off_windows_shim():
-        if gateway_resume is not None:
-            _m()._resume_windows_gateways_after_update(gateway_resume)
+    context = handoff_context
+    if context is None and gateway_resume is not None:
+        context = {"gateway_resume": gateway_resume}
+    if _m()._reexec_dependency_sync_off_windows_shim(
+        context, before_spawn=_write_update_incomplete_marker
+    ):
         sys.exit(0)
+
+
+def _consume_update_reexec_context() -> dict:
+    """Take the one-shot context passed by the Windows shim parent."""
+    raw = os.environ.pop(_m()._UPDATE_REEXEC_CONTEXT_ENV, "")
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.debug("Ignoring invalid Windows update handoff context: %s", exc)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resume_reexec_gateway_before_hard_exit() -> None:
+    """Run the inherited atexit safety net before ``os._exit`` skips it."""
+    global _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME
+    token = _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME
+    _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME = None
+    if isinstance(token, dict):
+        _m()._resume_windows_gateways_after_update(token)
+
+
+def _wait_for_reexec_parent_shim_exit(
+    scripts_dir: Path, *, timeout: float = 10.0
+) -> bool:
+    """Let the spawning hermes.exe release itself before the child guard runs."""
+    if os.environ.get(_m()._UPDATE_REEXEC_ENV) != "1":
+        return True
+    deadline = _time.monotonic() + max(timeout, 0.0)
+    while True:
+        if not _m()._detect_concurrent_hermes_instances(scripts_dir):
+            return True
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(0.1)
 
 
 def _defer_update_for_self_lock(loaded: list[str]) -> None:
@@ -5882,11 +5935,34 @@ def _rebuild_desktop_after_update(
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    global _LAST_SIBLING_SNAPSHOTS, _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME
     # A managed-runtime refresh can replace site-packages before the normal
     # ``.[all]`` install runs. Snapshot while the old environment can still
     # prove which optional backends the user had activated.
     active_lazy_features = _m()._capture_active_lazy_features()
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
+    handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+    reexec_context = _consume_update_reexec_context() if handed_off_sync else {}
+    inherited_gateway_context = reexec_context.get("gateway_resume")
+    inherited_gateway_atexit_registered = False
+    if handed_off_sync and isinstance(inherited_gateway_context, dict):
+        # Arm both cleanup paths before any preflight can fail: os._exit skips
+        # atexit, while an unhandled exception takes the normal atexit path.
+        _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME = inherited_gateway_context
+        import atexit as _atexit
+
+        _atexit.register(
+            _m()._resume_windows_gateways_after_update,
+            inherited_gateway_context,
+        )
+        inherited_gateway_atexit_registered = True
+    inherited_sibling_snapshots = reexec_context.get("sibling_snapshots")
+    if handed_off_sync:
+        _LAST_SIBLING_SNAPSHOTS = (
+            dict(inherited_sibling_snapshots)
+            if isinstance(inherited_sibling_snapshots, dict)
+            else {}
+        )
 
     # Snapshot the pre-update version before any code is pulled so the
     # completion line can report the transition (prime-agent#630 port).
@@ -5990,6 +6066,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if _m()._is_windows() and not getattr(args, "force", False):
         scripts_dir = _m()._venv_scripts_dir()
         if scripts_dir is not None:
+            # The detached child can start before its spawning hermes.exe has
+            # finished unwinding. Give that one intentional overlap a bounded
+            # release window; any remaining shim is still refused below.
+            _wait_for_reexec_parent_shim_exit(scripts_dir)
             concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir)
             if concurrent:
                 non_gateway = _m()._filter_non_gateway_concurrent_instances(
@@ -6007,7 +6087,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # always roll back to the exact state they had before this update.
     # Returns the quick-snapshot id (or None when disabled/failed); the
     # post-update cron-jobs safety net uses it to detect job loss.
-    pre_update_snapshot_id = _m()._run_pre_update_backup(args)
+    if handed_off_sync:
+        pre_update_snapshot_id = reexec_context.get("pre_update_snapshot_id")
+        print("◆ Pre-update backup: already completed by handoff parent")
+        print()
+    else:
+        pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     try:
         from hermes_cli.update_receipt import record_step
 
@@ -6019,8 +6104,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except Exception:
         pass
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
+    inherited_gateway_resume = inherited_gateway_context
+    _windows_gateway_resume = (
+        inherited_gateway_resume
+        if isinstance(inherited_gateway_resume, dict)
+        else _m()._pause_windows_gateways_for_update()
+    )
+    if handed_off_sync and isinstance(_windows_gateway_resume, dict):
+        _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME = _windows_gateway_resume
+    if _windows_gateway_resume and not inherited_gateway_atexit_registered:
         import atexit as _atexit
 
         _atexit.register(
@@ -6156,7 +6248,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Capture this after every fail-closed venv guard, but before either
     # update path can remove the ignored release tree.
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    had_desktop_app_before_update = _desktop_app_present(desktop_dir)
+    inherited_desktop_state = reexec_context.get("had_desktop_app_before_update")
+    had_desktop_app_before_update = (
+        bool(inherited_desktop_state)
+        if inherited_desktop_state is not None
+        else _desktop_app_present(desktop_dir)
+    )
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
@@ -6223,6 +6320,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
+                handoff_context={
+                    "gateway_resume": _windows_gateway_resume,
+                    "pre_update_snapshot_id": pre_update_snapshot_id,
+                    "pre_update_head": pre_update_head,
+                    "had_desktop_app_before_update": had_desktop_app_before_update,
+                    "sibling_snapshots": dict(_LAST_SIBLING_SNAPSHOTS),
+                },
             )
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
@@ -6455,7 +6559,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Restore manually with: git stash apply")
                 sys.exit(1)
             if deploy_commit_count == 0:
-                if _m()._completed_deploy_handoff_requires_post_update(
+                if handed_off_sync:
+                    # The parent already published/synced the tested artifact;
+                    # this child exists to finish the install and the complete
+                    # post-update tail on that current checkout.
+                    deploy_commit_count = 1
+                elif _m()._completed_deploy_handoff_requires_post_update(
                     git_cmd, _m().PROJECT_ROOT, current_branch
                 ):
                     deploy_commit_count = 1
@@ -6543,6 +6652,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # path active even if the informational count cannot be read.
                 commit_count = max(1, synced_count)
 
+        if commit_count == 0 and handed_off_sync:
+            # HEAD is current because the parent already pulled it. Preserve a
+            # synthetic nonzero gate so this child executes the same dependency,
+            # build, migration, verification, and restart tail as a normal pull.
+            commit_count = 1
+
         if commit_count == 0:
             _invalidate_update_cache()
 
@@ -6618,8 +6733,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if handed_off_sync or not healthy:
                 # Self-lock deferral (#86735): the repair rewrites the venv
                 # too — same mapped-extension hazard as the update sync.
-                _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
                 _write_update_incomplete_marker()
+                _m()._abort_dependency_sync_if_self_locked(
+                    _windows_gateway_resume,
+                    handoff_context={
+                        "gateway_resume": _windows_gateway_resume,
+                        "pre_update_snapshot_id": pre_update_snapshot_id,
+                        "pre_update_head": pre_update_head,
+                        "had_desktop_app_before_update": had_desktop_app_before_update,
+                        "sibling_snapshots": dict(_LAST_SIBLING_SNAPSHOTS),
+                    },
+                )
                 from hermes_cli.managed_uv import ensure_uv
 
                 repair_uv = ensure_uv()
@@ -6954,7 +7078,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # holds a native extension the sync must rewrite, defer NOW — after
         # the code swap, so only the dependency install is pending and the
         # next fresh launch completes it via the marker.
-        _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
+        _m()._abort_dependency_sync_if_self_locked(
+            _windows_gateway_resume,
+            handoff_context={
+                "gateway_resume": _windows_gateway_resume,
+                "pre_update_snapshot_id": pre_update_snapshot_id,
+                "pre_update_head": pre_update_head,
+                "had_desktop_app_before_update": had_desktop_app_before_update,
+                "sibling_snapshots": dict(_LAST_SIBLING_SNAPSHOTS),
+            },
+        )
         #
         # Drop the core-install breadcrumb BEFORE touching the venv. If the
         # install is killed mid-flight (Ctrl-C, terminal close, WSL OOM), the
@@ -6962,7 +7095,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
         _write_update_incomplete_marker()
-        deps_current = _editable_install_is_current(
+        deps_current = False if handed_off_sync else _editable_install_is_current(
             git_cmd, _m().PROJECT_ROOT, pre_pull_sha
         )
         if deps_current:
@@ -7565,7 +7698,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._print_update_brief(
             git_cmd,
             _m().PROJECT_ROOT,
-            pre_update_head,
+            reexec_context.get("pre_update_head") or pre_update_head,
             branch=current_branch if is_deploy_branch else branch,
             gateway_mode=gateway_mode,
         )
@@ -8680,6 +8813,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
+                handoff_context={
+                    "gateway_resume": _windows_gateway_resume,
+                    "pre_update_snapshot_id": pre_update_snapshot_id,
+                    "pre_update_head": pre_update_head,
+                    "had_desktop_app_before_update": had_desktop_app_before_update,
+                    "sibling_snapshots": dict(_LAST_SIBLING_SNAPSHOTS),
+                },
             )
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)
