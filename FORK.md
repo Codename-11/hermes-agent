@@ -94,7 +94,7 @@ Primary files:
 - `hermes_cli/banner.py` — deploy/upstream update check and `hermes version` preview ranges
 - `hermes_cli/fork_update.py` — fork-owned deploy update helper implementation
 - `hermes_cli/update_ui.py` — update progress/status helpers used by deploy handoff review and resolve output
-- `hermes_cli/main.py` — thin import/call-site seam only
+- `hermes_cli/main.py` — deploy call-site seam plus TUI npm lockfile guard
 - `hermes_cli/update_cmd.py` — Windows update preflight, receipt lifetime, and
   post-Desktop lockfile cleanup
 - `hermes_cli/dashboard_procs.py` — concurrent-shim process classification
@@ -139,6 +139,9 @@ Required behavior:
 - Desktop rebuilds restore only semantically verified npm annotation/optional-
   transitive lockfile churn. Meaningful dependency changes remain dirty and
   flow through the normal stash/preserve policy.
+- TUI startup applies the same exact-byte semantic guard around its direct npm
+  workspace install, including failed installs, so reopening Hermes cannot
+  re-dirty the canonical lockfile after a successful update.
 - After a manual push to `origin/tgi`, rerunning `hermes update --yes` fast-forwards live cleanly and refreshes install state.
 - On Windows, an existing Hermes Desktop shortcut is durable install intent. `hermes update` must rebuild Desktop when source changed even if a failed or interrupted package step removed the source-tree `release/` and `dist/` artifacts.
 
@@ -167,7 +170,8 @@ venv/bin/python -m pytest -o 'addopts=' -q \
   tests/hermes_cli/test_update_receipt.py \
   tests/hermes_cli/test_update_stale_module_purge.py \
   tests/hermes_cli/test_update_lockfile_churn.py \
-  tests/hermes_cli/test_update_shim_self_lock.py
+  tests/hermes_cli/test_update_shim_self_lock.py \
+  tests/hermes_cli/test_tui_npm_install.py
 ```
 
 ### 2. Desktop deploy-branch update visibility

@@ -434,6 +434,126 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     _assert_utf8_replace_capture(calls[1][1])
 
 
+def _tui_lock_payload(*, peer: bool = True, version: str = "1.0.0") -> dict:
+    app = {
+        "version": version,
+        "resolved": "https://registry.invalid/app.tgz",
+        "integrity": "sha512-app",
+        "license": "MIT",
+    }
+    if peer:
+        app["peer"] = True
+    return {
+        "name": "hermes-agent",
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "hermes-agent", "dependencies": {"app": "1.0.0"}},
+            "node_modules/app": app,
+            "node_modules/encoding": {
+                "version": "0.1.13",
+                "resolved": "https://registry.invalid/encoding.tgz",
+                "integrity": "sha512-encoding",
+                "optional": True,
+                "dependencies": {"iconv-lite": "^0.6.2"},
+            },
+        },
+    }
+
+
+def test_make_tui_argv_restores_incidental_root_lockfile_churn(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package.json").write_text('{"name":"hermes-agent"}')
+    lock_path = tmp_path / "package-lock.json"
+    before = (json.dumps(_tui_lock_payload(), indent=2) + "\n").encode()
+    lock_path.write_bytes(before)
+
+    churned = _tui_lock_payload(peer=False)
+    churned["packages"].pop("node_modules/encoding")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            lock_path.write_text(json.dumps(churned, indent=2) + "\n")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert lock_path.read_bytes() == before
+
+
+def test_make_tui_argv_preserves_meaningful_root_lockfile_change(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package.json").write_text('{"name":"hermes-agent"}')
+    lock_path = tmp_path / "package-lock.json"
+    before = (json.dumps(_tui_lock_payload(), indent=2) + "\n").encode()
+    lock_path.write_bytes(before)
+    meaningful = json.dumps(_tui_lock_payload(version="2.0.0"), indent=2) + "\n"
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            lock_path.write_text(meaningful)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert lock_path.read_text() == meaningful
+    assert "preserving it for review" in capsys.readouterr().out
+
+
+def test_make_tui_argv_restores_incidental_churn_when_install_fails(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package.json").write_text('{"name":"hermes-agent"}')
+    lock_path = tmp_path / "package-lock.json"
+    before = (json.dumps(_tui_lock_payload(), indent=2) + "\n").encode()
+    lock_path.write_bytes(before)
+    churned = _tui_lock_payload(peer=False)
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+
+    def fake_run(*_args, **_kwargs):
+        lock_path.write_text(json.dumps(churned, indent=2) + "\n")
+        return types.SimpleNamespace(returncode=1, stdout="failed", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit):
+        main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert lock_path.read_bytes() == before
+
+
 def test_make_tui_argv_npm_install_forces_include_dev(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:

@@ -2638,6 +2638,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             "--progress=false",
         ]
 
+        lock_path = npm_cwd / "package-lock.json"
+        package_path = npm_cwd / "package.json"
+        try:
+            lock_before = lock_path.read_bytes()
+            package_before = package_path.read_bytes()
+        except OSError:
+            lock_before = None
+            package_before = None
+
         def _run_tui_install() -> subprocess.CompletedProcess:
             from hermes_constants import with_hermes_node_path
 
@@ -2669,6 +2678,32 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 npm = repaired_npm
                 npm_install_cmd[0] = repaired_npm
                 result = _run_tui_install()
+
+        # npm's workspace install can rewrite the canonical root lockfile even
+        # when dependency resolution did not change (peer/license annotations,
+        # platform-optional package omission). Restore the exact pre-install
+        # bytes only when the semantic verifier proves the delta incidental;
+        # pre-existing user edits are therefore preserved byte-for-byte.
+        from hermes_cli.update_cmd import _restore_incidental_lockfile_churn
+
+        restored_lockfile = _restore_incidental_lockfile_churn(
+            lock_path,
+            package_path,
+            lock_before=lock_before,
+            package_before=package_before,
+        )
+        if restored_lockfile and not os.environ.get("HERMES_QUIET"):
+            print("Restored incidental npm lockfile metadata after TUI install.")
+        elif lock_before is not None:
+            try:
+                meaningful_lock_change = lock_path.read_bytes() != lock_before
+            except OSError:
+                meaningful_lock_change = False
+            if meaningful_lock_change:
+                print(
+                    "⚠ npm changed package-lock.json beyond incidental metadata; "
+                    "preserving it for review."
+                )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
