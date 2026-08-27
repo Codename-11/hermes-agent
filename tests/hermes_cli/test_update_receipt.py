@@ -163,6 +163,24 @@ class TestCommandBoundaryFinalization:
     while inner-finalized runs are untouched.
     """
 
+    def test_receipt_survives_post_pull_module_purge(self, receipt_home):
+        """A direct-Python update retains its receipt across cache cleanup."""
+        from hermes_cli import main as cli_main
+
+        ur.begin_update_receipt()
+        ur.record_step("git_pull", True, "checkout advanced")
+
+        cli_main._purge_stale_hermes_modules()
+
+        path = ur.finalize_pending_update_receipt(
+            0, "completed at command boundary"
+        )
+        assert path is not None and path.is_file()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "success"
+        assert payload["steps"][0]["name"] == "git_pull"
+        assert ur.read_latest_receipt()["outcome"] == "success"
+
     def test_pending_receipt_persisted_on_exit_2_refusal(self, receipt_home):
         ur.begin_update_receipt()
         ur.record_step("windows_preflight", False, "another hermes.exe running")

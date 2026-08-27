@@ -598,11 +598,12 @@ def _detect_concurrent_hermes_instances(
 
     This helper enumerates processes whose ``exe`` matches one of the venv's
     shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
-    process_name)`` pairs. The caller's own PID and its entire ancestor
-    chain are excluded so the running ``hermes update`` invocation never
-    reports itself — this matters on Windows where the setuptools .exe
-    launcher (``hermes.exe``) is a separate process from the Python
-    interpreter it loads (``python.exe``).
+    process_name)`` pairs. The caller's own PID and an immediate shim parent are
+    excluded so the running ``hermes update`` invocation never reports its own
+    setuptools launcher. A matching shim anywhere farther up the tree is
+    deliberately retained: that is a long-lived outer Hermes process (for
+    example a TUI that launched a terminal-tool update) and it will keep the
+    executable locked after this child exits.
 
     Returns an empty list off-Windows, on missing psutil, or when no other
     instances exist. Never raises — process enumeration is best-effort.
@@ -625,8 +626,8 @@ def _detect_concurrent_hermes_instances(
     if not shim_paths:
         return []
 
-    # Build a set of PIDs to exclude: the Python process itself plus every
-    # ancestor whose executable is one of our shims. On Windows the
+    # Build a set of PIDs to exclude: the Python process itself plus its immediate
+    # parent when that executable is one of our shims. On Windows the
     # setuptools-generated hermes.exe launcher is a separate native process
     # that spawns python.exe (the interpreter that runs our code).
     # os.getpid() returns the Python PID, but the launcher (which holds the
@@ -640,10 +641,10 @@ def _detect_concurrent_hermes_instances(
     #      first psutil error (AccessDenied/NoSuchProcess is common on Windows
     #      across session/elevation boundaries), leaving the launcher shim in
     #      the candidate set and re-triggering the false positive.
-    #   2. Only exclude ancestors whose exe is itself a shim. A genuine second
-    #      hermes.exe sitting *under* a non-Hermes parent (e.g. a Hermes
-    #      Desktop backend child) must still be flagged, so we don't blanket-
-    #      exclude unrelated ancestors like the shell or terminal.
+    #   2. Exclude only parents()[0] when it is a shim. A shim after an
+    #      intervening shell/python process is a genuine outer Hermes runtime —
+    #      most importantly an active TUI that launched this updater through a
+    #      terminal tool — and must stay visible to the mutation preflight.
     # Broad ``except Exception`` guards against partially-stubbed psutil in
     # unit tests; this helper is documented as "never raises".
     if exclude_pid is not None:
@@ -656,7 +657,7 @@ def _detect_concurrent_hermes_instances(
             ancestors = psutil.Process(seed).parents()
         except Exception:
             ancestors = []
-        for ancestor in ancestors:
+        for ancestor in ancestors[:1]:
             try:
                 anc_exe = ancestor.exe()
             except Exception:
@@ -672,6 +673,7 @@ def _detect_concurrent_hermes_instances(
                     exclude_pids.add(int(ancestor.pid))
                 except Exception:
                     continue
+
     except Exception:
         pass
 

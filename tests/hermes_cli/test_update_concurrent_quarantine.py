@@ -52,16 +52,16 @@ def _fake_psutil_with_parent_chain(
     parent_chain: list[int],
     proc_iter_rows: list,
     *,
-    ancestor_exe: str | None = None,
+    ancestor_exe: str | dict[int, str | None] | None = None,
 ):
     """Build a psutil stand-in that has Process()/parents()/exe() AND process_iter().
 
     ``parent_chain`` is the ordered list of ancestor PIDs (closest first)
     returned by ``proc.parents()`` on the seed (``os.getpid()``).
-    ``ancestor_exe`` is the executable path reported by each ancestor's
-    ``.exe()``; when it matches one of our shim paths the ancestor is
-    excluded (the launcher-shim case). Pass ``None`` to model an ancestor
-    whose exe can't be read (psutil error) — it stays in the candidate set.
+    ``ancestor_exe`` is either one executable path for every ancestor or a
+    per-PID mapping. The immediate parent is excluded only when it is a shim;
+    farther matching shims remain candidates. Pass ``None`` to model an
+    ancestor whose exe can't be read (psutil error).
     """
 
     class _FakeProc:
@@ -75,7 +75,17 @@ def _fake_psutil_with_parent_chain(
             return self._exe
 
         def parents(self):
-            return [_FakeProc(p, ancestor_exe) for p in parent_chain]
+            return [
+                _FakeProc(
+                    p,
+                    (
+                        ancestor_exe.get(p)
+                        if isinstance(ancestor_exe, dict)
+                        else ancestor_exe
+                    ),
+                )
+                for p in parent_chain
+            ]
 
     class _NoSuchProcess(Exception):
         pass
@@ -127,6 +137,62 @@ def test_detect_concurrent_parents_call_robust_to_one_bad_hop(_winp, tmp_path):
 
     # No crash; helper completes. (Degenerate stub: launcher exe unreadable.)
     assert result == [(launcher_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_excludes_only_nearest_launcher_shim(_winp, tmp_path):
+    """An outer Hermes TUI ancestor is a real concurrent shim holder.
+
+    A terminal tool launched from a live Hermes TUI creates two shim ancestors:
+    the updater's immediate ``hermes.exe`` launcher and the long-lived TUI's
+    ``hermes.exe`` farther up the tree.  Excluding both lets the update mutate
+    source before its detached child discovers that the outer shim cannot be
+    replaced.  Only the nearest launcher belongs to this invocation.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    launcher_pid = me + 100
+    outer_tui_pid = me + 200
+    rows = [
+        _make_proc(launcher_pid, str(shim), "hermes.exe"),
+        _make_proc(outer_tui_pid, str(shim), "hermes.exe"),
+    ]
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[launcher_pid, outer_tui_pid],
+        proc_iter_rows=rows,
+        ancestor_exe=str(shim),
+    )
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == [(outer_tui_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_direct_python_keeps_outer_tui_visible(_winp, tmp_path):
+    """A direct-Python updater has no shim parent to exempt."""
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    shell_pid = me + 100
+    outer_tui_pid = me + 200
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[shell_pid, outer_tui_pid],
+        proc_iter_rows=[_make_proc(outer_tui_pid, str(shim), "hermes.exe")],
+        ancestor_exe={
+            shell_pid: str(tmp_path / "bash.exe"),
+            outer_tui_pid: str(shim),
+        },
+    )
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == [(outer_tui_pid, "hermes.exe")]
 
 
 

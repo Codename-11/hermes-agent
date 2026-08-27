@@ -82,6 +82,11 @@ _STALE_PURGE_PROTECTED = frozenset(
         "hermes_cli",
         "hermes_cli.main",
         "hermes_cli.update_cmd",
+        # Owns the in-flight UpdateReceipt singleton. Purging it after Git
+        # advances replaces the module with a fresh `_current = None`, so a
+        # successful direct-Python update leaves no success receipt and
+        # `latest.json` keeps pointing at an earlier refusal.
+        "hermes_cli.update_receipt",
         "hermes_cli.hermes_logging",
     }
 )
@@ -6978,13 +6983,101 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
             f"  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)"
         )
 
-def _discard_lockfile_churn(git_cmd, repo_root):
-    """Restore tracked ``package-lock.json`` files that npm dirtied locally.
+_NPM_LOCKFILE_INCIDENTAL_FIELDS = frozenset({"license", "optional", "peer"})
 
-    npm rewrites lockfiles non-deterministically at install/build time. On a
-    managed install those diffs are never intentional, so we discard them so
-    ``hermes update`` sees a clean tree instead of autostashing every run.
-    Best-effort; only ever touches files named ``package-lock.json``.
+
+def _lockfile_churn_is_incidental(before: bytes, after: bytes) -> bool:
+    """Whether two npm lockfiles differ only by install-time annotations.
+
+    npm versions disagree about ``license``/``optional``/``peer`` annotations
+    and may omit an optional transitive package on the current platform. Those
+    changes do not alter the declared dependency graph. Versions, resolutions,
+    integrity hashes, dependency maps, root/workspace declarations, and every
+    other field must remain byte-semantically equal or the change is treated as
+    meaningful and left for the operator.
+    """
+    try:
+        old = json.loads(before.decode("utf-8-sig"))
+        new = json.loads(after.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return False
+
+    old_top = {key: value for key, value in old.items() if key != "packages"}
+    new_top = {key: value for key, value in new.items() if key != "packages"}
+    if old_top != new_top:
+        return False
+    old_packages = old.get("packages")
+    new_packages = new.get("packages")
+    if not isinstance(old_packages, dict) or not isinstance(new_packages, dict):
+        return False
+
+    def normalized(record):
+        if not isinstance(record, dict):
+            return record
+        return {
+            key: value
+            for key, value in record.items()
+            if key not in _NPM_LOCKFILE_INCIDENTAL_FIELDS
+        }
+
+    common = set(old_packages).intersection(new_packages)
+    if any(
+        normalized(old_packages[path]) != normalized(new_packages[path])
+        for path in common
+    ):
+        return False
+
+    def optional_transitive(path: str, record) -> bool:
+        return (
+            path.startswith("node_modules/")
+            and isinstance(record, dict)
+            and record.get("optional") is True
+        )
+
+    old_only = set(old_packages) - set(new_packages)
+    new_only = set(new_packages) - set(old_packages)
+    old_optional = all(
+        optional_transitive(path, old_packages[path]) for path in old_only
+    )
+    new_optional = all(
+        optional_transitive(path, new_packages[path]) for path in new_only
+    )
+    return old_optional and new_optional
+
+
+def _restore_incidental_lockfile_churn(
+    lock_path: Path,
+    package_path: Path,
+    *,
+    lock_before: bytes | None,
+    package_before: bytes | None,
+) -> bool:
+    """Restore updater-owned npm churn while preserving meaningful/user edits."""
+    if lock_before is None or package_before is None:
+        return False
+    try:
+        lock_after = lock_path.read_bytes()
+        if lock_after == lock_before:
+            return False
+        if package_path.read_bytes() != package_before:
+            return False
+        if not _lockfile_churn_is_incidental(lock_before, lock_after):
+            return False
+        lock_path.write_bytes(lock_before)
+        return True
+    except OSError:
+        return False
+
+
+def _discard_lockfile_churn(git_cmd, repo_root):
+    """Restore only verified incidental ``package-lock.json`` rewrites.
+
+    Meaningful lockfile edits remain dirty and flow through the updater's normal
+    stash/preserve policy. Best-effort; only ever touches files whose working
+    JSON is semantically equivalent to the committed lockfile under
+    :func:`_lockfile_churn_is_incidental`.
     """
     try:
         diff = subprocess.run(
@@ -7000,22 +7093,39 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             for line in diff.stdout.splitlines()
             if line.strip().endswith("package.json")
         }
-        dirty = [
+        candidates = [
             line.strip()
             for line in diff.stdout.splitlines()
             if line.strip().endswith("package-lock.json")
             and Path(line.strip()).parent not in dirty_package_dirs
         ]
-        if not dirty:
+        verified = []
+        for relative in candidates:
+            committed = subprocess.run(
+                git_cmd + ["show", f"HEAD:{Path(relative).as_posix()}"],
+                cwd=repo_root,
+                capture_output=True,
+                check=False,
+            )
+            if committed.returncode != 0:
+                continue
+            try:
+                working = (Path(repo_root) / relative).read_bytes()
+            except OSError:
+                continue
+            if _lockfile_churn_is_incidental(committed.stdout, working):
+                verified.append(relative)
+        if not verified:
             return
-        subprocess.run(
-            git_cmd + ["checkout", "--", *dirty],
+        restored = subprocess.run(
+            git_cmd + ["checkout", "--", *verified],
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             check=False,
         )
-        print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
+        if restored.returncode == 0:
+            print(f"→ Discarded npm lockfile churn ({len(verified)} file(s))")
     except Exception:
         # Never let lockfile cleanup block an update.
         pass
@@ -7229,6 +7339,15 @@ def _rebuild_desktop_after_update(
         print("  ✓ Desktop app up to date")
         return True
 
+    lock_path = _m().PROJECT_ROOT / "package-lock.json"
+    package_path = _m().PROJECT_ROOT / "package.json"
+    try:
+        lock_before = lock_path.read_bytes()
+        package_before = package_path.read_bytes()
+    except OSError:
+        lock_before = None
+        package_before = None
+
     desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
     # Capture the (very loud) Electron/vite build output into update.log
     # instead of streaming it to the terminal. On the rare nonzero exit,
@@ -7251,6 +7370,13 @@ def _rebuild_desktop_after_update(
         build_result = _m()._run_logged_subprocess(
             desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
         )
+    if _restore_incidental_lockfile_churn(
+        lock_path,
+        package_path,
+        lock_before=lock_before,
+        package_before=package_before,
+    ):
+        print("  ✓ Restored incidental npm lockfile churn after Desktop build")
     if build_result.returncode != 0:
         print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
         tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])

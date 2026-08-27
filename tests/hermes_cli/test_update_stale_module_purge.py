@@ -82,6 +82,21 @@ def test_purge_protects_executing_modules():
     assert "hermes_cli" in sys.modules
 
 
+def test_purge_preserves_active_update_receipt_state():
+    """Post-pull cache cleanup must not erase the in-flight receipt singleton."""
+    from hermes_cli import update_receipt
+
+    previous = update_receipt._current
+    sentinel = object()
+    update_receipt._current = sentinel  # type: ignore[assignment]
+    try:
+        cli_main._purge_stale_hermes_modules()
+        assert sys.modules.get("hermes_cli.update_receipt") is update_receipt
+        assert update_receipt._current is sentinel
+    finally:
+        update_receipt._current = previous
+
+
 def test_purge_leaves_prefix_lookalikes_alone():
     # `gateway_foo` starts with the string prefix "gateway" but is NOT the
     # gateway package — the root-segment check must spare it.
