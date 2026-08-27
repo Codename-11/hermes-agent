@@ -87,6 +87,7 @@ Commits:
 - `a400363a5` — `docs: document patched deploy branch sync`
 - `47bbd3eed` — `test(update): force stale web dist in build assertion`
 - This commit — `fix(update): port deploy resolver to TGI`
+- `bc6648bbe6` — `fix(update): harden Windows completion handoff`
 
 Primary files:
 
@@ -94,6 +95,9 @@ Primary files:
 - `hermes_cli/fork_update.py` — fork-owned deploy update helper implementation
 - `hermes_cli/update_ui.py` — update progress/status helpers used by deploy handoff review and resolve output
 - `hermes_cli/main.py` — thin import/call-site seam only
+- `hermes_cli/update_cmd.py` — Windows update preflight, receipt lifetime, and
+  post-Desktop lockfile cleanup
+- `hermes_cli/dashboard_procs.py` — concurrent-shim process classification
 - `hermes_cli/subcommands/update.py`
 - `tests/hermes_cli/test_update_autostash.py`
 - `tests/hermes_cli/test_update_ui.py`
@@ -126,6 +130,15 @@ Required behavior:
 - Recover the common push race where another TGI host advances `origin/tgi` while an update is preparing its temp merge; retry once when reconciliation is safe before falling back to a handoff.
 - `hermes version` should show the deploy branch and preview both pending deploy-branch commits and pending upstream commits.
 - Resolver failures leave the live checkout unchanged and retain enough worktree/report context for safe retry or manual recovery.
+- On Windows, a long-lived outer Hermes TUI/Desktop launcher remains visible
+  to the concurrent-instance preflight even when it is an ancestor of the
+  updater process. Refuse before backup, gateway pause, or source mutation;
+  exempt only the updater Python process's immediate shim parent.
+- The in-flight update receipt survives post-pull module-cache purging so a
+  successful direct-Python completion replaces any earlier refused receipt.
+- Desktop rebuilds restore only semantically verified npm annotation/optional-
+  transitive lockfile churn. Meaningful dependency changes remain dirty and
+  flow through the normal stash/preserve policy.
 - After a manual push to `origin/tgi`, rerunning `hermes update --yes` fast-forwards live cleanly and refreshes install state.
 - On Windows, an existing Hermes Desktop shortcut is durable install intent. `hermes update` must rebuild Desktop when source changed even if a failed or interrupted package step removed the source-tree `release/` and `dist/` artifacts.
 
@@ -149,7 +162,12 @@ venv/bin/python -m pytest -o 'addopts=' -q \
   tests/hermes_cli/test_update_check.py \
   tests/hermes_cli/test_version_preview.py \
   tests/hermes_cli/test_cmd_update.py \
-  tests/hermes_cli/test_update_interrupted_recovery.py
+  tests/hermes_cli/test_update_interrupted_recovery.py \
+  tests/hermes_cli/test_update_concurrent_quarantine.py \
+  tests/hermes_cli/test_update_receipt.py \
+  tests/hermes_cli/test_update_stale_module_purge.py \
+  tests/hermes_cli/test_update_lockfile_churn.py \
+  tests/hermes_cli/test_update_shim_self_lock.py
 ```
 
 ### 2. Desktop deploy-branch update visibility
