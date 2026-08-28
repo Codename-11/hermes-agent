@@ -49,6 +49,15 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
+// Persisted names can belong to a backend, plugin, or imported registry that
+// hydrates after this module's boot paint. Preserve any non-retired name until
+// its provider arrives; deriveTheme intentionally paints the default palette
+// while unresolved, then store reactivity repaints the named theme in place.
+const normalizeStoredSkin = (name: string | null): string =>
+  name && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+
+// Explicit selections still fail closed: callers cannot persist a name that no
+// currently loaded registry can resolve.
 const normalizeSkin = (name: string | null): string =>
   name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
@@ -79,7 +88,7 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
   }
 })
 
-export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
+export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeStoredSkin)
 export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
 /** Everything a peer window could change that this one has to repaint for. */

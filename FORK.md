@@ -679,6 +679,35 @@ npx vitest run src/app/settings/helpers.test.ts
 **Retire when:** upstream ships a tri-state GPU policy UI and direct packaged
 launches honor `desktop.disable_gpu` with equivalent precedence and tests.
 
+### 15. Desktop delayed-registry theme restoration
+
+**Required behavior:**
+
+- A persisted backend/plugin/imported theme name survives cold start even when
+  that registry hydrates after the first paint.
+- Desktop may paint its default palette temporarily, then repaints the preserved
+  name when the provider registers it through `gateway.ready` or another theme
+  store update.
+- Explicit attempts to select an unknown theme still fail closed, and retired
+  names still normalize to the Desktop default.
+
+**Primary files:** `apps/desktop/src/themes/context.tsx` and focused theme tests.
+
+**Focused verification:**
+
+```bash
+cd apps/desktop
+NODE_ENV=test npx vitest run --environment jsdom \
+  src/themes/context.test.tsx \
+  src/themes/profile-theme.test.ts \
+  src/themes/backend-sync.test.ts
+npm run typecheck
+```
+
+**Retire when:** upstream preserves unresolved persisted theme names until late
+registries hydrate and covers connect-time seed repaint without overriding a
+manual Desktop-side selection.
+
 ## Current known update/build pitfalls
 
 ### 7. Anthropic Claude OAuth billing-lane fixes

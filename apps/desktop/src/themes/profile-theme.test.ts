@@ -21,7 +21,7 @@ const cases = [
   { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'light', junk: 'dusk' }
 ]
 
-describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
+describe.each(cases)('per-profile $name', ({ name, pref, fallback, a, b, junk }) => {
   beforeEach(() => window.localStorage.clear())
 
   it('falls back to the default when unassigned', () => {
@@ -41,9 +41,9 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
     expect(pref.resolve('never-themed')).toBe(a)
   })
 
-  it('normalizes an unknown stored value back to the default', () => {
+  it('preserves delayed skin names but normalizes invalid mode values', () => {
     pref.assign('work', junk)
-    expect(pref.resolve('work')).toBe(fallback)
+    expect(pref.resolve('work')).toBe(name === 'skin' ? junk : fallback)
   })
 })
 

@@ -22,6 +22,37 @@ describe('ThemeProvider ← backend skin sync', () => {
 
   afterEach(cleanup)
 
+  it('restores a persisted backend theme after the registry hydrates', () => {
+    let observed: ReturnType<typeof useTheme>
+
+    function Probe() {
+      observed = useTheme()
+
+      return null
+    }
+
+    // Persisted before the backend registry exists — the cold-start shape that
+    // previously normalized the name to Nous and never returned to it.
+    skinPref.assign('default', 'bloomberg')
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+
+    expect(observed!.themeName).toBe('bloomberg')
+    expect(cssVar('--theme-background-seed')).not.toBe('#000000')
+
+    // gateway.ready seeds without apply. Registry reactivity must repaint the
+    // preserved selection without treating the seed as a new user choice.
+    act(() => ingestBackendSkin(bloomberg('#ff9f0a'), { apply: false }))
+
+    expect(observed!.themeName).toBe('bloomberg')
+    expect(skinPref.resolve('default')).toBe('bloomberg')
+    expect(cssVar('--theme-background-seed')).toBe('#000000')
+    expect(cssVar('--theme-foreground')).toBe('#ff9f0a')
+  })
+
   it('applies an activated backend skin', () => {
     render(
       <ThemeProvider>
@@ -127,6 +158,15 @@ describe('ThemeProvider highlight preview', () => {
     expect(ctx.themeName).toBe('mono')
     expect(skinPref.resolve('default')).toBe('mono')
     expect(cssVar('--theme-foreground')).not.toBe(everforestTheme.darkColors!.foreground)
+  })
+
+  it('an explicit unknown selection still fails closed', () => {
+    renderProbe()
+
+    act(() => ctx.setTheme('does-not-exist'))
+
+    expect(ctx.themeName).not.toBe('does-not-exist')
+    expect(skinPref.resolve('default')).not.toBe('does-not-exist')
   })
 
   it('ignores a preview of an unknown theme', () => {

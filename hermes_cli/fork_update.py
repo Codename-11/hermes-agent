@@ -100,6 +100,19 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
         ),
     },
     {
+        "name": "Desktop delayed-registry theme restoration",
+        "paths": (
+            "apps/desktop/src/themes/context.tsx",
+            "apps/desktop/src/themes/context.test.tsx",
+            "apps/desktop/src/themes/profile-theme.test.ts",
+            "apps/desktop/src/themes/backend-sync",
+        ),
+        "checks": (
+            "cd apps/desktop && npx vitest run --environment jsdom src/themes/context.test.tsx src/themes/profile-theme.test.ts src/themes/backend-sync.test.ts",
+            "cd apps/desktop && npm run typecheck",
+        ),
+    },
+    {
         "name": "Slack channel/session behavior",
         "paths": (
             "gateway/platforms/slack.py",
