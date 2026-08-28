@@ -1,8 +1,6 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
-import type { ProfileInfo } from '@/types/hermes'
-
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -192,10 +190,6 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      listRemoteProfilesForConnection: (
-        payload: DesktopConnectionConfigInput
-      ) => Promise<DesktopRemoteProfilesResult>
-      pinRemoteProfileConnection: (payload: DesktopPinRemoteProfileInput) => Promise<DesktopConnectionConfig>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
@@ -845,18 +839,6 @@ export interface DesktopConnectionConfigInput {
   sshKeyPath?: string
   sshRemoteHermesPath?: string
   sshRemoteProfile?: string
-}
-
-export interface DesktopPinRemoteProfileInput extends DesktopConnectionConfigInput {
-  remoteProfile?: null | string
-  sourceProfile?: null | string
-  targetProfile: string
-}
-
-export interface DesktopRemoteProfilesResult {
-  baseUrl: string
-  ok: boolean
-  profiles: ProfileInfo[]
 }
 
 export interface DesktopConnectionTestResult {

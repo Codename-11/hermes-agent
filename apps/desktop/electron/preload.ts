@@ -202,8 +202,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
   sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
-  listRemoteProfilesForConnection: payload => ipcRenderer.invoke('hermes:connection-config:list-remote-profiles', payload),
-  pinRemoteProfileConnection: payload => ipcRenderer.invoke('hermes:connection-config:pin-remote-profile', payload),
   oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
   // Hermes Cloud: one portal login powers discovery + silent per-agent sign-in

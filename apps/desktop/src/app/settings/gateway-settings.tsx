@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -7,7 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
 import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
-import { createProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -27,8 +25,6 @@ import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { notify, notifyError, readableError } from '@/store/notifications'
-import { $profiles, refreshActiveProfile } from '@/store/profile'
-import type { ProfileInfo } from '@/types/hermes'
 
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
@@ -84,42 +80,6 @@ const EMPTY_STATE: GatewaySettingsState = {
   sshKeyPath: '',
   sshRemoteHermesPath: '',
   sshRemoteProfile: ''
-}
-
-const PROFILE_HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-export function normalizeRemoteProfileHandle(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
-}
-
-function slugSegment(value: string): string {
-  return normalizeRemoteProfileHandle(value).replace(/_/g, '-')
-}
-
-export function suggestRemoteProfileHandle(profileName: string, baseUrl: string, existingNames: Set<string>): string {
-  const remote = normalizeRemoteProfileHandle(profileName) || 'default'
-  let host = ''
-
-  try {
-    host = slugSegment(new URL(baseUrl).hostname.split('.')[0] ?? '')
-  } catch {
-    host = ''
-  }
-
-  const base = remote === 'default' ? [host || 'remote', 'default'].join('-') : remote
-  let candidate = base
-  let suffix = 2
-
-  while (existingNames.has(candidate)) {
-    candidate = `${base}-${suffix}`
-    suffix += 1
-  }
-
-  return candidate
-}
-
-function isValidProfileHandle(value: string): boolean {
-  return PROFILE_HANDLE_RE.test(value)
 }
 
 export function normalizeGatewaySettingsState(
@@ -194,7 +154,6 @@ function ModeCard({
 export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useI18n()
   const g = t.settings.gateway
-  const profiles = useStore($profiles)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -202,11 +161,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
-  const [remoteProfiles, setRemoteProfiles] = useState<ProfileInfo[] | null>(null)
-  const [remoteProfileHandles, setRemoteProfileHandles] = useState<Record<string, string>>({})
-  const [remoteProfilesBaseUrl, setRemoteProfilesBaseUrl] = useState('')
-  const [remoteProfilesLoading, setRemoteProfilesLoading] = useState(false)
-  const [pinningProfile, setPinningProfile] = useState<null | string>(null)
 
   const [sshHostSuggestions, setSshHostSuggestions] = useState<string[]>([])
   const [sshCustomHost, setSshCustomHost] = useState(false)
@@ -316,13 +270,9 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     setLoading(true)
     // Clear transient connection-entry state before hydrating the global
     // window connection. Gateways settings is intentionally no longer
-    // profile-scoped upstream; remote profile handles remain a discovery and
-    // pinning workflow beneath this global connection.
+    // profile-scoped.
     setRemoteToken('')
     setLastTest(null)
-    setRemoteProfiles(null)
-    setRemoteProfileHandles({})
-    setRemoteProfilesBaseUrl('')
 
     desktop
       .getConnectionConfig(null)
@@ -1116,86 +1066,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
   }
 
-  const localProfileNames = useMemo(() => new Set(profiles.map(profile => profile.name)), [profiles])
-
-  const loadRemoteProfiles = async () => {
-    if (!canUseRemote) {
-      notify({
-        kind: 'warning',
-        title: g.incompleteTitle,
-        message:
-          authMode === 'oauth'
-            ? g.incompleteSignInTest
-            : g.incompleteTokenTest
-      })
-
-      return
-    }
-
-    setRemoteProfilesLoading(true)
-
-    try {
-      const result = await window.hermesDesktop.listRemoteProfilesForConnection(payload())
-      setRemoteProfiles(result.profiles)
-      setRemoteProfilesBaseUrl(result.baseUrl)
-      setRemoteProfileHandles(() => {
-        const used = new Set(localProfileNames)
-        const next: Record<string, string> = {}
-
-        for (const profile of result.profiles) {
-          const suggested = suggestRemoteProfileHandle(profile.name, result.baseUrl, used)
-          used.add(suggested)
-          next[profile.name] = suggested
-        }
-
-        return next
-      })
-      notify({
-        kind: 'success',
-        title: g.remoteProfilesLoadedTitle,
-        message: g.remoteProfilesLoaded(result.profiles.length, result.baseUrl)
-      })
-    } catch (err) {
-      notifyError(err, g.remoteProfilesFailed)
-    } finally {
-      setRemoteProfilesLoading(false)
-    }
-  }
-
-  const pinRemoteProfile = async (profile: ProfileInfo) => {
-    const handle = normalizeRemoteProfileHandle(remoteProfileHandles[profile.name] ?? '')
-
-    if (!isValidProfileHandle(handle) || handle === 'default') {
-      notify({ kind: 'warning', title: g.remoteProfileHandleInvalidTitle, message: g.remoteProfileHandleInvalidDesc })
-
-      return
-    }
-
-    setPinningProfile(profile.name)
-
-    try {
-      if (!localProfileNames.has(handle)) {
-        await createProfile({ name: handle, no_skills: true })
-      }
-
-      await window.hermesDesktop.pinRemoteProfileConnection({
-        ...payload(),
-        remoteProfile: profile.name,
-        targetProfile: handle
-      })
-      await refreshActiveProfile()
-      notify({
-        kind: 'success',
-        title: g.remoteProfilePinnedTitle,
-        message: g.remoteProfilePinned(profile.name, handle)
-      })
-    } catch (err) {
-      notifyError(err, g.remoteProfilePinFailed(profile.name))
-    } finally {
-      setPinningProfile(null)
-    }
-  }
-
   if (loading) {
     return (
       <SettingsSkeleton
@@ -1673,102 +1543,6 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             {saving ? <Loader2 className="animate-spin" /> : null}
             {g.saveAndReconnect}
           </Button>
-        </div>
-      ) : null}
-
-      {state.mode === 'remote' ? (
-        <div className="mt-6 rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-[length:var(--conversation-text-font-size)] font-medium">
-                {g.remoteProfilesTitle}
-              </div>
-              <p className="mt-1 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {g.remoteProfilesDesc}
-              </p>
-            </div>
-            <Button
-              disabled={remoteProfilesLoading || !canUseRemote}
-              onClick={() => void loadRemoteProfiles()}
-              size="sm"
-              variant="textStrong"
-            >
-              {remoteProfilesLoading ? <Loader2 className="animate-spin" /> : null}
-              {g.loadRemoteProfiles}
-            </Button>
-          </div>
-
-          {remoteProfiles ? (
-            <div className="mt-3 grid gap-2">
-              {remoteProfilesBaseUrl ? (
-                <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {g.remoteProfilesFrom(remoteProfilesBaseUrl)}
-                </div>
-              ) : null}
-              {remoteProfiles.length === 0 ? (
-                <div className="rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {g.remoteProfilesEmpty}
-                </div>
-              ) : (
-                remoteProfiles.map(profile => {
-                  const handle = remoteProfileHandles[profile.name] ?? ''
-                  const normalizedHandle = normalizeRemoteProfileHandle(handle)
-                  const exists = localProfileNames.has(normalizedHandle)
-                  const isDefault = profile.is_default || profile.name === 'default'
-                  const busy = pinningProfile === profile.name
-                  const validHandle = isValidProfileHandle(normalizedHandle) && normalizedHandle !== 'default'
-
-                  return (
-                    <div
-                      className="grid gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)_auto] sm:items-center"
-                      key={profile.name}
-                    >
-                      <div className="min-w-0">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] font-medium">
-                          <span className="truncate">{profile.name}</span>
-                          <Pill>{g.remoteProfileRemote}</Pill>
-                          {isDefault ? <Pill tone="primary">{g.remoteProfileDefault}</Pill> : null}
-                        </div>
-                        <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          {profile.provider && profile.model
-                            ? `${profile.provider} · ${profile.model}`
-                            : g.remoteProfileNoModel}
-                        </div>
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-                          {g.remoteProfileHandleLabel}
-                        </label>
-                        <Input
-                          className={cn('h-8 font-mono', CONTROL_TEXT, !validHandle && 'border-destructive/50')}
-                          onChange={event => {
-                            const next = normalizeRemoteProfileHandle(event.target.value)
-                            setRemoteProfileHandles(current => ({ ...current, [profile.name]: next }))
-                          }}
-                          value={handle}
-                        />
-                        <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          {g.remoteProfileHandleHint(profile.name)}
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap items-center justify-end gap-2">
-                        {exists ? <Pill tone="primary">{g.remoteProfileLocal}</Pill> : null}
-                        <Button
-                          disabled={busy || !validHandle}
-                          onClick={() => void pinRemoteProfile(profile)}
-                          size="sm"
-                          variant={exists ? 'textStrong' : 'outline'}
-                        >
-                          {busy ? <Loader2 className="animate-spin" /> : null}
-                          {exists ? g.pinRemoteProfileExisting : g.pinRemoteProfileNew}
-                        </Button>
-                      </div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          ) : null}
         </div>
       ) : null}
 

@@ -386,54 +386,13 @@ venv/bin/python -m pytest -o 'addopts=' -q \
   tests/tools/test_mcp_tool.py::TestMCPServerTask::test_refresh_tools_replaces_schema_for_unchanged_tool_name
 ```
 
-### 7. Desktop remote profile handles
+### 7. RETIRED — Desktop remote profile handles
 
-Commit:
-
-- This commit — `feat(desktop): add TGI remote profile handles`
-
-Primary files:
-
-- `apps/desktop/electron/main.ts`
-- `apps/desktop/electron/preload.ts`
-- `apps/desktop/src/global.d.ts`
-- `apps/desktop/src/app/settings/gateway-settings.tsx`
-- `apps/desktop/src/i18n/*.ts`
-- `docs/refs/2026-06-tgi-desktop-remote-profile-handles.md`
-
-Why TGI needs it:
-
-- Upstream Desktop can save per-profile remote gateway overrides, but operators still have to create local stubs and copy connection settings by hand before remote profiles are visible in the profile rail.
-- TGI needs a low-friction way to load named profiles from a remote gateway and pin them as local Desktop profile handles so the existing profile rail/sidebar becomes the local/remote agent switcher.
-- The closest upstream design, draft PR #39337, is broad and stale; this TGI patch intentionally ports only the narrow discover-and-pin workflow.
-
-Required behavior:
-
-- Settings -> Gateway Connection shows a Remote profiles panel when the selected scope is remote.
-- The panel can call the selected remote gateway's `/api/profiles` endpoint using the saved token/OAuth connection path.
-- A remote profile can be added as a distinct local profile handle, then pinned to that remote gateway as a per-profile remote override. The local handle no longer has to match the remote profile name, so a remote `default` / Atlas can coexist with the local `default` / Atlas.
-- Selecting that handle from the existing profile rail routes future Desktop traffic to the remote gateway; switching back to a local profile uses the local backend.
-
-Retirement criteria:
-
-- Upstream provides an equivalent or better Desktop workflow for discovering remote profiles/gateways, showing them beside local profiles, and switching without manual stub creation or token copying.
-- Upstream routes chat/session/profile-scoped settings to the selected backend correctly and handles dead remotes visibly.
-- Once upstream covers those outcomes, remove this TGI IPC/UI/string patch and keep the upstream implementation.
-
-Watch upstream for:
-
-- PR #39337 or successor peer-gateway/profile selector work.
-- Desktop changes mentioning peer gateways, remote profile discovery, connection registry, gateway selector, per-profile routing, profile switch races, or model/session refresh on profile swap.
-
-Reference:
-
-- `docs/refs/2026-06-tgi-desktop-remote-profile-handles.md`
-
-Focused checks:
-
-```bash
-cd apps/desktop && npm run typecheck
-```
+Retired 2026-08-28. Upstream's connection registry and fleet profile rail now
+provide remote agent discovery and switching, superseding TGI's local profile-
+handle discovery/pinning IPC and settings panel. The fork-specific implementation,
+tests, strings, and reference document were removed; broader Desktop connection
+routing remains covered by the upstream registry flows.
 
 ### 8. Desktop OAuth remote artifact opening
 

@@ -78,7 +78,7 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
         ),
     },
     {
-        "name": "Desktop remote profile handles / remote routing",
+        "name": "Desktop connection routing",
         "paths": (
             "apps/desktop/electron/connection-config.ts",
             "apps/desktop/electron/main.ts",
