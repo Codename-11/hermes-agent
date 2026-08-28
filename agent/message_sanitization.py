@@ -416,8 +416,16 @@ def _strip_images_from_messages(messages: list) -> bool:
         practice this only hits synthetic image-only user messages appended
         for attachment delivery; real user turns always include text.
 
+    This runs on the persistent history as well as the per-call copy, so any
+    message it rewrites must also lose its ``api_content`` sidecar: the sidecar
+    carries the exact bytes previously sent — here, the images this strip
+    exists to remove — and the next turn substitutes it back into ``content``,
+    undoing the strip on the wire.
+
     Returns True if any image parts were removed.
     """
+    from agent.turn_context import drop_stale_api_content
+
     found = False
     to_delete = []
     for i, msg in enumerate(messages):
@@ -443,9 +451,86 @@ def _strip_images_from_messages(messages: list) -> bool:
                 # Synthetic image-only user/assistant message with no text;
                 # safe to drop.
                 to_delete.append(i)
+            # Content was rewritten — the pre-strip sidecar is now stale.
+            drop_stale_api_content(msg)
     for i in reversed(to_delete):
         del messages[i]
     return found
+
+
+_IMAGE_REJECTION_PHRASES = (
+    "only 'text' content type is supported",
+    "only text content type is supported",
+    "image_url is not supported",
+    "image content is not supported",
+    "multimodal is not supported",
+    "multimodal content is not supported",
+    "multimodal input is not supported",
+    "vision is not supported",
+    "vision input is not supported",
+    "does not support images",
+    "does not support image input",
+    "does not support multimodal",
+    "does not support vision",
+    "model does not support image",
+    # Some OpenAI-compatible endpoints (e.g. Alibaba/DashScope-style
+    # gateways) reject non-text content blocks with this generic body
+    # instead of naming image_url or vision support explicitly.
+    # (issue #57948)
+    "unexpected item type in content",
+    # ChatGPT-account Codex backend
+    # (https://chatgpt.com/backend-api/codex) rejects
+    # data:image/...base64 URLs in input_image fields
+    # with HTTP 400 "Invalid 'input[N].content[K].image_url'.
+    # Expected a valid URL, but got a value with an
+    # invalid format." The OpenAI Responses API on the
+    # public endpoint accepts data URLs, but the
+    # ChatGPT-account variant does not. Without this
+    # phrase the agent cascaded into compression /
+    # context-too-large recovery instead of just
+    # stripping the images. Match is narrow on
+    # purpose — keyed on the field-path apostrophe so
+    # we don't false-trip on other URL validation
+    # errors. (issue #23570)
+    "image_url'. expected",
+    # ChatGPT-account Codex can also reject corrupt/unsupported
+    # native image payloads with this wording. Treat it like a
+    # provider image rejection so the loop strips images and
+    # retries text-only instead of aborting the session.
+    "image data you provided does not represent a valid image",
+    # DeepSeek's OpenAI-compatible API reports text-only
+    # request-body variants as:
+    # "unknown variant `image_url`, expected `text`".
+    "unknown variant `image_url`, expected `text`",
+    "unknown variant image_url, expected text",
+    # OpenRouter routes a request to upstream endpoints and,
+    # when none of the candidate endpoints for the model accept
+    # image input, returns HTTP 404 "No endpoints found that
+    # support image input". Without this phrase the agent never
+    # strips the images, the retry loop re-sends the same
+    # rejected request until exhaustion, and the gateway leaves
+    # every subsequent message queued behind the stuck turn —
+    # the P1 in issue #21160. The 404 passes the 4xx gate in the
+    # conversation loop.
+    "no endpoints found that support image input",
+    # Kimi / Moonshot / other OpenAI-compatible Chinese
+    # providers reject truncated or corrupt image bytes with
+    # HTTP 400 "Invalid request: prepare image failed ...
+    # failed to decode image: invalid or unsupported image
+    # format". Like the Codex case above, the bad bytes are
+    # baked into immutable conversation history and re-sent on
+    # every retry, wedging the session. Strip the images so the
+    # turn recovers instead of exhausting retries. (issue
+    # #76884; complements the proactive full-decode validation
+    # in tools/vision_tools._normalize_to_supported_image)
+    "failed to decode image",
+)
+
+
+def _looks_like_image_content_rejection(error_body: str) -> bool:
+    """Return True when a provider error says image/multimodal input is unsupported."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _IMAGE_REJECTION_PHRASES)
 
 
 def _sanitize_structure_non_ascii(payload: Any) -> bool:
