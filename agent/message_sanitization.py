@@ -400,6 +400,41 @@ def _sanitize_tools_non_ascii(tools: list) -> bool:
     return _sanitize_structure_non_ascii(tools)
 
 
+def serialized_messages_bytes(messages: list) -> int:
+    """Exact serialized size, in bytes, of the ``messages`` request payload.
+
+    Recovery path for HTTP 413 (payload too large).  A 413 is a *byte*-size
+    error, but Hermes' context estimator deliberately prices an image at a
+    flat per-image token cost so that a screenshot does not trigger premature
+    compaction (see ``estimate_messages_tokens_rough``).  That makes the
+    token estimate structurally unable to *score* recovery from an
+    image-dominated 413: compaction can free megabytes of base64 while the
+    estimate barely moves, so a token-scored progress check reports
+    "no progress" and the turn dies permanently.
+
+    This measures the thing the provider actually rejected — serialized
+    bytes — exactly and for free.  It is a faithful proxy for the request
+    body's ``messages`` field (the only part recovery can shrink) and is
+    measured identically before and after each compression pass, so the
+    before/after ratio is exact.  It is NOT an estimate.
+
+    Non-serializable values fall back to ``str()`` so a malformed message
+    can never crash the 413 recovery path.
+    """
+    if not isinstance(messages, list) or not messages:
+        return 0
+    try:
+        return len(
+            json.dumps(
+                messages, ensure_ascii=False, separators=(",", ":"), default=str
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        # Extremely defensive — ``default=str`` already covers exotic
+        # values.  Never let byte accounting take down error recovery.
+        return sum(len(str(m)) for m in messages)
+
+
 def _strip_images_from_messages(messages: list) -> bool:
     """Remove image_url content parts from all messages in-place.
 
@@ -412,9 +447,11 @@ def _strip_images_from_messages(messages: list) -> bool:
         with a plaintext placeholder, NOT deleted — deleting them would leave
         the paired ``tool_call_id`` on the prior assistant message unmatched,
         which providers reject with HTTP 400.
-      * Non-tool messages whose content becomes empty are dropped.  In
-        practice this only hits synthetic image-only user messages appended
-        for attachment delivery; real user turns always include text.
+      * Assistant messages carrying ``tool_calls`` are likewise replaced, not
+        deleted — dropping them would orphan their tool responses.
+      * Other messages whose content becomes empty are dropped.  In practice
+        this only hits synthetic image-only user messages appended for
+        attachment delivery; real user turns always include text.
 
     This runs on the persistent history as well as the per-call copy, so any
     message it rewrites must also lose its ``api_content`` sidecar: the sidecar
@@ -443,13 +480,15 @@ def _strip_images_from_messages(messages: list) -> bool:
         if len(new_parts) < len(content):
             if new_parts:
                 msg["content"] = new_parts
-            elif msg.get("role") == "tool":
-                # Preserve tool_call_id linkage — providers require every
-                # assistant tool_call to have a matching tool response.
+            elif msg.get("role") == "tool" or msg.get("tool_calls"):
+                # Preserve message linkage — providers require every assistant
+                # tool_call to have a matching tool response, and an assistant
+                # message carrying tool_calls must survive even if its content
+                # was entirely images.
                 msg["content"] = "[image content removed — server does not support images]"
             else:
-                # Synthetic image-only user/assistant message with no text;
-                # safe to drop.
+                # Synthetic image-only user/assistant message with no text and
+                # no tool_calls; safe to drop.
                 to_delete.append(i)
             # Content was rewritten — the pre-strip sidecar is now stale.
             drop_stale_api_content(msg)
