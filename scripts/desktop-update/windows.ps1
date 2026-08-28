@@ -21,6 +21,7 @@
 #     -File scripts\desktop-update\windows.ps1
 #     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
 #     -Branch <ref>         branch to update against
+#     [-BareUpdate]         run deploy-aware `hermes update` without --branch
 #     -DesktopPid <pid>     the Electron main process to wait out
 #     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
 #     [-NoUi]               headless (tests); default shows a progress window
@@ -44,14 +45,29 @@
 param(
     [string]$InstallRoot,
     [string]$Branch = "main",
+    [switch]$BareUpdate,
     [int]$DesktopPid = 0,
     [string]$RelaunchExe = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
-    [switch]$SelfTestMarker
+    [switch]$SelfTestMarker,
+    [switch]$SelfTestUpdateArgs
 )
+
+function Get-HermesUpdateArgs([string]$TargetBranch, [switch]$UseBareUpdate) {
+    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force")
+    $bare = $UseBareUpdate -or $TargetBranch -in @("axiom", "tgi")
+    if (-not $bare) { $updateArgs += @("--branch", $TargetBranch) }
+    return ,$updateArgs
+}
+
+if ($SelfTestUpdateArgs) {
+    $values = [string[]](Get-HermesUpdateArgs $Branch -UseBareUpdate:$BareUpdate)
+    ConvertTo-Json -InputObject $values -Compress
+    exit 0
+}
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
@@ -1478,7 +1494,7 @@ try {
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    $updateArgs = @(Get-HermesUpdateArgs $Branch -UseBareUpdate:$BareUpdate)
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which

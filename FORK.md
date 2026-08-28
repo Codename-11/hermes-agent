@@ -179,10 +179,16 @@ venv/bin/python -m pytest -o 'addopts=' -q \
 Commits:
 
 - This commit — `fix(desktop): support TGI deploy update visibility`
+- This commit — `fix(desktop): restore deploy-aware update handoff`
 
 Primary files:
 
 - `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/update-branch-policy.ts`
+- `apps/desktop/electron/windows-hermes-path.ts`
+- `apps/bootstrap-installer/src-tauri/src/update.rs`
+- `scripts/desktop-update/windows.ps1`
+- `scripts/desktop-update/posix.sh`
 - `apps/desktop/src/global.d.ts`
 - `apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx`
 - `apps/desktop/src/app/settings/about-settings.tsx`
@@ -206,6 +212,10 @@ Focused checks:
 
 ```bash
 cd apps/desktop && npm run typecheck
+cd apps/desktop && npx vitest run --project electron \
+  electron/update-branch-policy.test.ts \
+  electron/windows-hermes-path.test.ts
+python -m pytest -o 'addopts=' -q tests/test_desktop_update_deploy_branch_contract.py
 ```
 
 ### 3. Slack non-threaded/channel-session behavior

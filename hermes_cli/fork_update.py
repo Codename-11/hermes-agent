@@ -55,12 +55,21 @@ FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
         "paths": (
             "hermes_cli/fork_update.py",
             "hermes_cli/main.py",
+            "apps/desktop/electron/main.ts",
+            "apps/desktop/electron/update-branch-policy.ts",
+            "apps/desktop/electron/windows-hermes-path.ts",
+            "apps/bootstrap-installer/src-tauri/src/update.rs",
+            "scripts/desktop-update/windows.ps1",
+            "scripts/desktop-update/posix.sh",
+            "tests/test_desktop_update_deploy_branch_contract.py",
             "tests/hermes_cli/test_update_autostash.py",
             "tests/hermes_cli/test_cmd_update.py",
         ),
         "checks": (
             "python -m py_compile hermes_cli/main.py hermes_cli/fork_update.py",
-            "python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py",
+            "python -m pytest -o addopts= -q tests/hermes_cli/test_update_autostash.py tests/hermes_cli/test_cmd_update.py tests/test_desktop_update_deploy_branch_contract.py",
+            "cd apps/desktop && npx vitest run --project electron electron/update-branch-policy.test.ts electron/windows-hermes-path.test.ts",
+            "cd apps/desktop && npm run typecheck",
         ),
     },
     {

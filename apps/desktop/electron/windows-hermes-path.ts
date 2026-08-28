@@ -32,6 +32,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { stagedUpdaterBranchArgs } from './update-branch-policy'
+
 /**
  * Build the ordered list of extensions findOnPath() should try when
  * resolving a bare command name off PATH.
@@ -79,7 +81,7 @@ export interface BootstrapRecoverySignals {
 export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: string): string[] {
   const canRunUpdater = signals.hasVenvHermes && signals.hasVenvPython
 
-  return canRunUpdater ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  return canRunUpdater ? ['--update', ...stagedUpdaterBranchArgs(branch)] : ['--repair', '--branch', branch]
 }
 
 /**

@@ -328,6 +328,8 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let update_branch = update_branch_from_args(std::env::args().skip(1))
         .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
         .unwrap_or_else(|| "main".to_string());
+    let bare_update =
+        bare_update_from_args(std::env::args().skip(1)) || is_deploy_update_branch(&update_branch);
     let target_app = if cfg!(target_os = "macos") {
         target_app_from_args(std::env::args().skip(1))
     } else {
@@ -379,23 +381,24 @@ async fn run_update(app: AppHandle) -> Result<()> {
     );
 
     // ---- stage 2: hermes update -----------------------------------------
-    // Pass --branch so `hermes update` targets the branch this installer was
-    // built/pinned against (BUILD_PIN_BRANCH), NOT its built-in default of
-    // `main`. The install was a detached-HEAD checkout of a specific commit;
-    // without --branch, `hermes update` switches the checkout to `main` (a
-    // divergent branch that may not even have the desktop CLI command), then
-    // reports "already up to date" against the wrong branch. The desktop
-    // detected the update against this same branch, so we must update against
-    // it too.
+    // Ordinary branches stay explicitly pinned. Deploy branches pass
+    // --bare-update from Electron so bare `hermes update` can run the fork's
+    // upstream -> origin/deploy -> live reconciliation transaction.
     emit_log(
         &app,
         Some("update"),
         LogStream::Stdout,
-        &format!("[update] updating against branch {update_branch}"),
+        &format!(
+            "[update] updating against branch {update_branch}{}",
+            if bare_update {
+                " (deploy-aware bare update)"
+            } else {
+                ""
+            }
+        ),
     );
     let child_env = update_child_env(&install_root);
-    let mut update_args: Vec<String> =
-        vec!["update".into(), "--yes".into(), "--gateway".into()];
+    let update_args = build_hermes_update_args(&update_branch, bare_update);
     // --force skips `hermes update`'s Windows running-exe guard (which would
     // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
     // already exited and waited for the install locks to clear before launching
@@ -410,10 +413,6 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // could still be alive here — mutating the venv under it would strand the
     // install half-updated. If that guard fires, it exits 2 and the match arm
     // below surfaces the correct "close all Hermes windows" message.
-    update_args.push("--force".into());
-    update_args.push("--branch".into());
-    update_args.push(update_branch);
-
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
     let mut update = run_streamed(
@@ -1075,6 +1074,32 @@ fn path_with_prepended_entries(entries: &[PathBuf]) -> Option<OsString> {
         parts.extend(env::split_paths(&existing));
     }
     env::join_paths(parts).ok()
+}
+
+fn build_hermes_update_args(update_branch: &str, bare_update: bool) -> Vec<String> {
+    let mut args = vec![
+        "update".to_string(),
+        "--yes".to_string(),
+        "--gateway".to_string(),
+        "--force".to_string(),
+    ];
+    if !bare_update {
+        args.push("--branch".to_string());
+        args.push(update_branch.to_string());
+    }
+    args
+}
+
+fn is_deploy_update_branch(branch: &str) -> bool {
+    matches!(branch.trim(), "axiom" | "tgi")
+}
+
+fn bare_update_from_args<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == "--bare-update")
 }
 
 fn update_branch_from_args<I, S>(args: I) -> Option<String>
@@ -1758,6 +1783,36 @@ mod tests {
             Some("main".to_string())
         );
         assert_eq!(update_branch_from_args(["--update"]), None);
+    }
+
+    #[test]
+    fn deploy_aware_update_omits_branch_but_generic_update_keeps_it() {
+        assert!(bare_update_from_args(["--update", "--bare-update"]));
+        assert!(!bare_update_from_args(["--update", "--branch", "main"]));
+        assert!(is_deploy_update_branch("tgi"));
+        assert!(is_deploy_update_branch("axiom"));
+        assert!(!is_deploy_update_branch("release/1.2"));
+        assert_eq!(
+            build_hermes_update_args("tgi", true),
+            vec!["update", "--yes", "--gateway", "--force"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            build_hermes_update_args("release/1.2", false),
+            vec![
+                "update",
+                "--yes",
+                "--gateway",
+                "--force",
+                "--branch",
+                "release/1.2",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
     }
 
     #[test]

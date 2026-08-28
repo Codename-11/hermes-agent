@@ -12,6 +12,7 @@
 #   bash scripts/desktop-update/posix.sh
 #     --install-root <path>    repo checkout (HERMES_HOME/hermes-agent)
 #     --branch <ref>           branch to update against
+#     [--bare-update]          run deploy-aware `hermes update` without --branch
 #     --desktop-pid <pid>      the Electron main process to wait out
 #     [--relaunch-target <p>]  mac: running .app to swap+reopen;
 #                              linux: running binary (omit = no relaunch)
@@ -38,12 +39,14 @@ set -u
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0 BARE_UPDATE=0
+SELF_TEST_UPDATE_ARGS=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
+    --bare-update) BARE_UPDATE=1; shift ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
@@ -52,12 +55,17 @@ while [ $# -gt 0 ]; do
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
+    --self-test-update-args) SELF_TEST_UPDATE_ARGS=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
+case "$BRANCH" in axiom|tgi) BARE_UPDATE=1 ;; esac
+BRANCH_ARGS=()
+if [ "$BARE_UPDATE" -ne 1 ]; then BRANCH_ARGS=(--branch "$BRANCH"); fi
+if [ "$SELF_TEST_UPDATE_ARGS" -eq 1 ]; then printf '%s\n' "${BRANCH_ARGS[*]}"; exit 0; fi
 [ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -585,9 +593,9 @@ if "$HERMES_BIN" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
 else
   log "installed hermes predates --keep-stash; running without it"
 fi
-log "running: hermes update --yes --gateway $KEEP_STASH --branch $BRANCH"
+log "running: hermes update --yes --gateway $KEEP_STASH ${BRANCH_ARGS[*]}"
 publish_stage "Updating code and dependencies"
-OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH "${BRANCH_ARGS[@]}" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
@@ -609,7 +617,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
-  OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+  OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH "${BRANCH_ARGS[@]}" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi

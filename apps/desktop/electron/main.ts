@@ -369,6 +369,13 @@ import {
   resolveCommitLogSelection,
   shouldCountCommits
 } from './update-count'
+import {
+  collectUpstreamDisparity,
+  manualUpdateCommand,
+  posixHandoffBranchArgs,
+  stagedUpdaterBranchArgs,
+  windowsHandoffBranchArgs
+} from './update-branch-policy'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3020,6 +3027,11 @@ async function checkUpdates() {
   ])
 
   const isShallow = shallowStr === 'true'
+  const upstreamDisparity = await collectUpstreamDisparity(
+    branch,
+    args => runGit(args, { cwd: updateRoot }),
+    { isShallow }
+  )
 
   // A shallow graph cannot provide a trustworthy exact count, even when it has
   // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
@@ -3064,6 +3076,7 @@ async function checkUpdates() {
     targetSha,
     commits,
     dirty: dirtyStr.length > 0,
+    ...upstreamDisparity,
     hermesRoot: updateRoot,
     fetchedAt: Date.now()
   }
@@ -3683,13 +3696,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       const updateRoot = resolveUpdateRoot()
 
       if (!resolveUpdateScriptHandoff(updateRoot)) {
-        // They DO have a working `hermes` on PATH / in the venv, so the
-        // correct path is the one-liner in their native medium. We show the
-        // EXACT command, branch-pinned to the checkout they're on — bare
-        // `hermes update` defaults to main and would silently switch a
-        // bb/gui (or any non-main) install off-branch. Mirror the GUI
-        // button's contract: append --branch <current> for non-main
-        // checkouts, keep it bare for main so the card stays clean.
+        // They DO have a working `hermes` on PATH / in the venv, so show the
+        // exact command for the checkout. Ordinary non-main branches stay
+        // pinned; deploy branches must enter through bare `hermes update` so
+        // the fork-aware reconciler owns upstream -> origin/deploy -> live.
         let command = 'hermes update'
 
         try {
@@ -3699,9 +3709,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           if (head.code === 0 && current && current !== 'HEAD') {
             const branch = await resolveHealedBranch(updateRoot, current)
 
-            if (branch !== 'main') {
-              command = `hermes update --branch ${branch}`
-            }
+            command = manualUpdateCommand(branch)
           }
         } catch {
           // Best-effort: fall back to bare `hermes update` if branch detection fails.
@@ -3740,7 +3748,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    const updaterArgs = ['--update', '--branch', branch]
+    const updaterArgs = ['--update', ...stagedUpdaterBranchArgs(branch)]
     const targetApp = IS_MAC ? runningAppBundle() : null
 
     if (targetApp) {
@@ -3864,8 +3872,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
         '-InstallRoot',
         updateRoot,
-        '-Branch',
-        branch,
+        ...windowsHandoffBranchArgs(branch),
         '-DesktopPid',
         String(process.pid),
         '-RelaunchExe',
@@ -4234,7 +4241,14 @@ async function applyUpdatesPosixHandoff(opts: any) {
     // best effort
   }
 
-  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+  const args = [
+    ...handoff.args,
+    '--install-root',
+    updateRoot,
+    ...posixHandoffBranchArgs(branch),
+    '--desktop-pid',
+    String(process.pid)
+  ]
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
   // Relaunch target: the running .app bundle on mac (script swaps the

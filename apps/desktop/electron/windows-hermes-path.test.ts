@@ -84,6 +84,17 @@ test('chooseUpdaterArgs: passes the branch through unchanged in both modes', () 
   )
 })
 
+test('chooseUpdaterArgs: deploy update is bare but repair keeps install provenance', () => {
+  assert.deepEqual(
+    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: true }, 'tgi'),
+    ['--update', '--bare-update']
+  )
+  assert.deepEqual(
+    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: false, hasVenvPython: false }, 'tgi'),
+    ['--repair', '--branch', 'tgi']
+  )
+})
+
 function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>[2]> = {}) {
   return {
     isWindows: true,
