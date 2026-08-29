@@ -1824,7 +1824,10 @@ def _scan_conflict_markers(worktree: Path, paths: list[str]) -> list[str]:
             text = candidate.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if any(line.startswith(("<<<<<<< ", "=======", ">>>>>>> ")) for line in text.splitlines()):
+        if any(
+            line.startswith(("<<<<<<< ", ">>>>>>> ")) or line.rstrip() == "======="
+            for line in text.splitlines()
+        ):
             offenders.append(rel)
     return offenders
 
@@ -2295,6 +2298,23 @@ def _retry_validation_with_resolver(
     )
 
 
+def _compile_python_paths(worktree: Path, python_paths: list[str]) -> subprocess.CompletedProcess[str]:
+    """Compile paths without expanding them into the Windows command line."""
+    compiler = (
+        "import py_compile, sys\n"
+        "for path in sys.stdin.read().split('\\0'):\n"
+        "    if path:\n"
+        "        py_compile.compile(path, doraise=True)\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", compiler],
+        cwd=worktree,
+        input="\0".join(python_paths),
+        capture_output=True,
+        text=True,
+    )
+
+
 def _checkpoint_resolved_handoff(
     git_cmd: list[str], worktree: Path, branch: str
 ) -> tuple[str, str]:
@@ -2364,12 +2384,7 @@ def _checkpoint_resolved_handoff(
         if relative.strip() and (worktree / relative).is_file()
     ]
     if python_paths:
-        syntax_check = subprocess.run(
-            [sys.executable, "-m", "py_compile", *python_paths],
-            cwd=worktree,
-            capture_output=True,
-            text=True,
-        )
+        syntax_check = _compile_python_paths(worktree, python_paths)
         if syntax_check.returncode != 0:
             return "", (
                 syntax_check.stderr

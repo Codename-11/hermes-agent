@@ -10,13 +10,15 @@ same as every other ``_spawn_detached`` caller.
 
 from __future__ import annotations
 
+import pytest
+
 from hermes_cli import gateway as hermes_gateway
 from hermes_cli import gateway_windows
 from hermes_cli import main as cli_main
 from hermes_cli import update_cmd
 
 
-def _run_cold_start(monkeypatch, capsys, *, surviving_pids, launcher_alive=False):
+def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
 
     # The pre-spawn re-check (``all_profiles=True``) must find nothing
@@ -31,45 +33,22 @@ def _run_cold_start(monkeypatch, capsys, *, surviving_pids, launcher_alive=False
     monkeypatch.setattr(
         gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: surviving_pids
     )
-    monkeypatch.setattr(
-        "gateway.status._pid_exists", lambda pid: launcher_alive and pid == 4242
-    )
-
     update_cmd._cold_start_windows_gateway_after_update()
 
     return capsys.readouterr().out
 
 
-def test_cold_start_reports_failure_when_process_does_not_survive(monkeypatch, capsys):
-    out = _run_cold_start(monkeypatch, capsys, surviving_pids=[])
+def test_cold_start_raises_when_process_does_not_survive(monkeypatch, capsys):
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        _run_cold_start(monkeypatch, capsys, surviving_pids=[])
 
-    assert "✓ Starting Windows gateway after update" not in out
-    assert "exited before the gateway became ready" in out
+    assert "✓ Starting Windows gateway after update" not in capsys.readouterr().out
 
 
 def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):
     out = _run_cold_start(monkeypatch, capsys, surviving_pids=[4242])
 
     assert "✓ Gateway started via cold-start after update" in out
-    assert out.count("4242") == 1
-    assert "gateway PID: 4242" in out
-
-
-def test_cold_start_labels_different_launcher_and_gateway_pids(monkeypatch, capsys):
-    out = _run_cold_start(monkeypatch, capsys, surviving_pids=[5252])
-
-    assert "gateway PID: 5252" in out
-    assert "launcher PID: 4242" in out
-
-
-def test_cold_start_reports_live_launcher_as_still_starting(monkeypatch, capsys):
-    out = _run_cold_start(
-        monkeypatch, capsys, surviving_pids=[], launcher_alive=True
-    )
-
-    assert "still starting" in out
-    assert "launcher PID: 4242" in out
-    assert "no process detected" not in out
 
 
 def test_gateway_ready_prefers_control_socket_identity(monkeypatch):

@@ -1750,6 +1750,28 @@ def test_checkpoint_resolved_handoff_commits_tracked_resolution_and_persists_sha
     assert payload["check_status"] == {}
 
 
+def test_compile_python_paths_streams_large_path_set_over_stdin(tmp_path):
+    from hermes_cli import axiom_update
+
+    paths = []
+    for index in range(300):
+        path = tmp_path / f"{index:03d}_{'x' * 70}.py"
+        path.write_text("value = 1\n", encoding="utf-8")
+        paths.append(str(path))
+
+    assert sum(len(path) + 3 for path in paths) > 32_767
+    result = axiom_update._compile_python_paths(tmp_path, paths)
+
+    assert result.returncode == 0, result.stderr
+    assert len(result.args) == 3
+
+    broken = tmp_path / "broken.py"
+    broken.write_text("if True print('broken')\n", encoding="utf-8")
+    result = axiom_update._compile_python_paths(tmp_path, [str(broken)])
+    assert result.returncode != 0
+    assert "SyntaxError" in result.stderr
+
+
 def test_checkpoint_resolved_handoff_rejects_whitespace_errors_already_staged(
     monkeypatch, tmp_path
 ):
