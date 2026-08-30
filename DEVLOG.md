@@ -1,5 +1,12 @@
 # Hermes Agent — Axiom Dev Log
 
+## 2026-08-30 — Restore thin Update Control facade
+
+- Restored a versioned `host.updates` plugin capability after the 2026-08-22 regeneration accidentally preserved the external Axiom Enhancements UI but omitted its core connector.
+- Kept Desktop's normal deploy-aware check/apply/rebuild/relaunch path authoritative; did not restore the retired parallel staging/history engine.
+- Added background `sync-upstream` execution and live output around the existing `hermes_cli.axiom_update` LLM worktree resolver so reconciliation can run while Desktop remains open.
+- Registered `desktop-update-control-facade` as a replayable carry with an immutable source commit, focused Electron/SDK tests, isolated dependency preparation, full typecheck, and a successful replay probe.
+
 ## 2026-08-30 — Retire Axiom ownership of Desktop registered-source routing
 
 - Refreshed `axiom` from current `upstream/main` without Desktop routing conflicts.

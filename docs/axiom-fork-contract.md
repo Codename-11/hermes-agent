@@ -149,16 +149,19 @@ home page when no URL tab exists; it must not create a parallel browser surface.
   `upstream/main`. Upstream work can be pending reconciliation even when the
   local checkout has consumed every published Axiom commit.
 
-The fork-local typed `host.updates` facade exposes detached client/backend
-snapshots, backend apply progress, staged-update status/history, refresh, stage
-preparation/cancellation/discard, guarded client or backend apply, restart/apply,
-and upstream reconciliation status. The renderer may present and request those
-operations, but core remains authoritative for checks, branch selection,
-progress collection, locks, confirmation, dirty-tree policy, Git/filesystem
-mutation, process shutdown, rollback, deploy reconciliation, and relaunch. The
-facade never exposes raw Electron IPC, shell commands, repository paths, or
-updater internals. Its readiness display does not replace the separate
-build-stamp/source-hash/running-executable verification below.
+The fork-local typed `host.updates` facade is deliberately smaller than the old
+custom staged updater. Version 1 exposes detached client/backend status, backend
+apply progress, refresh, the normal guarded deploy-aware Desktop handoff, and a
+background `sync-upstream` action/status stream. The background action invokes
+the existing `hermes_cli.axiom_update` LLM worktree resolver so reconciliation
+can finish while Desktop remains open; installation, rebuild, rollback, and
+relaunch still use the normal Desktop updater.
+
+The plugin owns presentation and smart action selection only. Core remains
+authoritative for checks, branch selection, Git/filesystem mutation, locks,
+process shutdown, validation, rollback, deploy publication, rebuild, and
+relaunch. Do not restore the retired parallel staging/history engine or expose
+raw Electron IPC, shell commands, repository paths, or updater internals.
 
 Suggested focused verification for Desktop patch work:
 
@@ -166,6 +169,7 @@ Suggested focused verification for Desktop patch work:
 cd apps/desktop
 npm run typecheck
 NODE_ENV=test npm run test:ui -- \
+  src/sdk/index.test.ts \
   src/app/right-sidebar/files/use-project-tree.test.ts \
   src/app/session/hooks/use-prompt-actions.test.tsx \
   src/store/session.test.ts

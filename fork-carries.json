@@ -98,6 +98,95 @@
       }
     },
     {
+      "id": "desktop-update-control-facade",
+      "title": "Desktop Update Control facade",
+      "order": 15,
+      "status": "active",
+      "domain_id": "desktop",
+      "ownership": "core",
+      "contract": {
+        "path": "docs/axiom-fork-contract.md",
+        "heading": "Desktop Update Control contract"
+      },
+      "depends_on": [],
+      "provenance": [
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "b37d6e0cf4ad288b7355505774e026a222ec9522"
+        }
+      ],
+      "summary": "Expose versioned plugin update status, normal deploy-aware handoff, backend apply, and background LLM reconciliation without duplicating the updater.",
+      "paths": [
+        "apps/desktop/electron/main.ts",
+        "apps/desktop/electron/preload.ts",
+        "apps/desktop/electron/upstream-sync.ts",
+        "apps/desktop/src/global.d.ts",
+        "apps/desktop/src/sdk/index.ts",
+        "apps/desktop/src/store/updates.ts"
+      ],
+      "tests": [
+        "apps/desktop/electron/upstream-sync.test.ts",
+        "apps/desktop/src/sdk/index.test.ts"
+      ],
+      "checks": [
+        {
+          "id": "desktop-update-control-facade-dependencies",
+          "cwd": ".",
+          "argv": [
+            "npm",
+            "ci",
+            "--ignore-scripts",
+            "--include=dev"
+          ],
+          "env": {},
+          "covers": []
+        },
+        {
+          "id": "desktop-update-control-facade-tests",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npx",
+            "vitest",
+            "run",
+            "--project",
+            "electron",
+            "electron/upstream-sync.test.ts",
+            "--project",
+            "ui",
+            "src/sdk/index.test.ts"
+          ],
+          "env": {
+            "NODE_ENV": "test"
+          },
+          "covers": [
+            "apps/desktop/electron/upstream-sync.test.ts",
+            "apps/desktop/src/sdk/index.test.ts"
+          ]
+        },
+        {
+          "id": "desktop-update-control-facade-typecheck",
+          "cwd": "apps/desktop",
+          "argv": [
+            "npm",
+            "run",
+            "typecheck"
+          ],
+          "env": {},
+          "covers": []
+        }
+      ],
+      "retirement": "Retire when upstream exposes an equivalent versioned plugin update facade with background deploy-branch reconciliation and normal guarded Desktop handoff.",
+      "replay": {
+        "kind": "commit_series",
+        "source_ref": "origin/carry/source-desktop-update-control-facade",
+        "base_commit": "8ce77ed6b62ad118e7d5e53e97d1027dc49d8168",
+        "commits": [
+          "b37d6e0cf4ad288b7355505774e026a222ec9522"
+        ]
+      }
+    },
+    {
       "id": "fork-replay-tooling",
       "title": "Fork replay tooling",
       "order": 20,
