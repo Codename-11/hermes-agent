@@ -1,9 +1,32 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { host } from '@/sdk'
+import { host, requirePluginUpdateSuccess } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+
+describe('host.updates', () => {
+  it('exposes one versioned facade without claiming the retired staging engine', () => {
+    expect(host.updates.version).toBe(1)
+    expect(host.updates.capabilities).toEqual({
+      backgroundReconciliation: true,
+      stagedPreparation: false
+    })
+    expect(host.updates.getStatus('client')).toBeNull()
+    expect(host.updates.getStatus('backend')).toBeNull()
+    expect(typeof host.updates.refresh).toBe('function')
+    expect(typeof host.updates.standardUpdate).toBe('function')
+    expect(typeof host.updates.syncUpstream).toBe('function')
+    expect(typeof host.updates.getUpstreamSyncStatus).toBe('function')
+  })
+
+  it('rejects failed update handoffs instead of reporting a false start', () => {
+    expect(() => requirePluginUpdateSuccess({ ok: false, message: 'Blocked by an active update.' })).toThrow(
+      'Blocked by an active update.'
+    )
+    expect(requirePluginUpdateSuccess({ ok: true, message: 'Started.' })).toEqual({ ok: true, message: 'Started.' })
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {

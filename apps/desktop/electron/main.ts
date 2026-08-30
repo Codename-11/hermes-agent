@@ -385,6 +385,7 @@ import {
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
 } from './updater-process'
+import { getUpstreamSyncStatus, runUpstreamSync, updateOperationConflict } from './upstream-sync'
 import {
   formatBlockerMessage,
   formatProbeFailedMessage,
@@ -16868,13 +16869,46 @@ ipcMain.handle('hermes:updates:check', async () =>
   }))
 )
 
-ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
-  applyUpdates(payload || {}).catch(error => ({
+ipcMain.handle('hermes:updates:sync-upstream', async () => {
+  const conflict = updateOperationConflict('sync', {
+    syncRunning: getUpstreamSyncStatus().running,
+    updateRunning: updateInFlight,
+    handoffConflict: updateHandoffConflict(HERMES_HOME)
+  })
+
+  if (conflict) {
+    return { ok: false, state: 'failed', error: 'operation-running', message: conflict }
+  }
+
+  const { branch } = readDesktopUpdateConfig()
+
+  return runUpstreamSync({
+    python: getVenvPython(VENV_ROOT),
+    repo: resolveUpdateRoot(),
+    branch,
+    env: { HERMES_HOME }
+  })
+})
+
+ipcMain.handle('hermes:updates:sync-upstream:status', async () => getUpstreamSyncStatus())
+
+ipcMain.handle('hermes:updates:apply', async (_event, payload) => {
+  const conflict = updateOperationConflict('apply', {
+    syncRunning: getUpstreamSyncStatus().running,
+    updateRunning: updateInFlight,
+    handoffConflict: updateHandoffConflict(HERMES_HOME)
+  })
+
+  if (conflict) {
+    return { ok: false, error: 'operation-running', message: conflict }
+  }
+
+  return applyUpdates(payload || {}).catch(error => ({
     ok: false,
     error: 'apply-failed',
     message: error?.message || String(error)
   }))
-)
+})
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

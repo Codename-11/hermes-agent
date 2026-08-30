@@ -12,6 +12,8 @@ import type {
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
+  DesktopUpstreamSyncResult,
+  DesktopUpstreamSyncStatus,
   DesktopVersionInfo
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
@@ -425,6 +427,25 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   } finally {
     $updateChecking.set(false)
   }
+}
+
+export async function syncDesktopUpstream(): Promise<DesktopUpstreamSyncResult> {
+  const bridge = window.hermesDesktop?.updates
+
+  if (!bridge?.syncUpstream) {
+    return {
+      ok: false,
+      state: 'failed',
+      error: 'unavailable',
+      message: 'Background upstream reconciliation is unavailable in this Desktop build.'
+    }
+  }
+
+  return bridge.syncUpstream()
+}
+
+export async function getDesktopUpstreamSyncStatus(): Promise<DesktopUpstreamSyncStatus> {
+  return (await window.hermesDesktop?.updates?.getUpstreamSyncStatus?.()) ?? { running: false }
 }
 
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {

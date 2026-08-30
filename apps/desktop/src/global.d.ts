@@ -494,6 +494,8 @@ declare global {
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
+        syncUpstream?: () => Promise<DesktopUpstreamSyncResult>
+        getUpstreamSyncStatus?: () => Promise<DesktopUpstreamSyncStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
@@ -623,6 +625,26 @@ export interface DesktopUpdateStatus {
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
   fetchedAt?: number
+}
+
+export interface DesktopUpstreamSyncResult {
+  ok: boolean
+  state: 'completed' | 'failed' | 'handoff'
+  branch?: string
+  reconciled?: number
+  targetSha?: string
+  message: string
+  error?: string
+  worktree?: string
+  reportPath?: string
+  output?: string
+}
+
+export interface DesktopUpstreamSyncStatus {
+  running: boolean
+  startedAt?: number
+  output?: string
+  result?: DesktopUpstreamSyncResult
 }
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'

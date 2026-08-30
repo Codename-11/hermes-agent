@@ -41,6 +41,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
+import type { DesktopUpdateStatus, DesktopUpstreamSyncStatus } from '@/global'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import {
   $gateway,
@@ -96,6 +97,19 @@ import {
   sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
+import {
+  $backendUpdateApply,
+  $backendUpdateStatus,
+  $updateStatus,
+  applyBackendUpdate,
+  applyUpdates,
+  checkBackendUpdates,
+  checkUpdates,
+  getDesktopUpstreamSyncStatus,
+  syncDesktopUpstream,
+  type UpdateApplyState,
+  type UpdateTarget
+} from '@/store/updates'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
@@ -103,6 +117,76 @@ import { planPluginOpenSession } from './plugin-open-session-plan'
 // -- state: readonly views over the app's live atoms -------------------------
 
 const readonlyAtom = <T>(atomLike: ReadableAtom<T>): ReadableAtom<T> => atomLike
+
+export interface PluginUpdateCapabilities {
+  backgroundReconciliation: boolean
+  stagedPreparation: boolean
+}
+
+export interface PluginUpdateStatus extends Omit<DesktopUpdateStatus, 'behind'> {
+  behind?: number
+  deployBranch?: string
+  deployBehind?: number
+  deployCommits?: DesktopUpdateStatus['commits']
+}
+
+export interface PluginBackendUpdateApplySnapshot {
+  applying: boolean
+  stage: string
+  message: string
+  percent: number | null
+  error: string | null
+  command: string | null
+  output: string
+}
+
+export interface PluginUpdateManagement {
+  version: 1
+  capabilities: PluginUpdateCapabilities
+  getStatus: (target: UpdateTarget) => PluginUpdateStatus | null
+  getBackendApply: () => PluginBackendUpdateApplySnapshot
+  refresh: (target: UpdateTarget) => Promise<PluginUpdateStatus | null>
+  standardUpdate: () => ReturnType<typeof applyUpdates>
+  applyBackend: () => ReturnType<typeof applyBackendUpdate>
+  syncUpstream: () => ReturnType<typeof syncDesktopUpstream>
+  getUpstreamSyncStatus: () => Promise<DesktopUpstreamSyncStatus>
+}
+
+const pluginUpdateStatus = (status: DesktopUpdateStatus | null): PluginUpdateStatus | null => {
+  if (!status) {
+    return null
+  }
+
+  const commits = status.commits?.map(commit => ({ ...commit }))
+  const behind = status.behind ?? undefined
+
+  return {
+    ...status,
+    behind,
+    commits,
+    deployBranch: status.branch,
+    deployBehind: behind,
+    deployCommits: commits
+  }
+}
+
+const pluginBackendApplySnapshot = (state: UpdateApplyState): PluginBackendUpdateApplySnapshot => ({
+  applying: state.applying,
+  stage: state.stage,
+  message: state.message,
+  percent: state.percent,
+  error: state.error,
+  command: state.command,
+  output: state.log.map(entry => entry.message).join('\n')
+})
+
+export function requirePluginUpdateSuccess<T extends { ok: boolean; message?: string }>(result: T): T {
+  if (!result.ok) {
+    throw new Error(result.message || 'Hermes update did not start.')
+  }
+
+  return result
+}
 
 /**
  * Turn flag for the FOCUSED chat — same semantics as the statusbar's busy
@@ -624,6 +708,25 @@ export const host = {
     /** Window geometry ({ width, height, narrow }). */
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
+
+  /** Versioned, presentation-neutral update control. Core remains authoritative
+   * for Git, reconciliation, process lifecycle, build, rollback, and relaunch. */
+  updates: {
+    version: 1,
+    capabilities: {
+      backgroundReconciliation: true,
+      stagedPreparation: false
+    },
+    getStatus: (target: UpdateTarget) =>
+      pluginUpdateStatus(target === 'client' ? $updateStatus.get() : $backendUpdateStatus.get()),
+    getBackendApply: () => pluginBackendApplySnapshot($backendUpdateApply.get()),
+    refresh: async (target: UpdateTarget) =>
+      pluginUpdateStatus(await (target === 'client' ? checkUpdates() : checkBackendUpdates())),
+    standardUpdate: async () => requirePluginUpdateSuccess(await applyUpdates()),
+    applyBackend: async () => requirePluginUpdateSuccess(await applyBackendUpdate()),
+    syncUpstream: async () => syncDesktopUpstream(),
+    getUpstreamSyncStatus: async () => getDesktopUpstreamSyncStatus()
+  } satisfies PluginUpdateManagement,
 
   /** Toast into the app's notification stack. */
   notify,
