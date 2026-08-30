@@ -31,7 +31,7 @@ Use these surfaces deliberately; do not duplicate live branch counts by hand:
 | --- | --- |
 | `docs/axiom-fork-contract.md` | Canonical concise branch/Desktop/update contract. |
 | `fork-carries.json` + `fork-carries.schema.json` | Canonical ordered carry manifest and schema for IDs, provenance, exact repo paths, focused test paths, declared checks, retirement criteria, and optional immutable replay metadata. Carries without replay metadata remain declaration-only/incomplete. |
-| `FORK.md` | Detailed prose carry contract, retired fork surface, historical fork-only commit classification, and validation expectations. |
+| `DEVLOG.md` | Append-only history of major carry regeneration, retirement, and reconciliation decisions. |
 | `scripts/fork-status.py` | Read-only live status report for branch divergence, dirty files, Sentinel sync state, and optional Axiom-Desktop SSH branch check. |
 | `python scripts/fork_carry_manifest.py validate --json` | Read-only manifest validation; checks declarations only and never executes carry checks. |
 | `python scripts/fork_carry_manifest.py status --json` | Read-only manifest inventory/status report; never executes carry checks. |
@@ -86,8 +86,40 @@ identity or state from whichever chat/profile is currently foregrounded:
   profile-qualified, including when cloned profiles share a stored session id.
 
 The detailed protected-file inventory, focused verification commands, upstream
-overlap references, and drop conditions live in `FORK.md` under **Axiom Desktop
-session convergence and profile-safe live status**.
+overlap references, and drop conditions belong in this contract and the active
+carry manifest. Registered-source routing itself is no longer an Axiom carry.
+
+## Retired Desktop registered-source routing
+
+The former Axiom carry for registered-gateway profile identity, remote roster
+routing, and profile-qualified session navigation is retired. Upstream now owns
+that behavior, and the Axiom tree carries no protected paths or focused checks
+for it. Do not recreate a parallel Axiom routing layer merely because the
+upstream implementation descends from earlier Axiom work.
+
+Deployment policy is narrower than upstream capability:
+
+- Docker-Server is the canonical Victor brain and profile/session authority.
+- Axiom-Desktop normally connects to that registered gateway as a thin client.
+- The Windows-local Hermes backend remains an explicit local/offline fallback,
+  not a mirror of Docker-Server profiles, sessions, auth, cron, or state.
+- Do not configure the Windows local gateway with `profile_routes` or use it to
+  import remote profiles. Do not enable local profile multiplexing merely to
+  reproduce the Docker-Server roster.
+- Keep upstream multi-gateway/profile-qualified routing intact. Choosing not to
+  configure a topology is not a reason to fork-delete supported upstream code.
+
+The remaining Desktop carry is the gateway-scoped hybrid Projects/Recent
+Sessions presentation and its source-boundary policy.
+
+## Desktop gateway-scoped hybrid Projects
+
+The Projects overview is owned by the selected registered gateway. It may
+aggregate profiles hosted by that gateway, but it must not fan into unrelated
+registered gateways or ask the Windows-local backend to mirror remote profile
+state. The overview keeps Projects primary and renders a separate flat Recent
+Sessions lane. Retire this carry only when upstream provides the same
+gateway-scoped aggregation, Projects/Recent presentation, and focused tests.
 
 ## Desktop Update Control contract
 

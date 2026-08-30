@@ -64,9 +64,11 @@ def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
     assert result is None
     mock_run.assert_not_called()
 
-    # Cache rewritten with the current installed version.
+    # An inconclusive probe is never cached: the stale-version row remains on
+    # disk but cannot be reused because its version still does not match. The
+    # next call will retry immediately instead of suppressing checks for 6h.
     written = json.loads(cache_file.read_text())
-    assert written["ver"] == banner.VERSION
+    assert written["ver"] == "0.0.1-old"
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):

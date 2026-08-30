@@ -732,24 +732,25 @@ describe('project tree profile isolation', () => {
     $projectTree.set([])
   })
 
-  it('retries a dropped projects.tree request once on the active gateway', async () => {
-    const request = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('request timed out after 30s: projects.tree'))
-      .mockResolvedValueOnce({
-        active_id: null,
-        projects: [{ id: 'remote-tree', label: 'Remote tree', path: null, repos: [], sessionCount: 0 }],
-        scoped_session_ids: []
-      })
+  it('loads the selected gateway aggregate without falling back to a profile RPC', async () => {
+    const request = vi.fn()
 
-    const gateway = { connectionState: 'open', request }
-    activeGateway.mockReturnValue(gateway as never)
-    gatewayAtom.set(gateway as never)
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    hermesApi.mockResolvedValueOnce({
+      active_id: null,
+      projects: [{ id: 'gateway-tree', label: 'Gateway tree', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
+    })
+    $connection.set({ connectionId: 'gateway-a' } as never)
 
     await refreshProjectTree()
 
-    expect(request).toHaveBeenCalledTimes(2)
-    expect($projectTree.get().map(project => project.id)).toEqual(['remote-tree'])
+    expect(hermesApi).toHaveBeenCalledWith({
+      path: '/api/profiles/projects/tree?preview_limit=3',
+      timeoutMs: 60_000
+    })
+    expect(request).not.toHaveBeenCalled()
+    expect($projectTree.get().map(project => project.id)).toEqual(['gateway-tree'])
   })
 
   it('does not publish a late response from the previous gateway', async () => {

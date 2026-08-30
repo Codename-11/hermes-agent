@@ -29,6 +29,7 @@ def test_run_checks_resolves_windows_command_shims(monkeypatch, tmp_path):
     observed = []
 
     monkeypatch.setattr(axiom_reconcile.os, "name", "nt")
+    monkeypatch.setattr(axiom_reconcile.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     monkeypatch.setattr(
         axiom_reconcile.shutil,
         "which",
@@ -51,7 +52,7 @@ def test_run_checks_resolves_windows_command_shims(monkeypatch, tmp_path):
     assert complete is True
     assert reports[0]["returncode"] == 0
     assert observed[0][0] == ["C:/Program Files/nodejs/npx.CMD", "vitest", "run"]
-    assert observed[0][1]["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert observed[0][1]["creationflags"] == 0x08000000
 
 
 def test_run_checks_streams_log_and_reports_progress(tmp_path):
@@ -727,6 +728,8 @@ def test_pid_liveness_probe_does_not_signal_process():
 def test_windows_wait_failure_is_not_treated_as_dead(module, monkeypatch):
     import ctypes
 
+    monkeypatch.setattr(module.os, "name", "nt")
+
     class FakeCall:
         def __init__(self, result):
             self.result = result
@@ -740,7 +743,12 @@ def test_windows_wait_failure_is_not_treated_as_dead(module, monkeypatch):
         WaitForSingleObject=FakeCall(0xFFFFFFFF),
         CloseHandle=FakeCall(1),
     )
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32)
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: kernel32,
+        raising=False,
+    )
 
     assert module._pid_is_running(12345) is True
 

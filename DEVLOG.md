@@ -1,5 +1,12 @@
 # Hermes Agent — Axiom Dev Log
 
+## 2026-08-30 — Retire Axiom ownership of Desktop registered-source routing
+
+- Refreshed `axiom` from current `upstream/main` without Desktop routing conflicts.
+- Confirmed the former registered-source routing files have converged with upstream and removed their stale protected paths, deleted test references, and checks from the retired carry declaration.
+- Kept upstream multi-gateway/profile-qualified behavior intact while narrowing Axiom's deployment policy: Docker-Server is canonical, and the Windows-local backend is an explicit local/offline fallback rather than a remote-profile mirror.
+- Preserved the only active Desktop carry: gateway-scoped hybrid Projects with a separate Recent Sessions lane.
+
 ## 2026-08-23 — Standardize non-deploying fork reconciliation
 
 - Local and remote Desktop gateways failed after a final upstream refresh preserved `gateway_ws(auth_identity=..., subprotocol=...)` but retained a stale `handle_ws(ws)` implementation.

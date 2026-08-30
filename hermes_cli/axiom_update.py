@@ -680,7 +680,10 @@ def _promote_ready_reconciliation_candidate_locked(
         )
         return 0
 
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Promotion retries can occur inside the same second. Include microseconds
+    # so each verified attempt receives its own immutable rollback ref instead
+    # of silently reusing the prior attempt's archive name.
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     archive_branch = f"archive/{branch}-pre-{stamp}-{old_deploy_sha[:12]}"
     archive_verified = _push_ref_and_verify(
         git_cmd=git_cmd,

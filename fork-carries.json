@@ -9,7 +9,7 @@
       "domain_id": "desktop",
       "ownership": "core",
       "contract": {
-        "path": "FORK.md",
+        "path": "docs/axiom-fork-contract.md",
         "heading": "Desktop gateway-scoped hybrid Projects"
       },
       "depends_on": [],
@@ -262,12 +262,10 @@
       "domain_id": "desktop",
       "ownership": "core",
       "contract": {
-        "path": "FORK.md",
-        "heading": "Desktop registered-source routing"
+        "path": "docs/axiom-fork-contract.md",
+        "heading": "Retired Desktop registered-source routing"
       },
-      "depends_on": [
-        "forge-integration"
-      ],
+      "depends_on": [],
       "provenance": [
         {
           "kind": "commit",
@@ -275,67 +273,11 @@
           "revision": "1f25fcfcbb63f42944d598097fab87a389e0b9d5"
         }
       ],
-      "summary": "Preserve registered connection identity for overlapping remote rosters and all-profile session opens.",
-      "paths": [
-        "apps/desktop/src/app/session/hooks/use-session-actions/index.ts",
-        "apps/desktop/src/plugins/hermes-bots/plugin.js",
-        "apps/desktop/src/store/profile.ts"
-      ],
-      "tests": [
-        "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx",
-        "apps/desktop/src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs",
-        "apps/desktop/src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
-        "apps/desktop/src/store/profile.test.ts"
-      ],
-      "checks": [
-        {
-          "id": "desktop-registered-source-routing-ui-tests",
-          "cwd": "apps/desktop",
-          "argv": [
-            "npx",
-            "vitest",
-            "run",
-            "--project",
-            "ui",
-            "src/store/profile.test.ts",
-            "src/app/session/hooks/use-session-actions.test.tsx"
-          ],
-          "env": {
-            "NODE_ENV": "test"
-          },
-          "covers": [
-            "apps/desktop/src/store/profile.test.ts",
-            "apps/desktop/src/app/session/hooks/use-session-actions.test.tsx"
-          ]
-        },
-        {
-          "id": "desktop-registered-source-routing-bot-tests",
-          "cwd": "apps/desktop",
-          "argv": [
-            "node",
-            "--test",
-            "src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
-            "src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs"
-          ],
-          "env": {},
-          "covers": [
-            "apps/desktop/src/plugins/hermes-bots/tests/multi-source-roster.test.mjs",
-            "apps/desktop/src/plugins/hermes-bots/tests/cross-connection-bots.test.mjs"
-          ]
-        },
-        {
-          "id": "desktop-registered-source-routing-typecheck",
-          "cwd": "apps/desktop",
-          "argv": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "env": {},
-          "covers": []
-        }
-      ],
-      "retirement": "Retire when upstream preserves qualified registered-source identity across remote roster and all-profile session navigation and these parity tests pass without the carry.",
+      "summary": "Retired after upstream absorbed registered-source profile and session routing; Axiom carries no code or checks for this behavior.",
+      "paths": [],
+      "tests": [],
+      "checks": [],
+      "retirement": "Retired on 2026-08-30 after the owned routing files converged with upstream and the Axiom deploy tree no longer contained a fork-only routing delta.",
       "replay": {
         "kind": "commit_series",
         "source_ref": "origin/axiom-next",
