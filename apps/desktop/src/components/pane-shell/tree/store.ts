@@ -1345,7 +1345,7 @@ function adoptContributedPanes(): void {
 
   const dataOf = (paneId: string) =>
     panes.find(c => c.id === paneId)?.data as
-      | { closeBehavior?: string; placement?: string; dock?: PaneDockHint }
+      | { closeBehavior?: string; defaultCollapsed?: boolean; dock?: PaneDockHint; placement?: string }
       | undefined
 
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
@@ -1425,6 +1425,17 @@ function adoptContributedPanes(): void {
 
   if (next !== tree) {
     commit(next)
+  }
+
+  // After the commit, so the zone exists to minimize. `defaultCollapsed` is the
+  // pane's arrival state, not a standing invariant: it runs on the adoption
+  // that put the pane in the tree, and a pane already in the tree is never
+  // re-adopted — so a user's expand persists with the layout and is never
+  // overruled on a later boot.
+  for (const pane of missing) {
+    if (dataOf(pane.id)?.defaultCollapsed) {
+      setPaneCollapsed(pane.id, true)
+    }
   }
 }
 
