@@ -10718,12 +10718,16 @@ def _finalize_update_output(state):
 def _resolve_update_branch(args) -> str:
     """Normalize ``args.branch`` into a non-empty branch name.
 
-    Centralizes the "default to main, accept --branch override, treat empty
-    or whitespace-only values as the default" parsing so every consumer of
-    ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
-    the same answer.
+    Explicit ``--branch`` always wins. Without it, checked-out deploy branches
+    remain their own update target; ordinary branches still default to main.
+    This keeps fork consumers on ``axiom``/``tgi`` while preserving upstream's
+    normal feature-branch behavior.
     """
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    explicit = (getattr(args, "branch", None) or "").strip()
+    if explicit:
+        return explicit
+    detected = _resolve_reconciliation_branch(args)
+    return detected if detected in {"axiom", "tgi"} else "main"
 
 
 def _resolve_reconciliation_branch(args) -> str:
