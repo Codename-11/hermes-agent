@@ -10,6 +10,44 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def test_cli_check_deploy_branch_reports_origin_and_upstream_separately(tmp_path, monkeypatch, capsys):
+    """The CLI must not collapse a current deploy artifact into 'up to date' while upstream is pending."""
+    import hermes_cli.main as main
+    import hermes_cli.update_cmd as update_cmd
+    import hermes_cli.update_contract as update_contract
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n", stderr="")
+        if cmd == ["git", "remote", "get-url", "upstream"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n", stderr="")
+        if cmd in (["git", "fetch", "origin", "axiom"], ["git", "fetch", "upstream", "main"]):
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd == ["git", "rev-parse", "--verify", "--quiet", "origin/axiom"]:
+            return MagicMock(returncode=0, stdout="origin-sha\n", stderr="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/axiom"]:
+            return MagicMock(returncode=0, stdout="0\n", stderr="")
+        if cmd == ["git", "rev-list", "--count", "origin/axiom..upstream/main"]:
+            return MagicMock(returncode=0, stdout="3\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(main, "PROJECT_ROOT", repo_dir)
+    monkeypatch.setattr(update_contract, "evaluate_update_admission", lambda _root: None)
+    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+
+    update_cmd._cmd_update_check("axiom", branch_explicit=False)
+
+    output = capsys.readouterr().out
+    assert "Deploy branch: 0 commits from origin/axiom." in output
+    assert "Hermes upstream: 3 commits awaiting reconciliation" in output
+    assert "Update work is available" in output
+    assert "Already up to date" not in output
+
+
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
