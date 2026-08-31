@@ -3546,9 +3546,10 @@ def _print_fetch_failure(stderr: str) -> None:
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
-    ``branch`` selects which branch the check compares against. Default is
-    "main"; callers can pass another branch to ask "are there new commits
-    on origin/<branch>?" without performing the update.
+    ``branch`` selects which branch the check compares against. Deploy branches
+    report both runnable-artifact drift (HEAD -> origin/<deploy>) and official
+    upstream drift (origin/<deploy> -> upstream/main). Other branches retain
+    the normal single-ref comparison.
 
     ``branch_explicit`` is True iff the caller passed --branch on the CLI.
     Installs that can't honor non-default branches (e.g. Docker) surface a
@@ -3613,6 +3614,101 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         == "true"
     )
     depth_args = ["--depth", "1"] if is_shallow else []
+
+    use_deploy_check = (
+        not branch_explicit
+        and branch in DEPLOY_BRANCHES
+        and _has_upstream_remote(git_cmd, _m().PROJECT_ROOT)
+    )
+    if use_deploy_check:
+        remote_ref = f"origin/{branch}"
+        print("→ Fetching deploy branch from origin...")
+        origin_fetch = subprocess.run(
+            git_cmd + ["fetch"] + depth_args + ["origin", branch],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if origin_fetch.returncode != 0:
+            _print_fetch_failure(origin_fetch.stderr)
+            sys.exit(1)
+
+        print("→ Fetching Hermes upstream...")
+        upstream_fetch = subprocess.run(
+            git_cmd + ["fetch"] + depth_args + ["upstream", "main"],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        upstream_fetched = upstream_fetch.returncode == 0
+        if not upstream_fetched:
+            print("⚠ Failed to fetch upstream; deploy-branch status is still available.")
+            if upstream_fetch.stderr.strip():
+                print(f"  {upstream_fetch.stderr.strip().splitlines()[0]}")
+
+        verify_result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "--quiet", remote_ref],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if verify_result.returncode != 0:
+            print(f"✗ Branch '{branch}' not found on origin.")
+            sys.exit(1)
+
+        if is_shallow:
+            # A depth-1 checkout cannot count or prove ancestry across the fork
+            # boundary. Stay honest: show presence-only status for each lane.
+            head_sha = subprocess.run(
+                git_cmd + ["rev-parse", "HEAD"],
+                cwd=_m().PROJECT_ROOT, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            deploy_sha = subprocess.run(
+                git_cmd + ["rev-parse", remote_ref],
+                cwd=_m().PROJECT_ROOT, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            deploy_state = "current" if head_sha and head_sha == deploy_sha else "update available"
+            print(f"Deploy branch: {deploy_state} ({remote_ref}).")
+            if upstream_fetched:
+                print("Hermes upstream: fetched; exact disparity unavailable in a shallow checkout.")
+            return
+
+        origin_pending = _count_commits_between(
+            git_cmd, _m().PROJECT_ROOT, "HEAD", remote_ref
+        )
+        if origin_pending < 0:
+            print(f"✗ Could not compare HEAD against {remote_ref}.")
+            sys.exit(1)
+
+        upstream_pending: int | None = None
+        if upstream_fetched:
+            upstream_pending = _count_commits_between(
+                git_cmd, _m().PROJECT_ROOT, remote_ref, "upstream/main"
+            )
+            if upstream_pending < 0:
+                print(f"✗ Could not compare {remote_ref} against upstream/main.")
+                sys.exit(1)
+
+        print(
+            f"Deploy branch: {origin_pending} commit{'s' if origin_pending != 1 else ''} "
+            f"from {remote_ref}."
+        )
+        if upstream_pending is not None:
+            print(
+                f"Hermes upstream: {upstream_pending} commit{'s' if upstream_pending != 1 else ''} "
+                "awaiting reconciliation into the deploy branch."
+            )
+
+        if origin_pending == 0 and upstream_pending in {0, None}:
+            print("✓ Already up to date.")
+        else:
+            from hermes_cli.config import recommended_update_command
+
+            print("⚕ Update work is available.")
+            print(f"  Run '{recommended_update_command()}' to reconcile or install.")
+        return
 
     if branch == "main":
         # Probe locally (~6 ms) whether an 'upstream' remote exists at all
