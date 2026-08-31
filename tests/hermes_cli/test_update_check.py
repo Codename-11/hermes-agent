@@ -10,6 +10,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def test_update_branch_defaults_to_checked_out_deploy_branch(monkeypatch):
+    """Bare `hermes update --check` must reach the fork-aware path on axiom."""
+    from argparse import Namespace
+    import hermes_cli.main as main
+
+    monkeypatch.setattr(main, "_resolve_reconciliation_branch", lambda _args: "axiom")
+    assert main._resolve_update_branch(Namespace(branch=None)) == "axiom"
+
+    monkeypatch.setattr(main, "_resolve_reconciliation_branch", lambda _args: "feature/test")
+    assert main._resolve_update_branch(Namespace(branch=None)) == "main"
+    assert main._resolve_update_branch(Namespace(branch=" tgi ")) == "tgi"
+
+
 def test_cli_check_deploy_branch_reports_origin_and_upstream_separately(tmp_path, monkeypatch, capsys):
     """The CLI must not collapse a current deploy artifact into 'up to date' while upstream is pending."""
     import hermes_cli.main as main
