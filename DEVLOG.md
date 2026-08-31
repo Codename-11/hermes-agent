@@ -4,6 +4,7 @@
 
 - Repaired a semantic carry drop from the Axiom regeneration: the banner still counted `HEAD..origin/axiom` plus `origin/axiom..upstream/main`, but the interactive CLI had reverted to origin-only checks.
 - Deploy-branch checks now fetch and print both lanes explicitly, including zero counts, so a current local install cannot hide upstream work awaiting reconciliation.
+- Bare update commands once again infer checked-out `axiom`/`tgi` as their target; ordinary feature branches retain the upstream default to `main`.
 - Added CLI regression coverage for the exact failure mode: local equals `origin/axiom` while upstream has pending commits.
 
 ## 2026-08-30 — Restore thin Update Control facade
