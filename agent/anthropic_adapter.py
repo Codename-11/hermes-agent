@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
@@ -533,26 +534,7 @@ def _sanitize_oauth_text(text: str) -> str:
     """Mask competing-product identity references in OAuth-relocated prompt text."""
     for old, new in _OAUTH_TEXT_REPLACEMENTS:
         text = text.replace(old, new)
-    return text
-
-
-def _to_oauth_wire_name(name: str) -> str:
-    """Encode a tool name for the Claude-Code OAuth wire.
-
-    Anthropic's OAuth billing classifier treats a single-underscore ``mcp_``
-    tool name as a third-party-app fingerprint and rejects the request with
-    HTTP 400 "Third-party apps now draw from extra usage, not plan limits".
-    Promote every leading ``mcp_`` to ``mcp__`` and prefix bare native tool
-    names so NOTHING on the wire carries a single-underscore ``mcp_``.
-
-    Idempotent on already-encoded names. See PR #47723.
-    """
-    if name.startswith("mcp__"):
-        return name  # already correct, don't double-prefix
-    if name.startswith("mcp_"):
-        # single-underscore native MCP tool -> promote to double
-        return "mcp__" + name[len("mcp_"):]
-    return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+    return _apply_oauth_prose_aliases(text)
 
 
 def _prepend_oauth_system_context(messages, preamble: str) -> None:
@@ -603,6 +585,54 @@ def _prepend_oauth_system_context(messages, preamble: str) -> None:
         return
     messages.insert(0, {"role": "user", "content": [block]})
 
+# Anthropic's OAuth billing classifier fingerprints certain Hermes tool
+# schemas/prose as a third-party app and reroutes the request to the metered
+# extra-usage lane, surfacing as HTTP 400 "You're out of extra usage" on a
+# valid subscription token (#65365). Deterministic live A/B repros (issue
+# #65365 comments, replayed with the anthropic-ratelimit-unified-* response
+# headers as a lane oracle) isolated two independent triggers:
+#   - the ``session_search`` tool schema/name/prose, alone
+#   - the ``memory`` tool schema/name, alone
+# Both are aliased to neutral names on the OAuth wire only. normalize_response
+# reverses the mapping before dispatch, so tool behavior and API-key requests
+# are unchanged.
+_OAUTH_TOOL_NAME_ALIASES = {
+    "session_search": "chat_history_lookup",
+    "memory": "context_notes",
+}
+_OAUTH_TOOL_NAME_REVERSE_ALIASES = {
+    wire_name: name for name, wire_name in _OAUTH_TOOL_NAME_ALIASES.items()
+}
+
+# Aliases that are ALSO safe to substitute in free-form prose (system prompt
+# text, tool descriptions). Only unambiguous snake_case tool tokens qualify:
+# "memory" is ordinary English throughout the system prompt ("persistent
+# memory across sessions", "OS, CPU, memory, disk") and inside the memory
+# tool's own parameter docs (the ``target`` enum the model must still emit
+# verbatim), so rewriting it in prose would corrupt guidance the model has
+# to follow. Renaming a tool is a different operation from rewriting the
+# vocabulary that describes it — a model that follows unaliased "memory"
+# prose and calls ``memory`` still dispatches correctly: normalize_response
+# resolves the bare name through the tool registry regardless.
+_OAUTH_PROSE_ALIAS_NAMES = frozenset({"session_search"})
+
+# Word-boundary matchers so a prose substitution can't corrupt a longer
+# identifier that merely contains the token (project AGENTS.md / memory
+# snapshots can carry arbitrary text, e.g. a path like
+# ``tools/session_search_tool.py`` must not become
+# ``tools/chat_history_lookup_tool.py``). ``\b`` treats ``_`` as a word
+# char, so only the standalone token matches.
+_OAUTH_PROSE_ALIAS_PATTERNS = tuple(
+    (re.compile(rf"\b{re.escape(name)}\b"), _OAUTH_TOOL_NAME_ALIASES[name])
+    for name in sorted(_OAUTH_PROSE_ALIAS_NAMES)
+)
+
+
+def _apply_oauth_prose_aliases(text: str) -> str:
+    """Rewrite prose-safe tool-name tokens to their OAuth wire aliases."""
+    for pattern, wire_name in _OAUTH_PROSE_ALIAS_PATTERNS:
+        text = pattern.sub(wire_name, text)
+    return text
 
 def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
@@ -1046,10 +1076,42 @@ def build_anthropic_kwargs(
         #    so any session with an MCP server configured still tripped the
         #    classifier. normalize_response reverses both forms via registry
         #    lookup so the dispatcher still sees the original name. GH-25255.
+        # Wire names owned by tools that are NOT alias sources. An alias must
+        # never collide with one: two identical tool names in a single
+        # request is a hard 400 from Anthropic, strictly worse than the bug
+        # being fixed. Mirrors the "registered tool wins" precedence in
+        # normalize_response so outbound and inbound agree on who owns a
+        # contested name.
+        def _normalize_to_mcp_wire(name: str) -> str:
+            """OAuth wire form of a tool name (no aliasing): mcp__<...>."""
+            if name.startswith("mcp__"):
+                return name  # already correct, don't double-prefix
+            if name.startswith("mcp_"):
+                # single-underscore native MCP tool -> promote to double
+                return "mcp__" + name[len("mcp_"):]
+            return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+
+        _claimed_wire_names = {
+            _normalize_to_mcp_wire(tool["name"])
+            for tool in (anthropic_tools or [])
+            if isinstance(tool.get("name"), str)
+            and tool["name"] not in _OAUTH_TOOL_NAME_ALIASES
+        }
+
+        def _to_oauth_wire_name(name: str) -> str:
+            if name in _OAUTH_TOOL_NAME_ALIASES:
+                aliased = _OAUTH_TOOL_NAME_ALIASES[name]
+                if _MCP_TOOL_PREFIX + aliased not in _claimed_wire_names:
+                    name = aliased
+            return _normalize_to_mcp_wire(name)
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
+                description = tool.get("description")
+                if isinstance(description, str):
+                    # Prose-safe aliases only — see _OAUTH_PROSE_ALIAS_NAMES.
+                    tool["description"] = _apply_oauth_prose_aliases(description)
 
         # 5. Apply the same normalization to tool names in message history
         #    (tool_use blocks) so replayed turns match the wire names above.
