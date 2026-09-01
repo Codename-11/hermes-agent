@@ -2355,8 +2355,24 @@ def _checkpoint_resolved_handoff(
     )
     if staged.returncode != 0:
         return "", (staged.stderr or staged.stdout or "Could not stage tracked resolution").strip()
+    conflict_paths: list[str] = []
+    try:
+        handoff_payload = json.loads(
+            _deploy_handoff_marker_path().read_text(encoding="utf-8")
+        )
+        raw_conflict_paths = handoff_payload.get("conflict_files")
+        if isinstance(raw_conflict_paths, list):
+            conflict_paths = [
+                path for path in raw_conflict_paths if isinstance(path, str) and path.strip()
+            ]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+
+    staged_diff_check_cmd = git_cmd + ["diff", "--cached", "--check"]
+    if conflict_paths:
+        staged_diff_check_cmd += ["--", *conflict_paths]
     staged_diff_check = subprocess.run(
-        git_cmd + ["diff", "--cached", "--check"],
+        staged_diff_check_cmd,
         cwd=worktree,
         capture_output=True,
         text=True,
