@@ -126,6 +126,12 @@ def test_restore_stashed_changes_prompts_before_applying(monkeypatch, tmp_path, 
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if cmd[1:] == ["ls-files", "--others", "--exclude-standard", "-z"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if len(cmd) >= 3 and cmd[1] == "-c" and "__HERMES_IMPORT_HEALTH_" in cmd[2]:
+            suffix = cmd[2].split("__HERMES_IMPORT_HEALTH_", 1)[1].split("__", 1)[0]
+            marker = f"__HERMES_IMPORT_HEALTH_{suffix}__"
+            return SimpleNamespace(stdout=f"\n{marker}[]", stderr="", returncode=0)
         if cmd[1:3] == ["stash", "apply"]:
             return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
         if cmd[1:3] == ["diff", "--name-only"]:
@@ -142,10 +148,11 @@ def test_restore_stashed_changes_prompts_before_applying(monkeypatch, tmp_path, 
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
 
     assert restored is True
-    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
-    assert calls[1][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
-    assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
-    assert calls[3][0] == ["git", "stash", "drop", "stash@{1}"]
+    commands = [cmd for cmd, _kwargs in calls]
+    assert ["git", "stash", "apply", "abc123"] in commands
+    assert ["git", "diff", "--name-only", "--diff-filter=U"] in commands
+    assert ["git", "stash", "list", "--format=%gd %H"] in commands
+    assert ["git", "stash", "drop", "stash@{1}"] in commands
     out = capsys.readouterr().out
     assert "Restore local changes now? [Y/n]" in out
     assert "restored on top of the updated codebase" in out
@@ -178,6 +185,12 @@ def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatc
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if cmd[1:] == ["ls-files", "--others", "--exclude-standard", "-z"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if len(cmd) >= 3 and cmd[1] == "-c" and "__HERMES_IMPORT_HEALTH_" in cmd[2]:
+            suffix = cmd[2].split("__HERMES_IMPORT_HEALTH_", 1)[1].split("__", 1)[0]
+            marker = f"__HERMES_IMPORT_HEALTH_{suffix}__"
+            return SimpleNamespace(stdout=f"\n{marker}[]", stderr="", returncode=0)
         if cmd[1:3] == ["stash", "apply"]:
             return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
         if cmd[1:3] == ["diff", "--name-only"]:
@@ -193,10 +206,11 @@ def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatc
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=False)
 
     assert restored is True
-    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
-    assert calls[1][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
-    assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
-    assert calls[3][0] == ["git", "stash", "drop", "stash@{0}"]
+    commands = [cmd for cmd, _kwargs in calls]
+    assert ["git", "stash", "apply", "abc123"] in commands
+    assert ["git", "diff", "--name-only", "--diff-filter=U"] in commands
+    assert ["git", "stash", "list", "--format=%gd %H"] in commands
+    assert ["git", "stash", "drop", "stash@{0}"] in commands
     assert "Restore local changes now?" not in capsys.readouterr().out
 
 
@@ -216,6 +230,12 @@ def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if cmd[1:] == ["ls-files", "--others", "--exclude-standard", "-z"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if len(cmd) >= 3 and cmd[1] == "-c" and "__HERMES_IMPORT_HEALTH_" in cmd[2]:
+            suffix = cmd[2].split("__HERMES_IMPORT_HEALTH_", 1)[1].split("__", 1)[0]
+            marker = f"__HERMES_IMPORT_HEALTH_{suffix}__"
+            return SimpleNamespace(stdout=f"\n{marker}[]", stderr="", returncode=0)
         if cmd[1:3] == ["stash", "apply"]:
             return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
         if cmd[1:3] == ["diff", "--name-only"]:
@@ -230,9 +250,10 @@ def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved
 
     assert restored is True
     _utf8 = {"encoding": "utf-8", "errors": "replace"}
-    assert calls[0] == (["git", "stash", "apply", "abc123"], {"cwd": tmp_path, "capture_output": True, "text": True, **_utf8})
-    assert calls[1] == (["git", "diff", "--name-only", "--diff-filter=U"], {"cwd": tmp_path, "capture_output": True, "text": True, **_utf8})
-    assert calls[2] == (["git", "stash", "list", "--format=%gd %H"], {"cwd": tmp_path, "capture_output": True, "text": True, **_utf8, "check": True})
+    by_command = {tuple(cmd): kwargs for cmd, kwargs in calls}
+    assert by_command[("git", "stash", "apply", "abc123")] == {"cwd": tmp_path, "capture_output": True, "text": True, **_utf8}
+    assert by_command[("git", "diff", "--name-only", "--diff-filter=U")] == {"cwd": tmp_path, "capture_output": True, "text": True, **_utf8}
+    assert by_command[("git", "stash", "list", "--format=%gd %H")] == {"cwd": tmp_path, "capture_output": True, "text": True, **_utf8, "check": True}
     out = capsys.readouterr().out
     assert "couldn't find the stash entry to drop" in out
     assert "stash was left in place" in out
@@ -247,6 +268,12 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if cmd[1:] == ["ls-files", "--others", "--exclude-standard", "-z"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if len(cmd) >= 3 and cmd[1] == "-c" and "__HERMES_IMPORT_HEALTH_" in cmd[2]:
+            suffix = cmd[2].split("__HERMES_IMPORT_HEALTH_", 1)[1].split("__", 1)[0]
+            marker = f"__HERMES_IMPORT_HEALTH_{suffix}__"
+            return SimpleNamespace(stdout=f"\n{marker}[]", stderr="", returncode=0)
         if cmd[1:3] == ["stash", "apply"]:
             return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
         if cmd[1:3] == ["diff", "--name-only"]:
@@ -262,7 +289,7 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=False)
 
     assert restored is True
-    assert calls[3][0] == ["git", "stash", "drop", "stash@{0}"]
+    assert ["git", "stash", "drop", "stash@{0}"] in [cmd for cmd, _kwargs in calls]
     out = capsys.readouterr().out
     assert "couldn't drop the saved stash entry" in out
     assert "drop failed" in out
@@ -281,6 +308,12 @@ def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if cmd[1:] == ["ls-files", "--others", "--exclude-standard", "-z"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if len(cmd) >= 3 and cmd[1] == "-c" and "__HERMES_IMPORT_HEALTH_" in cmd[2]:
+            suffix = cmd[2].split("__HERMES_IMPORT_HEALTH_", 1)[1].split("__", 1)[0]
+            marker = f"__HERMES_IMPORT_HEALTH_{suffix}__"
+            return SimpleNamespace(stdout=f"\n{marker}[]", stderr="", returncode=0)
         if cmd[1:3] == ["stash", "apply"]:
             return SimpleNamespace(stdout="conflict output\n", stderr="conflict stderr\n", returncode=1)
         if cmd[1:3] == ["diff", "--name-only"]:
@@ -315,6 +348,12 @@ def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_pa
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if cmd[1:] == ["ls-files", "--others", "--exclude-standard", "-z"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if len(cmd) >= 3 and cmd[1] == "-c" and "__HERMES_IMPORT_HEALTH_" in cmd[2]:
+            suffix = cmd[2].split("__HERMES_IMPORT_HEALTH_", 1)[1].split("__", 1)[0]
+            marker = f"__HERMES_IMPORT_HEALTH_{suffix}__"
+            return SimpleNamespace(stdout=f"\n{marker}[]", stderr="", returncode=0)
         if cmd[1:3] == ["stash", "apply"]:
             return SimpleNamespace(stdout="applied\n", stderr="", returncode=0)
         if cmd[1:3] == ["diff", "--name-only"]:
@@ -1301,7 +1340,7 @@ def test_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "add", "--update"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "diff", "--cached", "--check"] and cwd == worktree:
+        if cmd == ["git", "diff", "--cached", "--check", "--", "README.md"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == [
             "git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.py"
