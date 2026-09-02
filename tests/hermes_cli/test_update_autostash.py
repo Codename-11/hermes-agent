@@ -497,6 +497,39 @@ def test_deploy_branch_update_fast_forwards_when_origin_ahead(monkeypatch, tmp_p
     ]
 
 
+def test_deploy_branch_fetch_failure_does_not_record_resolver_handoff(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import axiom_update
+
+    marker = tmp_path / ".update_handoff.json"
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "upstream", "--quiet"]:
+            return SimpleNamespace(
+                stdout="",
+                stderr="error: RPC failed; HTTP 429",
+                returncode=1,
+            )
+        if cmd[:3] == ["git", "rev-parse"]:
+            return SimpleNamespace(stdout="deadbeef\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(axiom_update, "_deploy_handoff_marker_path", lambda: marker)
+
+    changed = hermes_main._run_deploy_branch_update(
+        ["git"], tmp_path, "axiom", "oldhead"
+    )
+
+    assert changed is None
+    assert not marker.exists()
+    out = capsys.readouterr().out
+    assert "cannot fetch upstream" in out
+    assert "Retry `hermes update`" in out
+    assert "automatic resolution" not in out
+
+
 def test_deploy_branch_update_pins_exact_staged_target(monkeypatch, tmp_path):
     target = "a" * 40
     calls = []

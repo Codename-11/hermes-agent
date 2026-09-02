@@ -2847,6 +2847,7 @@ def _print_deploy_branch_handoff(
     conflict_files: str = "",
     error: str = "",
     git_cmd: Optional[list[str]] = None,
+    retain: bool = True,
 ) -> None:
     git_cmd = git_cmd or ["git"]
     review: dict[str, object] | None = None
@@ -2896,18 +2897,22 @@ def _print_deploy_branch_handoff(
     if error:
         print(f"  │ Error: {error.splitlines()[0]}")
     print("  │ ")
-    print("  │ Hermes will attempt automatic resolution next. If a safety")
-    print("  │ gate stops it, review this retained worktree, resolve the")
-    print(f"  │ listed issue, and rerun hermes update to publish {branch}.")
+    if retain:
+        print("  │ Hermes will attempt automatic resolution next. If a safety")
+        print("  │ gate stops it, review this retained worktree, resolve the")
+        print(f"  │ listed issue, and rerun hermes update to publish {branch}.")
+    else:
+        print("  │ Retry `hermes update` once the remote is available.")
     print("  └────────────────────────────────────────────")
-    _record_deploy_handoff(
-        repo=repo,
-        branch=branch,
-        reason=reason,
-        worktree_path=worktree_path,
-        conflict_files=conflict_files,
-        review=review,
-    )
+    if retain:
+        _record_deploy_handoff(
+            repo=repo,
+            branch=branch,
+            reason=reason,
+            worktree_path=worktree_path,
+            conflict_files=conflict_files,
+            review=review,
+        )
     print()
 
 
@@ -3283,6 +3288,7 @@ def _run_deploy_branch_update(
                 branch=branch,
                 error=(fetch_upstream.stderr or "").strip(),
                 git_cmd=git_cmd,
+                retain=False,
             )
             return None
 
