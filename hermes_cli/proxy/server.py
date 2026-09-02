@@ -112,11 +112,17 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     app[_adapter_key] = adapter
 
     async def handle_health(request: "web.Request") -> "web.Response":
+        # ``is_authenticated`` is documented as cheap (see UpstreamAdapter),
+        # but both shipped adapters read auth state off disk, and the Nous one
+        # does it under ``_auth_store_lock()`` — 15s cross-process. Offload it
+        # so a healthcheck poll can never freeze the loop behind a lock held by
+        # a concurrent ``hermes auth`` command.
+        authenticated = await asyncio.to_thread(adapter.is_authenticated)
         return web.json_response(
             {
                 "status": "ok",
                 "upstream": adapter.display_name,
-                "authenticated": adapter.is_authenticated(),
+                "authenticated": authenticated,
             }
         )
 
@@ -144,11 +150,18 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         # the request body too. Routed adapters inspect it to select an upstream.
         body = await request.read()
 
+        # Credential lookup is synchronous and may take a cross-process auth
+        # lock or refresh a token. Keep it off the event loop while preserving
+        # the routed adapter's request-aware selection seam.
         try:
             if hasattr(adapter, "get_credential_for_request"):
-                cred = adapter.get_credential_for_request(rel_path, body)  # type: ignore[attr-defined]
+                cred = await asyncio.to_thread(
+                    adapter.get_credential_for_request,  # type: ignore[attr-defined]
+                    rel_path,
+                    body,
+                )
             else:
-                cred = adapter.get_credential()
+                cred = await asyncio.to_thread(adapter.get_credential)
         except Exception as exc:
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")
@@ -231,15 +244,24 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         session = session_or_response
 
         if upstream_resp.status in {401, 429}:
+            # Third and last blocking method on the adapter contract, and the
+            # most expensive: the Nous adapter routes this straight into
+            # ``_get_credential(force_refresh=True)``, so the refresh POST that
+            # ``get_credential`` only performs near expiry is unconditional
+            # here — under the same 15s cross-process ``_auth_store_lock()``.
+            # The xAI adapter loads its key pool off disk and rotates it under
+            # ``self._lock``. Offload it for the same reason as the two above.
             try:
                 if hasattr(adapter, "get_retry_credential_for_request"):
-                    retry_cred = adapter.get_retry_credential_for_request(  # type: ignore[attr-defined]
+                    retry_cred = await asyncio.to_thread(
+                        adapter.get_retry_credential_for_request,  # type: ignore[attr-defined]
                         context=proxy_context,
                         failed_credential=cred,
                         status_code=upstream_resp.status,
                     )
                 else:
-                    retry_cred = adapter.get_retry_credential(
+                    retry_cred = await asyncio.to_thread(
+                        adapter.get_retry_credential,
                         failed_credential=cred,
                         status_code=upstream_resp.status,
                     )
