@@ -402,12 +402,14 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 
 def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted service-tier preference into a Responses API value."""
+    """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
     value = str(raw or "").strip().lower()
     if not value or value in {"normal", "default", "standard", "off", "none"}:
         return None
     if value in {"fast", "priority", "on"}:
         return "priority"
+    if value in {"auto", "cold"}:
+        return value
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
@@ -12086,7 +12088,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if not providers:
                 _cprint("  No authenticated providers found.")
                 _cprint("")
-                _cprint("  /model <name>                        switch model (persists)")
+                _cprint("  /model <name>                        switch model (this session)")
+                _cprint("  /model <name> --global               switch model and persist as default")
                 _cprint("  /model <name> --once                 switch for the next turn only")
                 _cprint("  /model <name> --session              switch for this session only")
                 _cprint("  /model --provider <slug>             switch provider")
