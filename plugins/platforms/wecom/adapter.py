@@ -318,12 +318,12 @@ class WeComAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.WECOM)
 
         extra = config.extra or {}
-        self._bot_id = str(extra.get("bot_id") or os.getenv("WECOM_BOT_ID", "")).strip()
+        self._bot_id = str(extra.get("bot_id") or _get_scoped_secret("WECOM_BOT_ID", "")).strip()
         self._secret = str(extra.get("secret") or _get_scoped_secret("WECOM_SECRET", "")).strip()
         self._ws_url = str(
             extra.get("websocket_url")
             or extra.get("websocketUrl")
-            or os.getenv("WECOM_WEBSOCKET_URL", DEFAULT_WS_URL)
+            or _get_scoped_secret("WECOM_WEBSOCKET_URL", DEFAULT_WS_URL)
         ).strip() or DEFAULT_WS_URL
 
         self._dm_policy = str(extra.get("dm_policy") or _get_scoped_secret("WECOM_DM_POLICY", "pairing")).strip().lower()
