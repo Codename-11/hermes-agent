@@ -3,7 +3,7 @@
   "carries": [
     {
       "id": "oauth-shared-store-preservation",
-      "title": "Preserve symlinked shared OAuth stores during fork healing",
+      "title": "Preserve shared OAuth stores and persist first profile logins",
       "order": 1,
       "status": "active",
       "domain_id": "auth",
@@ -18,10 +18,15 @@
           "kind": "commit",
           "repository": "Codename-11/hermes-agent",
           "revision": "67c8df3e24d58cb9f1f3cdf2a587812560e5ee09"
+        },
+        {
+          "kind": "commit",
+          "repository": "Codename-11/hermes-agent",
+          "revision": "58d23e27fe7c935fc301de12a02c4139155a23d0"
         }
       ],
-      "summary": "Skip destructive fork healing when profile and root auth.json resolve to the same file; preserve healing for separate copied stores.",
-      "paths": ["hermes_cli/auth.py"],
+      "summary": "Skip destructive fork healing for shared stores and persist explicit credential additions even in empty named profiles; retain distinct-copy healing and update-only borrowed refresh safeguards.",
+      "paths": ["hermes_cli/auth.py", "agent/credential_pool.py"],
       "tests": [
         "tests/hermes_cli/test_auth_symlink_heal.py",
         "tests/agent/test_credential_pool_profile_oauth_fork.py",
@@ -49,7 +54,7 @@
           ]
         }
       ],
-      "retirement": "Drop the runtime guard and retire this carry when the integrated upstream revision resolves #101356 (or provides equivalent shared-store protection) and the declared shared-store and distinct-copy tests pass against upstream without this carry. Issue closure alone is not sufficient; retain regression coverage unless upstream supplies equivalent tests.",
+      "retirement": "Drop both runtime changes and retire this carry when the integrated upstream revision provides equivalent shared-store protection (#101356) AND durable first-login persistence in named profiles, and the declared shared-store, distinct-copy, first/second-login and write-failure tests pass against upstream without this carry. Issue closure alone is not sufficient; retain regression coverage unless upstream supplies equivalent tests.",
       "references": [
         "https://github.com/NousResearch/hermes-agent/issues/101356",
         "https://github.com/NousResearch/hermes-agent/pull/100929"
@@ -58,7 +63,7 @@
         "kind": "commit_series",
         "source_ref": "origin/carry/source-oauth-symlink-heal",
         "base_commit": "aaa34b0e08834d6f7811577782c836f4d79f1b48",
-        "commits": ["67c8df3e24d58cb9f1f3cdf2a587812560e5ee09"]
+        "commits": ["67c8df3e24d58cb9f1f3cdf2a587812560e5ee09", "58d23e27fe7c935fc301de12a02c4139155a23d0"]
       }
     },
     {

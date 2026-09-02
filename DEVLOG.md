@@ -1,5 +1,12 @@
 # Hermes Agent — Axiom Dev Log
 
+## 2026-09-02 — Persist the first explicit OAuth login in named profiles
+
+- Follow-up to the shared-store guard: first auth-add in an empty named profile was misclassified as borrowed refresh persistence, silently discarding the new ID before reporting success.
+- Explicit additions now use the direct active-store writer; borrowed-ID exclusion and update-only refresh safeguards remain unchanged.
+- Added ten cases covering real auth-add, first/second login durability across root/named/symlinked layouts and all three providers, and disk-write failure reporting. Before the fix, all six named-profile login cases failed; the focused source suite now passes 123 tests.
+- Extended the same replayable carry and retirement gate to require both shared-store preservation and first-login persistence. Live credentials, services, and the pre-existing `uv.lock` edit remain untouched.
+
 ## 2026-09-02 — Preserve shared OAuth credentials during fork healing
 
 - Added a four-line same-resolved-file guard to upstream's OAuth fork healer, preventing profile `auth.json` symlinks from deleting shared root credentials (upstream issue #101356).

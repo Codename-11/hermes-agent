@@ -284,10 +284,19 @@ The fork healer introduced by upstream PR #100929 treats a profile's symlinked
 `auth.json` as a separate copy, then strips credentials through that symlink
 from the shared root store.
 
-The carry adds only an existing `_same_path` check before consolidation. When
+The carry adds an existing `_same_path` check before consolidation. When
 profile and root resolve to the same file, healing is a no-op. Separate copied
 stores retain upstream healing. No new hook, credential format, migration,
 refresh policy, or provider selection behavior is introduced.
+
+The first-login follow-up makes `CredentialPool.add_entry()` use the direct
+active-store writer for explicit additions. An empty named profile must not
+route a new credential through the update-only borrowed-refresh path, which
+silently skips unknown IDs. The existing borrowed-ID exclusion remains intact;
+refresh persistence stays update-only. Tests run real auth-add commands with
+only the OAuth login boundary replaced, checking first and second login
+durability for root, named, and symlinked profiles across all three providers,
+and verifying disk-write errors prevent a success message.
 
 Tests exercise absolute and relative symlinks, repeated real `load_pool` calls,
 and genuinely separate copies for Anthropic, OpenAI Codex, and xAI OAuth, using
@@ -295,8 +304,9 @@ temporary homes and fake credentials. Source commit and replay metadata live
 in `fork-carries.json`.
 
 Retire the carry and drop its runtime guard once the integrated upstream
-revision fixes #101356 or provides equivalent protection, and these focused
-tests pass against upstream without the carry. Issue closure alone is not a
+revision fixes #101356 or provides equivalent protection AND correctly persists
+first logins in named profiles, and these focused tests pass against upstream
+without either runtime change. Issue closure alone is not a
 drop signal. Retain regression coverage unless equivalent upstream tests exist.
 This prevents future deletion; credentials already erased require a fresh
 login after the patched code is installed.
