@@ -276,6 +276,31 @@ Keep this section as the tracking source for remote file/sidebar/artifact behavi
 | Upstream PR #39122 — `remote workspace + terminal over SSH` | Not carried | Broad Electron SSH/terminal/settings/file-browser architecture change. Evaluate in a dedicated branch. |
 | Upstream PR #39183 — `edit files in place from the preview pane` | Not carried | Stacked on #39122 and introduces remote write-back/editing. Do not mix it into the read-only browse/preview lane. |
 
+## Shared OAuth store preservation
+
+Temporary carry: `oauth-shared-store-preservation`, tracked upstream in
+[issue #101356](https://github.com/NousResearch/hermes-agent/issues/101356).
+The fork healer introduced by upstream PR #100929 treats a profile's symlinked
+`auth.json` as a separate copy, then strips credentials through that symlink
+from the shared root store.
+
+The carry adds only an existing `_same_path` check before consolidation. When
+profile and root resolve to the same file, healing is a no-op. Separate copied
+stores retain upstream healing. No new hook, credential format, migration,
+refresh policy, or provider selection behavior is introduced.
+
+Tests exercise absolute and relative symlinks, repeated real `load_pool` calls,
+and genuinely separate copies for Anthropic, OpenAI Codex, and xAI OAuth, using
+temporary homes and fake credentials. Source commit and replay metadata live
+in `fork-carries.json`.
+
+Retire the carry and drop its runtime guard once the integrated upstream
+revision fixes #101356 or provides equivalent protection, and these focused
+tests pass against upstream without the carry. Issue closure alone is not a
+drop signal. Retain regression coverage unless equivalent upstream tests exist.
+This prevents future deletion; credentials already erased require a fresh
+login after the patched code is installed.
+
 ## Axiom-Desktop operational notes
 
 After pushing `origin/axiom`, update Axiom-Desktop with:

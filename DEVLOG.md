@@ -1,5 +1,12 @@
 # Hermes Agent — Axiom Dev Log
 
+## 2026-09-02 — Preserve shared OAuth credentials during fork healing
+
+- Added a four-line same-resolved-file guard to upstream's OAuth fork healer, preventing profile `auth.json` symlinks from deleting shared root credentials (upstream issue #101356).
+- Added isolated regression coverage for absolute/relative symlinks, repeated real pool loads, and normal separate-copy healing across all three single-use OAuth providers. Without the guard, the nine shared-store cases fail; with it, all 12 new cases and the 15 existing fork-healing tests pass.
+- Registered the bounded, replayable `oauth-shared-store-preservation` carry. Drop its runtime guard when the integrated upstream fix passes the same behavior checks without the carry; issue closure alone is insufficient.
+- Prepared in an isolated worktree for publication to `origin/axiom`; live checkout, existing `uv.lock` changes, credentials, and services are left to the operator's subsequent `hermes update`. Already-erased credentials require reauthentication after updating.
+
 ## 2026-08-30 — Restore fork-aware `hermes update --check`
 
 - Repaired a semantic carry drop from the Axiom regeneration: the banner still counted `HEAD..origin/axiom` plus `origin/axiom..upstream/main`, but the interactive CLI had reverted to origin-only checks.
