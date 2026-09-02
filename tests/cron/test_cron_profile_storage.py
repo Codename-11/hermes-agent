@@ -7,6 +7,7 @@ that owner so one profile cannot execute or mutate another profile's jobs.
 import importlib
 import json
 import os
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,6 +19,23 @@ def _reload_jobs(root: Path, hermes_home: Path, monkeypatch):
     import cron.jobs as jobs
     importlib.reload(jobs)
     return jobs
+
+
+@pytest.mark.parametrize("owner_exists", [False, True])
+def test_execution_id_reaches_real_profile_job_runner(tmp_path, monkeypatch, owner_exists):
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from tests.cron.test_cron_workdir import TestRunJobTerminalCwd
+
+    observed = {}
+    TestRunJobTerminalCwd._install_stubs(monkeypatch, observed)
+    monkeypatch.setattr(jobs, "resolve_profile_home", lambda owner: tmp_path if owner_exists else None)
+    success, *_ = sched.run_job(
+        {"id": "profile-execution", "prompt": "check", "schedule_display": "manual", "owner_profile": "sentinel"},
+        execution_id="explicit-run-id",
+    )
+    assert success
+    assert observed["task_id"] == "cron:profile-execution:explicit-run-id"
 
 
 def test_cron_storage_shared_root_but_owner_scoped_under_profile(tmp_path, monkeypatch):
@@ -41,6 +59,27 @@ def test_cron_storage_shared_root_but_owner_scoped_under_profile(tmp_path, monke
         assert jobs.list_jobs(include_disabled=True) == []
         assert jobs.get_job(created["id"]) is None
         assert jobs.get_job(created["id"], include_all_profiles=True)["owner_profile"] == "sentinel"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(jobs)
+
+
+def test_explicit_owner_and_failure_delivery_survive_create_and_reload(tmp_path, monkeypatch):
+    root = tmp_path / "hermes_home"
+    (root / "profiles" / "sentinel").mkdir(parents=True)
+    jobs = _reload_jobs(root, root, monkeypatch)
+    try:
+        created = jobs.create_job(
+            prompt="check", schedule="30m", profile="sentinel",
+            deliver="local", failure_deliver="slack:D0ALERTS",
+        )
+        saved = jobs.get_job(created["id"], include_all_profiles=True)
+        assert saved["owner_profile"] == "sentinel"
+        assert saved["failure_deliver"] == "slack:D0ALERTS"
+        assert saved["deliver"] == "local"
+        assert jobs.get_job(created["id"]) is None
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "sentinel"))
+        assert jobs.get_job(created["id"])["failure_deliver"] == "slack:D0ALERTS"
     finally:
         monkeypatch.undo()
         importlib.reload(jobs)

@@ -2848,7 +2848,20 @@ def _expand_routing_tokens(part: str) -> List[str]:
     return expanded
 
 
-def _resolve_delivery_targets(job: dict) -> List[dict]:
+def _delivery_lane_value(job: dict, *, for_failure: bool = False):
+    """Raw deliver-lane value for a run outcome: the failure lane when
+    ``for_failure`` and the job overrides it, else ``deliver``. Keeps
+    delivery bookkeeping (outcome classification, unresolved-origin,
+    incident 'alerted' marking) reading the SAME lane the notice was
+    actually routed through (NS-788 review finding B1)."""
+    if for_failure:
+        failure_deliver = job.get("failure_deliver")
+        if failure_deliver is not None and str(failure_deliver).strip():
+            return failure_deliver
+    return job.get("deliver", "local")
+
+
+def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
     """Resolve all concrete auto-delivery targets for a cron job.
 
     Accepts the legacy comma-separated ``deliver`` string plus the
@@ -2857,8 +2870,17 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
     Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
     existing dedup pass.
+
+    ``for_failure=True`` resolves failure-category engine notices
+    (failure summaries, interrupted-run notices, drift/preflight
+    alerts): when the job carries a ``failure_deliver`` value, targets
+    resolve from it INSTEAD of ``deliver`` — ``failure_deliver: local``
+    is the structural opt-out for shared channels (NS-788, Coatue).
+    Absent ``failure_deliver``, failure delivery follows ``deliver``
+    exactly as before.
     """
-    deliver = _normalize_deliver_value(job.get("deliver", "local"))
+    deliver_raw = _delivery_lane_value(job, for_failure=for_failure)
+    deliver = _normalize_deliver_value(deliver_raw)
     if deliver == "local":
         return []
 
@@ -3151,7 +3173,9 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         )
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(
+    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -3160,11 +3184,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
 
+    ``for_failure=True`` routes failure-category engine notices through the
+    job's ``failure_deliver`` override when present (NS-788).
+
     Returns None on success, or an error string on failure.
     """
-    targets = _resolve_delivery_targets(job)
+    targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
-        deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+        deliver_value = _normalize_deliver_value(
+            _delivery_lane_value(job, for_failure=for_failure)
+        )
         if deliver_value == "local":
             return None  # local-only jobs don't deliver — not a failure
         # deliver=origin with no resolvable origin and no configured home
@@ -5443,19 +5472,30 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     the same source `cron_delivery_targets` uses). Gateway-config load
     failures fail OPEN so a transient config hiccup never wedges delivery
     that would have worked.
+
+    ``failure_deliver`` is checked with the same rules: a typo'd failure
+    platform would otherwise only surface when a failure occurs — exactly
+    when the notice must not be lost (NS-788 follow-up).
     """
     deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+    failure_deliver_value = _normalize_deliver_value(
+        _delivery_lane_value(job, for_failure=True)
+    )
+    lane_values = [deliver_value]
+    if failure_deliver_value != deliver_value:
+        lane_values.append(failure_deliver_value)
     platform_parts: list[str] = []
-    for part in deliver_value.split(","):
-        part = part.strip()
-        if not part or part.lower() in {"local", "origin", "all"}:
-            continue
-        # bot-chat targets need no gateway credentials — they deliver via a
-        # local chat subprocess. Unknown-profile failures surface per run in
-        # last_delivery_error (and are validated at create time).
-        if parse_bot_chat_deliver_token(part) is not None:
-            continue
-        platform_parts.append(part.split(":", 1)[0].strip())
+    for lane_value in lane_values:
+        for part in lane_value.split(","):
+            part = part.strip()
+            if not part or part.lower() in {"local", "origin", "all"}:
+                continue
+            # bot-chat targets need no gateway credentials — they deliver via a
+            # local chat subprocess. Unknown-profile failures surface per run in
+            # last_delivery_error (and are validated at create time).
+            if parse_bot_chat_deliver_token(part) is not None:
+                continue
+            platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None
 
@@ -5721,14 +5761,17 @@ def run_job(
     """Execute a job under its persisted owner profile's Hermes home."""
     from cron.jobs import resolve_profile_home
 
-    owner = str(job.get("owner_profile") or job.get("profile") or "default")
-    owner_home = resolve_profile_home(owner)
+    # Stored jobs already have an explicit owner (including legacy default
+    # jobs). Raw calls without one must preserve the caller's profile context.
+    owner = job.get("owner_profile") or job.get("profile")
+    owner_home = resolve_profile_home(str(owner)) if owner else None
     if owner_home is None:
         return _run_job_impl(
             job,
             defer_agent_teardown=defer_agent_teardown,
             extra_prompt=extra_prompt,
             cancel_event=cancel_event,
+            execution_id=execution_id,
         )
 
     previous_home = os.environ.get("HERMES_HOME")
@@ -5740,6 +5783,7 @@ def run_job(
             defer_agent_teardown=defer_agent_teardown,
             extra_prompt=extra_prompt,
             cancel_event=cancel_event,
+            execution_id=execution_id,
         )
     finally:
         reset_hermes_home_override(token)
@@ -5755,6 +5799,7 @@ def _run_job_impl(
     defer_agent_teardown: Optional[list] = None,
     extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    execution_id: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -7727,8 +7772,9 @@ def _run_one_job_body(
 
             if should_deliver:
                 unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
-                    and not _resolve_delivery_targets(job)
+                    _normalize_deliver_value(_delivery_lane_value(job, for_failure=not success))
+                    == "origin"
+                    and not _resolve_delivery_targets(job, for_failure=not success)
                 )
                 try:
                     with _side_effect_fence() as owns_delivery:
@@ -7740,6 +7786,10 @@ def _run_one_job_body(
                             deliver_content,
                             adapters=adapters,
                             loop=loop,
+                            # Failure summaries (and drift/blocked-config alerts
+                            # composed into deliver_content on the failure path)
+                            # honor the job's failure_deliver override (NS-788).
+                            for_failure=not success,
                         )
                 except Exception as de:
                     if isinstance(de, _FireClaimLostDuringSideEffect):
@@ -7827,7 +7877,9 @@ def _run_one_job_body(
                 error="Fire claim ownership lost before terminal completion.",
             )
             return True
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        normalized_deliver = _normalize_deliver_value(
+            _delivery_lane_value(job, for_failure=not success)
+        )
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:
@@ -7884,7 +7936,7 @@ def _run_one_job_body(
             and not _fire_claim_ownership_lost()
         ):
             normalized_deliver = _normalize_deliver_value(
-                job.get("deliver", "local")
+                _delivery_lane_value(job, for_failure=True)
             )
             unresolved_origin = False
             # Durable failure incident: same ack gate as the normal failure
@@ -7910,6 +7962,7 @@ def _run_one_job_body(
                         + _failure_streak_nudge(job),
                         adapters=adapters,
                         loop=loop,
+                        for_failure=True,
                     )
                 except Exception as delivery_exc:
                     delivery_error = str(delivery_exc)
@@ -7917,7 +7970,9 @@ def _run_one_job_body(
                         "Delivery failed for job %s: %s", job["id"], delivery_exc
                     )
                 if not delivery_error and normalized_deliver == "origin":
-                    unresolved_origin = not _resolve_delivery_targets(job)
+                    unresolved_origin = not _resolve_delivery_targets(
+                        job, for_failure=True
+                    )
                 if delivery_error:
                     delivery_outcome = "failed"
                 elif unresolved_origin:

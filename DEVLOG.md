@@ -1,5 +1,13 @@
 # Hermes Agent — Axiom Dev Log
 
+## 2026-09-02 — Resolve cron failure-delivery integration
+
+- Resolved the retained updater merge by keeping both explicit Axiom `profile` ownership and upstream `failure_deliver` in `create_job`; preserved upstream routing, preflight validation, and delivery bookkeeping.
+- Added a real create/reload regression exercising both arguments together and confirming profile-scoped visibility.
+- Broad cron checks exposed a previously clean-merged signature mismatch: the profile wrapper accepted upstream `execution_id` but neither forwarded it nor declared it on `_run_job_impl`. Repaired both wrapper branches so upstream task identity reaches actual execution.
+- Preserved upstream caller-context behavior for raw jobs without owner metadata; persisted jobs still have explicit owners (legacy rows normalize to default), and their owner remains authoritative. This restores the upstream multiplex SessionDB context regression.
+- Retained both OAuth fixes and excluded unrelated generated `uv.lock` churn from the merge commit.
+
 ## 2026-09-02 — Persist the first explicit OAuth login in named profiles
 
 - Follow-up to the shared-store guard: first auth-add in an empty named profile was misclassified as borrowed refresh persistence, silently discarding the new ID before reporting success.
