@@ -1987,6 +1987,10 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
         if real_home_env and _same_path(root_path, Path(real_home_env) / ".hermes" / "auth.json"):
             return None
     profile_path = _auth_file_path()
+    # A symlinked store is already shared, not a forked copy. Stripping
+    # profile credentials would write through the link and erase root grants.
+    if _same_path(profile_path, root_path):
+        return None
     profile_home = profile_path.parent
     root_home = root_path.parent
     profile_singleton = profile_home / ".anthropic_oauth.json" if provider_id == "anthropic" else None
