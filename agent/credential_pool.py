@@ -2988,7 +2988,13 @@ class CredentialPool:
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
                 self._borrowed_root_ids = set()
             else:
-                self._persist()
+                # Explicit additions own their lifecycle, even when the
+                # active store has no rows yet. Borrowed refresh persistence
+                # is update-only and would silently discard the first login.
+                write_credential_pool(
+                    self.provider,
+                    [e.to_dict() for e in self._entries],
+                )
             return entry
 
 
