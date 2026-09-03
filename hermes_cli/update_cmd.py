@@ -8104,6 +8104,16 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     sys.exit(1)
 
 
+def _register_update_atexit(callback, *args) -> bool:
+    """Register a process-exit recovery unless this is a hermetic test run."""
+    if os.environ.get("HERMES_TEST_ISOLATION"):
+        return False
+    import atexit
+
+    atexit.register(callback, *args)
+    return True
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -8121,9 +8131,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Arm both cleanup paths before any preflight can fail: os._exit skips
         # atexit, while an unhandled exception takes the normal atexit path.
         _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME = inherited_gateway_context
-        import atexit as _atexit
-
-        _atexit.register(
+        # Pytest restores monkeypatch fixtures before process atexit callbacks
+        # run. Registering the real gateway recovery callback in an isolated
+        # test process therefore escapes its mocks and starts an actual detached
+        # gateway after a green suite. The persistent conftest marker survives
+        # fixture teardown; skip only the redundant process-exit safety net.
+        _register_update_atexit(
             _m()._resume_windows_gateways_after_update,
             inherited_gateway_context,
         )
@@ -8284,10 +8297,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     if handed_off_sync and isinstance(_windows_gateway_resume, dict):
         _ACTIVE_UPDATE_REEXEC_GATEWAY_RESUME = _windows_gateway_resume
-    if _windows_gateway_resume and not inherited_gateway_atexit_registered:
-        import atexit as _atexit
-
-        _atexit.register(
+    if (
+        _windows_gateway_resume
+        and not inherited_gateway_atexit_registered
+    ):
+        _register_update_atexit(
             _m()._resume_windows_gateways_after_update,
             _windows_gateway_resume,
         )

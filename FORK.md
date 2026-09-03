@@ -126,7 +126,12 @@ Required behavior:
 - Bare `hermes update` owns the full deploy transaction: resume or rebuild a retained handoff when needed, validate, commit, push `HEAD:tgi`, fast-forward the live checkout, and continue install/restart handling.
 - Retained handoff classification uses Git ancestry, not literal SHA text: already-published snapshots are cleared; handoffs based on an older `origin/tgi` tip are rebuilt once from the current tip; otherwise the retained worktree is resumed.
 - The resolver must import the clean live Hermes CLI while retaining the conflict worktree as process cwd, because `hermes_cli/main.py` itself may be conflicted and unparsable.
-- Deploy handoff progress must remain scrollback-safe: persistent phase lines only, no carriage-return spinner frames or ANSI clear-line output.
+- Deploy handoff progress must remain scrollback-safe: persistent phase lines only, no carriage-return spinner frames or ANSI clear-line output. The resolver transcript streams live with an explicit `resolver/unverified` label; only the parent validator may claim success.
+- Retrying a handoff whose worktree has no unmerged paths or conflict markers skips the resolver agent and resumes at parent validation instead of paying for the same resolution again. Git conflict/changed-path queries are checked mutation gates: timeout or nonzero status stops before agent, add, commit, or push.
+- Resolver-owned focused checks run with a process-level temporary `HERMES_HOME` so pytest teardown/`atexit` callbacks cannot touch live gateway state.
+- Focused Node checks reuse both root and workspace-local live dependencies. On Windows, the updater falls back from privileged symlinks to verified directory junctions, parks partial retry residue outside the Git worktree, recovers interrupted park/link state, and restores/removes only positively identified updater-owned links after the check.
+- Resolver timeouts terminate the resolver process tree, not only its immediate Python parent; timeout and retained-pipe failures preserve the handoff for a safe retry.
+- The resolver agent does not duplicate the full focused suite; it may run one narrow edit-guiding check, while the parent runs the canonical checks once.
 - Recover the common push race where another TGI host advances `origin/tgi` while an update is preparing its temp merge; retry once when reconciliation is safe before falling back to a handoff.
 - `hermes version` should show the deploy branch and preview both pending deploy-branch commits and pending upstream commits.
 - Resolver failures leave the live checkout unchanged and retain enough worktree/report context for safe retry or manual recovery.

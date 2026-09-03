@@ -41,6 +41,23 @@ def mock_args():
     return SimpleNamespace()
 
 
+def test_update_atexit_registration_is_disabled_by_persistent_test_marker(
+    monkeypatch,
+):
+    from hermes_cli import update_cmd
+
+    callback = lambda token: token
+    monkeypatch.setenv("HERMES_TEST_ISOLATION", "C:/isolated-test-home")
+    with patch("atexit.register") as register:
+        assert update_cmd._register_update_atexit(callback, {"pending": True}) is False
+        register.assert_not_called()
+
+    monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
+    with patch("atexit.register") as register:
+        assert update_cmd._register_update_atexit(callback, {"pending": True}) is True
+        register.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
@@ -90,7 +107,13 @@ def _patch_gateway_discovery():
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.main._refresh_windows_gateway_launchers"), \
+         patch("hermes_cli.main._cold_start_windows_gateway_after_update"), \
+         patch("hermes_cli.main._write_update_incomplete_marker"), \
+         patch("hermes_cli.main._clear_update_incomplete_marker"), \
+         patch("hermes_cli.main._write_lazy_refresh_incomplete_marker"), \
+         patch("hermes_cli.main._clear_lazy_refresh_incomplete_marker"):
         yield
 
 

@@ -1,4 +1,6 @@
 import json
+import io
+import os
 import sys
 from pathlib import Path
 from subprocess import CalledProcessError
@@ -54,10 +56,16 @@ def _patch_managed_uv(request):
 
 @pytest.fixture(autouse=True)
 def _isolate_gateway_discovery():
-    """Keep updater tests from discovering or signaling live gateways."""
+    """Keep updater tests from discovering or mutating live gateway state."""
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch.object(hermes_main, "_refresh_windows_gateway_launchers"), \
+         patch.object(hermes_main, "_cold_start_windows_gateway_after_update"), \
+         patch.object(hermes_main, "_write_update_incomplete_marker"), \
+         patch.object(hermes_main, "_clear_update_incomplete_marker"), \
+         patch.object(hermes_main, "_write_lazy_refresh_incomplete_marker"), \
+         patch.object(hermes_main, "_clear_lazy_refresh_incomplete_marker"):
         yield
 
 
@@ -979,7 +987,7 @@ def test_tgi_deploy_branch_update_retries_push_after_merging_remote_advanced_ori
     assert "hermes update: push to origin/tgi failed" not in out
 
 
-def test_tgi_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
+def test_tgi_resolved_deploy_handoff_skips_agent_pushes_and_fast_forwards(
     monkeypatch, tmp_path, capsys
 ):
     from hermes_cli import fork_update as hermes_fork_update
@@ -1011,7 +1019,9 @@ def test_tgi_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     monkeypatch.setattr(
         hermes_fork_update,
         "_run_update_resolver_agent",
-        lambda prompt, cwd: SimpleNamespace(returncode=0),
+        lambda *args, **kwargs: pytest.fail(
+            "an already-resolved retained handoff must not rerun the agent"
+        ),
     )
 
     def fake_run(cmd, **kwargs):
@@ -1022,6 +1032,10 @@ def test_tgi_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
         if cmd == ["git", "fetch", "upstream", "main", "--quiet"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "diff", "--name-only", "--diff-filter=U"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "HEAD"] and cwd == worktree:
+            return SimpleNamespace(stdout="README.md\n", stderr="", returncode=0)
+        if cmd == ["git", "ls-files", "--others", "--exclude-standard"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "add", "-A"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
@@ -1057,11 +1071,188 @@ def test_tgi_deploy_handoff_resolve_runs_agent_pushes_and_fast_forwards(
     out = capsys.readouterr().out
     assert "prepare resolve" in out
     assert "agent resolve" in out
+    assert "already resolved; agent skipped" in out
     assert "sync live" in out
     assert "resolved handoff" in out
     assert "Resolved deploy handoff" in out
     assert "\r" not in out
     assert not any(frame in out for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+
+def test_tgi_deploy_handoff_stops_when_conflict_query_fails(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "asset.bin").write_bytes(b"resolved binary")
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "tgi",
+                "reason": "merge into tgi failed.",
+                "worktree": str(worktree),
+                "conflict_files": ["asset.bin"],
+                "focused_checks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    monkeypatch.setattr(hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail("unknown Git state must stop first"),
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd in (
+            ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "--diff-filter=U"]:
+            return SimpleNamespace(stdout="", stderr="index unavailable", returncode=128)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+
+    assert hermes_fork_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="tgi", pre_update_head="oldhead"
+    ) is None
+    assert ["git", "add", "-A"] not in calls
+    assert ["git", "push", "origin", "HEAD:tgi"] not in calls
+    assert "Git conflict state is unknown" in capsys.readouterr().out
+
+
+def test_tgi_deploy_handoff_sensitive_gate_uses_checked_current_paths(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "tgi",
+                "reason": "merge into tgi failed.",
+                "worktree": str(worktree),
+                "conflict_files": [],
+                "focused_checks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    conflict_queries = 0
+    monkeypatch.setattr(hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: pytest.fail("sensitive path must stop first"),
+    )
+
+    def fake_run(cmd, **kwargs):
+        nonlocal conflict_queries
+        calls.append(cmd)
+        if cmd in (
+            ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "--diff-filter=U"]:
+            conflict_queries += 1
+            if conflict_queries == 1:
+                return SimpleNamespace(stdout="", stderr="transient", returncode=128)
+            return SimpleNamespace(stdout=".env\n", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "HEAD"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "ls-files", "--others", "--exclude-standard"]:
+            return SimpleNamespace(stdout=".env\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+
+    assert hermes_fork_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="tgi", pre_update_head="oldhead"
+    ) is None
+    assert ["git", "add", "-A"] not in calls
+    assert "sensitive path" in capsys.readouterr().out
+
+
+def test_tgi_deploy_handoff_retains_worktree_when_resolver_times_out(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "README.md").write_text("<<<<<<< ours\n", encoding="utf-8")
+    marker = tmp_path / ".update_handoff.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "repo": str(repo),
+                "branch": "tgi",
+                "reason": "merge into tgi failed.",
+                "worktree": str(worktree),
+                "conflict_files": ["README.md"],
+                "focused_checks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(hermes_fork_update, "_deploy_handoff_marker_path", lambda: marker)
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "_run_update_resolver_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            hermes_fork_update.subprocess.TimeoutExpired("resolver", 1)
+        ),
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd in (
+            ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"],
+            ["git", "fetch", "upstream", "main", "--quiet"],
+        ):
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "--diff-filter=U"]:
+            return SimpleNamespace(stdout="README.md\n", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "HEAD"]:
+            return SimpleNamespace(stdout="README.md\n", stderr="", returncode=0)
+        if cmd == ["git", "ls-files", "--others", "--exclude-standard"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+
+    assert hermes_fork_update._resolve_deploy_handoff(
+        git_cmd=["git"], repo=repo, branch="tgi", pre_update_head="oldhead"
+    ) is None
+    assert marker.exists()
+    assert ["git", "add", "-A"] not in calls
+    assert "timed out" in capsys.readouterr().out
 
 
 def test_tgi_update_conflict_review_status_prints_scrollback_safe_progress(capsys):
@@ -1085,11 +1276,23 @@ def test_tgi_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        return SimpleNamespace(returncode=0)
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = io.StringIO("inspecting conflicts\nresolver draft complete\n")
+            self.returncode = 0
 
-    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+        def wait(self, timeout=None):
+            assert timeout == 3600
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "Popen", fake_popen)
 
     result = hermes_fork_update._run_update_resolver_agent("resolve this", tmp_path)
 
@@ -1102,7 +1305,122 @@ def test_tgi_update_resolver_agent_uses_oneshot_not_chat(monkeypatch, tmp_path):
     assert "terminal,file,search,skills" in cmd
     assert kwargs["cwd"] == tmp_path
     assert kwargs["env"]["HERMES_UPDATE_RESOLVE"] == "1"
-    assert kwargs["capture_output"] is True
+    assert kwargs["stdin"] == hermes_fork_update.subprocess.DEVNULL
+    assert kwargs["stdout"] == hermes_fork_update.subprocess.PIPE
+    assert kwargs["stderr"] == hermes_fork_update.subprocess.STDOUT
+    assert kwargs["bufsize"] == 1
+    assert result.stdout == "inspecting conflicts\nresolver draft complete\n"
+    assert result.stderr == ""
+
+
+def test_tgi_update_resolver_agent_streams_unverified_output(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    class FakeProcess:
+        stdout = io.StringIO("checking ours vs theirs\nlooks resolved\n")
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(
+        hermes_fork_update.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+
+    hermes_fork_update._run_update_resolver_agent("resolve this", tmp_path)
+
+    out = capsys.readouterr().out
+    assert "[resolver/unverified] checking ours vs theirs" in out
+    assert "[resolver/unverified] looks resolved" in out
+
+
+def test_tgi_update_resolver_agent_kills_on_timeout(monkeypatch, tmp_path):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    class FakeProcess:
+        stdout = io.StringIO("last visible resolver line\n")
+        returncode = None
+        killed = False
+
+        def wait(self, timeout=None):
+            if timeout is not None:
+                raise hermes_fork_update.subprocess.TimeoutExpired("resolver", timeout)
+            self.returncode = -9
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        hermes_fork_update.subprocess,
+        "Popen",
+        lambda *args, **kwargs: process,
+    )
+
+    with pytest.raises(hermes_fork_update.subprocess.TimeoutExpired) as caught:
+        hermes_fork_update._run_update_resolver_agent("resolve this", tmp_path)
+
+    assert process.killed is True
+    assert "last visible resolver line" in str(caught.value.output)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object regression")
+def test_tgi_windows_resolver_job_kills_child_after_leader_exit():
+    import subprocess
+    import time
+
+    import psutil
+
+    from hermes_cli import fork_update as hermes_fork_update
+
+    script = (
+        "import subprocess,sys; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+        "print(child.pid,flush=True)"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        **hermes_fork_update._resolver_process_group_kwargs(),
+    )
+    job = None
+    child_pid = None
+    try:
+        job = hermes_fork_update._attach_windows_resolver_job(process)
+        assert job is not None
+        assert process.stdout is not None
+        child_pid = int(process.stdout.readline().strip())
+        process.wait(timeout=5)
+        assert psutil.pid_exists(child_pid)
+
+        job.close()
+        job = None
+        deadline = time.monotonic() + 5
+        while psutil.pid_exists(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not psutil.pid_exists(child_pid)
+    finally:
+        if job is not None:
+            job.close()
+        if child_pid is not None:
+            try:
+                psutil.Process(child_pid).kill()
+            except psutil.NoSuchProcess:
+                pass
+        try:
+            process.kill()
+        except OSError:
+            pass
 
 
 def test_tgi_resolver_bootstrap_avoids_conflicted_worktree_main(tmp_path):
@@ -1166,9 +1484,18 @@ def test_tgi_update_focused_check_env_keeps_virtualenv_symlink(
     ]
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="Symlinks require elevated privileges on Windows"
-)
+def test_tgi_focused_checks_isolate_process_hermes_home():
+    from hermes_cli import fork_update as hermes_fork_update
+
+    with hermes_fork_update._isolated_focused_check_env() as env:
+        sandbox = Path(env["HERMES_HOME"])
+        assert sandbox.is_dir()
+        assert sandbox != Path.home() / ".hermes"
+        assert env["HERMES_TEST_ISOLATION"] == str(sandbox)
+
+    assert not sandbox.exists()
+
+
 def test_tgi_focused_node_checks_reuse_live_dependencies(monkeypatch, tmp_path):
     from hermes_cli import fork_update as hermes_fork_update
 
@@ -1183,14 +1510,91 @@ def test_tgi_focused_node_checks_reuse_live_dependencies(monkeypatch, tmp_path):
 
     with hermes_fork_update._focused_node_modules(worktree, ["cd apps/desktop && npx vitest run"]):
         link = worktree / "node_modules"
-        assert link.is_symlink()
         assert link.resolve() == live_modules.resolve()
         desktop_link = worktree / "apps" / "desktop" / "node_modules"
-        assert desktop_link.is_symlink()
         assert desktop_link.resolve() == live_desktop_modules.resolve()
 
     assert not (worktree / "node_modules").exists()
     assert not (worktree / "apps" / "desktop" / "node_modules").exists()
+
+
+def test_tgi_focused_node_checks_park_and_restore_partial_dependencies(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    live_root = tmp_path / "live"
+    live_modules = live_root / "node_modules"
+    live_modules.mkdir(parents=True)
+    (live_modules / "complete.txt").write_text("live\n", encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    partial = worktree / "node_modules"
+    partial.mkdir(parents=True)
+    (partial / "partial.txt").write_text("retry residue\n", encoding="utf-8")
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "__file__",
+        str(live_root / "hermes_cli" / "fork_update.py"),
+    )
+
+    with hermes_fork_update._focused_node_modules(
+        worktree, ["npx vitest run"]
+    ):
+        assert (worktree / "node_modules" / "complete.txt").read_text(
+            encoding="utf-8"
+        ) == "live\n"
+        assert not (worktree / "node_modules" / "partial.txt").exists()
+
+    assert (partial / "partial.txt").read_text(encoding="utf-8") == "retry residue\n"
+    assert not (worktree.parent / ".hermes-resolver-root-node-modules-parked").exists()
+
+
+def test_tgi_focused_node_checks_recover_interrupted_park_and_link(
+    monkeypatch, tmp_path
+):
+    import subprocess
+
+    from hermes_cli import fork_update as hermes_fork_update
+
+    live_root = tmp_path / "live"
+    live_modules = live_root / "node_modules"
+    live_modules.mkdir(parents=True)
+    (live_modules / "complete.txt").write_text("live\n", encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    link = worktree / "node_modules"
+    parked = worktree.parent / ".hermes-resolver-root-node-modules-parked"
+    parked.mkdir()
+    (parked / "partial.txt").write_text("retry residue\n", encoding="utf-8")
+    monkeypatch.setattr(
+        hermes_fork_update,
+        "__file__",
+        str(live_root / "hermes_cli" / "fork_update.py"),
+    )
+    try:
+        link.symlink_to(live_modules, target_is_directory=True)
+    except OSError:
+        made = subprocess.run(
+            [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/s",
+                "/c",
+                "mklink",
+                "/J",
+                str(link),
+                str(live_modules),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert made.returncode == 0, made.stderr or made.stdout
+
+    with hermes_fork_update._focused_node_modules(worktree, ["npx vitest run"]):
+        assert (link / "complete.txt").read_text(encoding="utf-8") == "live\n"
+
+    assert (link / "partial.txt").read_text(encoding="utf-8") == "retry residue\n"
+    assert not parked.exists()
 
 
 def test_tgi_focused_checks_install_declared_pytest_tooling_when_missing(monkeypatch):
@@ -1586,6 +1990,10 @@ def test_tgi_deploy_handoff_resolve_suppresses_child_success_before_validation(
         if cmd == ["git", "fetch", "upstream", "main", "--quiet"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "diff", "--name-only", "--diff-filter=U"] and cwd == worktree:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "diff", "--name-only", "HEAD"] and cwd == worktree:
+            return SimpleNamespace(stdout="cron/jobs.py\n", stderr="", returncode=0)
+        if cmd == ["git", "ls-files", "--others", "--exclude-standard"] and cwd == worktree:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd} cwd={cwd}")
 

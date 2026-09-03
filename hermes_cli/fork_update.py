@@ -30,10 +30,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -410,6 +413,47 @@ def _git_output(git_cmd: list[str], cwd: Path, args: list[str], *, limit: int = 
     if len(text) > limit:
         return text[:limit].rstrip() + "\n…(truncated)…"
     return text
+
+
+def _checked_git_lines(
+    git_cmd: list[str], cwd: Path, args: list[str]
+) -> tuple[Optional[list[str]], str]:
+    """Run a Git query used as a mutation gate, failing closed on uncertainty."""
+    command = git_cmd + args
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"timed out: {' '.join(command)}"
+    except OSError as exc:
+        return None, f"could not execute {' '.join(command)}: {exc}"
+    if result.returncode != 0:
+        detail = str(result.stderr or result.stdout or "").strip()
+        suffix = f": {detail.splitlines()[-1]}" if detail else ""
+        return None, f"exit {result.returncode}: {' '.join(command)}{suffix}"
+    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()], ""
+
+
+def _checked_changed_paths(
+    git_cmd: list[str], cwd: Path
+) -> tuple[Optional[list[str]], str]:
+    """Return tracked and untracked paths that ``git add -A`` would consider."""
+    tracked, error = _checked_git_lines(
+        git_cmd, cwd, ["diff", "--name-only", "HEAD"]
+    )
+    if tracked is None:
+        return None, error
+    untracked, error = _checked_git_lines(
+        git_cmd, cwd, ["ls-files", "--others", "--exclude-standard"]
+    )
+    if untracked is None:
+        return None, error
+    return list(dict.fromkeys([*tracked, *untracked])), ""
 
 
 def _matched_fork_watch_areas(paths: list[str]) -> list[dict[str, object]]:
@@ -1014,6 +1058,25 @@ def _focused_check_env() -> dict[str, str]:
     return env
 
 
+@contextmanager
+def _isolated_focused_check_env() -> Iterator[dict[str, str]]:
+    """Keep resolver-owned tests out of the live Hermes state directory.
+
+    Pytest monkeypatch fixtures restore process environment before Python runs
+    ``atexit`` callbacks. Updater tests that register gateway recovery callbacks
+    can therefore escape their per-test temporary home at interpreter shutdown
+    unless the whole pytest process inherited an isolated ``HERMES_HOME``.
+    """
+    sandbox = Path(tempfile.mkdtemp(prefix="hermes-update-check-home-"))
+    env = _focused_check_env()
+    env["HERMES_HOME"] = str(sandbox)
+    env["HERMES_TEST_ISOLATION"] = str(sandbox)
+    try:
+        yield env
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
 def _focused_pytest_requirements() -> list[str]:
     """Return the pytest packages declared by the checkout's ``dev`` extra."""
     fallback = ["pytest", "pytest-asyncio"]
@@ -1072,16 +1135,40 @@ def _ensure_focused_pytest(checks: list[str], env: dict[str, str]) -> bool:
     return verified.returncode == 0
 
 
+def _resolver_node_parking_path(worktree: Path, link: Path) -> Path:
+    """Return an updater-owned parking path outside the Git worktree."""
+    label = "root" if link.parent == worktree else "desktop"
+    return worktree.parent / f".hermes-resolver-{label}-node-modules-parked"
+
+
+def _resolver_node_link_kind(link: Path, target: Path) -> Optional[str]:
+    if not os.path.lexists(link):
+        return None
+    try:
+        if link.resolve() != target.resolve():
+            return None
+        if link.is_symlink():
+            return "symlink"
+        if os.name == "nt" and getattr(link.lstat(), "st_reparse_tag", 0) == 0xA0000003:
+            return "junction"
+    except OSError:
+        return None
+    return None
+
+
+def _remove_resolver_node_link(link: Path, kind: str) -> None:
+    """Remove only a link type positively identified by the caller."""
+    if kind == "junction":
+        os.rmdir(link)
+    elif kind == "symlink":
+        link.unlink()
+    else:
+        raise OSError(f"Refusing to remove unrecognized dependency link: {link}")
+
+
 @contextmanager
 def _focused_node_modules(worktree: Path, checks: list[str]) -> Iterator[None]:
-    """Expose the live install's Node dependencies to a resolver worktree.
-
-    Update worktrees intentionally do not install dependencies.  Desktop
-    focused checks otherwise invoke ``npx``, create a partial local
-    ``node_modules/.vite-temp``, and fail before collecting tests because
-    ``vitest/config`` cannot resolve.  Reuse the already-installed live root
-    dependencies for the duration of validation, then remove only our symlink.
-    """
+    """Temporarily expose live Node dependencies, with crash-safe restoration."""
     needs_node = any(
         token in check
         for check in checks
@@ -1096,25 +1183,103 @@ def _focused_node_modules(worktree: Path, checks: list[str]) -> Iterator[None]:
                 live_root / "apps" / "desktop" / "node_modules",
             )
         )
-    created: list[Path] = []
+
+    created: list[tuple[Path, str, Optional[Path]]] = []
     for link, live_modules in candidates:
-        if not needs_node or link.exists() or not live_modules.is_dir():
+        if not needs_node or not live_modules.is_dir():
             continue
+        parked = _resolver_node_parking_path(worktree, link)
+
+        # Recover an interrupted prior context before starting a new one. The
+        # parked tree lives outside the Git worktree, so even another abrupt
+        # exit cannot feed it to the later ``git add -A``.
+        if os.path.lexists(parked):
+            stale_kind = _resolver_node_link_kind(link, live_modules)
+            if os.path.lexists(link) and stale_kind is None:
+                logger.warning(
+                    "Resolver dependency recovery found an unrelated path at %s; "
+                    "leaving both paths untouched",
+                    link,
+                )
+                continue
+            try:
+                if stale_kind is not None:
+                    _remove_resolver_node_link(link, stale_kind)
+                parked.replace(link)
+            except OSError:
+                logger.warning(
+                    "Could not recover interrupted resolver dependencies at %s",
+                    link,
+                    exc_info=True,
+                )
+                continue
+
+        parked_for_run: Optional[Path] = None
+        if os.path.lexists(link):
+            if _resolver_node_link_kind(link, live_modules) is not None:
+                continue
+            try:
+                link.replace(parked)
+                parked_for_run = parked
+            except OSError:
+                logger.debug("Could not park resolver Node dependencies", exc_info=True)
+                continue
+
+        link_kind: Optional[str] = None
         try:
             link.symlink_to(live_modules, target_is_directory=True)
-            created.append(link)
+            link_kind = "symlink"
         except OSError:
-            logger.debug("Could not link resolver Node dependencies", exc_info=True)
+            if os.name == "nt":
+                junction = subprocess.run(
+                    [
+                        os.environ.get("COMSPEC", "cmd.exe"),
+                        "/d",
+                        "/s",
+                        "/c",
+                        "mklink",
+                        "/J",
+                        str(link),
+                        str(live_modules),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if junction.returncode == 0:
+                    link_kind = _resolver_node_link_kind(link, live_modules)
+            if link_kind is None:
+                logger.debug("Could not link resolver Node dependencies", exc_info=True)
+
+        if link_kind is not None:
+            created.append((link, link_kind, parked_for_run))
+            continue
+        if parked_for_run is not None:
+            try:
+                parked_for_run.replace(link)
+            except OSError:
+                logger.warning(
+                    "Could not restore parked resolver dependencies at %s",
+                    link,
+                    exc_info=True,
+                )
+
     if created:
         print("  ✓ Reusing installed Node dependencies for focused checks")
     try:
         yield
     finally:
-        for link in reversed(created):
+        for link, link_kind, parked in reversed(created):
             try:
-                link.unlink()
+                _remove_resolver_node_link(link, link_kind)
+                if parked is not None:
+                    parked.replace(link)
             except OSError:
-                logger.debug("Could not remove resolver Node dependency link", exc_info=True)
+                logger.warning(
+                    "Could not restore resolver Node dependencies at %s",
+                    link,
+                    exc_info=True,
+                )
 
 
 def _handoff_snapshot_is_published(
@@ -1245,7 +1410,9 @@ Resolver contract:
 1. Work only inside the retained worktree above.
 2. Resolve the git merge conflict, preserving documented deploy-branch/TGI behavior and preferring upstream code when it provides equivalent or better behavior.
 3. Do not touch secrets, auth tokens, .env files, or unrelated generated churn.
-4. Run focused verification. Suggested checks:
+4. Do not run the full focused suite yourself; the parent updater runs it once
+   after validating your edits. You may run one narrow check only when needed to
+   guide a specific conflict resolution. Parent-owned checks:
 {checks_text}
 5. Leave the worktree ready for the updater to commit/push: no unmerged paths, no conflict markers, and only justified changes.
 
@@ -1272,12 +1439,175 @@ def _resolver_cli_bootstrap(worktree: Path) -> str:
     )
 
 
+class _WindowsResolverJob:
+    """Windows Job Object whose close terminates the resolver process tree."""
+
+    def __init__(self, handle) -> None:
+        self._handle = handle
+
+    def close(self) -> None:
+        if not self._handle:
+            return
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(self._handle)
+        self._handle = None
+
+
+def _attach_windows_resolver_job(process: subprocess.Popen) -> Optional[_WindowsResolverJob]:
+    """Attach a real Windows resolver process to a kill-on-close Job Object."""
+    if os.name != "nt" or not getattr(process, "pid", None):
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    job_handle = kernel32.CreateJobObjectW(None, None)
+    if not job_handle:
+        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+    job = _WindowsResolverJob(job_handle)
+    try:
+        limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            job_handle,
+            9,  # JobObjectExtendedLimitInformation
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
+        process_handle = kernel32.OpenProcess(
+            0x0001 | 0x0100 | 0x0400,  # TERMINATE | SET_QUOTA | QUERY_INFORMATION
+            False,
+            int(process.pid),
+        )
+        if not process_handle:
+            raise OSError(ctypes.get_last_error(), "OpenProcess failed")
+        try:
+            if not kernel32.AssignProcessToJobObject(job_handle, process_handle):
+                raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
+        finally:
+            kernel32.CloseHandle(process_handle)
+        return job
+    except Exception:
+        job.close()
+        raise
+
+
+def _resolver_process_group_kwargs() -> dict[str, object]:
+    """Put the resolver in a process group that can be torn down as a tree."""
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": flags} if flags else {}
+    return {"start_new_session": True}
+
+
+def _terminate_resolver_process_tree(process: subprocess.Popen) -> None:
+    """Best-effort hard stop of the resolver and every inherited tool child."""
+    pid = getattr(process, "pid", None)
+    if pid:
+        if os.name == "nt":
+            # Windows keeps each process's original PPID after the parent exits.
+            # Snapshot the full ancestry from the process table first so a tool
+            # that outlives the resolver leader cannot escape merely because
+            # ``taskkill /PID <leader> /T`` no longer finds that dead PID.
+            descendants: list[tuple[int, float, int]] = []
+            try:
+                import psutil
+
+                by_parent: dict[int, list[object]] = {}
+                for candidate in psutil.process_iter(["pid", "ppid", "create_time"]):
+                    try:
+                        by_parent.setdefault(int(candidate.info["ppid"]), []).append(candidate)
+                    except (KeyError, TypeError, ValueError, psutil.NoSuchProcess):
+                        continue
+                stack = [(int(pid), 0)]
+                while stack:
+                    parent_pid, depth = stack.pop()
+                    for child in by_parent.get(parent_pid, []):
+                        child_pid = int(child.info["pid"])
+                        created = float(child.info["create_time"])
+                        descendants.append((child_pid, created, depth + 1))
+                        stack.append((child_pid, depth + 1))
+            except Exception:
+                descendants = []
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=15,
+            )
+            if descendants:
+                try:
+                    import psutil
+
+                    for child_pid, created, _depth in sorted(
+                        descendants, key=lambda item: item[2], reverse=True
+                    ):
+                        try:
+                            child = psutil.Process(child_pid)
+                            if abs(child.create_time() - created) <= 0.01:
+                                child.kill()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                except Exception:
+                    pass
+        else:
+            try:
+                # The child starts a new session, so its PID is the durable
+                # process-group ID even after the leader itself exits.
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
 def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.CompletedProcess:
     """Run a non-interactive Hermes resolver session in the retained worktree.
 
-    The parent updater owns user-facing progress and validation. Capture the
-    child agent's transcript so optimistic final self-reports do not appear as
-    authoritative status before the parent has verified the worktree.
+    Stream the child transcript so a long resolve never looks hung. Every line
+    is explicitly labeled unverified because the parent updater still owns the
+    authoritative validation, commit, and push decision.
     """
     timeout = int(os.environ.get("HERMES_UPDATE_RESOLVE_TIMEOUT", "3600") or "3600")
     cmd = [
@@ -1290,15 +1620,82 @@ def _run_update_resolver_agent(prompt: str, worktree: Path) -> subprocess.Comple
         "terminal,file,search,skills",
     ]
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "HERMES_UPDATE_RESOLVE": "1"}
-    return subprocess.run(
+    process = subprocess.Popen(
         cmd,
         cwd=worktree,
         env=env,
+        stdin=subprocess.DEVNULL,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        **_resolver_process_group_kwargs(),
+    )
+    try:
+        windows_job = _attach_windows_resolver_job(process)
+    except Exception as exc:
+        _terminate_resolver_process_tree(process)
+        raise RuntimeError(
+            f"Could not establish killable Windows resolver boundary: {exc}"
+        ) from exc
+    if process.stdout is None:
+        if windows_job is not None:
+            windows_job.close()
+        process.kill()
+        raise RuntimeError("Resolver subprocess did not expose an output stream")
+
+    transcript_tail: deque[str] = deque(maxlen=200)
+
+    def _pump_output() -> None:
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                transcript_tail.append(line)
+                rendered = line.rstrip("\r\n")
+                print(f"  [resolver/unverified] {rendered}", flush=True)
+        finally:
+            process.stdout.close()
+
+    pump = threading.Thread(
+        target=_pump_output,
+        name="hermes-update-resolver-output",
+        daemon=True,
+    )
+    pump.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if windows_job is not None:
+            windows_job.close()
+        _terminate_resolver_process_tree(process)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        pump.join(timeout=10)
+        raise subprocess.TimeoutExpired(
+            cmd,
+            timeout,
+            output="".join(transcript_tail),
+        ) from exc
+    if windows_job is not None:
+        # KILL_ON_JOB_CLOSE removes a resolver tool that retained stdout after
+        # the leader exited; close before the bounded pump join.
+        windows_job.close()
+    pump.join(timeout=10)
+    if pump.is_alive():
+        _terminate_resolver_process_tree(process)
+        raise RuntimeError(
+            "Resolver exited but a descendant retained its output pipe; "
+            "the resolver process tree was terminated"
+        )
+    return subprocess.CompletedProcess(
+        cmd,
+        returncode,
+        stdout="".join(transcript_tail),
+        stderr="",
     )
 
 
@@ -1413,8 +1810,28 @@ def _resolve_deploy_handoff(
             git_cmd, repo, branch, pre_update_head
         )
 
-    conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
-    blocked = _egregious_handoff_paths(conflict_files)
+    marker_conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
+    status.advance("agent resolve")
+    unresolved_paths, unresolved_error = _checked_git_lines(
+        git_cmd,
+        worktree,
+        ["diff", "--name-only", "--diff-filter=U"],
+    )
+    if unresolved_paths is None:
+        status.fail(note="cannot inspect conflict state")
+        print(f"✗ Refusing resolver mutation because Git conflict state is unknown: {unresolved_error}")
+        return None
+    changed_before, changed_error = _checked_changed_paths(git_cmd, worktree)
+    if changed_before is None:
+        status.fail(note="cannot enumerate changed files")
+        print(f"✗ Refusing resolver mutation because changed paths are unknown: {changed_error}")
+        return None
+
+    conflict_files = list(
+        dict.fromkeys([*marker_conflict_files, *unresolved_paths])
+    )
+    safety_paths = list(dict.fromkeys([*conflict_files, *changed_before]))
+    blocked = _egregious_handoff_paths(safety_paths)
     if blocked:
         status.fail(note="sensitive path gate")
         print("✗ Refusing unattended resolve: conflict touches sensitive paths:")
@@ -1423,17 +1840,44 @@ def _resolve_deploy_handoff(
         print("  Resolve manually or rerun with a future explicit override once reviewed.")
         return None
 
-    checks = _focused_checks_for_paths(conflict_files, payload)
-    status.advance("agent resolve")
-    result = _run_update_resolver_agent(_build_deploy_resolver_prompt({**payload, "conflict_files": conflict_files}, checks), worktree)
-    if result.returncode != 0:
-        status.fail(note="resolver agent failed")
-        print("✗ Resolver agent failed; retained worktree was left untouched for manual review.")
-        return None
+    checks = _focused_checks_for_paths(safety_paths, payload)
+    marker_hits_before = _scan_conflict_markers(worktree, conflict_files)
+    if unresolved_paths or marker_hits_before:
+        try:
+            result = _run_update_resolver_agent(
+                _build_deploy_resolver_prompt(
+                    {**payload, "conflict_files": conflict_files}, checks
+                ),
+                worktree,
+            )
+        except subprocess.TimeoutExpired:
+            status.fail(note="resolver agent timed out")
+            print(
+                "✗ Resolver agent timed out; retained worktree was left for safe retry."
+            )
+            return None
+        except Exception as exc:
+            status.fail(note="resolver agent failed")
+            print(
+                "✗ Resolver agent failed; retained worktree was left for safe retry: "
+                f"{exc}"
+            )
+            return None
+        if result.returncode != 0:
+            status.fail(note="resolver agent failed")
+            print("✗ Resolver agent failed; retained worktree was left untouched for manual review.")
+            return None
+    else:
+        print("  Retained worktree is already resolved; agent skipped.", flush=True)
 
     status.advance("validate")
-    unmerged = _git_output(git_cmd, worktree, ["diff", "--name-only", "--diff-filter=U"], limit=4000)
-    remaining = [line.strip() for line in unmerged.splitlines() if line.strip()]
+    remaining, remaining_error = _checked_git_lines(
+        git_cmd, worktree, ["diff", "--name-only", "--diff-filter=U"]
+    )
+    if remaining is None:
+        status.fail(note="cannot validate conflict state")
+        print(f"✗ Refusing commit because Git conflict state is unknown: {remaining_error}")
+        return None
     if remaining:
         status.fail(note="unmerged files remain")
         print("✗ Resolver exited but unmerged files remain:")
@@ -1441,8 +1885,19 @@ def _resolve_deploy_handoff(
             print(f"  - {item}")
         return None
 
-    marker_files = conflict_files or _git_output(git_cmd, worktree, ["diff", "--name-only", "HEAD"], limit=4000).splitlines()
-    marker_hits = _scan_conflict_markers(worktree, [line.strip() for line in marker_files if line.strip()])
+    changed_after, changed_error = _checked_changed_paths(git_cmd, worktree)
+    if changed_after is None:
+        status.fail(note="cannot enumerate changed files")
+        print(f"✗ Refusing commit because changed paths are unknown: {changed_error}")
+        return None
+    blocked_after = _egregious_handoff_paths(changed_after)
+    if blocked_after:
+        status.fail(note="sensitive path gate")
+        print("✗ Refusing commit: resolver result touches sensitive paths:")
+        for item in blocked_after:
+            print(f"  - {item}")
+        return None
+    marker_hits = _scan_conflict_markers(worktree, changed_after)
     if marker_hits:
         status.fail(note="conflict markers remain")
         print("✗ Resolver left conflict markers in files:")
@@ -1450,26 +1905,30 @@ def _resolve_deploy_handoff(
             print(f"  - {item}")
         return None
 
+    # Recompute from the authoritative post-resolver tree so a resolver-added
+    # watch area cannot bypass its declared checks.
+    checks = _focused_checks_for_paths(changed_after, payload)
+
     status.advance("focused checks")
-    check_env = _focused_check_env()
-    if not _ensure_focused_pytest(checks, check_env):
-        status.fail(note="pytest tooling unavailable")
-        return None
-    with _focused_node_modules(worktree, checks):
-        for check in checks:
-            print(f"→ Focused check: {check}")
-            check_result = subprocess.run(
-                check,
-                cwd=worktree,
-                shell=True,
-                text=True,
-                timeout=900,
-                env=check_env,
-            )
-            if check_result.returncode != 0:
-                status.fail(note="focused check failed")
-                print(f"✗ Focused check failed: {check}")
-                return None
+    with _isolated_focused_check_env() as check_env:
+        if not _ensure_focused_pytest(checks, check_env):
+            status.fail(note="pytest tooling unavailable")
+            return None
+        with _focused_node_modules(worktree, checks):
+            for check in checks:
+                print(f"→ Focused check: {check}")
+                check_result = subprocess.run(
+                    check,
+                    cwd=worktree,
+                    shell=True,
+                    text=True,
+                    timeout=900,
+                    env=check_env,
+                )
+                if check_result.returncode != 0:
+                    status.fail(note="focused check failed")
+                    print(f"✗ Focused check failed: {check}")
+                    return None
 
     status.advance("commit")
     subprocess.run(git_cmd + ["add", "-A"], cwd=worktree, capture_output=True, text=True)
