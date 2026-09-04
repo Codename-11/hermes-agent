@@ -105,6 +105,116 @@ def test_tgi_is_registered_as_deploy_branch():
     assert "tgi" in hermes_main.DEPLOY_BRANCHES
 
 
+def test_git_fetch_retries_transient_429_in_same_transaction(monkeypatch, tmp_path, capsys):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    results = iter(
+        (
+            SimpleNamespace(
+                stdout="",
+                stderr="error: RPC failed; HTTP 429 curl 22 rate limited\n",
+                returncode=128,
+            ),
+            SimpleNamespace(stdout="", stderr="", returncode=0),
+        )
+    )
+    calls = []
+    sleeps = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return next(results)
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_fork_update, "_sleep_before_fetch_retry", sleeps.append)
+    monkeypatch.setattr(hermes_fork_update.random, "uniform", lambda _a, _b: 0.25)
+
+    result = hermes_fork_update._run_git_fetch_with_retry(
+        ["git"], tmp_path, ["upstream", "main", "--quiet"]
+    )
+
+    assert result.returncode == 0
+    assert [cmd for cmd, _ in calls] == [
+        ["git", "fetch", "upstream", "main", "--quiet"],
+        ["git", "fetch", "upstream", "main", "--quiet"],
+    ]
+    assert sleeps == [5.25]
+    assert "HTTP 429" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    (
+        "error: RPC failed; HTTP 500 curl 22 upstream failure",
+        "fatal: unable to access URL: requested URL returned error: 521",
+        "error: RPC failed; HTTP/2 599 after ref listing",
+    ),
+)
+def test_git_fetch_classifies_all_http_5xx_as_transient(stderr):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    result = SimpleNamespace(stdout="", stderr=stderr, returncode=128)
+    assert hermes_fork_update._is_transient_git_fetch_failure(result) is True
+
+
+def test_git_fetch_does_not_retry_non_transient_failure(monkeypatch, tmp_path):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    calls = []
+    sleeps = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(
+            stdout="", stderr="fatal: Authentication failed\n", returncode=128
+        )
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_fork_update, "_sleep_before_fetch_retry", sleeps.append)
+
+    result = hermes_fork_update._run_git_fetch_with_retry(
+        ["git"], tmp_path, ["upstream", "main", "--quiet"]
+    )
+
+    assert result.returncode == 128
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_deploy_branch_update_reuses_caller_fresh_refs(monkeypatch, tmp_path):
+    from hermes_cli import fork_update as hermes_fork_update
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "rev-list", "--count", "upstream/main..main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "main..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/tgi"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/tgi..HEAD"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "--count", "origin/tgi..upstream/main"]:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_fork_update.subprocess, "run", fake_run)
+
+    changed = hermes_fork_update._run_deploy_branch_update(
+        ["git"],
+        tmp_path,
+        "tgi",
+        "oldhead",
+        origin_ref_fresh=True,
+        upstream_ref_fresh=True,
+    )
+
+    assert changed == 0
+    assert not any("fetch" in cmd for cmd in calls)
+
+
 def test_deploy_branch_update_fast_forwards_when_origin_ahead(monkeypatch, tmp_path):
     calls = []
 
@@ -1059,7 +1169,12 @@ def test_tgi_resolved_deploy_handoff_skips_agent_pushes_and_fast_forwards(
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
     changed = hermes_fork_update._resolve_deploy_handoff(
-        git_cmd=["git"], repo=repo, branch="tgi", pre_update_head="oldhead"
+        git_cmd=["git"],
+        repo=repo,
+        branch="tgi",
+        pre_update_head="oldhead",
+        origin_ref_fresh=True,
+        upstream_ref_fresh=True,
     )
 
     assert changed == 2
@@ -1068,6 +1183,12 @@ def test_tgi_resolved_deploy_handoff_skips_agent_pushes_and_fast_forwards(
     assert ["git", "commit", "--no-edit"] in commands
     assert ["git", "push", "origin", "HEAD:tgi"] in commands
     assert ["git", "merge", "--ff-only", "origin/tgi"] in commands
+    # The one origin fetch is the required post-push readback before syncing live.
+    # The already-fresh pre-merge refs must not be fetched again.
+    assert commands.count(
+        ["git", "fetch", "origin", "tgi:refs/remotes/origin/tgi"]
+    ) == 1
+    assert ["git", "fetch", "upstream", "main", "--quiet"] not in commands
     out = capsys.readouterr().out
     assert "prepare resolve" in out
     assert "agent resolve" in out
@@ -1725,8 +1846,8 @@ def test_tgi_published_handoff_snapshot_is_discarded_before_agent_resolve(
     monkeypatch.setattr(
         hermes_fork_update,
         "_run_deploy_branch_update",
-        lambda git_cmd, cwd, branch, pre_update_head: rebuilt.append(
-            (git_cmd, cwd, branch, pre_update_head)
+        lambda git_cmd, cwd, branch, pre_update_head, **fresh: rebuilt.append(
+            (git_cmd, cwd, branch, pre_update_head, fresh)
         )
         or 7,
     )
@@ -1754,7 +1875,15 @@ def test_tgi_published_handoff_snapshot_is_discarded_before_agent_resolve(
 
     assert result == 7
     assert not marker.exists()
-    assert rebuilt == [(["git"], repo, "tgi", "live-head")]
+    assert rebuilt == [
+        (
+            ["git"],
+            repo,
+            "tgi",
+            "live-head",
+            {"origin_ref_fresh": True, "upstream_ref_fresh": True},
+        )
+    ]
     assert ["git", "worktree", "remove", str(worktree), "--force"] in calls
     out = capsys.readouterr().out
     assert "already published" in out
@@ -1799,8 +1928,8 @@ def test_tgi_handoff_with_superseded_origin_base_rebuilds_once(
     monkeypatch.setattr(
         hermes_fork_update,
         "_run_deploy_branch_update",
-        lambda git_cmd, cwd, branch, pre_update_head: rebuilt.append(
-            (git_cmd, cwd, branch, pre_update_head)
+        lambda git_cmd, cwd, branch, pre_update_head, **fresh: rebuilt.append(
+            (git_cmd, cwd, branch, pre_update_head, fresh)
         )
         or 9,
     )
@@ -1834,7 +1963,15 @@ def test_tgi_handoff_with_superseded_origin_base_rebuilds_once(
 
     assert result == 9
     assert not marker.exists()
-    assert rebuilt == [(["git"], repo, "tgi", "live-head")]
+    assert rebuilt == [
+        (
+            ["git"],
+            repo,
+            "tgi",
+            "live-head",
+            {"origin_ref_fresh": True, "upstream_ref_fresh": True},
+        )
+    ]
     out = capsys.readouterr().out
     assert "advanced after this handoff was created" in out
     assert "rebuilding once" in out
@@ -1869,8 +2006,8 @@ def test_tgi_handoff_with_missing_worktree_is_discarded_and_rebuilt(
     monkeypatch.setattr(
         hermes_fork_update,
         "_run_deploy_branch_update",
-        lambda git_cmd, cwd, branch, pre_update_head: rebuilt.append(
-            (git_cmd, cwd, branch, pre_update_head)
+        lambda git_cmd, cwd, branch, pre_update_head, **fresh: rebuilt.append(
+            (git_cmd, cwd, branch, pre_update_head, fresh)
         )
         or 11,
     )
@@ -1893,7 +2030,15 @@ def test_tgi_handoff_with_missing_worktree_is_discarded_and_rebuilt(
 
     assert result == 11
     assert not marker.exists()
-    assert rebuilt == [(["git"], repo, "tgi", "live-head")]
+    assert rebuilt == [
+        (
+            ["git"],
+            repo,
+            "tgi",
+            "live-head",
+            {"origin_ref_fresh": True, "upstream_ref_fresh": True},
+        )
+    ]
     out = capsys.readouterr().out
     assert "worktree is missing" in out
     assert "rebuilding once from current refs" in out

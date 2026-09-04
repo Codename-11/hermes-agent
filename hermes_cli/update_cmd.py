@@ -8583,12 +8583,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Fetch and pull
     try:
 
-        # Resolve the target branch up front so the fetch can be scoped to it.
-        # A bare `git fetch origin` pulls every ref, and this repo carries
-        # thousands of auto-generated branches — an unscoped fetch can stall for
-        # minutes on a non-single-branch checkout. Fetch only what we update
-        # against.
+        # Resolve both the requested target and the live checkout branch before
+        # fetching. A bare update defaults to main for ordinary installs, but a
+        # deploy-aware fork must fetch its exact current deploy ref (for example
+        # origin/tgi) before any caller may attest that ref is fresh.
         branch = _m()._resolve_update_branch(args)
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            check=True,
+        )
+        current_branch = result.stdout.strip()
+        branch_explicit = bool(getattr(args, "branch", None))
+        is_deploy_branch = (
+            not branch_explicit
+            and current_branch in _m().DEPLOY_BRANCHES
+            and is_fork
+            and _m()._has_upstream_remote(git_cmd, _m().PROJECT_ROOT)
+        )
+        if is_deploy_branch:
+            branch = current_branch
 
         # Self-heal abandoned git lock files (e.g. .git/shallow.lock left by a
         # crashed fetch) before the fetch — otherwise the update fails with
@@ -8604,38 +8620,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
+        origin_fetch_args = (
+            ["origin", f"{branch}:refs/remotes/origin/{branch}"]
+            if is_deploy_branch
+            else ["origin", branch]
+        )
+        fetch_result = _m()._run_git_fetch_with_retry(
+            git_cmd,
+            _m().PROJECT_ROOT,
+            origin_fetch_args,
         )
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)
 
-        # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            check=True,
-        )
-        current_branch = result.stdout.strip()
-
-        branch_explicit = bool(getattr(args, "branch", None))
-        is_deploy_branch = (
-            not branch_explicit
-            and current_branch in _m().DEPLOY_BRANCHES
-            and is_fork
-            and _m()._has_upstream_remote(git_cmd, _m().PROJECT_ROOT)
-        )
         if is_deploy_branch:
-            # The generic updater defaults to main.  After the fork reconciler
-            # publishes a tested deploy artifact, its consume tail must stay on
-            # that deploy branch rather than switching the live checkout.
-            branch = current_branch
             print(f"→ Deploy branch: {current_branch}")
             print(f"  upstream → origin/{current_branch} → live checkout")
             print()
@@ -8794,6 +8793,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     repo=_m().PROJECT_ROOT,
                     branch=current_branch,
                     pre_update_head=pre_update_head,
+                    origin_ref_fresh=True,
                 )
             else:
                 deploy_commit_count = _m()._run_deploy_branch_update(
@@ -8801,6 +8801,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _m().PROJECT_ROOT,
                     current_branch,
                     pre_update_head,
+                    origin_ref_fresh=True,
                 )
             if deploy_commit_count is None:
                 if auto_stash_ref is not None:

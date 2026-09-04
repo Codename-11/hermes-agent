@@ -41,6 +41,14 @@ def mock_args():
     return SimpleNamespace()
 
 
+@pytest.fixture(autouse=True)
+def _skip_real_fetch_backoff(monkeypatch):
+    """Command-flow mocks must not spend real time backing off fake failures."""
+    from hermes_cli import fork_update
+
+    monkeypatch.setattr(fork_update, "_sleep_before_fetch_retry", lambda _seconds: None)
+
+
 def test_update_atexit_registration_is_disabled_by_persistent_test_marker(
     monkeypatch,
 ):
@@ -369,7 +377,18 @@ class TestCmdUpdateBranchFallback:
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
-        deploy_update.assert_called_once_with(expected_git_cmd, PROJECT_ROOT, "tgi", "oldhead")
+        deploy_update.assert_called_once_with(
+            expected_git_cmd,
+            PROJECT_ROOT,
+            "tgi",
+            "oldhead",
+            origin_ref_fresh=True,
+        )
+        fetch_calls = [cmd for cmd in calls if "fetch" in cmd]
+        assert fetch_calls == [
+            expected_git_cmd
+            + ["fetch", "origin", "tgi:refs/remotes/origin/tgi"]
+        ]
         assert not any("checkout main" in " ".join(cmd) for cmd in calls)
         assert not any("HEAD..origin/main" in " ".join(cmd) for cmd in calls)
 

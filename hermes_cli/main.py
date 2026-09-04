@@ -530,6 +530,7 @@ from hermes_cli.fork_update import (  # noqa: E402  (fork seam)
     _record_deploy_handoff,
     _remove_update_worktree,
     _resolve_deploy_handoff,
+    _run_git_fetch_with_retry,
     _run_deploy_branch_update,
     _short_git_ref,
     _sync_deploy_main_to_upstream,

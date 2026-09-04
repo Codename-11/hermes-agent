@@ -30,12 +30,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
+import re
 import signal
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from contextlib import contextmanager
 from datetime import datetime
@@ -50,6 +53,79 @@ logger = logging.getLogger("hermes_cli.fork_update")
 DEPLOY_HANDOFF_FILE = ".update_handoff.json"
 UPDATE_REVIEW_DIR = "update-reports"
 DEPLOY_BRANCHES = {"axiom", "tgi"}
+
+_TRANSIENT_FETCH_RETRY_DELAYS = (5.0, 15.0)
+
+
+def _sleep_before_fetch_retry(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _is_transient_git_fetch_failure(result: subprocess.CompletedProcess) -> bool:
+    """Return whether a failed Git fetch is safe to retry in-place."""
+    detail = str(result.stderr or result.stdout or "").lower()
+    if "429" in detail or "rate limit" in detail or "rate-limit" in detail:
+        return True
+    if re.search(r"(?:http(?:/[0-9.]+)?|error:)\s*5[0-9]{2}\b", detail):
+        return True
+    return any(
+        marker in detail
+        for marker in (
+            "the remote end hung up unexpectedly",
+            "connection reset by peer",
+            "connection was reset",
+            "could not resolve host",
+            "failed to connect",
+            "timed out",
+            "timeout",
+        )
+    )
+
+
+def _run_git_fetch_with_retry(
+    git_cmd: list[str],
+    repo: Path,
+    fetch_args: list[str],
+) -> subprocess.CompletedProcess:
+    """Run one scoped fetch with bounded transient backoff.
+
+    Retrying here keeps a brief GitHub secondary limit or transport reset inside
+    the current update transaction instead of forcing the operator to restart
+    backup, gateway-pause, and handoff classification from the beginning.
+    """
+    result: subprocess.CompletedProcess | None = None
+    attempts = len(_TRANSIENT_FETCH_RETRY_DELAYS) + 1
+    for attempt in range(attempts):
+        result = subprocess.run(
+            git_cmd + ["fetch", *fetch_args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode == 0 or not _is_transient_git_fetch_failure(result):
+            return result
+        if attempt >= len(_TRANSIENT_FETCH_RETRY_DELAYS):
+            return result
+
+        delay = _TRANSIENT_FETCH_RETRY_DELAYS[attempt] + random.uniform(0.0, 1.0)
+        detail = next(
+            (
+                line.strip()
+                for line in str(result.stderr or result.stdout or "").splitlines()
+                if line.strip()
+            ),
+            "transient Git transport failure",
+        )
+        print(
+            f"  ⚠ Git fetch failed transiently ({detail}); "
+            f"retrying in {delay:.1f}s ({attempt + 2}/{attempts})..."
+        )
+        _sleep_before_fetch_retry(delay)
+
+    assert result is not None  # attempts is always at least one
+    return result
 
 
 FORK_WATCH_AREAS: tuple[dict[str, object], ...] = (
@@ -1705,6 +1781,8 @@ def _resolve_deploy_handoff(
     repo: Path,
     branch: str,
     pre_update_head: str,
+    origin_ref_fresh: bool = False,
+    upstream_ref_fresh: bool = False,
 ) -> Optional[int]:
     """Autonomously resolve a retained deploy update handoff.
 
@@ -1735,27 +1813,27 @@ def _resolve_deploy_handoff(
     if worktree_raw:
         print(f"  Worktree: {worktree}")
     status.start("prepare resolve")
-    fetches = [
-        (
-            "origin",
-            subprocess.run(
-                git_cmd
-                + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-            ),
-        ),
-        (
-            "upstream",
-            subprocess.run(
-                git_cmd + ["fetch", "upstream", "main", "--quiet"],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-            ),
-        ),
-    ]
+    fetches = []
+    if not origin_ref_fresh:
+        fetches.append(
+            (
+                "origin",
+                _run_git_fetch_with_retry(
+                    git_cmd,
+                    repo,
+                    ["origin", f"{branch}:refs/remotes/origin/{branch}"],
+                ),
+            )
+        )
+    if not upstream_ref_fresh:
+        fetches.append(
+            (
+                "upstream",
+                _run_git_fetch_with_retry(
+                    git_cmd, repo, ["upstream", "main", "--quiet"]
+                ),
+            )
+        )
     failed_fetches = [(name, result) for name, result in fetches if result.returncode != 0]
     if failed_fetches:
         status.fail(note="fetch failed")
@@ -1778,7 +1856,12 @@ def _resolve_deploy_handoff(
             "starting a fresh deploy update."
         )
         return _run_deploy_branch_update(
-            git_cmd, repo, branch, pre_update_head
+            git_cmd,
+            repo,
+            branch,
+            pre_update_head,
+            origin_ref_fresh=True,
+            upstream_ref_fresh=True,
         )
 
     if _handoff_origin_is_behind(git_cmd, repo, branch, payload):
@@ -1792,7 +1875,12 @@ def _resolve_deploy_handoff(
             "rebuilding once from the current deploy tip."
         )
         return _run_deploy_branch_update(
-            git_cmd, repo, branch, pre_update_head
+            git_cmd,
+            repo,
+            branch,
+            pre_update_head,
+            origin_ref_fresh=True,
+            upstream_ref_fresh=True,
         )
 
     if not worktree_raw or not worktree.exists():
@@ -1807,7 +1895,12 @@ def _resolve_deploy_handoff(
         status.finish(note="missing worktree cleared")
         print("→ Discarded non-resumable handoff; rebuilding once from current refs.")
         return _run_deploy_branch_update(
-            git_cmd, repo, branch, pre_update_head
+            git_cmd,
+            repo,
+            branch,
+            pre_update_head,
+            origin_ref_fresh=True,
+            upstream_ref_fresh=True,
         )
 
     marker_conflict_files = _handoff_conflict_files(git_cmd, worktree, payload)
@@ -2004,17 +2097,14 @@ def _sync_deploy_main_to_upstream(git_cmd: list[str], repo: Path) -> bool:
             # longer visible. Deepen the one ref we need, in bounded chunks,
             # and reclassify before refusing to move main.
             for _ in range(16):
-                deepen = subprocess.run(
-                    git_cmd
-                    + [
-                        "fetch",
+                deepen = _run_git_fetch_with_retry(
+                    git_cmd,
+                    repo,
+                    [
                         "--deepen=1024",
                         "upstream",
                         "main:refs/remotes/upstream/main",
                     ],
-                    cwd=repo,
-                    capture_output=True,
-                    text=True,
                 )
                 if deepen.returncode != 0:
                     break
@@ -2139,11 +2229,10 @@ def _fast_forward_live_deploy_checkout(
 ) -> Optional[int]:
     """Refresh ``origin/<branch>`` and fast-forward the live checkout to it."""
     remote_ref = f"origin/{branch}"
-    fetch_deploy = subprocess.run(
-        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+    fetch_deploy = _run_git_fetch_with_retry(
+        git_cmd,
+        repo,
+        ["origin", f"{branch}:refs/remotes/origin/{branch}"],
     )
     if fetch_deploy.returncode != 0:
         return None
@@ -2186,18 +2275,16 @@ def _recover_deploy_push_rejection(
     remote_ref = f"origin/{branch}"
     print(f"  ⚠ origin/{branch} advanced during update; reconciling once...")
 
-    subprocess.run(
-        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+    fetch_origin = _run_git_fetch_with_retry(
+        git_cmd,
+        repo,
+        ["origin", f"{branch}:refs/remotes/origin/{branch}"],
     )
-    subprocess.run(
-        git_cmd + ["fetch", "upstream", "--quiet"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+    fetch_upstream = _run_git_fetch_with_retry(
+        git_cmd, repo, ["upstream", "--quiet"]
     )
+    if fetch_origin.returncode != 0 or fetch_upstream.returncode != 0:
+        return None
 
     # Another host may have already pushed the same/equivalent merge. If the
     # retained temp merge is now an ancestor of origin/<branch>, do not hand off;
@@ -2317,6 +2404,9 @@ def _run_deploy_branch_update(
     repo: Path,
     branch: str,
     pre_update_head: str,
+    *,
+    origin_ref_fresh: bool = False,
+    upstream_ref_fresh: bool = False,
 ) -> Optional[int]:
     """Update a merge-based deploy branch without mutating live code on conflicts.
 
@@ -2350,49 +2440,42 @@ def _run_deploy_branch_update(
     _pipe = Pipeline(["fetch upstream", "merge upstream", f"sync {branch}"])
     _pipe.start("fetch upstream")
 
-    fetch_upstream = subprocess.run(
-        git_cmd + ["fetch", "upstream", "--quiet"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_upstream.returncode != 0:
-        _pipe.fail(note="cannot fetch upstream")
-        _print_deploy_branch_handoff(
-            reason="cannot fetch upstream.",
-            repo=repo,
-            branch=branch,
-            error=(fetch_upstream.stderr or "").strip(),
-            git_cmd=git_cmd,
+    if not upstream_ref_fresh:
+        fetch_upstream = _run_git_fetch_with_retry(
+            git_cmd, repo, ["upstream", "--quiet"]
         )
-        return None
+        if fetch_upstream.returncode != 0:
+            _pipe.fail(note="cannot fetch upstream")
+            _print_deploy_branch_handoff(
+                reason="cannot fetch upstream.",
+                repo=repo,
+                branch=branch,
+                error=(fetch_upstream.stderr or "").strip(),
+                git_cmd=git_cmd,
+            )
+            return None
 
     # Refresh the tested deploy artifact before comparing refs. Otherwise a
     # client with a stale remote-tracking ref can falsely report origin current
     # and strand itself on an old deploy commit after another host resolved and
-    # pushed the integration.
-    fetch_deploy = subprocess.run(
-        git_cmd
-        + [
-            "fetch",
-            "origin",
-            f"{branch}:refs/remotes/origin/{branch}",
-            "--quiet",
-        ],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    if fetch_deploy.returncode != 0:
-        _pipe.fail(note=f"cannot refresh origin/{branch}")
-        _print_deploy_branch_handoff(
-            reason=f"cannot fetch origin/{branch}.",
-            repo=repo,
-            branch=branch,
-            error=(fetch_deploy.stderr or "").strip(),
-            git_cmd=git_cmd,
+    # pushed the integration. The command entry point can explicitly attest that
+    # its immediately preceding scoped origin fetch already established this.
+    if not origin_ref_fresh:
+        fetch_deploy = _run_git_fetch_with_retry(
+            git_cmd,
+            repo,
+            ["origin", f"{branch}:refs/remotes/origin/{branch}", "--quiet"],
         )
-        return None
+        if fetch_deploy.returncode != 0:
+            _pipe.fail(note=f"cannot refresh origin/{branch}")
+            _print_deploy_branch_handoff(
+                reason=f"cannot fetch origin/{branch}.",
+                repo=repo,
+                branch=branch,
+                error=(fetch_deploy.stderr or "").strip(),
+                git_cmd=git_cmd,
+            )
+            return None
 
     if not _sync_deploy_main_to_upstream(git_cmd, repo):
         _pipe.fail(note="cannot sync local main")
@@ -2506,6 +2589,8 @@ def _run_deploy_branch_update(
                 repo=repo,
                 branch=branch,
                 pre_update_head=pre_update_head,
+                origin_ref_fresh=True,
+                upstream_ref_fresh=True,
             )
             if resolved is not None:
                 return resolved
@@ -2543,6 +2628,8 @@ def _run_deploy_branch_update(
                 repo=repo,
                 branch=branch,
                 pre_update_head=pre_update_head,
+                origin_ref_fresh=True,
+                upstream_ref_fresh=True,
             )
             if resolved is not None:
                 return resolved
@@ -2594,11 +2681,10 @@ def _run_deploy_branch_update(
         return None
 
     _pipe.advance(f"sync {branch}")
-    fetch_deploy = subprocess.run(
-        git_cmd + ["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+    fetch_deploy = _run_git_fetch_with_retry(
+        git_cmd,
+        repo,
+        ["origin", f"{branch}:refs/remotes/origin/{branch}"],
     )
     if fetch_deploy.returncode != 0:
         _pipe.fail(note=f"cannot refresh origin/{branch}")
