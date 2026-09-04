@@ -622,9 +622,11 @@ def _detect_concurrent_hermes_instances(
 
     This helper enumerates processes whose ``exe`` matches one of the venv's
     shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
-    process_name)`` pairs. The caller's own PID and an immediate shim parent are
-    excluded so the running ``hermes update`` invocation never reports its own
-    setuptools launcher. A matching shim anywhere farther up the tree is
+    process_name)`` pairs. The caller's own PID and its nearest launcher shim
+    ancestor are excluded so the running ``hermes update`` invocation never
+    reports its own setuptools launcher. The shim can sit behind one or more
+    Python bootstrap processes on managed-runtime installs. A matching shim
+    after that nearest launcher, or beyond a non-Python process boundary, is
     deliberately retained: that is a long-lived outer Hermes process (for
     example a TUI that launched a terminal-tool update) and it will keep the
     executable locked after this child exits.
@@ -650,10 +652,11 @@ def _detect_concurrent_hermes_instances(
     if not shim_paths:
         return []
 
-    # Build a set of PIDs to exclude: the Python process itself plus its immediate
-    # parent when that executable is one of our shims. On Windows the
-    # setuptools-generated hermes.exe launcher is a separate native process
-    # that spawns python.exe (the interpreter that runs our code).
+    # Build a set of PIDs to exclude: the Python process itself plus the nearest
+    # launcher shim reached through leading Python bootstrap ancestors. On
+    # Windows the setuptools-generated hermes.exe launcher is a separate native
+    # process that spawns venv Python, which may then re-exec Hermes under the
+    # managed runtime Python.
     # os.getpid() returns the Python PID, but the launcher (which holds the
     # file lock) is the parent. Without excluding it, every ``hermes update``
     # reports its own launcher as a concurrent instance — a false positive
@@ -661,14 +664,14 @@ def _detect_concurrent_hermes_instances(
     #
     # Two robustness points learned from the field:
     #   1. Use ``proc.parents()`` — it returns the WHOLE ancestor list in one
-    #      call. The earlier per-hop ``current.parent()`` loop bailed on the
-    #      first psutil error (AccessDenied/NoSuchProcess is common on Windows
-    #      across session/elevation boundaries), leaving the launcher shim in
-    #      the candidate set and re-triggering the false positive.
-    #   2. Exclude only parents()[0] when it is a shim. A shim after an
-    #      intervening shell/python process is a genuine outer Hermes runtime —
-    #      most importantly an active TUI that launched this updater through a
-    #      terminal tool — and must stay visible to the mutation preflight.
+    #      call. The earlier per-hop ``current.parent()`` loop could lose the
+    #      chain on transient Windows process-enumeration errors. If an
+    #      individual ancestor's executable is unreadable, stop and fail closed
+    #      rather than crossing an unverified process boundary.
+    #   2. Skip leading python.exe/pythonw.exe bootstrap layers and exclude only
+    #      the first shim reached. Stop at any other executable boundary. This
+    #      exempts ``hermes.exe -> venv python -> managed python`` without hiding
+    #      a farther outer TUI that launched this updater through a terminal.
     # Broad ``except Exception`` guards against partially-stubbed psutil in
     # unit tests; this helper is documented as "never raises".
     if exclude_pid is not None:
@@ -681,13 +684,13 @@ def _detect_concurrent_hermes_instances(
             ancestors = psutil.Process(seed).parents()
         except Exception:
             ancestors = []
-        for ancestor in ancestors[:1]:
+        for ancestor in ancestors:
             try:
                 anc_exe = ancestor.exe()
             except Exception:
-                continue
+                break
             if not anc_exe:
-                continue
+                break
             try:
                 anc_norm = str(Path(anc_exe).resolve()).lower()
             except (OSError, ValueError):
@@ -696,7 +699,10 @@ def _detect_concurrent_hermes_instances(
                 try:
                     exclude_pids.add(int(ancestor.pid))
                 except Exception:
-                    continue
+                    pass
+                break
+            if Path(anc_exe).name.lower() not in {"python.exe", "pythonw.exe"}:
+                break
 
     except Exception:
         pass

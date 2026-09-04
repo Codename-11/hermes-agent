@@ -59,9 +59,9 @@ def _fake_psutil_with_parent_chain(
     ``parent_chain`` is the ordered list of ancestor PIDs (closest first)
     returned by ``proc.parents()`` on the seed (``os.getpid()``).
     ``ancestor_exe`` is either one executable path for every ancestor or a
-    per-PID mapping. The immediate parent is excluded only when it is a shim;
-    farther matching shims remain candidates. Pass ``None`` to model an
-    ancestor whose exe can't be read (psutil error).
+    per-PID mapping. The nearest matching shim ancestor is excluded; farther
+    matching shims remain candidates. Pass ``None`` to model an ancestor whose
+    exe can't be read (psutil error).
     """
 
     class _FakeProc:
@@ -105,15 +105,8 @@ def _fake_psutil_with_parent_chain(
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_parents_call_robust_to_one_bad_hop(_winp, tmp_path):
-    """The launcher shim is still excluded even when an ancestor exe is unreadable.
-
-    Field regression (issues #29341, #34795): the old per-hop ``parent()``
-    walk bailed on the FIRST psutil error, so an AccessDenied on any hop left
-    the launcher shim in the candidate set and re-triggered the false
-    positive. ``parents()`` returns the whole list at once; we evaluate each
-    ancestor independently, so one unreadable hop never strands the launcher.
-    """
+def test_detect_concurrent_unreadable_ancestor_fails_closed(_winp, tmp_path):
+    """An unreadable ancestor remains a blocker instead of being crossed."""
     scripts_dir = tmp_path
     shim = scripts_dir / "hermes.exe"
     shim.write_bytes(b"")
@@ -172,18 +165,80 @@ def test_detect_concurrent_excludes_only_nearest_launcher_shim(_winp, tmp_path):
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_skips_bootstrap_python_to_exempt_launcher(_winp, tmp_path):
+    """A routine Windows launch may put Python between the updater and shim."""
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    venv_python_pid = me + 100
+    launcher_pid = me + 200
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[venv_python_pid, launcher_pid],
+        proc_iter_rows=[_make_proc(launcher_pid, str(shim), "hermes.exe")],
+        ancestor_exe={
+            venv_python_pid: str(scripts_dir / "python.exe"),
+            launcher_pid: str(shim),
+        },
+    )
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_bootstrap_keeps_farther_outer_tui_visible(_winp, tmp_path):
+    """Exempt the updater shim behind Python, but retain an outer TUI shim."""
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    me = os.getpid()
+    venv_python_pid = me + 100
+    launcher_pid = me + 200
+    shell_pid = me + 300
+    outer_tui_pid = me + 400
+    fake_psutil = _fake_psutil_with_parent_chain(
+        parent_chain=[
+            venv_python_pid,
+            launcher_pid,
+            shell_pid,
+            outer_tui_pid,
+        ],
+        proc_iter_rows=[
+            _make_proc(launcher_pid, str(shim), "hermes.exe"),
+            _make_proc(outer_tui_pid, str(shim), "hermes.exe"),
+        ],
+        ancestor_exe={
+            venv_python_pid: str(scripts_dir / "python.exe"),
+            launcher_pid: str(shim),
+            shell_pid: str(tmp_path / "bash.exe"),
+            outer_tui_pid: str(shim),
+        },
+    )
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == [(outer_tui_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
 def test_detect_concurrent_direct_python_keeps_outer_tui_visible(_winp, tmp_path):
     """A direct-Python updater has no shim parent to exempt."""
     scripts_dir = tmp_path
     shim = scripts_dir / "hermes.exe"
     shim.write_bytes(b"")
     me = os.getpid()
-    shell_pid = me + 100
-    outer_tui_pid = me + 200
+    venv_python_pid = me + 100
+    shell_pid = me + 200
+    outer_tui_pid = me + 300
     fake_psutil = _fake_psutil_with_parent_chain(
-        parent_chain=[shell_pid, outer_tui_pid],
+        parent_chain=[venv_python_pid, shell_pid, outer_tui_pid],
         proc_iter_rows=[_make_proc(outer_tui_pid, str(shim), "hermes.exe")],
         ancestor_exe={
+            venv_python_pid: str(scripts_dir / "python.exe"),
             shell_pid: str(tmp_path / "bash.exe"),
             outer_tui_pid: str(shim),
         },

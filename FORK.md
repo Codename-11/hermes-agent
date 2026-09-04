@@ -88,6 +88,7 @@ Commits:
 - `47bbd3eed` — `test(update): force stale web dist in build assertion`
 - This commit — `fix(update): port deploy resolver to TGI`
 - `bc6648bbe6` — `fix(update): harden Windows completion handoff`
+- This commit — `fix(update/windows): exempt managed-runtime launcher shim`
 
 Primary files:
 
@@ -138,7 +139,8 @@ Required behavior:
 - On Windows, a long-lived outer Hermes TUI/Desktop launcher remains visible
   to the concurrent-instance preflight even when it is an ancestor of the
   updater process. Refuse before backup, gateway pause, or source mutation;
-  exempt only the updater Python process's immediate shim parent.
+  cross only leading Python bootstrap layers and exempt the nearest matching
+  shim ancestor, while retaining any farther outer Hermes launcher.
 - The in-flight update receipt survives post-pull module-cache purging so a
   successful direct-Python completion replaces any earlier refused receipt.
 - Desktop rebuilds restore only semantically verified npm annotation/optional-
