@@ -2308,6 +2308,7 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    status_cleared_ids: Optional[Iterable[str]] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -2326,8 +2327,13 @@ def write_credential_pool(
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
+
+    Pass ``status_cleared_ids`` for entries whose status was deliberately
+    reset. Their cleared timestamp would otherwise look older than the
+    still-binding on-disk cooldown and the recency merge would restore it.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
+    status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
@@ -2353,7 +2359,9 @@ def write_credential_pool(
         }
         merged: List[Dict[str, Any]] = [
             _merge_disk_cooldown_state(
-                entry, existing_by_id.get(entry.get("id")), provider_id
+                entry,
+                None if entry.get("id") in status_cleared else existing_by_id.get(entry.get("id")),
+                provider_id,
             )
             if isinstance(entry, dict)
             else entry

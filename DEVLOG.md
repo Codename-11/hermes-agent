@@ -1,5 +1,13 @@
 # Hermes Agent — Axiom Dev Log
 
+## 2026-09-07 — Restore credential-pool status-clear writer contract
+
+- Reproduced fresh-session and delegated-child initialization failure: `write_credential_pool() got an unexpected keyword argument 'status_cleared_ids'`.
+- Root cause: the Axiom merge contained the new `agent.credential_pool.persist_pool_entries(..., status_cleared_ids=...)` caller and regression tests, but `hermes_cli.auth.write_credential_pool` had regressed to its older signature/merge behavior. `origin/axiom` carried the same mismatch; current `upstream/main` contained the missing implementation.
+- Restored the missing writer parameter and deliberate-status-clear merge bypass in the local fix commit.
+- Verification: original failing cooldown-reset test passed; focused credential tests 6/6; auth profile fallback 7/7; full credential-pool suite 62/62; fresh Victor CLI session returned `SESSION_INIT_OK`.
+- Existing TUI/gateway processes loaded the old Python module before the fix and require restart/reopen to consume it. No live gateway was restarted during the active operator session.
+
 ## 2026-09-02 — Resolve cron failure-delivery integration
 
 - Resolved the retained updater merge by keeping both explicit Axiom `profile` ownership and upstream `failure_deliver` in `create_job`; preserved upstream routing, preflight validation, and delivery bookkeeping.
