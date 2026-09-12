@@ -324,6 +324,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 `DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to create an unrestricted conversation mesh. The default, `"none"`, ignores all other bots and is the safe setting.
 
 Discord can add the replied-to bot to `message.mentions` even when the author did not type an inline mention. If multiple bots may reply in one room, set `discord.bots_require_inline_mention: true` (or `DISCORD_BOTS_REQUIRE_INLINE_MENTION=true`). Then only a literal `<@bot-id>` in a bot-authored message can trigger Hermes; a reply chip alone cannot continue a loop. This is a narrow admission guard, not a rate limiter: keep `allow_bots` at `none` unless bot input is required, prefer `mentions` over `all`, and only admit trusted bots.
+
+Wiring multiple Hermes profiles to reply to one another in a shared channel — by setting `"mentions"` or `"all"` across several profiles — is an unsupported topology. Discord auto-`@mentions` the replied-to author on every reply, so under `"mentions"` two bots will satisfy each other's mention gate and ack-loop. The gateway's bot loop guard bounds the damage rather than preventing it: after 20 bot-authored messages in one channel inside 5 minutes, further bot messages there are dropped for 10 minutes (tunable under `gateway.bot_loop_guard` in `config.yaml`; human messages are never counted). The supported configuration is still to leave `DISCORD_ALLOW_BOTS` at `"none"`. If you must accept a particular bot, scope the acceptance narrowly and never to another auto-replying agent.
 :::
 
 ### Config File (`config.yaml`)

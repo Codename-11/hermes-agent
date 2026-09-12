@@ -597,6 +597,23 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_git_safe_directory_read(request, monkeypatch):
+    """Skip the ``git config --get-all safe.directory`` pre-read in ``noninteractive_git_env()``.
+
+    Many tests fake ``subprocess.run``/``Popen`` with a fixed sequence of expected git calls;
+    the pre-read is an extra spawn that would trip them. Tests of the carve-out itself opt in
+    with ``@pytest.mark.real_safe_directory``.
+    """
+    if request.node.get_closest_marker("real_safe_directory"):
+        return
+    try:
+        from hermes_cli import _subprocess_compat
+    except Exception:
+        return
+    monkeypatch.setattr(_subprocess_compat, "_user_safe_directories", lambda base_env: [], raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser
@@ -1162,6 +1179,11 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     )
     config.addinivalue_line(
         "markers",
+        "real_safe_directory: run the real `git config --get-all safe.directory` pre-read in "
+        "noninteractive_git_env() (autouse fixture otherwise stubs it to no entries).",
+    )
+    config.addinivalue_line(
+        "markers",
         f"{_REQUIRES_WAL_MARK}: test needs the runtime to actually enable "
         "SQLite WAL mode; skipped on builds where Hermes falls back to "
         "journal_mode=DELETE for the WAL-reset bug.",
@@ -1428,6 +1450,14 @@ def _live_system_guard(request, monkeypatch):
         "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    _CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
+
+    def _first_token_basename(cmd_str: str) -> str:
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        return tokens[0].rsplit("/", 1)[-1].lower() if tokens else ""
     # Shell/launcher executables whose arguments are themselves commands —
     # argv[0]-only scanning must not exempt what they wrap.
     _WRAPPER_COMMANDS = (
@@ -1563,7 +1593,14 @@ def _live_system_guard(request, monkeypatch):
         # sibling refactor moved the spawn seam and left tests patching the
         # facade. The canonical matcher, never an argv substring.
         from gateway.status import _gateway_command_subcommand
-        if not lookalike_ok and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart"):
+        # A gateway launched INSIDE a container (`docker exec … hermes gateway start`) cannot
+        # reach the host's systemd unit or webhook port; tests/docker/ exists to exercise it.
+        in_container = _first_token_basename(cmd_str) in _CONTAINER_RUNTIMES
+        if (
+            not lookalike_ok
+            and not in_container
+            and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart")
+        ):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — this would spawn a REAL "
